@@ -177,7 +177,31 @@
 }
 .settings-provider-list:empty { display: none; }
 
-.settings-provider-card + .settings-provider-card { border-block-start: 1px solid var(--ak-rule-subtle); }
+.settings-provider-card + .settings-provider-card,
+.settings-provider-list > li + .settings-provider-parked,
+.settings-provider-parked + .settings-provider-card { border-block-start: 1px solid var(--ak-rule-subtle); }
+
+/* 停用连接的折叠行：次级墨色一行计数，箭头指向展开方向；展开后作为停用组的组头。 */
+.settings-provider-parked button {
+  display: flex;
+  width: 100%;
+  min-height: 2.75rem;
+  align-items: center;
+  gap: 0.375rem;
+  border: 0;
+  padding-inline: 1rem 0.875rem;
+  color: var(--ak-ink-secondary);
+  background: transparent;
+  font: inherit;
+  font-size: 0.8125rem;
+  text-align: start;
+  cursor: pointer;
+}
+.settings-provider-parked button span { flex: 1 1 auto; }
+.settings-provider-parked button svg { transition: rotate var(--ak-sys-duration-short) var(--ak-sys-motion-standard); }
+.settings-provider-parked button[aria-expanded="true"] svg { rotate: 90deg; }
+@media (hover: hover) { .settings-provider-parked button:hover { color: var(--ak-ink-primary); background: color-mix(in oklab, var(--ak-ink-primary) 4%, transparent); } }
+.settings-provider-parked button:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: -2px; }
 
 /* 一行两个控件：展开按钮用 ::before 铺满整行，开关叠在上方；箭头不接收点击。 */
 .settings-provider-row {
@@ -249,6 +273,9 @@
 .settings-provider-switch input:checked::after { translate: 0.875rem 0; }
 .settings-provider-switch input:disabled { opacity: 0.5; cursor: progress; }
 .settings-provider-switch input:focus-visible { outline: 2px solid var(--md-sys-color-primary); outline-offset: 2px; }
+/* 开关本身 34×20，外层 label 用内边距撑热区、等量负外边距抵消，不改行布局：鼠标下至少 24px 高，触屏 44×44。 */
+.settings-provider-switch { margin-block: -0.125rem; padding-block: 0.125rem; }
+@media (pointer: coarse) { .settings-provider-switch { margin: -0.75rem -0.3125rem; padding: 0.75rem 0.3125rem; } }
 
 /* 行尾额度：套餐、最紧的窗口、细条、比例排成一行；超过八成换警示色，悬停看全部窗口。 */
 .settings-provider-quota {
@@ -805,6 +832,11 @@ dialog.settings-scrim::backdrop { background: transparent; }
 .models-usage .settings-section-bar .settings-text-button { min-height: 2rem; padding-inline: 0.5rem; font-size: var(--models-type-caption); }
 .usage-toggle { display: inline-flex; margin-inline-start: auto; border: 1px solid var(--ak-rule-default); border-radius: var(--ak-radius-sm); padding: 2px; }
 .usage-toggle button { min-height: 1.75rem; border: 0; border-radius: calc(var(--ak-radius-sm) - 2px); padding-inline: 0.625rem; color: var(--ak-ink-secondary); background: transparent; font: inherit; font-size: var(--models-type-caption); cursor: pointer; }
+/* 触屏：时段与已用/剩余切换、刷新都到 44px（鼠标下保持紧凑）。 */
+@media (pointer: coarse) {
+  .usage-toggle button, .models-usage .settings-section-bar .settings-text-button { min-height: var(--models-hit-target, 44px); }
+  .usage-toggle button { min-width: 44px; }
+}
 .usage-toggle button[aria-pressed="true"] { color: var(--ak-ink-primary); background: var(--ak-paper-quiet); font-weight: 600; }
 .usage-quota-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr)); gap: 0.625rem; }
 .usage-quota-card { display: grid; gap: 0.5rem; border: 1px solid var(--ak-rule-subtle); border-radius: var(--ak-radius-md); padding: 0.75rem 0.875rem; background: var(--ak-paper-sheet); }
@@ -877,6 +909,7 @@ dialog.settings-scrim::backdrop { background: transparent; }
 .settings-section-hint { color: var(--ak-ink-tertiary, var(--ak-ink-secondary)); font-size: var(--models-type-caption); }
 .settings-find { display: flex; width: min(15rem, 50%); min-height: 2rem; align-items: center; gap: 0.4rem; margin-inline-start: auto; border: 1px solid var(--ak-rule-default); border-radius: var(--ak-radius-sm); padding-inline: 0.625rem; color: var(--ak-ink-secondary); background: var(--ak-paper-editing); }
 .settings-find:focus-within { border-color: var(--ak-rule-focus); }
+@media (pointer: coarse) { .settings-find { min-height: 2.75rem; } }
 .settings-find > svg { flex: none; width: 0.875rem; height: 0.875rem; }
 .settings-find input { width: 100%; min-width: 0; border: 0; outline: 0; color: var(--ak-ink-primary); background: transparent; font: inherit; font-size: var(--models-type-caption); }
 .settings-section-bar > .settings-text-button { min-height: 2rem; padding-inline: 0.5rem; font-size: var(--models-type-caption); }

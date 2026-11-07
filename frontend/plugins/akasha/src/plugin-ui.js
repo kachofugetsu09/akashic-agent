@@ -193,8 +193,6 @@ export function mountRecall(host, context) {
   let active = true;
   let loading = false;
   let dirty = false;
-  let loaded = false;
-  let loadingTimer;
   let rendered = null;
   let unsubscribe;
   let view = null;
@@ -232,12 +230,8 @@ export function mountRecall(host, context) {
     loading = true;
     dirty = false;
     let settled = false;
-    // 2. 成功空快照也是已读；后续刷新不再显示首次加载占位。
-    if (!loaded && status.hidden) loadingTimer = setTimeout(() => {
-      if (!active) return;
-      status.innerHTML = `${BRAIN}<span class="akasha-recall-shimmer">回想中…</span>`;
-      status.hidden = false;
-    }, 150);
+    // 2. 读取期间不写占位：回想是回答的旁注，等的是查询而不是召回本身；
+    //    打开历史会话时逐轮闪「回想中…」只是噪声，结果到了再出现那一行。
     try {
       const result = await readRecall(context, () => active);
       if (!active) return;
@@ -248,7 +242,6 @@ export function mountRecall(host, context) {
       claimed = Array.isArray(result.message_ids) ? result.message_ids : [];
       publishView(context.sessionId, claimed, view);
       show(view);
-      loaded = true;
       status.hidden = true;
       settled = result.pending === false;
     } catch (error) {
@@ -264,7 +257,6 @@ export function mountRecall(host, context) {
       }
     } finally {
       loading = false;
-      clearTimeout(loadingTimer);
       // 读取期间收到的提交不能丢失，即使这份旧快照已经声称闭合。
       if (active && dirty) void load();
       else if (active && settled) { unsubscribe?.(); unsubscribe = undefined; }
@@ -275,7 +267,6 @@ export function mountRecall(host, context) {
   return () => {
     active = false;
     unsubscribe?.();
-    clearTimeout(loadingTimer);
     if (openPanel?.anchor === content.querySelector(".akasha-recall-badge")) closePanel();
     retractView(context.sessionId, claimed, view);
   };

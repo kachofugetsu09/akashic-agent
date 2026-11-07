@@ -12,7 +12,8 @@ export function activate(ctx: WebHostContextV1): WebUiDisposer {
   const stopRail = ctx.ui.inject(RAIL_ACTIONS_MOUNT, (mount) =>
     mount.register({
       id: "privacy-mask.toggle",
-      order: 90,
+      // 排在功能设置之后：底栏第一项带字，打码收成图标。
+      order: 110,
       label: "截屏打码",
       iconSvg: EYE_OFF_ICON,
       onActivate: () => engine.toggle(),
