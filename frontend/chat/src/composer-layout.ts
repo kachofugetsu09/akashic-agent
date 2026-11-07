@@ -19,8 +19,9 @@ export function useComposerCrowded(card: RefObject<HTMLElement | null>, singleLi
     const lead = root?.querySelector<HTMLElement>(".composer__lead");
     if (!root || !lead || !singleLine) return;
     // 1. 单行时：工具位内容溢出就转两行；插件改了控件（换模型名、多一个钮）也要重量。
+    //    控件常用伪元素把热区左右外扩几像素，scrollWidth 会算进去，所以超出 8px 以上才算挤。
     if (!crowded) {
-      const measure = () => { if (lead.scrollWidth > lead.clientWidth + 1) setCrowded(true); };
+      const measure = () => { if (lead.scrollWidth > lead.clientWidth + 8) setCrowded(true); };
       measure();
       const resize = new ResizeObserver(measure);
       resize.observe(root);
