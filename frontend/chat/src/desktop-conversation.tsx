@@ -386,14 +386,15 @@ export const DesktopTimelineMessages = React.memo(function DesktopTimelineMessag
   }, [messages]);
   const onNavigate = useCallback((id: string, partIndex?: number) => {
     stopScroll();
-    const processOwner = partIndex === undefined ? undefined : [...groups.inline.leading].find(
-      ([, members]) => members.some(message => message.id === id))?.[0];
+    // 指向某一段或已并进别的轮次（没有自己的行）时，交给持有它的那一轮去定位并展开。
+    const processOwner = partIndex === undefined && anchorIndexes.has(id) ? undefined
+      : [...groups.inline.leading, ...groups.completed].find(([, members]) => members.some(message => message.id === id))?.[0];
     const index = anchorIndexes.get(processOwner ?? id);
     const activity = index === undefined ? undefined : activities[index - visibleMessages.length];
     const row = messageElementsRef.current.get(visibleMessages[index ?? -1]?.id)
       ?? (activity ? document.querySelector<HTMLElement>(`[data-reply-handle="${CSS.escape(activity.handle)}"]`) : null);
     if (row) focusMessagePart(row, id, partIndex);
-  }, [activities, anchorIndexes, groups.inline.leading, messageElementsRef, stopScroll, visibleMessages]);
+  }, [activities, anchorIndexes, groups.completed, groups.inline.leading, messageElementsRef, stopScroll, visibleMessages]);
   // 末尾一段不跳过渲染：新插入或刚切到 content-visibility:auto 的元素首帧按 160px 占位布局，
   // 一轮落定时正式回复会先塌成占位高度、滚动被夹紧，下一帧再弹回，形成整屏闪跳。
   // 窗口取得足够宽，切换只发生在远离视口的上方，由原生滚动锚定吸收。
