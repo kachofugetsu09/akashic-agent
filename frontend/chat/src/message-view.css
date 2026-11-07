@@ -1588,6 +1588,11 @@ button.tool-step-summary:active {
   .turn-process {
     --tool-sticky-h: 44px;
   }
+
+  /* 触屏收起的行与展开吸顶的行同高：每行都够手指点（44px），点开时也不在指尖下长高 16px。 */
+  :is(.process-trace, .turn-process) :is(.tool-step-summary, .process-trigger) {
+    min-height: var(--tool-sticky-h);
+  }
 }
 
 .tool-detail-surface {
