@@ -224,6 +224,15 @@ class MarkdownProfileStore:
         if scope is not None and not isinstance(scope, str):
             raise ValueError(f"Markdown draft scope 无效: {source_ref}")
         ops = parse_ops({"ops": draft.get("ops")})
+        if (saved_before := self._read_receipt(source_ref, "markdown_before_v1")) is not None:
+            for doc, text in saved_before.items():
+                if isinstance(text, str):
+                    path = self._path(doc)
+                    if text:
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        atomic_write_text(path, text, domain="markdown_memory")
+                    elif path.exists():
+                        path.unlink()
         for _attempt in range(_APPLY_ATTEMPTS):
             # 1. 读取当前文件并叠加；不持锁的原生工具可能在其间写入，替换前再比对一次。
             workspace = self.workspace(scope)
@@ -232,7 +241,7 @@ class MarkdownProfileStore:
             changed = {doc: text for doc, text in workspace.texts.items() if before.get(doc) != text}
             if any(self.read(doc) != before.get(doc, "") for doc in changed):
                 continue
-            # 2. 首次 before-image 保留；写入后才记 applied，冲突随 receipt 留存。
+            # 2. 首次 before-image 保留；先更新时间戳与文件，最后记 applied，崩溃重放可完整恢复。
             self._write_first(source_ref, "markdown_before_v1", {doc: before.get(doc, "") for doc in changed})
             for doc, text in changed.items():
                 path = self._path(doc)
@@ -240,11 +249,11 @@ class MarkdownProfileStore:
                 atomic_write_text(path, text, domain="markdown_memory")
             for conflict in workspace.conflicts:
                 logger.warning("Markdown 操作前提失效，已跳过: source_ref=%s %s", source_ref, conflict)
+            self._update_entry_timestamps(source_ref, ops, before, changed, workspace.folder())
             _ = self._write_once(source_ref, "markdown_ops_applied_v1", {
                 "files": {doc: content_digest(text) for doc, text in changed.items()},
                 "conflicts": list(workspace.conflicts),
             })
-            self._update_entry_timestamps(source_ref, ops, before, changed, workspace.folder())
             return
         raise ConcurrentChange(f"Markdown 文件在叠加期间持续变化，保留待处理: {source_ref}")
 
@@ -377,18 +386,21 @@ class MarkdownProfileStore:
                 if not op.line:
                     continue
                 doc = resolve(op.doc)
+                target_doc = MEMORY if op.op == "promote" else resolve(op.target) if op.op == "demote" else doc
+                stamp: tuple[str, str] | None = None
                 if op.op == "prune" and doc and (doc, content_digest(op.old)) in known:
-                    inherited[(doc, content_digest(op.line))] = known[(doc, content_digest(op.old))]
-                elif op.op == "demote":
-                    target = resolve(op.target)
-                    if target and (MEMORY, content_digest(op.old)) in known:
-                        inherited[(target, content_digest(op.line))] = known[(MEMORY, content_digest(op.old))]
+                    stamp = known[(doc, content_digest(op.old))]
+                elif op.op == "demote" and (MEMORY, content_digest(op.old)) in known:
+                    stamp = known[(MEMORY, content_digest(op.old))]
                 elif op.op == "promote" and doc and (doc, content_digest(op.old)) in known:
-                    inherited[(MEMORY, content_digest(op.line))] = known[(doc, content_digest(op.old))]
+                    stamp = known[(doc, content_digest(op.old))]
                 elif op.op == "merge" and doc:
                     prev = [known[(doc, content_digest(old))] for old in op.olds if (doc, content_digest(old)) in known]
                     if prev:
-                        inherited[(doc, content_digest(op.line))] = max(prev, key=lambda item: item[0])
+                        stamp = max(prev, key=lambda item: item[0])
+                if target_doc is not None and stamp is not None:
+                    inherited[(target_doc, content_digest(op.line))] = stamp
+                    known[(target_doc, content_digest(op.line))] = stamp
             upserts: list[tuple[str, str, str, str]] = []
             with conn:
                 for doc, text in changed.items():
