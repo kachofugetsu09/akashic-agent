@@ -5,6 +5,7 @@ export type PluginUiSlotName =
   | "turn.before_reasoning"
   | "turn.after_answer"
   | "message.actions"
+  | "message.meta"
   | "drawer.panel"
   | "tool.result"
   | "message.attachment"
@@ -75,6 +76,11 @@ export interface PluginUiSlotFacts {
    * 浮层请挂到 document.body，避免继承工具栏样式或被消息裁切。
    */
   "message.actions": { sessionId: string; messageId: string };
+  /**
+   * 完整回答的说明行，紧跟在时间后面，与时间同字号同墨色；只放安静的短文字（例如本轮用量），不放按钮。
+   * 和时间一起在宽屏悬停时显现，不另占一行。
+   */
+  "message.meta": { sessionId: string; messageId: string };
   /** 本插件注册的工具的一次结果；只交给工具 owner。 */
   "tool.result": { block: ToolResultFacts };
   /** 消息里的一个附件；插件按文件名、媒体类型在 accepts 里认领。 */

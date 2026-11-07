@@ -154,7 +154,9 @@ function Summary({stored}: {stored: WebResource<Status>}) {
     return () => window.removeEventListener("focus", load);
   }, [stored]);
   const label = failed ? {text: "状态读取失败", tone: "attention" as const} : status ? statusLabel(status) : null;
-  return <span className={`config-status is-${label?.tone ?? "off"}`}>{label?.text ?? "…"}</span>;
+  // 开启是常态，不写字：卡片上只留成员名，关闭、需要设置、读取失败才标出来；读到之前也不放占位。
+  if (!label || label.tone === "on") return null;
+  return <span className={`config-status is-${label.tone}`}>{label.text}</span>;
 }
 
 export function Configuration({ctx, definition, embed, stored}: {ctx: WebHostContextV1; definition: FormDefinition; embed: EmbedProps; stored?: WebResource<Status>}) {

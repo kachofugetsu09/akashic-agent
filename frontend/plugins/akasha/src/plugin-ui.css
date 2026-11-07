@@ -46,18 +46,6 @@
   cursor: pointer;
 }
 
-/* 读取时文字上扫过一道高光，不占额外空间。 */
-.akasha-recall-shimmer {
-  color: transparent;
-  background: linear-gradient(90deg, transparent 0%, var(--ak-ink-primary) 40%, var(--ak-ink-primary) 60%, transparent 100%)
-    -100% 0 / 50% 200% no-repeat, color-mix(in oklab, var(--ak-ink-primary) 45%, transparent);
-  background-clip: text;
-  -webkit-background-clip: text;
-  animation: akasha-recall-shimmer 1.6s linear infinite;
-}
-
-@keyframes akasha-recall-shimmer { to { background-position: 200% 0, 0 0; } }
-
 /* 面板挂在 document.body 上，样式不依赖聊天外壳的变量。 */
 .akasha-recall-panel {
   position: fixed;
@@ -142,7 +130,6 @@
 .akasha-recall-more:hover { color: var(--ak-ink-primary); }
 
 @media (prefers-reduced-motion: reduce) {
-  .akasha-recall-shimmer { animation: none; color: inherit; background: none; }
   .akasha-recall-panel { animation: none; }
 }
 

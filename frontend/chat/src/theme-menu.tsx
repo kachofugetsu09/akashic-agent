@@ -29,13 +29,12 @@ export function ThemeMenu() {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <button type="button" className="chat-sidebar__action" title={`主题：${label} · ${mode.label}`}
+        <button type="button" className="chat-sidebar__icon-action" data-tip={`主题：${label} · ${mode.label}`}
           aria-label={`主题，当前为${label}，${mode.label}`}>
           <ModeIcon size={18} aria-hidden="true" />
-          <span>主题 · {label}</span>
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent side="top" align="start" collisionPadding={8} className="theme-menu">
+      <DropdownMenuContent side="top" align="end" collisionPadding={8} className="theme-menu">
         <DropdownMenuLabel className="theme-menu__label">明暗</DropdownMenuLabel>
         <DropdownMenuRadioGroup className="theme-menu__modes" value={selection.mode}
           onValueChange={(value) => setThemePreference(selection.family, value as ThemeMode)}>

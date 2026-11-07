@@ -7,7 +7,7 @@ import {
   ConversationContent,
   ConversationEmptyState,
 } from "@/components/ai-elements/conversation";
-import { DesktopAutoScroll, ComposerPageKeys, NarrowReadingChrome, ReadingReturnButton, SessionReadingMemory, TurnRail } from "./desktop-auto-scroll";
+import { DesktopAutoScroll, ComposerPageKeys, NarrowReadingChrome, ReadingReturnButton, SessionReadingMemory, ToggleKeepsPlace, TurnRail } from "./desktop-auto-scroll";
 import { ComposerStatsLine } from "./composer-stats-line";
 import { ThinkingPlaceholder } from "./thinking-placeholder";
 import { DesktopComposer, type ComposerApi } from "./desktop-composer";
@@ -220,6 +220,7 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
           {hasMessages ? <ThreadFind {...find} /> : null}
           <NarrowReadingChrome />
           <ComposerPageKeys />
+          <ToggleKeepsPlace />
           <ReadingReturnButton generating={isGeneratingChatStatus(status)} />
           {hasMessages ? <SelectionQuote onQuote={editInput} /> : null}
           {hasMessages ? <MediaGalleryViewer /> : null}
