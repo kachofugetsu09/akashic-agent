@@ -1,6 +1,6 @@
 /* 侧栏顶部目的地：品牌行变成一行联系人。位置、圆角与选中底色沿用会话行，只多一行最近一句。 */
-.chat-sidebar__brand-row--destination { padding-inline-start: 0; }
-.destination-row { flex: 1; }
+.chat-sidebar__brand-row.chat-sidebar__brand-row--destination { padding-inline-start: 0; }
+.destination-row { flex: 1; --destination-menu-inset: 36px; }
 
 .destination-row__open {
   display: flex;
@@ -73,19 +73,26 @@
 
 .destination-row__open[data-unread] .destination-row__preview { color: var(--chat-ink); }
 
+.destination-row[data-menu-open] > .destination-row__open,
+.destination-row__open:focus-visible { padding-inline-end: var(--destination-menu-inset); }
+.destination-row[data-menu-open] :is(time, .session-status-slot),
+.destination-row__open:focus-visible :is(time, .session-status-slot) { visibility: hidden; }
+.destination-row__open:focus-visible + .navigation-menu-trigger { opacity: 1; pointer-events: auto; }
+:where([data-chat-width~="820"], [data-chat-touch]) .destination-row { --destination-menu-inset: 50px; }
+
 @media (hover: hover) and (pointer: fine) {
   .navigation-menu-row:hover > .destination-row__open:not([data-active]) {
     background: color-mix(in oklab, var(--ak-ink-primary) 5%, transparent);
   }
-  /* 悬停时时间让位给 ⋯，与会话行同一规则。 */
-  .navigation-menu-row:hover > .destination-row__open time,
-  .navigation-menu-row[data-menu-open] > .destination-row__open time { visibility: hidden; }
+  /* 最近一句与状态一起给行菜单让位。 */
+  .destination-row:hover > .destination-row__open { padding-inline-end: var(--destination-menu-inset); }
+  .destination-row:hover :is(time, .session-status-slot) { visibility: hidden; }
 }
 
 .chat-sidebar__search-row { display: flex; min-width: 0; align-items: flex-start; gap: 2px; }
 .chat-sidebar__search-row > .chat-sidebar__search { min-width: 0; flex: 1 1 auto; }
 .chat-sidebar__search-row > .chat-sidebar__brand-actions { min-height: 36px; }
 
-.destination-notice:empty { display: none; }
+.destination-notice:has(> .plugin-ui-host:only-child:empty) { display: none; }
 
 .group-dialog.destination-dialog { max-height: min(640px, calc(100dvh - 48px)); gap: 18px; overflow: auto; }

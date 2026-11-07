@@ -35,7 +35,7 @@ export function CompactNavigation(props: DesktopSidebarProps) {
     actionAfterClose.current = action;
     setOpen(false);
   }, []);
-  const overlayOpen = open || formRequest !== null;
+  const overlayOpen = open || formRequest !== null || destinationForm !== null;
   const searchOnOpen = useRef(false);
   // 关闭后回到打开前的位置：快捷键打开时是当时的焦点（输入框里写到一半的草稿，光标位置由 textarea 自己保留），点按钮打开时是按钮。
   const returnFocus = useRef<HTMLElement | null>(null);
