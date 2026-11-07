@@ -928,18 +928,12 @@ export function useDesktopChatController() {
     const sessionId = `akashic:${createUuid().replaceAll("-", "")}`;
     if (newChatScopeRef.current) sessionScopesRef.current.set(sessionId, newChatScopeRef.current);
     newChatScopeRef.current = null;
-    const adopter = adoptRef.current;
-    adoptRef.current = null;
-    if (adopter?.provider.adopt) {
-      void adopter.provider.adopt(adopter.context(new AbortController().signal), sessionId)
-        .then(destinationState.reload, reportError);
-    }
     activeSessionRef.current = sessionId;
     setFollowAfter(-1);
     followSession(socketRef.current, sessionId, -1);
     // 发送前只准备路由；上传失败时编辑器仍留在原草稿位置。
     return sessionId;
-  }, [loadMessages, setFollowAfter, destinationState.reload, reportError]);
+  }, [loadMessages, setFollowAfter]);
 
   // 等服务端对 requestId 的确认；超时返回 false 交给调用方换连接重发，服务端拒绝时抛 SendRejected。
   const waitForAccepted = useCallback((requestId: string, signal: AbortSignal) => new Promise<boolean>((resolve, reject) => {
@@ -1040,6 +1034,13 @@ export function useDesktopChatController() {
       controller.signal.throwIfAborted();
       markDelivery(undefined);
       setActiveSessionId(sessionId);
+      // 已接纳输入才交回会话；上传或发送失败时仍保留空位与本次采用意图。
+      const adopter = adoptRef.current;
+      adoptRef.current = null;
+      if (adopter?.provider.adopt) {
+        void adopter.provider.adopt(adopter.context(new AbortController().signal), sessionId)
+          .then(destinationState.reload, reportError);
+      }
       console.debug("[chat-ui] send frame delivered", { sessionId });
       notifyComposerSent();
       for (const [key, value] of replyTargetsRef.current) if (value === reply) replyTargetsRef.current.delete(key);
@@ -1057,7 +1058,7 @@ export function useDesktopChatController() {
     } finally {
       if (sendRequestRef.current === controller) sendRequestRef.current = null;
     }
-  }, [canSend, sendProblem, deliverMessage, ensureSession, replyTarget, reportError, setMessages, setStatusLive]);
+  }, [canSend, sendProblem, deliverMessage, ensureSession, replyTarget, reportError, setMessages, setStatusLive, destinationState.reload]);
 
   // 重跑失败的这一轮：只引用原输入，服务端追加恢复记录，不新增用户消息。
   const retryTurn = useCallback(async (inputId: string) => {

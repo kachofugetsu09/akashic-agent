@@ -142,10 +142,18 @@ export function DestinationFormDialog({ source, form, controls, onClose }: {
   controls: DestinationControls;
   onClose(): void;
 }) {
+  // 表单生命周期跟随 source/form；父级更新回调不能清掉插件里正在填写的内容。
+  const latest = useRef({ controls, onClose });
+  useEffect(() => { latest.current = { controls, onClose }; }, [controls, onClose]);
+  const destination = useMemo((): DestinationControls => ({
+    reload: () => latest.current.controls.reload(), open: (id) => latest.current.controls.open(id),
+    openForm: (next) => latest.current.controls.openForm(next),
+  }), []);
+  const close = useCallback(() => latest.current.onClose(), []);
   return <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
     <DialogContent className="group-dialog destination-dialog" overlayClassName="group-dialog-overlay" aria-describedby={undefined}>
       <DialogHeader className="group-dialog__header"><DialogTitle>{form.title}</DialogTitle></DialogHeader>
-      <DestinationMount source={source} renderer={form} destination={controls} close={onClose} />
+      <DestinationMount source={source} renderer={form} destination={destination} close={close} />
     </DialogContent>
   </Dialog>;
 }
