@@ -273,6 +273,9 @@
 .settings-provider-switch input:checked::after { translate: 0.875rem 0; }
 .settings-provider-switch input:disabled { opacity: 0.5; cursor: progress; }
 .settings-provider-switch input:focus-visible { outline: 2px solid var(--md-sys-color-primary); outline-offset: 2px; }
+/* 开关本身 34×20，外层 label 用内边距撑热区、等量负外边距抵消，不改行布局：鼠标下至少 24px 高，触屏 44×44。 */
+.settings-provider-switch { margin-block: -0.125rem; padding-block: 0.125rem; }
+@media (pointer: coarse) { .settings-provider-switch { margin: -0.75rem -0.3125rem; padding: 0.75rem 0.3125rem; } }
 
 /* 行尾额度：套餐、最紧的窗口、细条、比例排成一行；超过八成换警示色，悬停看全部窗口。 */
 .settings-provider-quota {
@@ -901,6 +904,7 @@ dialog.settings-scrim::backdrop { background: transparent; }
 .settings-section-hint { color: var(--ak-ink-tertiary, var(--ak-ink-secondary)); font-size: var(--models-type-caption); }
 .settings-find { display: flex; width: min(15rem, 50%); min-height: 2rem; align-items: center; gap: 0.4rem; margin-inline-start: auto; border: 1px solid var(--ak-rule-default); border-radius: var(--ak-radius-sm); padding-inline: 0.625rem; color: var(--ak-ink-secondary); background: var(--ak-paper-editing); }
 .settings-find:focus-within { border-color: var(--ak-rule-focus); }
+@media (pointer: coarse) { .settings-find { min-height: 2.75rem; } }
 .settings-find > svg { flex: none; width: 0.875rem; height: 0.875rem; }
 .settings-find input { width: 100%; min-width: 0; border: 0; outline: 0; color: var(--ak-ink-primary); background: transparent; font: inherit; font-size: var(--models-type-caption); }
 .settings-section-bar > .settings-text-button { min-height: 2rem; padding-inline: 0.5rem; font-size: var(--models-type-caption); }
