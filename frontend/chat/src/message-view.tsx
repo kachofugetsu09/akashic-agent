@@ -85,11 +85,13 @@ const MessageBody = memo(function MessageBody({
   if (!messageNeedsMarkdown(content)) {
     return <p className="plain-message-response">{content}</p>;
   }
+  // 富文本分块还在下载时先用主包里的静态渲染排好标题、列表与代码块，不把 Markdown 原文（##、```）露给读者；分块到了只补高亮与公式。
+  const fallback = <StaticMessageResponse streaming={streaming} onError={onError}>{content}</StaticMessageResponse>;
   if (deferRichContent) {
     const features = detectMessageRenderingFeatures(content);
     if (features.math || features.code) {
       return (
-        <Suspense fallback={<p className="plain-message-response">{content}</p>}>
+        <Suspense fallback={fallback}>
           <LazyMessageResponse isAnimating={streaming} paced={paced}>{content}</LazyMessageResponse>
         </Suspense>
       );
@@ -97,7 +99,7 @@ const MessageBody = memo(function MessageBody({
     return <StaticMessageResponse streaming={streaming} onError={onError}>{content}</StaticMessageResponse>;
   }
   return (
-    <Suspense fallback={<p className="plain-message-response">{content}</p>}>
+    <Suspense fallback={fallback}>
       <LazyMessageResponse isAnimating={streaming} paced={paced}>{content}</LazyMessageResponse>
     </Suspense>
   );
