@@ -1278,8 +1278,10 @@ input {
   .navigation-group__open,
   .group-session,
   .navigation-group__sessions .conversation-session,
+  .chat-sidebar--entry .conversation-session,
   .navigation-section__icon { min-height: 44px; }
-  .navigation-section__header > .navigation-section__icon { width: 44px; }
+  .navigation-section__header > .navigation-section__icon,
+  .conversation-sort-trigger { width: 44px; }
   /* 排序钮放到 44px 后，分组标题行不再叠 18px 上内边距：热区不变，搜索框到"最近会话"文字的空白 62→44px。 */
   .conversation-navigation__heading--section:has(.conversation-sort-trigger) { padding-block: 4px 0; }
 }
