@@ -43,10 +43,6 @@
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  color: var(--ak-sys-color-success);
-}
-
-.shell-result-exit.is-failed {
   color: var(--ak-color-status-error);
 }
 
