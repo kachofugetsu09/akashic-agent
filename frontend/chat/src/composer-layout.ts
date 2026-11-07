@@ -18,10 +18,10 @@ export function useComposerCrowded(card: RefObject<HTMLElement | null>, singleLi
     const root = card.current;
     const lead = root?.querySelector<HTMLElement>(".composer__lead");
     if (!root || !lead || !singleLine) return;
-    // 1. 单行时：工具位内容溢出就转两行；插件改了控件（换模型名、多一个钮）也要重量。
-    //    控件常用伪元素把热区左右外扩几像素，scrollWidth 会算进去，所以超出 8px 以上才算挤。
+    // 1. 单行时：工具位里有控件被压到自身最小宽度以下（内容溢出到旁边的控件上）就转两行；
+    //    插件改了控件（换模型名、多一个钮）也要重量。
     if (!crowded) {
-      const measure = () => { if (lead.scrollWidth > lead.clientWidth + 8) setCrowded(true); };
+      const measure = () => { if (toolbarOverflows(lead)) setCrowded(true); };
       measure();
       const resize = new ResizeObserver(measure);
       resize.observe(root);
@@ -39,4 +39,11 @@ export function useComposerCrowded(card: RefObject<HTMLElement | null>, singleLi
     return () => resize.disconnect();
   }, [card, crowded, singleLine]);
   return crowded && singleLine;
+}
+
+// 溢出可能落在相邻控件上、不越过工具位外缘，所以逐个看不裁切的元素；本来就省略号裁切的文字不算。
+// 控件常用伪元素把热区左右外扩几像素，scrollWidth 会算进去，所以超出 8px 以上才算挤。
+function toolbarOverflows(lead: HTMLElement): boolean {
+  return [lead, ...lead.querySelectorAll<HTMLElement>("*")].some((element) => element.clientWidth > 0
+    && element.scrollWidth > element.clientWidth + 8 && getComputedStyle(element).overflowX === "visible");
 }
