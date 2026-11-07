@@ -437,7 +437,8 @@ export function ModelCapsulePicker({
         }}
       >
         {multiSource && visibleModel.icon ? <img className="model-picker__group-icon" src={visibleModel.icon} alt="" aria-hidden="true" /> : null}
-        <span className="model-picker__name"><bdi>{selectionLabel}</bdi></span>
+        {/* 名字最少留约 6 个字符宽：再窄就认不出型号，输入卡据此判断单行放不下、改用两行。 */}
+        <span className="model-picker__name" style={{ minWidth: `${Math.min(selectionLabel.length, 6)}ch` }}><bdi>{selectionLabel}</bdi></span>
         <ChevronDown size={11} aria-hidden="true" />
       </button>
       {/* 先确定位置再挂列表，避免首次测量触发整份列表布局，随后写入定位又重算一次。 */}
