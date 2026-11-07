@@ -177,7 +177,31 @@
 }
 .settings-provider-list:empty { display: none; }
 
-.settings-provider-card + .settings-provider-card { border-block-start: 1px solid var(--ak-rule-subtle); }
+.settings-provider-card + .settings-provider-card,
+.settings-provider-list > li + .settings-provider-parked,
+.settings-provider-parked + .settings-provider-card { border-block-start: 1px solid var(--ak-rule-subtle); }
+
+/* 停用连接的折叠行：次级墨色一行计数，箭头指向展开方向；展开后作为停用组的组头。 */
+.settings-provider-parked button {
+  display: flex;
+  width: 100%;
+  min-height: 2.75rem;
+  align-items: center;
+  gap: 0.375rem;
+  border: 0;
+  padding-inline: 1rem 0.875rem;
+  color: var(--ak-ink-secondary);
+  background: transparent;
+  font: inherit;
+  font-size: 0.8125rem;
+  text-align: start;
+  cursor: pointer;
+}
+.settings-provider-parked button span { flex: 1 1 auto; }
+.settings-provider-parked button svg { transition: rotate var(--ak-sys-duration-short) var(--ak-sys-motion-standard); }
+.settings-provider-parked button[aria-expanded="true"] svg { rotate: 90deg; }
+@media (hover: hover) { .settings-provider-parked button:hover { color: var(--ak-ink-primary); background: color-mix(in oklab, var(--ak-ink-primary) 4%, transparent); } }
+.settings-provider-parked button:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: -2px; }
 
 /* 一行两个控件：展开按钮用 ::before 铺满整行，开关叠在上方；箭头不接收点击。 */
 .settings-provider-row {
