@@ -17,7 +17,13 @@ export function useComposerCrowded(card: RefObject<HTMLElement | null>, singleLi
   useLayoutEffect(() => {
     const root = card.current;
     const lead = root?.querySelector<HTMLElement>(".composer__lead");
-    if (!root || !lead || !singleLine) return;
+    // 0. 草稿、附件等别的原因已经是两行：作废挤压结论，下次回单行时按那时的宽度重量
+    //    （两行期间不观察尺寸，旧结论会让加宽后的空卡仍停在两行）。
+    if (!singleLine) {
+      if (crowded) setCrowded(false);
+      return;
+    }
+    if (!root || !lead) return;
     // 1. 单行时：工具位里有控件被压到自身最小宽度以下（内容溢出到旁边的控件上）就转两行；
     //    插件改了控件（换模型名、多一个钮）也要重量。
     if (!crowded) {
