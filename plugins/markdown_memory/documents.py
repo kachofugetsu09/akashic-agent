@@ -22,7 +22,7 @@ MAX_DESCRIPTION_CHARS = 80
 _FOLDER = re.compile(r"[^\s/\\._][^/\\]{0,39}")
 _TOPIC_FILE = re.compile(r"[a-z0-9][a-z0-9-]{0,63}\.md")
 
-OpName = Literal["add", "supersede", "retract", "create", "create_folder", "merge", "prune"]
+OpName = Literal["add", "supersede", "retract", "create", "create_folder", "merge", "prune", "demote", "promote"]
 _FIELDS: dict[str, frozenset[str]] = {
     "add": frozenset({"op", "doc", "line", "message_ids", "section"}),
     "supersede": frozenset({"op", "doc", "old", "line", "message_ids"}),
@@ -31,7 +31,11 @@ _FIELDS: dict[str, frozenset[str]] = {
     "create_folder": frozenset({"op", "folder", "description"}),
     "merge": frozenset({"op", "doc", "olds", "line"}),
     "prune": frozenset({"op", "doc", "old", "line"}),
+    "demote": frozenset({"op", "doc", "old", "target", "line", "description"}),
+    "promote": frozenset({"op", "doc", "old", "section", "line"}),
 }
+_MAINTENANCE_OPS = frozenset({"create_folder", "merge", "prune", "demote", "promote"})
+_WIKI_LINK = re.compile(r"\[\[([a-zA-Z0-9_.\-/]+?)(?:\.md)?\]\]")
 
 
 class InvalidDraft(ValueError):
@@ -46,6 +50,7 @@ class Op:
     old: str = ""
     section: str = ""
     description: str = ""
+    target: str = ""
     message_ids: tuple[str, ...] = ()
     olds: tuple[str, ...] = ()
 
@@ -59,7 +64,10 @@ class Op:
         elif self.op == "prune":
             if not self.line:
                 del values["line"]
-        else:
+        elif self.op == "demote":
+            if not self.description:
+                del values["description"]
+        elif self.op != "promote":
             values["message_ids"] = list(self.message_ids)
         if self.op == "add" and not self.section:
             del values["section"]
@@ -84,7 +92,8 @@ def _parse_op(item: object) -> Op:
     if name not in get_args(OpName):
         raise InvalidDraft(f"未知操作: {name!r}")
     allowed = _FIELDS[cast(str, name)]
-    required = allowed - ({"section"} if name == "add" else {"line"} if name == "prune" else set())
+    optional = {"section"} if name == "add" else {"line"} if name == "prune" else {"description"} if name == "demote" else set()
+    required = allowed - optional
     if not required <= set(data) <= allowed:
         raise InvalidDraft(f"{name} 操作字段必须是 {sorted(allowed)}")
     values = {key: value for key, value in data.items() if key not in {"op", "message_ids", "folder", "olds"}}
@@ -106,8 +115,8 @@ def _parse_op(item: object) -> Op:
                             or any(not isinstance(old, str) for old in cast(list[object], olds))):
         raise InvalidDraft("merge 的 olds 必须是至少两条旧条目原文")
     ids = data.get("message_ids", [])
-    if name not in {"create_folder", "merge", "prune"} and (not isinstance(ids, list) or not ids
-                                     or any(not isinstance(key, str) for key in cast(list[object], ids))):
+    if name not in _MAINTENANCE_OPS and (not isinstance(ids, list) or not ids
+                                         or any(not isinstance(key, str) for key in cast(list[object], ids))):
         raise InvalidDraft("message_ids 必须是非空消息 ID 数组")
     if name == "create_folder":
         folder = data["folder"]
@@ -180,6 +189,10 @@ class Workspace:
                 self._add(doc, op, strict, index)
             elif op.op == "merge":
                 self._merge(doc, op, strict, index)
+            elif op.op == "demote":
+                self._demote(doc, op, strict, index)
+            elif op.op == "promote":
+                self._promote(doc, op, strict, index)
             else:
                 self._replace(doc, op, strict, index)
 
@@ -252,6 +265,62 @@ class Workspace:
             raise InvalidDraft(f"merge 的旧条目必须各不相同且都在 {doc} 中")
         elif present or op.line not in lines:
             self.conflicts.append(f"#{index} merge {doc}: 旧条目已部分或全部变化（现存 {len(present)}/{len(op.olds)}）")
+
+    def _demote(self, doc: str, op: Op, strict: bool, index: int) -> None:
+        target = op.target if strict else self._replay_target(op.target)
+        if target is None:
+            self.conflicts.append(f"#{index} demote {op.target}: 当前 scope 没有文件夹")
+            return
+        if strict:
+            if doc != MEMORY or target in {MEMORY, SELF} or not writable(target, self.folder()):
+                raise InvalidDraft(f"demote 只能从 MEMORY.md 下沉到可写主题: {doc} -> {op.target}")
+            if target not in self.texts and not op.description:
+                raise InvalidDraft(f"demote 到新主题必须提供 description: {target}")
+            if op.line in self.texts.get(target, "").splitlines():
+                raise InvalidDraft(f"目标主题已存在相同条目: {op.line}")
+        lines = self.texts.get(MEMORY, "").splitlines()
+        target_lines = self.texts.get(target, "").splitlines()
+        if op.old not in lines:
+            if strict:
+                raise InvalidDraft(f"旧条目不存在: {op.old}")
+            if op.line not in target_lines:
+                self.conflicts.append(f"#{index} demote {doc} -> {target}: 旧条目与目标条目都不在")
+            return
+        if target not in self.texts:
+            if not op.description:
+                self.conflicts.append(f"#{index} demote {target}: 目标主题不存在且无 description")
+                return
+            self.texts[target] = topic_text(op.description, op.line)
+        elif op.line not in target_lines:
+            self.texts[target] = self.texts[target].rstrip("\n") + "\n" + op.line + "\n"
+        pos = lines.index(op.old)
+        del lines[pos]
+        self.texts[MEMORY] = "\n".join(lines) + "\n"
+
+    def _promote(self, doc: str, op: Op, strict: bool, index: int) -> None:
+        if strict:
+            if doc in {MEMORY, SELF} or not writable(doc, self.folder()):
+                raise InvalidDraft(f"promote 只能从可写主题上浮到 MEMORY.md: {doc}")
+            if op.section not in USER_HEADINGS[MEMORY]:
+                raise InvalidDraft(f"MEMORY.md 的 section 必须是 {list(USER_HEADINGS[MEMORY])} 之一")
+            if op.line in self.texts.get(MEMORY, "").splitlines():
+                raise InvalidDraft(f"重复已有条目: {op.line}")
+        lines = self.texts.get(doc, "").splitlines()
+        mem_lines = self.texts.get(MEMORY, "").splitlines()
+        if op.old not in lines:
+            if strict:
+                raise InvalidDraft(f"旧条目不存在: {op.old}")
+            if op.line not in mem_lines:
+                self.conflicts.append(f"#{index} promote {doc}: 旧条目与 MEMORY.md 目标条目都不在")
+            return
+        mem_text = self.texts.get(MEMORY, "")
+        if not mem_text.strip():
+            mem_text = MEMORY_TEMPLATE
+        self.texts[MEMORY] = append_section_lines(mem_text, op.section, [op.line])
+        if sum(row.startswith("- ") for row in lines if row != op.old) >= 1:
+            pos = lines.index(op.old)
+            del lines[pos]
+            self.texts[doc] = "\n".join(lines) + "\n"
 
 
 def append_section_lines(content: str, heading: str, lines: list[str]) -> str:
@@ -381,8 +450,59 @@ def _usage(root: str, scope: str | None, folder: str | None) -> str:
 - 已有的记忆文件只用 edit_file 修改或追加，write_file 只用来新建文件，避免整文件覆盖掉后台刚写入的条目。
 - 每条是一行 `- ` 文本；新主题文件以 `---` / `description: 一句话` / `---` 开头，description 写清适用对象与检索关键词；优先归并进已有主题、原地更新旧条目，不追加相互矛盾或已被取代的旧状态。
 - 记录部署、配置、额度、机器状态等易随时间变化的客观事实时，有明确时间就带上确认日期（如 `2026-11-06`），无明确时间时不编造日期。
+- 关联其他主题文件时，可在条目内写 `[[主题名]]`（不含 `.md`，如 `[[lan-machines]]`），浮现时会自动关联召回。
 - 在 frontmatter 加 `pinned: true` 会让该主题常驻，只用于每次都需要的少量内容。
-- 不要保存：能从仓库、配置或命令直接读到的内容，临时任务状态与未完待办（如“下一步做…”），调试流水，git 历史。"""
+- 重点保存耗费多步才定位的隐蔽陷阱（Trap）与经实测验证成立的通用规则；不要保存：能从仓库、配置或命令直接读到的内容，临时任务状态与未完待办（如“下一步做…”），线性调试试错流水，git 历史。"""
+
+
+def extract_wiki_links(text: str) -> list[str]:
+    return list(dict.fromkeys(match.group(1) for match in _WIKI_LINK.finditer(text)))
+
+
+def resolve_wiki_link(link: str, texts: Mapping[str, str], folder: str | None) -> str | None:
+    slug = link.strip().removeprefix(f"{TOPICS}/").removesuffix(".md")
+    if not slug:
+        return None
+    candidates = (
+        (f"{TOPICS}/{slug}.md",)
+        if "/" in slug
+        else (
+            *((f"{TOPICS}/{folder}/{slug}.md",) if folder is not None else ()),
+            f"{TOPICS}/{slug}.md",
+        )
+    )
+    return next((doc for doc in candidates if doc in texts and not doc.endswith(SCOPE_FILE)), None)
+
+
+def broken_wiki_links(texts: Mapping[str, str], folder: str | None, docs: tuple[str, ...]) -> dict[str, list[str]]:
+    broken: dict[str, list[str]] = {}
+    for doc in docs:
+        missing = [link for link in extract_wiki_links(texts.get(doc, ""))
+                   if resolve_wiki_link(link, texts, folder) is None]
+        if missing:
+            broken[doc] = missing
+    return broken
+
+
+def expand_linked_topics(
+    primary: list[str],
+    candidates: Mapping[str, str],
+    texts: Mapping[str, str],
+    folder: str | None,
+    *,
+    limit: int,
+) -> list[str]:
+    result = list(primary[:limit])
+    if len(result) >= limit:
+        return result
+    for doc in list(result):
+        for link in extract_wiki_links(texts.get(doc, "")):
+            target = resolve_wiki_link(link, texts, folder)
+            if target is not None and target in candidates and target not in result:
+                result.append(target)
+                if len(result) >= limit:
+                    return result
+    return result
 
 
 _WORD = re.compile(r"[a-z0-9_]+|[\u4e00-\u9fff]+")

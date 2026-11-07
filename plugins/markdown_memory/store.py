@@ -7,12 +7,13 @@ import sqlite3
 import time
 from collections.abc import Mapping
 from contextlib import closing
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
 from infra.persistence.json_store import atomic_write_text
 
-from .documents import MEMORY, MEMORY_TEMPLATE, SCOPE_FILE, SELF, TOPICS, Workspace, parse_ops, split_frontmatter
+from .documents import MEMORY, MEMORY_TEMPLATE, Op, SCOPE_FILE, SELF, TOPICS, Workspace, parse_ops, split_frontmatter
 
 logger = logging.getLogger(__name__)
 _APPLY_ATTEMPTS = 3
@@ -98,8 +99,37 @@ class MarkdownProfileStore:
 
     def ages_days(self, docs: list[str]) -> dict[str, int]:
         now = time.time()
-        return {doc: int((now - self._path(doc).stat().st_mtime) // 86400)
-                for doc in docs if self._path(doc).exists()}
+        recorded = self._recorded_timestamps(docs)
+        result: dict[str, int] = {}
+        for doc in docs:
+            path = self._path(doc)
+            if not path.exists():
+                continue
+            lines = [row for row in self.read(doc).splitlines() if row.startswith("- ")]
+            doc_map = recorded.get(doc, {})
+            if lines and all(content_digest(line) in doc_map for line in lines):
+                latest = max(doc_map[content_digest(line)] for line in lines)
+                ts = datetime.fromisoformat(latest.replace(" ", "T")).replace(tzinfo=UTC).timestamp()
+                result[doc] = max(0, int((now - ts) // 86400))
+            else:
+                result[doc] = max(0, int((now - path.stat().st_mtime) // 86400))
+        return result
+
+    def entry_dates(self, docs: list[str]) -> dict[str, dict[str, str]]:
+        recorded = self._recorded_timestamps(docs)
+        result: dict[str, dict[str, str]] = {}
+        for doc in docs:
+            doc_map = recorded.get(doc, {})
+            if not doc_map or not self._path(doc).exists():
+                continue
+            dates = {
+                line: doc_map[content_digest(line)][:10]
+                for line in self.read(doc).splitlines()
+                if line.startswith("- ") and content_digest(line) in doc_map
+            }
+            if dates:
+                result[doc] = dates
+        return result
 
     # 整理到期时返回本轮要整理的 scope（None 为全局），按上次整理后新应用的提炼 draft 计数。
     def consolidation_scopes(self, hours: int, min_drafts: int) -> tuple[str | None, ...]:
@@ -214,6 +244,7 @@ class MarkdownProfileStore:
                 "files": {doc: content_digest(text) for doc, text in changed.items()},
                 "conflicts": list(workspace.conflicts),
             })
+            self._update_entry_timestamps(source_ref, ops, before, changed, workspace.folder())
             return
         raise ConcurrentChange(f"Markdown 文件在叠加期间持续变化，保留待处理: {source_ref}")
 
@@ -245,7 +276,143 @@ class MarkdownProfileStore:
                     text TEXT NOT NULL,
                     updated_at INTEGER NOT NULL
                 )""")
+            _ = conn.execute("""CREATE TABLE IF NOT EXISTS entry_timestamps (
+                    doc TEXT NOT NULL,
+                    line_hash TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    source_ref TEXT NOT NULL,
+                    PRIMARY KEY (doc, line_hash)
+                )""")
             conn.commit()
+        self._backfill_entry_timestamps()
+
+    def _backfill_entry_timestamps(self) -> None:
+        with closing(sqlite3.connect(str(self.receipts_path), timeout=30.0)) as conn:
+            if conn.execute("SELECT 1 FROM entry_timestamps LIMIT 1").fetchone() is not None:
+                return
+            rows = conn.execute(
+                "SELECT draft.source_ref, draft.payload, draft.done_at "
+                "FROM consolidation_writes AS draft JOIN consolidation_writes AS applied "
+                "ON applied.source_ref=draft.source_ref AND applied.kind='markdown_ops_applied_v1' "
+                "WHERE draft.kind='markdown_ops_v1' ORDER BY draft.done_at, draft.source_ref"
+            ).fetchall()
+            if not rows:
+                return
+            known: dict[tuple[str, str], tuple[str, str]] = {}
+            for source_ref, payload, done_at in rows:
+                if not isinstance(payload, str):
+                    continue
+                raw = cast(Any, json.loads(payload))
+                if not isinstance(raw, dict):
+                    continue
+                try:
+                    ops = parse_ops({"ops": raw.get("ops")})
+                except ValueError:
+                    continue
+                for op in ops:
+                    if not op.line:
+                        continue
+                    target_doc = MEMORY if op.op == "promote" else op.target if op.op == "demote" else op.doc
+                    source_doc = MEMORY if op.op == "demote" else op.doc
+                    stamp = (str(done_at), str(source_ref))
+                    if op.op in {"prune", "demote", "promote"} and (source_doc, content_digest(op.old)) in known:
+                        stamp = known[(source_doc, content_digest(op.old))]
+                    elif op.op == "merge":
+                        prev = [known[(source_doc, content_digest(old))] for old in op.olds
+                                if (source_doc, content_digest(old)) in known]
+                        if prev:
+                            stamp = max(prev, key=lambda item: item[0])
+                    known[(target_doc, content_digest(op.line))] = stamp
+            if known:
+                with conn:
+                    _ = conn.executemany(
+                        "INSERT OR REPLACE INTO entry_timestamps (doc, line_hash, updated_at, source_ref) VALUES (?, ?, ?, ?)",
+                        [(doc, line_hash, updated_at, ref) for (doc, line_hash), (updated_at, ref) in known.items()],
+                    )
+
+    def _recorded_timestamps(self, docs: list[str]) -> dict[str, dict[str, str]]:
+        if not docs:
+            return {}
+        marks = ",".join("?" for _ in docs)
+        with closing(sqlite3.connect(str(self.receipts_path), timeout=30.0)) as conn:
+            rows = conn.execute(
+                f"SELECT doc, line_hash, updated_at FROM entry_timestamps WHERE doc IN ({marks})",
+                tuple(docs),
+            ).fetchall()
+        result: dict[str, dict[str, str]] = {}
+        for doc, line_hash, updated_at in rows:
+            result.setdefault(str(doc), {})[str(line_hash)] = str(updated_at)
+        return result
+
+    def _update_entry_timestamps(
+        self,
+        source_ref: str,
+        ops: tuple[Op, ...],
+        before: Mapping[str, str],
+        changed: Mapping[str, str],
+        folder: str | None,
+    ) -> None:
+        if not changed:
+            return
+        def resolve(doc: str) -> str | None:
+            parts = doc.split("/")
+            if len(parts) != 3:
+                return doc
+            return None if folder is None else "/".join((parts[0], folder, parts[2]))
+
+        with closing(sqlite3.connect(str(self.receipts_path), timeout=30.0)) as conn:
+            row = conn.execute(
+                "SELECT done_at FROM consolidation_writes WHERE source_ref=? AND kind='markdown_ops_v1'",
+                (source_ref,),
+            ).fetchone()
+            done_at = str(row[0]) if row is not None and row[0] else datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
+            known = {
+                (str(doc), str(line_hash)): (str(updated_at), str(ref))
+                for doc, line_hash, updated_at, ref in conn.execute(
+                    "SELECT doc, line_hash, updated_at, source_ref FROM entry_timestamps"
+                ).fetchall()
+            }
+            inherited: dict[tuple[str, str], tuple[str, str]] = {}
+            for op in ops:
+                if not op.line:
+                    continue
+                doc = resolve(op.doc)
+                if op.op == "prune" and doc and (doc, content_digest(op.old)) in known:
+                    inherited[(doc, content_digest(op.line))] = known[(doc, content_digest(op.old))]
+                elif op.op == "demote":
+                    target = resolve(op.target)
+                    if target and (MEMORY, content_digest(op.old)) in known:
+                        inherited[(target, content_digest(op.line))] = known[(MEMORY, content_digest(op.old))]
+                elif op.op == "promote" and doc and (doc, content_digest(op.old)) in known:
+                    inherited[(MEMORY, content_digest(op.line))] = known[(doc, content_digest(op.old))]
+                elif op.op == "merge" and doc:
+                    prev = [known[(doc, content_digest(old))] for old in op.olds if (doc, content_digest(old)) in known]
+                    if prev:
+                        inherited[(doc, content_digest(op.line))] = max(prev, key=lambda item: item[0])
+            upserts: list[tuple[str, str, str, str]] = []
+            with conn:
+                for doc, text in changed.items():
+                    old_hashes = {content_digest(line) for line in before.get(doc, "").splitlines() if line.startswith("- ")}
+                    new_hashes = [content_digest(line) for line in text.splitlines() if line.startswith("- ")]
+                    if new_hashes:
+                        marks = ",".join("?" for _ in new_hashes)
+                        _ = conn.execute(
+                            f"DELETE FROM entry_timestamps WHERE doc=? AND line_hash NOT IN ({marks})",
+                            (doc, *new_hashes),
+                        )
+                    else:
+                        _ = conn.execute("DELETE FROM entry_timestamps WHERE doc=?", (doc,))
+                    for line_hash in dict.fromkeys(new_hashes):
+                        if line_hash in old_hashes and (doc, line_hash) in known:
+                            continue
+                        updated_at, ref = inherited.get((doc, line_hash), (done_at, source_ref))
+                        known[(doc, line_hash)] = (updated_at, ref)
+                        upserts.append((doc, line_hash, updated_at, ref))
+                if upserts:
+                    _ = conn.executemany(
+                        "INSERT OR REPLACE INTO entry_timestamps (doc, line_hash, updated_at, source_ref) VALUES (?, ?, ?, ?)",
+                        upserts,
+                    )
 
     def read_surfaced(self, input_id: str) -> str | None:
         with closing(sqlite3.connect(str(self.receipts_path), timeout=30.0)) as conn:
