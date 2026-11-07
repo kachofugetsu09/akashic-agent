@@ -23,7 +23,7 @@ const modelsAssets = Object.fromEntries([["module", "plugin_ui.js", "text/javasc
 const pluginUiCatalog = {
   catalog_revision: "1".repeat(64),
   items: [{ id: "models", revision: "fixture", module_sha256: modelsAssets.module.sha256,
-    stylesheet_sha256: modelsAssets.stylesheet.sha256, slots: ["turn.after_answer", "composer.toolbar", "composer.status", "sidebar.panels"], navigation: null }],
+    stylesheet_sha256: modelsAssets.stylesheet.sha256, slots: ["message.meta", "composer.toolbar", "composer.status", "sidebar.panels"], navigation: null }],
 };
 
 /** Serve the production desktop bundle with deterministic HTTP and real WebSocket fixtures. */

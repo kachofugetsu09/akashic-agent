@@ -425,6 +425,8 @@ export const DesktopTimelineMessages = React.memo(function DesktopTimelineMessag
     {/* 轮次未结束的输出还会接着长，时间与复制等落定后挂在末条上，和实时视图一致。 */}
     {!groups.hiddenBodies.has(message.id) && !groups.moved.has(message.id) && !groups.joined.has(message.id) && !groups.unsettled.has(message.id) ? <div className={`shared-message-meta timeline-meta ${message.body.kind === "input" ? "user" : "assistant"}`}>
       <time dateTime={message.timestamp}>{formatMessageTime(message.timestamp)}</time>
+      {message.body.kind === "output" && message.body.finish === "complete" ? <PluginUiSlot
+        name="message.meta" sessionId={message.session_id} messageId={message.id} quiet /> : null}
       <SharedMessageActions
         canReply={status === "idle" && (message.body.kind === "input" || message.body.kind === "output")}
         canCopy={Boolean(timelineText(message))} copied={copiedMessageId === message.id}
