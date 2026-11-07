@@ -32,6 +32,8 @@ function PrivacyMaskControl({ engine }: { engine: PrivacyMaskEngine }) {
   }, [open]);
 
   const activeLabel = snapshot.enabled ? "已打码" : "截屏打码";
+  // 未开启时顶栏不常驻：开关在侧栏底栏与 Alt+M；开启后才显示状态与关闭入口。
+  if (!snapshot.enabled && !open) return null;
 
   const statusText = snapshot.enabled
     ? snapshot.redactTitles && snapshot.blurContent

@@ -336,7 +336,9 @@ try {
   await page.goto(server.origin, { waitUntil: "networkidle" });
   await page.waitForFunction(() => window.__webHostReady === true);
   assert.deepEqual(await page.locator(".web-host-entry-error").allTextContents(), [], "插件必须通过真实宿主加载");
-  await page.waitForSelector(".privacy-mask-marker .header-marker__trigger");
+  // 未开启时顶栏不常驻标记，开关只在侧栏底栏（图标）与快捷键。
+  await page.locator(".chat-sidebar__footer").getByRole("button", { name: "截屏打码" }).waitFor();
+  assert.equal(await page.locator(".privacy-mask-marker").count(), 0, "未开启时顶栏不应常驻截屏打码标记");
   await page.waitForTimeout(150);
 
   // 截图 1：开启打码前的默认态
@@ -352,8 +354,8 @@ try {
   });
 
   // 1. 点击侧栏底栏「截屏打码」按钮一键开启全量打码
-  const railBtn = page.locator(".chat-sidebar__footer .chat-sidebar__action", { hasText: "截屏打码" });
-  assert.equal(await railBtn.count(), 1, "侧栏底栏应挂载 shell.rail-actions.v1 的截屏打码按钮");
+  const railBtn = page.locator(".chat-sidebar__footer").getByRole("button", { name: "截屏打码" });
+  assert.equal(await railBtn.count(), 1, "侧栏底栏应挂载 shell.rail-actions.v1 的截屏打码图标按钮");
   await railBtn.click();
   await page.waitForTimeout(200);
 

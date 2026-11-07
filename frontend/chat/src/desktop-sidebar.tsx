@@ -824,25 +824,25 @@ export const DesktopSidebar = memo(function DesktopSidebar({
       />
       {activeSessionId && <PluginUiSlot name="drawer.panel" sessionId={activeSessionId} quiet />}
       </div>
+      {/* 底栏只占一行：第一个动作带字占满，其余动作、主题与快捷键收成图标，名称进提示。 */}
       <div className="chat-sidebar__footer">
-        {railActions.map((action) => (
-          <button key={action.id} type="button" className="chat-sidebar__action"
+        {railActions.map((action, index) => (
+          <button key={action.id} type="button" className={index === 0 ? "chat-sidebar__action" : "chat-sidebar__icon-action"}
+            aria-label={index === 0 ? undefined : action.label} data-tip={index === 0 ? undefined : action.label}
             onClick={() => {
               const activate = () => activateShellRailAction(action.id);
               if (onRailAction) onRailAction(activate); else activate();
             }}>
             <span className="chat-sidebar__action-icon" aria-hidden="true"
               dangerouslySetInnerHTML={{ __html: action.iconSvg }} />
-            <span>{action.label}</span>
+            {index === 0 ? <span>{action.label}</span> : null}
           </button>
         ))}
-        <div className="chat-sidebar__footer-row">
-          <ThemeMenu />
-          <button type="button" className="chat-sidebar__shortcuts" aria-label="键盘快捷键" title={`键盘快捷键（${SHORTCUT_MOD}+/）`}
-            onClick={openShortcuts}>
-            <Keyboard size={16} aria-hidden="true" />
-          </button>
-        </div>
+        <ThemeMenu />
+        <button type="button" className="chat-sidebar__icon-action chat-sidebar__shortcuts" aria-label="键盘快捷键" data-tip={`键盘快捷键（${SHORTCUT_MOD}+/）`}
+          onClick={openShortcuts}>
+          <Keyboard size={16} aria-hidden="true" />
+        </button>
       </div>
       <ShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} returnFocus={returnShortcutsFocus} />
       {rail ? <SidebarRailResizer rail={rail} sidebarRef={sidebarRef} /> : null}
