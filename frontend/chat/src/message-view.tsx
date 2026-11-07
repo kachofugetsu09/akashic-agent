@@ -85,11 +85,17 @@ const MessageBody = memo(function MessageBody({
   if (!messageNeedsMarkdown(content)) {
     return <p className="plain-message-response">{content}</p>;
   }
+  const features = detectMessageRenderingFeatures(content);
+  // 打开历史会话时富文本分块可能还在下载：先用主包里的静态渲染排好标题、列表与代码块，不把 ##、``` 原文露给读者。
+  // 含公式的仍放原文（静态渲染不保护公式，$a*b*c$ 会被当成强调改写）；流式也放原文（出字前已预热分块，
+  // 静态的流式分段按空行切，会把围栏里的空行后半段切出代码块）。
+  const fallback = streaming || features.math
+    ? <p className="plain-message-response">{content}</p>
+    : <StaticMessageResponse onError={onError}>{content}</StaticMessageResponse>;
   if (deferRichContent) {
-    const features = detectMessageRenderingFeatures(content);
     if (features.math || features.code) {
       return (
-        <Suspense fallback={<p className="plain-message-response">{content}</p>}>
+        <Suspense fallback={fallback}>
           <LazyMessageResponse isAnimating={streaming} paced={paced}>{content}</LazyMessageResponse>
         </Suspense>
       );
@@ -97,7 +103,7 @@ const MessageBody = memo(function MessageBody({
     return <StaticMessageResponse streaming={streaming} onError={onError}>{content}</StaticMessageResponse>;
   }
   return (
-    <Suspense fallback={<p className="plain-message-response">{content}</p>}>
+    <Suspense fallback={fallback}>
       <LazyMessageResponse isAnimating={streaming} paced={paced}>{content}</LazyMessageResponse>
     </Suspense>
   );
