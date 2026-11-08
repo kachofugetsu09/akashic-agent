@@ -235,3 +235,22 @@ async def apply(ctx: Context) -> None:
         return view, ToolLoadingPresentation(catalog, view, load_ref)
 
     _ = await ctx.provide(TOOL_LOADING_PRESENTATION, present)
+
+    from plugins.tools.contract import TOOL_LOADING_RESTORE
+
+    def restore(descriptions: Mapping[str, Mapping[str, object]], groups: tuple[Mapping[str, object], ...]):
+        # Restore only archived descriptions; never expand to newly installed tools.
+        frozen = _validate_groups(groups)
+        grouped = {str(schema["function"]["name"]) for group in frozen
+                   for schema in cast(tuple[Mapping[str, Any], ...], group["tools"])}
+        if not grouped <= descriptions.keys() or "load_tools" not in descriptions:
+            raise ValueError("Archived loading directory exceeds granted bindings")
+        value = object.__new__(ToolLoadingPresentation)
+        value._view = ToolView(tuple(ToolRef(name, d) for name, d in descriptions.items()))
+        value._load_ref = value._view.select("load_tools")
+        value._direct = ToolView(tuple(ref for ref in value._view.refs if ref.name not in grouped))
+        value._groups = frozen
+        value._schemas = None
+        return value
+
+    _ = await ctx.provide(TOOL_LOADING_RESTORE, restore)

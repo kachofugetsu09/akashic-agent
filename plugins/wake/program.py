@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from functools import partial
+from typing import cast
 
 import asyncio
 from collections.abc import Mapping
 
 from agent.plugin_composition import Context
+from plugins.tools.contract import TOOL_LOADING_RESTORE, TOOLS
+from plugins.ledger.contract import BINDINGS
 from plugins.ledger.contract import MESSAGE_WRITERS, MessageReader
 from plugins.models.contract import ModelError
 from agent.plugin_composition.tasks import Task
@@ -26,7 +29,7 @@ from .request import TERMINAL_TOOLS, Request, Stage, WakeFailure, read_phase
 
 
 # 每类职责最多运行的模型步数：技能读取、初筛、调查与提交决定共用一轮中心循环。
-MAX_STEPS: dict[Stage, int] = {"content": 26, "alert": 3}
+MAX_STEPS: dict[Stage, int] = {"content": 26, "alert": 8}
 
 
 async def run(ctx: Context, task: Task, reader: MessageReader, request: Request) -> Message:
@@ -40,6 +43,11 @@ async def run(ctx: Context, task: Task, reader: MessageReader, request: Request)
             return 'Wake 原请求未授予该工具'
         return {"source": "wake", "session_id": request.session_id}
 
+    presentation = None
+    if request.tool_groups:
+        bindings = ctx.require(BINDINGS)
+        descriptions = {name: cast(Mapping[str, object], bindings.describe(binding, TOOLS)["tool"]) for name, binding in fixed.items()}
+        presentation = ctx.require(TOOL_LOADING_RESTORE)(descriptions, request.tool_groups)
     try:
         return await ctx.require(REPLY_EXECUTE)(
             ctx,
@@ -54,6 +62,7 @@ async def run(ctx: Context, task: Task, reader: MessageReader, request: Request)
             authorize=authorize,
             tool_view=None,
             fixed_bindings=fixed,
+            presentation=presentation,
             # 推理也占用输出预算，不另设会截断工具决定的小上限。
             max_output_tokens=0,
             max_steps=MAX_STEPS[phase.stage],
