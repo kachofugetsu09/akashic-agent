@@ -107,7 +107,7 @@ def check_tool_rejection(part: ContentPart) -> ContentReferences:
         not isinstance(value, Mapping)
         or set(value) != {"name", "arguments", "error"}
         or not isinstance(value["name"], str) or not value["name"]
-        or not isinstance(value["arguments"], Mapping)
+        or not isinstance(value["arguments"], (Mapping, str))
         or not isinstance(value["error"], str) or not value["error"]
     ):
         raise ValueError("模型工具协议拒绝字段无效")
@@ -545,6 +545,12 @@ class MessageProjection:
                         raise ValueError("模型协议拒绝缺少 model.facts")
                     identity = model_facts["tool_ids"][str(index)]
                     rejected = cast(Mapping[str, Any], part.value)
+                    if isinstance(rejected["arguments"], str):
+                        blocks.append({"type": "text", "text": (
+                            f"调用未执行：{rejected['name']}；{rejected['error']}\n"
+                            f"原始参数：{rejected['arguments']}"
+                        )})
+                        continue
                     calls.append({
                         "id": identity, "type": "function",
                         "function": {"name": rejected["name"], "arguments": encode_arguments(rejected["arguments"])},

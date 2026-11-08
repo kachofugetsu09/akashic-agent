@@ -165,7 +165,7 @@ def _decode_response(payload: object) -> LLMResponse:
         tool_calls=[
             ToolCall(
                 cast(str, item["id"]), cast(str, item["name"]),
-                cast(Mapping[str, Any], item["arguments"]),
+                cast(Mapping[str, Any] | str, item["arguments"]),
             )
             for item in cast(Sequence[Mapping[str, Any]], calls)
         ],
@@ -515,7 +515,7 @@ class _BoundChat:
                     response = await self._driver.complete(driver_request)
                     log_timing("model.driver.end", operation_id=call_id, request_id=request_key)
                     # 空生成没有可交付输出；使用同一请求恢复，不能把它提交为 quiet。
-                    if (response.finish_reason != "length"
+                    if (response.finish_reason not in {"length", "malformed_function_call"}
                             and not (response.content and response.content.strip())
                             and not response.tool_calls):
                         raise EmptyResponseError("模型没有产生正文或工具调用，正在重新生成").exception()

@@ -144,6 +144,11 @@ class ToolMenu:
 
     def decode(self, call: ModelToolCall) -> ToolCallDecode:
         """把 wire 调用变成真实 binding 或模型可修正的拒绝反馈。"""
+        if isinstance(call.arguments, str):
+            return ToolCallDecode(None, {}, {
+                "name": call.name, "arguments": call.arguments,
+                "error": "工具参数必须是完整的 JSON 对象；请修正格式后重新调用。",
+            })
         decoded = self._presentation.decode(call)
         if isinstance(decoded, str):
             return ToolCallDecode(None, {}, {

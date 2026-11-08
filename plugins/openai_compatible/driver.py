@@ -972,7 +972,7 @@ async def _consume_stream(
     return LLMResponse(
         content=parsed_content,
         thinking=parsed_thinking,
-        tool_calls=_tool_calls(calls),
+        tool_calls=() if finish_reason == "length" else _tool_calls(calls),
         finish_reason=finish_reason,
         usage=usage,
     )
@@ -1032,7 +1032,7 @@ def _parse_chat_response(payload: Mapping[str, Any]) -> LLMResponse:
     calls: list[ToolCall] = []
     if not isinstance(raw_calls, list):
         raise TransportError("chat tool_calls must be an array").exception()
-    for raw in raw_calls:
+    for raw in (() if choice.get("finish_reason") == "length" else raw_calls):
         if not isinstance(raw, Mapping):
             raise TransportError("chat tool call must be an object").exception()
         function = raw.get("function")

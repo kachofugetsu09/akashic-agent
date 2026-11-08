@@ -504,6 +504,18 @@ async def _complete(
         yield response, prepared, message_id, request
 
 
+# Rejected generations become durable feedback, never executable tool calls.
+def _response_rejection(response: LLMResponse, budget: int) -> str | None:
+    if response.finish_reason == "length":
+        return (
+            f"上次模型生成达到长度限制（输出预算 {budget} tokens，含推理）；"
+            "回复未完成，全部工具调用均未执行。请减少推理和单次输出，分段完成任务。"
+        )
+    if response.finish_reason == "malformed_function_call":
+        return "上次模型生成了无法解析的工具调用，全部调用均未执行。请按工具 schema 重新生成完整的 JSON 参数。"
+    return None
+
+
 async def react(
     reader: MessageReader,
     writer: MessageWriter,
@@ -539,6 +551,7 @@ async def react(
     if reader.session_id != writer.session_id:
         raise ValueError("ReAct reader 与 writer 必须属于同一 Session")
     history = _History(writer.source)
+    recovery_count = 0
     while True:
         operation_id = uuid4().hex
         mark = partial(log_timing, session_id=reader.session_id, source=writer.source, operation_id=operation_id)
@@ -643,22 +656,25 @@ async def react(
             reminder_input_id=reminder_input_id,
             operation_id=operation_id,
         ) as (response, prepared, message_id, request):
-            # 先检查完整性：即使截断参数恰好是合法 JSON，也不能执行该批工具。
-            if response.finish_reason == "length":
-                raise OutputLengthError(
-                    f"模型生成达到长度限制（输出预算 {request.max_output_tokens} tokens，含推理）；"
-                    "回复未完成，本次返回的工具调用未执行。请检查输出预算与模型上下文容量后，用新输入继续。"
-                ).exception()
-            decoded, metadata = await content.decode(response.content or "", cast(tuple[Mapping[str, object], ...], prepared.get("references", ())))
+            # 3. Keep rejection feedback in history before another model request.
+            rejection = _response_rejection(response, request.max_output_tokens)
+            if rejection is not None:
+                recovery_count += 1
+                response = replace(response, tool_calls=(), continuation=None, provider_metadata=None)
+            decoded, metadata = await content.decode(
+                rejection or response.content or "",
+                cast(tuple[Mapping[str, object], ...], prepared.get("references", ())),
+            )
             parts: list[Part] = list(decoded)
             indices: list[int] = []
             actual_calls: list[ToolCall | ContentPart] = []
-            decoded_calls = tuple(tools.decode(call) for call in response.tool_calls)
+            calls = () if rejection is not None else response.tool_calls
+            decoded_calls = tuple(tools.decode(call) for call in calls)
             mixed_exclusive = len(decoded_calls) > 1 and any(
                 decoded.binding_id is not None and decoded.exclusive_batch
                 for decoded in decoded_calls
             )
-            for call, decoded_call in zip(response.tool_calls, decoded_calls, strict=True):
+            for call, decoded_call in zip(calls, decoded_calls, strict=True):
                 indices.append(len(parts))
                 if mixed_exclusive:
                     actual = ContentPart("model.tool_rejection", {
@@ -695,13 +711,17 @@ async def react(
             try:
                 message = await commit(
                     message_id,
-                    Output(tuple(parts), "continue" if indices else "complete"),
+                    Output(tuple(parts), "continue" if indices or rejection is not None else "complete"),
                     metadata,
                 )
             except _Superseded:
                 raise asyncio.CancelledError from None
             mark("output.committed", request_id=response.call_record_id or "", parent_operation_id=message.message_id, counts={"seq": message.seq, "tool_calls": len(indices)})
-            if not indices:
+            if rejection is not None:
+                if recovery_count > 3:
+                    failure = OutputLengthError if response.finish_reason == "length" else ModelError
+                    raise failure(rejection + " 已尝试 3 次恢复，现已停止；请调整输出预算或任务要求后继续。").exception()
+            elif not indices:
                 return message
         # Loop 保留当前历史，直到下轮真实快照替换它；弱解码缓存才能复用旧消息。
         # 不再使用的准备材料与提交闭包立即释放，结束或取消时释放整个 Loop。
