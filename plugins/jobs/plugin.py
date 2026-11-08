@@ -6,6 +6,7 @@ import logging
 import os
 from pathlib import Path
 from importlib import import_module
+from html import escape
 from collections.abc import AsyncGenerator, Iterable, Mapping, Sequence
 from contextlib import aclosing
 from dataclasses import replace
@@ -270,16 +271,62 @@ class Jobs:
                     self._follow(job), name=f"job-notice:{job.job_id}", context=independent_task_context(),
                 )
 
+    # Confirm claims from saved model reminders, including history outside the prompt window.
+    async def _confirm_notices(self, session_id: str, source: str, through_seq: int) -> None:
+        claims: dict[str, list[Notice]] = {}
+        restored: list[Notice] = []
+        for notice in self._board.pending(session_id):
+            if notice.job.source != source or notice.confirmed:
+                continue
+            if notice.claimed_input is not None:
+                claims.setdefault(notice.claimed_input, []).append(notice)
+            elif notice.claimed_by is None and notice.job.job_id in self._host_scheduled:
+                restored.append(notice)
+        if not claims and not restored:
+            return
+        reader = self._ctx.require(MESSAGE_CATALOG).reader(session_id)
+        def recorded(current: MessageReader) -> tuple[tuple[Notice, str], ...]:
+            inputs = tuple(current.get(identity) for identity in claims)
+            assert all(message is not None and isinstance(message.body, Input) for message in inputs)
+            host_heads: dict[Notice, int] = {}
+            for notice in restored:
+                saved = current.get("host-notice:" + notice.job.job_id)
+                assert saved is not None
+                host_heads[notice] = saved.seq
+            start = min([message.seq for message in inputs if message is not None] + list(host_heads.values()))
+            found: dict[Notice, str] = {}
+            def collect(messages: Iterable[Message]) -> None:
+                for message in messages:
+                    if not isinstance(message.body, Output):
+                        continue
+                    for part in message.body.parts:
+                        if not isinstance(part, ContentPart) or part.kind != "model.facts":
+                            continue
+                        facts = cast(Mapping[str, object], part.value)
+                        identity = cast(str | None, facts.get("reminder_input_id"))
+                        reminder = cast(str | None, facts.get("reminder"))
+                        if identity is None or reminder is None:
+                            continue
+                        candidates = (*claims.get(identity, ()), *(notice for notice, head in host_heads.items()
+                                                                  if message.seq > head))
+                        for notice in candidates:
+                            if escape(notice.text(), quote=False) in reminder:
+                                found[notice] = identity
+            current.scan(collect, source=source, after_seq=start, through_seq=through_seq)
+            return tuple(found.items())
+        for notice, identity in await reader.read_async(recorded):
+            await self._finish_host(notice.job.job_id)
+            self._board.confirm(notice, identity)
+
     # 每一步准备材料时调用：当前输入领取未读结算，并在该输入的后续步骤中保持可回放。
     async def materials(self, snapshot: tuple[Message, ...], source: str) -> Mapping[str, object]:
         latest = _latest_input(snapshot, source)
         if latest is None:
             return {}
+        await self._confirm_notices(latest.session_id, source, snapshot[-1].seq)
         notices = self._board.claim(latest.session_id, source, latest.message_id)
         if not notices:
             return {}
-        for notice in notices:
-            await self._finish_host(notice.job.job_id)
         return {"reminders": tuple(
             {"name": "job-" + notice.job.job_id, "text": notice.text(), "priority": 450, "replay": True}
             for notice in notices
@@ -306,6 +353,8 @@ class Jobs:
         # 2. 唤醒失败撤回领取，下一次用户输入仍会注入这条结算。
         try:
             async with self._ctx.runtime_scope():
+                reader = self._ctx.require(MESSAGE_CATALOG).reader(job.session_id)
+                await self._confirm_notices(job.session_id, job.source, reader.head())
                 await self._wake(notice)
         except CompositionError:
             return
