@@ -131,13 +131,35 @@ class Jobs:
         if await reader.read_async(lambda current: _latest_user_input(current, current.head())) is None:
             raise ValueError("目标会话没有对话输入，无法注入或唤醒")
         saved = await self._save_host_notice(notice)
-        self._host_received.add(notice.job_id)
-        message = reader.get("host-notice:" + notice.job_id)
-        assert message is not None
-        await self._deliver(message)
+        # Durable acceptance makes the notice available even if channel delivery fails.
         if not saved.handled:
             self._schedule_host(saved.notice)
-        return {"accepted": True, "wake": self._config.completion_delivery == "wakeup"}
+        message = reader.get("host-notice:" + notice.job_id)
+        assert message is not None
+        error = await self._deliver_host(notice.job_id, message)
+        if error is None:
+            self._host_received.add(notice.job_id)
+        else:
+            self._host_received.discard(notice.job_id)
+        return {"accepted": True, "wake": self._config.completion_delivery == "wakeup",
+                "delivery_error": error}
+
+    # Keep one channel failure local to its accepted notice; Delivery owns send retries.
+    async def _deliver_host(self, job_id: str, message: Message) -> str | None:
+        error = await self._deliver(message)
+        def save(tx: OwnerTransaction) -> bool:
+            row = tx.read(job_id)
+            assert row is not None
+            saved = SavedNotice.model_validate(json_value(row.value))
+            if saved.delivery_error == error:
+                return False
+            _ = tx.save(job_id, {**saved.model_dump(mode="json"), "delivery_error": error},
+                        expected_version=row.version)
+            return True
+        changed = await self._host_store.transact_async(save)
+        if changed and error is not None:
+            _ = self._ctx.report_incident("host-notice-delivery", f"{job_id}: {error}")
+        return error
 
     # Persist the visible failure and pending wake together before acknowledging the host.
     async def _save_host_notice(self, notice: HostNoticeParams) -> SavedNotice:
@@ -183,9 +205,15 @@ class Jobs:
     async def _recover_host_notices(self) -> None:
         for job_id, row in await run_file_io(self._host_store.list):
             saved = SavedNotice.model_validate(json_value(row.value))
-            self._host_received.add(job_id)
-            if not saved.handled:
-                _ = await self._ctx.entrypoint(self.host_notice)(saved.notice)
+            if not saved.handled or saved.delivery_error is not None:
+                try:
+                    _ = await self._ctx.entrypoint(self.host_notice)(saved.notice)
+                except (OSError, ValueError) as error:
+                    _ = self._ctx.report_incident(
+                        "host-notice-recovery", f"{job_id}: {type(error).__name__}: {error}",
+                    )
+            else:
+                self._host_received.add(job_id)
         socket = os.environ.get("AKASHIC_HOST_BRIDGE_SOCKET")
         if not socket:
             return
@@ -325,7 +353,7 @@ class Jobs:
             return
         board.finish_wake(notice)
         await self._finish_host(job.job_id)
-        await self._deliver(message)
+        _ = await self._deliver(message)
 
     # Save one visible notice per user input without another model or tool turn.
     async def _limit_message(self, task: Task, reader: MessageReader, input_id: str,
@@ -353,7 +381,7 @@ class Jobs:
             writer.expire()
 
     # 唤醒回复不属于 conversation 来源，按原会话最近输入的渠道显式回传。
-    async def _deliver(self, message: Message) -> None:
+    async def _deliver(self, message: Message) -> str | None:
         ctx = self._ctx
         reader = ctx.require(MESSAGE_CATALOG).reader(message.session_id)
         if reader.attributes.visibility == "internal":
@@ -366,16 +394,25 @@ class Jobs:
             binding = ctx.require(DELIVERY_SENDERS).bind(channel, ctx.require(BINDINGS))
         except KeyError:
             logger.warning("后台任务回传渠道没有发送能力 channel=%s", channel)
-            return
+            return f"渠道没有发送能力: {channel}"
         delivery = ctx.require(DELIVERY).open(ctx)
         selected = await delivery.prepare_async(
             reader, message, ({"name": channel, "binding_id": binding, "address": address},),
         )
+        errors: list[str] = []
         for sink in selected.sinks:
-            receipt = await delivery.send(message.message_id, sink)
+            # A sender can fail after its effect; keep Delivery's receipt and continue.
+            try:
+                receipt = await delivery.send(message.message_id, sink)
+            except Exception as failure:
+                logger.exception("后台任务通知发送异常 message=%s sink=%s", message.message_id, sink)
+                errors.append(f"{sink}: {type(failure).__name__}: {failure}")
+                continue
             if receipt.status != "delivered":
                 logger.error("后台任务通知发送失败 message=%s reason=%s", message.message_id,
                              receipt.error or receipt.status)
+                errors.append(f"{sink}: {receipt.error or receipt.status}")
+        return "; ".join(errors)[:2000] if errors else None
 
 
 # 用户停止后生产方可能已把条目回收（settled 返回 None），也可能先给出 killed 终态；两者都要让模型知道是谁停的。

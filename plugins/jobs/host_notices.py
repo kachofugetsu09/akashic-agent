@@ -26,6 +26,7 @@ class SavedNotice(BaseModel):
     model_config = ConfigDict(extra="forbid")
     notice: HostNoticeParams
     handled: bool = False
+    delivery_error: str | None = None
 
 
 class _Stop(BaseModel):
