@@ -317,6 +317,13 @@ class Runtime:
             logger.exception("Wake flow needs recovery: %s", flow_id)
             return "failed"
         except asyncio.CancelledError:
+            following = asyncio.current_task()
+            assert following is not None
+            if not following.cancelling():
+                # A cancelled flow keeps its recovery facts, but cannot stop the follower.
+                _ = self.ctx.report_incident("wake_flow_cancelled", f"flow={flow_id} 内部任务自行取消，原领取留待恢复")
+                logger.error("Wake flow cancelled itself: %s", flow_id)
+                return "failed"
             task.cancel()
             while not task.done:
                 try:

@@ -123,7 +123,7 @@ def finished(reader: MessageReader, request: Request, stage: Stage) -> Message |
             continue
         if isinstance(message.body, Output) and message.body.finish != "continue":
             return message
-        if isinstance(message.body, Control) and message.body.action in {"pause", "failure"}:
+        if isinstance(message.body, Control) and message.body.action in {"pause", "failure", "abandon"}:
             return message
         if isinstance(message.body, Input):
             raise ValueError("Wake 前一阶段未结束便出现下一输入")
