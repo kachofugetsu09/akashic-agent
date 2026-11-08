@@ -106,7 +106,7 @@ async def run_reply(
             members.append(message)
         # A new input may summarize earlier failed work; retry still keeps its original inputs.
         latest_input = max((item.seq for item in members if isinstance(item.body, Input)), default=-1)
-        failed_before_input = max((item.seq for item in messages
+        failed_before_input = max((item.body.through_seq for item in messages
                                   if item.source == source and item.seq < latest_input
                                   and isinstance(item.body, Control) and item.body.action == "failure"), default=-1)
         kept = tuple(item.message_id for item in members
