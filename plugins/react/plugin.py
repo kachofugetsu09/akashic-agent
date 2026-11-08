@@ -31,6 +31,7 @@ from plugins.models.contract import (
 from plugins.models.contract import (
     ContextLengthError,
     EmptyResponseError,
+    InputReductionRequired,
     OutputLengthError,
     ModelError,
 )
@@ -613,23 +614,27 @@ async def _complete(
 
         async def generate(
             request: ModelRequest, request_key: str, callback: StreamCallback | None,
+            *, max_attempts: int | None = None, reduce_on_empty: bool = False,
         ) -> LLMResponse:
             mark("model.begin", request_id=request_key)
-            response = await model.complete(replace(request, on_delta=callback, request_key=request_key, max_retry_wait=max_retry_wait))
+            response = await model.complete(replace(
+                request, on_delta=callback, request_key=request_key, max_retry_wait=max_retry_wait,
+                max_attempts=max_attempts, reduce_on_empty=reduce_on_empty,
+            ))
             mark("model.end", request_id=request_key)
             return response
 
         message_id, request_key, callback = begin()
         try:
-            response = await generate(request, request_key, callback)
+            response = await generate(request, request_key, callback, reduce_on_empty=reduce is not None)
         except (RuntimeError, TimeoutError) as error:
-            failure = ModelError.read(error, ContextLengthError)
+            failure = ModelError.read(error, ContextLengthError, InputReductionRequired)
             if failure is None:
                 raise
             previews.close()
             # 类型化容量拒绝也可能来自 HTTP 200 的流内错误码。
             # 已有输出的流仍保留未知效果；缩减后使用新 key，至多再生成一次。
-            if reduce is None or failure.response_delta_seen:
+            if reduce is None or isinstance(failure, ContextLengthError) and failure.response_delta_seen:
                 raise
             prepared, summary = await reduce_request(prepared, request, force=True)
             if summary is None or summary == prepared.get("summary"):
@@ -640,7 +645,10 @@ async def _complete(
                 raise ContextLengthError(rejection).exception()
             message_id, request_key, callback = begin()
             # 第二次调用在 except 内；再次拒绝直接上抛，不产生第三次请求。
-            response = await generate(request, request_key, callback)
+            response = await generate(
+                request, request_key, callback,
+                max_attempts=failure.remaining_attempts if isinstance(failure, InputReductionRequired) else None,
+            )
         # 3. 草稿持续到调用者完成解码与 CAS；异常和取消也会释放预览。
         yield response, prepared, message_id, request
 

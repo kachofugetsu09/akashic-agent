@@ -89,7 +89,7 @@ from plugins.models.contract import (
     ModelUsage,
     ToolCall,
 )
-from plugins.models.contract import EmptyResponseError, ModelAttemptStatus
+from plugins.models.contract import EmptyResponseError, InputReductionRequired, ModelAttemptStatus
 from agent.plugin_composition.tasks import register_task_bound_context
 from core.common.file_io import run_file_io
 
@@ -400,6 +400,8 @@ class _BoundChat:
         """Models 独占重试预算：一次 complete 内按预算恢复（默认最多 11 次）；每个真实
         attempt 先记账再结算，失败写耐久 next_attempt_at，重试前重新核对准入与孤儿。"""
         budget = self._max_attempts if budget is None else max(1, budget)
+        if request.max_attempts is not None:
+            budget = request.max_attempts if budget is None else min(budget, request.max_attempts)
         while True:
             # 1. 读取原请求回执和退避；成功只回放，终态不重新领取额度。
             replayed, records = await self._scan(request_key, digest, budget=budget)
@@ -554,6 +556,19 @@ class _BoundChat:
                     # 模型生成与本地工具效果分开：暂时故障允许重发生成，
                     # 保留真实发送证据和未知 usage，不声称第一次请求没有计费。
                     original_failure = failure
+                    # Count settled consecutive empties, including a reopened key.
+                    if request.reduce_on_empty and ModelError.matches(failure, EmptyResponseError):
+                        empty_count = 1
+                        for record in reversed(records):
+                            if not str(record.get("failure", "")).startswith("EmptyResponseError:"):
+                                break
+                            empty_count += 1
+                        remaining = None if budget is None else budget - len(records) - 1
+                        if empty_count >= 3 and (remaining is None or remaining > 0):
+                            failure = InputReductionRequired(
+                                "模型连续 3 次返回空响应；需要缩减输入后再试，无法缩减时请换模型或减少输入。",
+                                remaining_attempts=remaining,
+                            ).exception()
                     model_failure = ModelError.read(failure)
                     partial_response = first_token or bool(getattr(failure, "response_delta_seen", False)) or (
                         model_failure is not None and model_failure.response_delta_seen
