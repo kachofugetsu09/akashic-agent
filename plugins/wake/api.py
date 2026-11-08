@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from agent.plugin_composition import EmitEventKey
 from plugins.models.contract import ModelChoice, ModelUse
@@ -28,6 +28,13 @@ class DeliveryTarget(BaseModel):
 WAKE_MODEL = ModelUse("wake", "主动联系", follows=("session", "default"))
 
 
+class InformationQuery(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    provider: str = Field(min_length=1)
+    query: str = Field(min_length=1)
+    arguments: dict[str, object] = Field(default_factory=dict)
+
+
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -35,6 +42,9 @@ class Config(BaseModel):
     delivery: DeliveryTarget | None = None
     timezone: str = "Asia/Shanghai"
     investigation_tools: tuple[str, ...] = ("recall_memory", "web_fetch")
+    # 默认沿用旧版行为：每次唤醒带上 EventMail 当前有效状态（睡眠、Steam 等）。
+    information_queries: tuple[InformationQuery, ...] = Field(
+        default=(InformationQuery(provider="eventmail@release", query="current"),), max_length=8)
     model: ModelChoice = ModelChoice(follow="session")
 
     @field_validator("model")

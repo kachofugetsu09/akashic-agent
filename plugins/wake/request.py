@@ -56,7 +56,8 @@ class Request(BaseModel):
     reasoning_effort: str | None = Field(default=None, min_length=1)
     rules: str
     history: str
-    events: tuple[dict[str, object], ...] = ()
+    events: tuple[dict[str, object], ...] = ()  # legacy frozen Context events
+    information: tuple[dict[str, object], ...] = ()
 
     @model_validator(mode="after")
     def check_choices(self) -> Self:

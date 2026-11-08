@@ -41,6 +41,7 @@ from .legacy_rules import read_archived_rules
 from .messages import recent_context
 from .request import SKILL_TOOL, TOOLS as WAKE_TOOLS, WAKE_PROGRAM, Request
 from .source import Pointer, Source
+from .information import snapshot_information
 from .state import WakeState, WakeStateReader
 
 
@@ -210,7 +211,7 @@ class Runtime:
             rules=read_archived_rules(ctx.data_root) or "",
             history=await run_file_io(lambda: recent_context(
                 message_catalog, delivery_read, target=session_id, now=now)),
-            events=tuple(dict(item) for item in (await ctx.require(EVENTMAIL_WAKE).active_context(now))))
+            information=await snapshot_information(ctx, self.config.information_queries))
 
     async def follow(self) -> None:
         """先恢复原请求，再独立运行到期检查与五分钟池维护。"""

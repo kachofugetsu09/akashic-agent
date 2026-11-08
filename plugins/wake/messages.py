@@ -82,7 +82,12 @@ def render(part: ContentPart, *, fallback: Callable[[ContentPart], tuple[Mapping
     if part.kind == "wake.request":
         request = Request.model_validate_json(json.dumps(json_value(part.value)))
         value: dict[str, object] = {"time": request.now.astimezone(ZoneInfo(request.timezone)).isoformat(),
-                 "proactive_rules": request.rules, "history": request.history, "context_events": request.events}
+                 "proactive_rules": request.rules, "history": request.history}
+        # 旧请求归档的是 context_events，新请求是 user_information；只渲染实际存在的那份。
+        if request.events:
+            value["context_events"] = request.events
+        if request.information:
+            value["user_information"] = request.information
         return ({"type": "text", "text": json.dumps(value, ensure_ascii=False)},)
     if part.kind == "wake.phase":
         return ()
