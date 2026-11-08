@@ -28,6 +28,7 @@ from plugins.host_execution.contract import (
 )
 HealthCallback = Callable[[str, str, bool, str], Awaitable[None] | None]
 IncidentCallback = Callable[[str, str, str, str], Awaitable[None] | None]
+_BORROW_DRAIN_TIMEOUT = 300.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -295,7 +296,13 @@ class WorkloadGenerationHost:
     async def _cleanup(self, generation: _Generation) -> None:
         generation.state = "stopping"
         if generation.borrowers:
-            _ = await generation.drained.wait()
+            try:
+                _ = await asyncio.wait_for(generation.drained.wait(), _BORROW_DRAIN_TIMEOUT)
+            except TimeoutError as error:
+                raise TimeoutError(
+                    f"Workload {generation.generation_id} 借用超过 {_BORROW_DRAIN_TIMEOUT:g} 秒仍未归还；"
+                    "资源和 lease 保留，请在借用归还后显式重试清理"
+                ) from error
         errors: list[BaseException] = []
         # 缺少有效 lease 时，现有 Controller 没有核实或取消 start 的接口。
         # 保留原请求并阻断关闭；重发 start 可能创建新资源，不是清理操作。

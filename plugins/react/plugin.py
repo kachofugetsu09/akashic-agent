@@ -415,6 +415,7 @@ async def _complete(
     preview: Preview | None,
     reminder_input_id: str | None,
     operation_id: str = "",
+    max_retry_wait: float | None = None,
 ) -> AsyncGenerator[tuple[LLMResponse, Materials, str, ModelRequest]]:
     """缩减只更新已取得材料中的摘要；provider 容量拒绝最多重试一次。"""
     mark = partial(log_timing, session_id=snapshot[-1].session_id if snapshot else "",
@@ -472,7 +473,7 @@ async def _complete(
             request: ModelRequest, request_key: str, callback: StreamCallback | None,
         ) -> LLMResponse:
             mark("model.begin", request_id=request_key)
-            response = await model.complete(replace(request, on_delta=callback, request_key=request_key))
+            response = await model.complete(replace(request, on_delta=callback, request_key=request_key, max_retry_wait=max_retry_wait))
             mark("model.end", request_id=request_key)
             return response
 
@@ -514,6 +515,7 @@ async def react(
     tools: ToolMenu,
     max_output_tokens: int,
     max_steps: int,
+    max_retry_wait: float | None = None,
     reduce: SummaryReducer | None = None,
     preview: Preview | None = None,
     terminal_tools: frozenset[str] = frozenset(),
@@ -639,7 +641,7 @@ async def react(
             snapshot, prepared, source=writer.source, context=context, model=model,
             projection=projection, tools=tools, max_output_tokens=max_output_tokens, reduce=reduce, preview=preview,
             reminder_input_id=reminder_input_id,
-            operation_id=operation_id,
+            operation_id=operation_id, max_retry_wait=max_retry_wait,
         ) as (response, prepared, message_id, request):
             # 先检查完整性：即使截断参数恰好是合法 JSON，也不能执行该批工具。
             if response.finish_reason == "length":

@@ -11,7 +11,7 @@ from typing import Any
 from urllib.parse import quote, urlsplit
 
 import httpx
-from core.net.http import retry_after_time
+from core.net.http import StreamProgress, retry_after_time
 
 from plugins.models.contract import (
     LLMResponse,
@@ -145,8 +145,9 @@ async def _discover(connection: DriverConnectionDescriptor, credential: Credenti
 
 
 class _Chat:
-    def __init__(self, client: httpx.AsyncClient, credential: CredentialHandle, descriptor: BoundModelDescriptor):
+    def __init__(self, client: httpx.AsyncClient, credential: CredentialHandle, descriptor: BoundModelDescriptor, *, progress_timeout: float = 300.0):
         self.client, self.credential, self.descriptor = client, credential, descriptor
+        self._progress_timeout = progress_timeout
 
     @property
     def max_tool_schemas(self) -> int | None:
@@ -188,7 +189,8 @@ class _Chat:
                         await response.aread()
                     _status(response)
                     event: list[str] = []
-                    async for line in response.aiter_lines():
+                    progress = StreamProgress(self._progress_timeout)
+                    async for line in progress.read(response.aiter_lines()):
                         if line.startswith('data:'):
                             event.append(line[5:].lstrip())
                         elif not line and event:
@@ -197,6 +199,8 @@ class _Chat:
                             if raw == '[DONE]':
                                 continue
                             current, reason, current_usage = _chunk(_object(json.loads(raw), "Gemini SSE"))
+                            if any(part.get("text") or "functionCall" in part or part.get("thoughtSignature") for part in current):
+                                progress.advance()
                             parts.extend(current)
                             finish = reason or finish
                             usage = current_usage or usage
@@ -207,7 +211,10 @@ class _Chat:
                     if event or finish is None:
                         raise TransportError("Gemini SSE 未完整结束").exception()
             return _answer(parts, finish, usage)
-        except (RuntimeError, TimeoutError) as error:
+        except TimeoutError as cause:
+            error = ModelTimeoutError(f"Gemini 模型流超过 {self._progress_timeout:g} 秒没有有效进展").exception()
+            raise ModelError.change(error, response_delta_seen=bool(parts)) from cause
+        except RuntimeError as error:
             if not (ModelError.matches(error)):
                 raise
             error = ModelError.change(error, response_delta_seen=bool(parts))

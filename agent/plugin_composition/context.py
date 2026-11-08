@@ -64,6 +64,7 @@ T = TypeVar("T")
 R = TypeVar("R")
 F = TypeVar("F", bound=Callable[..., object])
 PluginApply = Callable[["Context"], object]
+_CALL_DRAIN_TIMEOUT = 300.0
 
 
 _lifecycle_binding: contextvars.ContextVar[
@@ -1400,9 +1401,18 @@ class Fiber:
             await _await_critical(asyncio.create_task(join_tasks()))
 
         # 3. 依赖方先退出；本 owner 已接纳的实际调用结束后再释放资源。
-        #    取消等待不等于资源已退出；超时与拒绝策略由调用方负责。
+        #    超时只结束卸载，仍保留在途许可和资源供显式重试。
         if self._in_flight_calls:
-            await _await_critical(asyncio.ensure_future(self._calls_idle.wait()))
+            try:
+                await _await_critical(asyncio.create_task(asyncio.wait_for(
+                    self._calls_idle.wait(), _CALL_DRAIN_TIMEOUT,
+                )))
+            except TimeoutError as error:
+                raise CompositionError(
+                    "OWNER_CALL_DRAIN_TIMEOUT",
+                    f"{self.name} 的在途调用超过 {_CALL_DRAIN_TIMEOUT:g} 秒仍未结束；"
+                    "卸载失败，资源和调用保留，请在调用结束后显式重试清理",
+                ) from error
 
         # 4. 子作用域失败时保留父资源；无关子分支仍尝试关闭。
         errors: list[BaseException] = []

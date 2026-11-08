@@ -181,6 +181,8 @@ class ModelRequest:
     continuation: ModelContinuation | None = None
     disable_reasoning: bool = False
     request_key: str | None = None
+    # Long provider backoff ends this request; None keeps visible, cancellable waiting.
+    max_retry_wait: float | None = None
     # 本次完整展示、尚无成功展示回执的消息内容位置；不发送给 provider。
     content_refs: tuple[tuple[str, int], ...] = ()
     content_transformed: bool = False
@@ -215,6 +217,11 @@ class ModelRequest:
                 self.tools if isinstance(self.tools, (list, tuple)) else tuple(self.tools)
             ))
         )
+        if self.max_retry_wait is not None and (
+            isinstance(self.max_retry_wait, bool) or not isinstance(self.max_retry_wait, (int, float))
+            or not math.isfinite(self.max_retry_wait) or self.max_retry_wait <= 0
+        ):
+            raise ValueError("max_retry_wait must be a finite positive number or None")
         object.__setattr__(self, "content_refs", self.read_content_refs(self.content_refs))
         if type(self.content_transformed) is not bool:
             raise ValueError("内容投影标记必须是 bool")

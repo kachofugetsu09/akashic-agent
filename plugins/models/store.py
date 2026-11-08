@@ -1947,6 +1947,8 @@ def _request_digest(
             }
         ),
     }
+    if request.max_retry_wait is not None:
+        payload["max_retry_wait"] = request.max_retry_wait
     if encodings is None:
         return hashlib.sha256(
             json.dumps(payload, ensure_ascii=False, separators=(",", ":"),

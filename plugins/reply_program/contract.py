@@ -24,6 +24,7 @@ from plugins.sources.contract import (
 class ReplyExecuteV4(Protocol):
     """固定执行前提；输出预算 None 跟随模型上限，未知时用 32768，含推理。
 
+    max_retry_wait limits one retry wait in seconds; None allows cancellable long waits.
     history="own" 时模型只看到本来源的消息（例如一次定时任务），会话里其他对话与摘要不进入请求。
     """
 
@@ -40,6 +41,7 @@ class ReplyExecuteV4(Protocol):
         ],
         max_output_tokens: int | None,
         max_steps: int,
+        max_retry_wait: float | None = 300.0,
         render_content: ContentRenderer | None = None,
         tool_view: ToolView | None = None,
         tool_names: Sequence[str] | None = None,

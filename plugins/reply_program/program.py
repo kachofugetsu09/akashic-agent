@@ -57,6 +57,7 @@ async def run_reply(
     authorize: Callable[[str, Mapping[str, object]], Awaitable[Mapping[str, object] | str]],
     max_output_tokens: int | None,
     max_steps: int,
+    max_retry_wait: float | None = 300.0,
     max_parallel_calls: int = 4,
     tool_view: ToolView | None = None,
     tool_names: Sequence[str] | None = None,
@@ -240,7 +241,7 @@ async def run_reply(
             return await react(
                 reader, output, model=model, context=context, projection=projection,
                 materials=build_materials, content=view, tools=menu,
-                max_output_tokens=max_output_tokens, max_steps=max_steps,
+                max_output_tokens=max_output_tokens, max_steps=max_steps, max_retry_wait=max_retry_wait,
                 reduce=None if history == "own" else reduce, preview=preview, terminal_tools=terminal_tools,
                 max_parallel_calls=max_parallel_calls,
                 state=owner_state.open_scoped(ctx, "generation"),

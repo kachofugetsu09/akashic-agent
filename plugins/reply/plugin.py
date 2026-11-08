@@ -224,6 +224,7 @@ async def apply(ctx: Context) -> None:
                 tool_view=view,
                 max_output_tokens=config.max_output_tokens,
                 max_steps=config.max_steps,
+                max_retry_wait=None if source == "conversation" else 300.0,
                 presentation=presentation,
                 preview=preview,
                 reminders=reminders,

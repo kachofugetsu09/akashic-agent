@@ -250,26 +250,36 @@ class McpClient:
         timeout: float | None = None,
     ) -> str:
         """调用远端工具，返回结果字符串。"""
-        while True:
-            await self._await_available()
-            async with self._call_lock:
-                if not self.connected:
-                    continue
-                call_id = self._new_id()
-                await self._send(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": call_id,
-                        "method": "tools/call",
-                        "params": {"name": tool_name, "arguments": arguments},
-                    }
-                )
-                resp = await self._recv(
-                    expected_id=call_id,
-                    stage=f"tools/call:{tool_name}",
-                    timeout=timeout,
-                )
-                break
+        call_timeout = _RECV_TIMEOUT if timeout is None else timeout
+        deadline = asyncio.timeout(call_timeout)
+        try:
+            async with deadline:
+                while True:
+                    await self._await_available()
+                    async with self._call_lock:
+                        if not self.connected:
+                            continue
+                        call_id = self._new_id()
+                        await self._send(
+                            {
+                                "jsonrpc": "2.0",
+                                "id": call_id,
+                                "method": "tools/call",
+                                "params": {"name": tool_name, "arguments": arguments},
+                            }
+                        )
+                        resp = await self._recv(
+                            expected_id=call_id,
+                            stage=f"tools/call:{tool_name}",
+                            timeout=timeout,
+                        )
+                        break
+        except TimeoutError as error:
+            if not deadline.expired():
+                raise
+            raise TimeoutError(self._build_timeout_message(
+                f"tools/call:{tool_name}", None, call_timeout,
+            )) from error
 
         if "error" in resp:
             err: object = resp["error"]
@@ -727,10 +737,12 @@ class McpClient:
     ) -> dict[str, Any]:
         assert self._process and self._process.stdout
         recv_timeout = _RECV_TIMEOUT if timeout is None else timeout
+        deadline = asyncio.get_running_loop().time() + recv_timeout
         while True:
             try:
                 line = await asyncio.wait_for(
-                    self._process.stdout.readline(), timeout=recv_timeout
+                    self._process.stdout.readline(),
+                    timeout=max(0, deadline - asyncio.get_running_loop().time())
                 )
             except asyncio.TimeoutError as e:
                 raise TimeoutError(
