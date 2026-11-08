@@ -653,7 +653,10 @@ class _Follower:
         errors = [*follower_errors, *state.source_settlement_errors]
         if state.caller_cancellations or state.coalesced_caller_cancel:
             cancelled = state.caller_cancellations[0] if state.caller_cancellations else asyncio.CancelledError()
-            raise cancelled from BaseExceptionGroup("回复取消时的结算结果", errors)
+            others = [error for error in errors if error is not cancelled]
+            if others:
+                raise cancelled from BaseExceptionGroup("回复取消时的结算结果", others)
+            raise cancelled
         if errors:
             if len(errors) == 1:
                 raise errors[0]
