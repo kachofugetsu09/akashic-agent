@@ -1441,21 +1441,77 @@ def redact_secret_text(message: str, secret: str) -> str:
     return message
 
 
-def response_error_message(response: httpx.Response, *, secret: str = "") -> str:
+# Keep provider diagnostics bounded while retaining the machine-readable code.
+def _provider_error_details(error: object, secret: str = "") -> tuple[str, str]:
+    if isinstance(error, Mapping):
+        raw = cast(Mapping[str, object], error)
+        code = str(raw.get("code") or raw.get("reason") or raw.get("type") or "")
+        message = raw.get("message")
+        detail = ": ".join(value for value in (code, message) if isinstance(value, str) and value)
+    else:
+        code, detail = "", error if isinstance(error, str) else ""
+    return code.lower(), redact_secret_text(detail or "unknown provider error", secret)[:500]
+
+
+def response_error_details(response: httpx.Response, secret: str) -> tuple[str, str]:
     try:
         payload = response.json()
     except (json.JSONDecodeError, UnicodeDecodeError):
-        return redact_secret_text(response.text, secret)[:500] or f"HTTP {response.status_code}"
-    if isinstance(payload, Mapping):
-        raw = payload.get("error", payload.get("detail", payload))
-        if isinstance(raw, Mapping):
-            message, code = raw.get("message"), raw.get("code")
-            details = [value for value in (code, message) if isinstance(value, str) and value]
-            if details:
-                return redact_secret_text(": ".join(dict.fromkeys(details)), secret)[:500]
-        if isinstance(raw, str) and raw:
-            return redact_secret_text(raw, secret)[:500]
-    return f"HTTP {response.status_code}"
+        return "", redact_secret_text(response.text, secret)[:500] or f"HTTP {response.status_code}"
+    raw = payload.get("error", payload.get("detail", payload)) if isinstance(payload, Mapping) else payload
+    return _provider_error_details(raw, secret)
+
+
+def response_error_message(response: httpx.Response, *, secret: str = "") -> str:
+    return response_error_details(response, secret)[1]
+
+
+# GLM codes are documented at https://docs.bigmodel.cn/cn/api/api-code.
+def is_quota_error(code: str, message: str) -> bool:
+    return code in {"1113", "1308", "1309", "1310", "1314", "1316", "1317", "1318", "1319", "1320", "1321"} or any(
+        marker in message.lower() for marker in (
+            "quota", "billing", "usage limit", "credit", "usage_not_included",
+            "使用上限", "余额不足", "账户已欠费", "套餐已到期", "套餐已失效",
+        )
+    )
+
+
+# Stream errors are generation failures; they do not prove an HTTP rejection.
+def provider_stream_error(error: object, *, secret: str = "") -> Exception:
+    code, message = _provider_error_details(error, secret)
+    lowered = message.lower()
+    if code in {"500", "502", "503", "504", "server_error", "internal_error", "overloaded_error", "server_is_overloaded", "interrupted"}:
+        return TransportError(message).exception()
+    if any(marker in lowered for marker in _CONTEXT_ERROR_CODES):
+        return ContextLengthError(message).exception()
+    if any(marker in lowered for marker in (*_SAFETY_ERROR_CODES, "bio_policy", "cyber_policy", "policy_violation", "invalid_prompt")):
+        return ContentSafetyError(message).exception()
+    if code == "402" or is_quota_error(code, message):
+        return QuotaError(message).exception()
+    if code in {"429", "rate_limit_exceeded", "rate_limit_error", "slow_down"}:
+        return RateLimitError(message).exception()
+    if code in {"401", "403", "invalid_api_key", "authentication_error"}:
+        return AuthenticationError(message).exception()
+    if code in {"408", "timeout", "request_timeout"}:
+        return ModelTimeoutError(message).exception()
+    if code in {"400", "404", "422", "invalid_request_error", "invalid_request"}:
+        return InvalidRequestError(message).exception()
+    return ModelError(message).exception()
+
+
+# Check both HTTP-200 JSON bodies and SSE chunks before consuming partial output.
+def check_chat_response_error(payload: Mapping[str, Any], *, secret: str = "") -> None:
+    if payload.get("error") is not None:
+        raise provider_stream_error(payload["error"], secret=secret)
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], Mapping):
+        return
+    choice = choices[0]
+    if choice.get("error") is not None:
+        raise provider_stream_error(choice["error"], secret=secret)
+    reason = choice.get("finish_reason")
+    if reason is not None and reason not in {"stop", "length", "tool_calls", "function_call"}:
+        raise provider_stream_error({"code": reason, "message": f"Provider finish_reason: {reason}"}, secret=secret)
 
 
 def http_status_error(
@@ -1468,7 +1524,7 @@ def http_status_error(
 ) -> Exception | None:
     if response.status_code < 400:
         return None
-    message = response_error_message(response, secret=secret)
+    code, message = response_error_details(response, secret)
     lowered = message.lower()
     if response.status_code in {401, 403}:
         text = auth_message or (
@@ -1488,7 +1544,7 @@ def http_status_error(
         return ContentSafetyError(f"模型安全策略拒绝请求（HTTP {response.status_code}）。服务返回：{message}").exception()
     if response.status_code == 402 or (
         response.status_code == 429
-        and any(value in lowered for value in ("quota", "usage limit", "credit"))
+        and is_quota_error(code, message)
     ):
         return QuotaError(f"模型账号额度不足（HTTP {response.status_code}）。服务返回：{message}").exception()
     if response.status_code == 429:

@@ -59,6 +59,7 @@ from plugins.models.contract import (
     StreamReadError as _StreamReadError,
     build_stream_tool_calls as _tool_calls,
     check_bound_model as _check_bound_model,
+    check_chat_response_error,
     check_credential_scope as _check_credential_scope,
     credential_bearer_token as _credential_token,
     describe_transport_error,
@@ -679,7 +680,10 @@ async def _request_json(
                     method, path, json=body, headers={"Authorization": f"Bearer {token}"}
                 )
             _raise_status(response, secret=token)
-            return _json_object(response)
+            payload = _json_object(response)
+            if path == "/chat/completions":
+                check_chat_response_error(payload, secret=token)
+            return payload
         except asyncio.CancelledError:
             raise
         except Exception as error:
@@ -819,7 +823,7 @@ async def _stream_chat(
                 if response.status_code >= 400:
                     _ = await response.aread()
                 _raise_status(response, secret=token)
-                return await _consume_stream(response, on_delta, progress_timeout=connection.progress_timeout)
+                return await _consume_stream(response, on_delta, progress_timeout=connection.progress_timeout, secret=token)
         except asyncio.CancelledError:
             raise
         except _CallbackError as error:
@@ -850,6 +854,7 @@ async def _consume_stream(
     on_delta: Callable[[dict[str, str]], Awaitable[None]] | None,
     *,
     progress_timeout: float = 300.0,
+    secret: str = "",
 ) -> LLMResponse:
     content: list[str] = []
     thinking: list[str] = []
@@ -881,6 +886,7 @@ async def _consume_stream(
                 raise TransportError("stream contains invalid JSON").exception() from error
             if not isinstance(chunk, dict):
                 raise TransportError("stream chunk must be an object").exception()
+            check_chat_response_error(chunk, secret=secret)
             raw_usage = chunk.get("usage")
             if isinstance(raw_usage, Mapping):
                 usage = _usage(raw_usage)
@@ -950,7 +956,7 @@ async def _consume_stream(
         raise _StreamReadError(
             error, response_delta_seen=response_delta_seen
         ) from error
-    if not completed:
+    if not completed and finish_reason is None:
         error = TransportError("stream ended before its terminal marker").exception()
         raise _StreamReadError(error, response_delta_seen=response_delta_seen)
     parsed_content, parsed_thinking = _split_tagged_thinking(
