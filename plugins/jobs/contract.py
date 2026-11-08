@@ -54,10 +54,12 @@ class JobSnapshot:
 
 
 class JobNotices(Protocol):
-    def watch(self, job: JobWatch) -> None: ...
+    def watch(self, job: JobWatch) -> None:
+        """Register completion; jobs assigns its source with origin_source at this boundary."""
+        ...
 
     def origin_source(self, session_id: str, source: str) -> str:
-        """当前唤醒可访问登记任务的原来源；其他会话和来源保持原样。"""
+        """有对话输入的会话统一归 conversation；其余会话保留登记任务的原来源。"""
         ...
 
     async def stop_job(self, session_id: str, job_id: str) -> bool:

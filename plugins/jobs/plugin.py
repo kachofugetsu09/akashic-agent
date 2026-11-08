@@ -4,8 +4,9 @@ from __future__ import annotations
 import asyncio
 import logging
 from importlib import import_module
-from collections.abc import AsyncGenerator, Mapping, Sequence
+from collections.abc import AsyncGenerator, Iterable, Mapping, Sequence
 from contextlib import aclosing
+from dataclasses import replace
 from typing import Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -14,18 +15,22 @@ from agent.plugin_composition import CompositionError, Context, ServiceKey
 from agent.plugin_composition.plugin_config import PLUGIN_CONFIG
 from agent.plugin_composition.tasks import Task, independent_task_context
 from plugins.context.contract import MATERIALS_V4 as MATERIALS
+from plugins.content.contract import CONTENT
 from plugins.conversation.contract import CONVERSATION_COMPLETE_V2 as CONVERSATION_COMPLETE
 from plugins.delivery.contract import DELIVERY_GUARDED_START as DELIVERY
 from plugins.delivery.contract import DELIVERY_SENDERS
 from plugins.gateway.contract import RpcMethod
-from plugins.ledger.contract import BINDINGS, MESSAGE_CATALOG, Control, Input, Message, MessageReader, json_value
+from plugins.ledger.contract import (
+    BINDINGS, MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, ContentPart, Control,
+    Input, Message, MessageReader, Output, OwnerTransaction, is_user_input, json_value,
+)
 from plugins.reply.contract import REPLY_PROGRAM_V3 as REPLY_PROGRAM
 from plugins.sources.contract import SourceGuard
 from plugins.ui.contract import UI_SLOTS, Configuration, ModelSettings, PluginUiDefinition, PluginUiRpcInvalidRequest, mount_settings
 
 from core.common.file_io import run_file_io
 
-from .board import JobBoard, JobMirror, Notice
+from .board import DEFAULT_MAX_WAKES, JobBoard, JobMirror, Notice
 from .contract import JOB_NOTICES, JobOutcome, JobSnapshot, JobStatus, JobWatch
 
 logger = logging.getLogger(__name__)
@@ -34,9 +39,11 @@ api_version = 3
 name = "jobs"
 version = "1.0.0"
 desc = "后台任务完成通知：忙时注入当前回合，闲时唤醒原会话"
-inject = (PLUGIN_CONFIG, MESSAGE_CATALOG, MATERIALS, CONVERSATION_COMPLETE, REPLY_PROGRAM, DELIVERY, DELIVERY_SENDERS, BINDINGS)
+inject = (PLUGIN_CONFIG, MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, CONTENT, MATERIALS,
+          CONVERSATION_COMPLETE, REPLY_PROGRAM, DELIVERY, DELIVERY_SENDERS, BINDINGS)
 
 _CONVERSATION = "conversation"
+_LIMIT_SOURCE = "jobs:limit"
 
 
 SETTINGS = ServiceKey[Configuration]("jobs.settings.v1")
@@ -61,12 +68,23 @@ class HostNoticeParams(BaseModel):
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
     completion_delivery: Literal["wakeup", "quiet"] = "wakeup"
-    max_consecutive_wakes: int | None = Field(default=None, ge=1)
+    max_consecutive_wakes: int | None = Field(default=DEFAULT_MAX_WAKES, ge=1)
 
 
 def _latest_input(messages: Sequence[Message], source: str) -> Message | None:
     return next((message for message in reversed(messages)
                  if message.source == source and isinstance(message.body, Input)), None)
+
+
+# Automatic goal inputs do not reset a user's budget or replace their channel.
+def _latest_user_input(reader: MessageReader, through_seq: int) -> Message | None:
+    def latest(messages: Iterable[Message]) -> Message | None:
+        found = None
+        for message in messages:
+            if is_user_input(message):
+                found = message
+        return found
+    return reader.scan(latest, source=_CONVERSATION, through_seq=through_seq)
 
 
 def _origin(message: Message | None) -> tuple[str, str] | None:
@@ -92,12 +110,18 @@ class Jobs:
         self._stopped_by_user: set[str] = set()
 
     def watch(self, job: JobWatch) -> None:
+        job = replace(job, source=self.origin_source(job.session_id, job.source))
         self._running[job.job_id] = job
         self._mirror.start(job)
         self._queue.put_nowait(job)
 
     def origin_source(self, session_id: str, source: str) -> str:
-        return self._board.origin_source(session_id, source)
+        source = self._board.origin_source(session_id, source)
+        if source != _CONVERSATION:
+            reader = self._ctx.require(MESSAGE_CATALOG).reader(session_id)
+            if reader.latest_input(_CONVERSATION, through_seq=reader.head()) is not None:
+                return _CONVERSATION
+        return source
 
     # 宿主任务已在 Core 外结束：只接受有用户输入的对话会话，忙时注入当前回合，闲时按原配置唤醒。
     async def host_notice(self, params: BaseModel) -> object:
@@ -106,7 +130,7 @@ class Jobs:
         if not await run_file_io(lambda: catalog.exists(notice.session_id)):
             raise ValueError("目标会话不存在")
         reader = catalog.reader(notice.session_id)
-        if reader.latest_input(_CONVERSATION, through_seq=reader.head()) is None:
+        if await reader.read_async(lambda current: _latest_user_input(current, current.head())) is None:
             raise ValueError("目标会话没有对话输入，无法注入或唤醒")
         outcome = JobOutcome(notice.status, notice.detail)
 
@@ -198,10 +222,13 @@ class Jobs:
         source = "job:" + job.job_id
 
         async def report(task: Task, current: MessageReader, check_admission: SourceGuard) -> Message:
-            latest = current.latest_input(_CONVERSATION, through_seq=current.head())
+            latest = await current.read_async(lambda reader: _latest_user_input(reader, reader.head()))
             if latest is None:
                 raise RuntimeError("后台任务的原会话没有用户输入")
             if not board.take_wake(notice, latest.message_id):
+                if board.wake_limit_reached(notice, latest.message_id):
+                    async with ctx.runtime_scope():
+                        return await self._limit_message(task, current, latest.message_id, check_admission)
                 return latest
             reminders: tuple[Mapping[str, object], ...] = (
                 {"name": "background_job", "text": notice.text(), "priority": 500},
@@ -214,6 +241,9 @@ class Jobs:
                 raise
 
         message = await ctx.require(CONVERSATION_COMPLETE)(job.session_id, report)
+        if message.source == _LIMIT_SOURCE:
+            await self._deliver(message)
+            return
         if message.source != source:
             return
         # 唤醒回合可能以控制消息收尾：引擎撞步数上限放弃本段时，reply program 返回的就是
@@ -228,13 +258,38 @@ class Jobs:
         board.finish_wake(notice)
         await self._deliver(message)
 
+    # Save one visible notice per user input without another model or tool turn.
+    async def _limit_message(self, task: Task, reader: MessageReader, input_id: str,
+                             check_admission: SourceGuard) -> Message:
+        identity = "job-wake-limit:" + input_id
+        saved = reader.get(identity)
+        if saved is not None:
+            return saved
+        pending = sum(notice.claimed_by is None for notice in self._board.pending(reader.session_id))
+        text = (f"连续自动唤醒已达上限（{self._config.max_consecutive_wakes} 次），已暂停自动唤醒。"
+                f"目前有 {pending} 个后台任务结果待查看；后续结果也会保留到下次对话。"
+                "请发送消息决定是否继续，或查看后台任务列表。")
+        ctx = self._ctx
+        writer = ctx.require(MESSAGE_WRITERS).bind(
+            ctx, author="jobs", source=_LIMIT_SOURCE, body_types=(Output,),
+            content={"text": ctx.require(CONTENT).check_text})(reader.session_id)
+        task.on_close(writer.expire)
+        try:
+            prepared = await writer.prepare_async(identity, Output((ContentPart("text", text),), "complete"))
+            def commit(tx: OwnerTransaction) -> Message:
+                check_admission(transaction=tx)
+                return tx.append_prepared(prepared)
+            return await ctx.require(OWNER_STATE).open(ctx).transact_async(commit)
+        finally:
+            writer.expire()
+
     # 唤醒回复不属于 conversation 来源，按原会话最近输入的渠道显式回传。
     async def _deliver(self, message: Message) -> None:
         ctx = self._ctx
         reader = ctx.require(MESSAGE_CATALOG).reader(message.session_id)
         if reader.attributes.visibility == "internal":
             return
-        origin = _origin(reader.latest_input(_CONVERSATION, through_seq=message.seq))
+        origin = _origin(await reader.read_async(lambda current: _latest_user_input(current, message.seq)))
         if origin is None:
             return
         channel, address = origin

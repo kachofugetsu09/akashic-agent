@@ -10,6 +10,7 @@ from .contract import JobOutcome, JobSnapshot, JobWatch
 
 _WAKE = "wake:"
 _SETTLED_KEPT = 20
+DEFAULT_MAX_WAKES = 3
 
 
 @dataclass(slots=True, eq=False)
@@ -31,7 +32,7 @@ class Notice:
 class JobBoard:
     """忙时由当前输入领取并在该输入的每一步重放；闲时由唤醒领取。"""
 
-    def __init__(self, max_consecutive_wakes: int | None = None) -> None:
+    def __init__(self, max_consecutive_wakes: int | None = DEFAULT_MAX_WAKES) -> None:
         self._max_wakes = max_consecutive_wakes
         self._notices: list[Notice] = []
         self._wakes: dict[str, tuple[str | None, int]] = {}
@@ -80,6 +81,13 @@ class JobBoard:
         self._wakes[session_id] = (input_id, count + 1)
         notice.claimed_by = _WAKE + notice.job.job_id
         return True
+
+    # Distinguish a spent budget from a result already claimed by a reply.
+    def wake_limit_reached(self, notice: Notice, input_id: str) -> bool:
+        last_input, count = self._wakes.get(notice.job.session_id, (None, 0))
+        return (notice in self._notices and notice.claimed_by is None
+                and last_input == input_id and self._max_wakes is not None
+                and count >= self._max_wakes)
 
     def finish_wake(self, notice: Notice) -> None:
         if notice in self._notices:
