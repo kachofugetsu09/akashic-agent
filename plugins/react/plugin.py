@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from collections import deque
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
 from contextlib import AbstractContextManager, ExitStack, asynccontextmanager
 from dataclasses import dataclass, replace
@@ -43,6 +45,7 @@ from plugins.ledger.contract import (
     Part,
     ToolCall,
     ToolResult,
+    json_value,
 )
 from plugins.content.contract import (
     ContentView as ContentView,
@@ -112,11 +115,138 @@ class _Superseded(Exception):
     """提交前提检查发现同来源新事实；被替代的旧草稿不写 failure。"""
 
 
+TOOL_FAILURE_LIMIT = 3
+TOOL_FAILURE_HINT_LIMIT = 2
+# 已提交拒绝的原因前缀；历史重放据此区分保护提示与原工具错误。
+TOOL_FAILURE_HINT = "重复失败保护："
+
+
+def _tool_key(name: str, arguments: Mapping[str, object] | str) -> tuple[str, str]:
+    return name, json.dumps(json_value(arguments), sort_keys=True, separators=(",", ":"))
+
+
+@dataclass(slots=True)
+class _ToolAttempt:
+    key: tuple[str, str]
+    output_id: str
+    name: str
+    ready: bool = False
+    error: str | None = None
+    blocked: bool = False
+
+
+class _ToolFailures:
+    """按调用顺序折叠本轮已提交失败；只保留连续失败和未结算批次。"""
+
+    def __init__(self, tool_name: Callable[[str], str]) -> None:
+        self._name = tool_name
+        self.reset()
+
+    # 新输入、收尾或放弃开启新的失败计数，迟到的旧结果不参与。
+    def reset(self) -> None:
+        self._pending: dict[CallRef, _ToolAttempt] = {}
+        self._queue: deque[_ToolAttempt] = deque()
+        self._key: tuple[str, str] | None = None
+        self._count = 0
+        self._blocked = 0
+        self._blocked_output: str | None = None
+        self._failed_name = ""
+        self._error = ""
+
+    # 回执可能晚于同批协议拒绝；等前驱就绪后再按调用位置计数。
+    def update(self, message: Message) -> None:
+        body = message.body
+        if isinstance(body, Input) or isinstance(body, Control) and body.action == "abandon":
+            self.reset()
+        elif isinstance(body, Output):
+            if body.finish != "continue":
+                self.reset()
+                return
+            self._add_output(message.message_id, body)
+        elif isinstance(body, ToolResult):
+            attempt = self._pending.pop(body.call_ref, None)
+            if attempt is not None:
+                attempt.ready = True
+                if body.outcome in {"error", "denied"}:
+                    detail = " ".join(str(part.value)[:500] for part in body.parts[:3])
+                    attempt.error = f"{body.outcome}: {detail}"[:500]
+        self._drain()
+
+    # 使用原模型调用名与参数；间接调用的 wire 事实已由投影 owner 保存。
+    def _add_output(self, message_id: str, output: Output) -> None:
+        wire: Mapping[str, Mapping[str, object]] = {}
+        for part in output.parts:
+            if isinstance(part, ContentPart) and part.kind == "model.facts":
+                facts = cast(Mapping[str, object], part.value)
+                wire = cast(Mapping[str, Mapping[str, object]], facts.get("wire_tool_calls", {}))
+        for index, part in enumerate(output.parts):
+            if isinstance(part, ToolCall):
+                name = self._name(part.binding_id)
+                raw = wire.get(str(index))
+                key = (_tool_key(name, part.arguments) if raw is None
+                       else _tool_key(cast(str, raw["name"]), cast(Mapping[str, object], raw["arguments"])))
+                attempt = _ToolAttempt(key, message_id, name)
+                self._pending[CallRef(message_id, index)] = attempt
+            elif isinstance(part, ContentPart) and part.kind == "model.tool_rejection":
+                rejected = cast(Mapping[str, object], part.value)
+                error = cast(str, rejected["error"])
+                key = _tool_key(cast(str, rejected["name"]), cast(Mapping[str, object] | str, rejected["arguments"]))
+                attempt = _ToolAttempt(key, message_id, key[0], ready=True,
+                                       error=error[:500], blocked=error.startswith(TOOL_FAILURE_HINT))
+            else:
+                continue
+            self._queue.append(attempt)
+
+    # success/interrupted 或不同调用打断连续失败；保护提示不覆盖原始错误。
+    def _drain(self) -> None:
+        while self._queue and self._queue[0].ready:
+            attempt = self._queue.popleft()
+            if attempt.key != self._key or attempt.error is None:
+                self._key = attempt.key
+                self._count = self._blocked = 0
+                self._blocked_output = None
+                self._failed_name = ""
+                self._error = ""
+            if attempt.error is None:
+                continue
+            if attempt.blocked:
+                if attempt.output_id != self._blocked_output:
+                    self._blocked += 1
+                    self._blocked_output = attempt.output_id
+            else:
+                self._count += 1
+                self._failed_name = attempt.name
+                self._error = attempt.error
+
+    # 达到失败门槛后，下一次相同请求只保存可行动的协议拒绝。
+    def rejection(self, name: str, arguments: Mapping[str, object] | str) -> str | None:
+        if self._key != _tool_key(name, arguments) or self._count < TOOL_FAILURE_LIMIT:
+            return None
+        return (
+            f"{TOOL_FAILURE_HINT}工具 {self._failed_name} 已用相同参数连续失败 {self._count} 次，"
+            f"本次未执行。最后错误：{self._error}。请换方案或向用户说明；"
+            "若仍重复，本轮将停止。先检查现场，失败不证明之前没有产生外部效果。"
+        )
+
+    # 提示之后仍重复才结束，批内多个真实失败不能跳过提示直接终止。
+    def failure(self) -> str | None:
+        if self._blocked < TOOL_FAILURE_HINT_LIMIT:
+            return None
+        assert self._key is not None
+        return (
+            f"工具重复失败：{self._failed_name} 使用相同参数连续失败 {self._count} 次，"
+            f"收到纠正提示后仍重复请求，本轮已停止。最后错误：{self._error}。"
+            "请检查工具状态或权限后发送新输入继续；新输入会重新计数。"
+        )
+
+
 class _History:
     """按新消息推进本来源的执行视图；旧前缀变化时从事实重建。"""
 
-    def __init__(self, source: str) -> None:
+    def __init__(self, source: str, tool_name: Callable[[str], str]) -> None:
         self.source = source
+        self._tool_name = tool_name
+        self.failures = _ToolFailures(tool_name)
         self.messages: Sequence[Message] = ()
         self.head = -1
         self.reminder_input_id: str | None = None
@@ -139,12 +269,13 @@ class _History:
             )
         )
         if not compatible:
-            self.__init__(self.source)
+            self.__init__(self.source, self._tool_name)
             previous = ()
         for message in messages[len(previous):]:
             if message.source != self.source:
                 continue
             self.head = message.seq
+            self.failures.update(message)
             body = message.body
             if isinstance(body, Input):
                 self.reminder_input_id = message.message_id
@@ -550,7 +681,7 @@ async def react(
         raise ValueError("并行工具上限必须是正整数")
     if reader.session_id != writer.session_id:
         raise ValueError("ReAct reader 与 writer 必须属于同一 Session")
-    history = _History(writer.source)
+    history = _History(writer.source, tools.name)
     recovery_count = 0
     while True:
         operation_id = uuid4().hex
@@ -631,6 +762,9 @@ async def react(
                 return await commit(uuid4().hex, Output((), "quiet"))
         except _Superseded:
             raise asyncio.CancelledError from None
+        failure = history.failures.failure()
+        if failure is not None:
+            raise ModelError(failure).exception()
         if max_steps > 0 and history.steps >= max_steps:
             # 门槛落在请求之前：本轮没有任何模型输出，未完成区段全部来自更早的轮次。
             # 只有「从未落过回执」的调用会被放弃结算，它们的真实效果未知，
@@ -678,7 +812,12 @@ async def react(
             mixed_exclusive = len(decoded_calls) > 1 and bool(exclusive_names)
             for call, decoded_call in zip(calls, decoded_calls, strict=True):
                 indices.append(len(parts))
-                if mixed_exclusive:
+                repeated = history.failures.rejection(call.name, call.arguments)
+                if repeated is not None:
+                    actual = ContentPart("model.tool_rejection", {
+                        "name": call.name, "arguments": call.arguments, "error": repeated,
+                    })
+                elif mixed_exclusive:
                     actual = ContentPart("model.tool_rejection", {
                         "name": call.name, "arguments": call.arguments,
                         "error": f"此批次包含要求独占的工具 {', '.join(exclusive_names)}；整批未执行，请分别单独调用这些工具。",

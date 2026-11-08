@@ -310,6 +310,8 @@ D 类效果只能由拥有 prepared、committed、failed 和必要补偿语义�
 
 工具结果使用 `success / denied / error / interrupted`。error 和 interrupted 不证明外部效果为零；模型获得原错误与先检查现场的提示，不能自动重复原操作。工具打开、参数准备、授权和执行边界的异常保存为有界错误回执，模型可以在本轮修正；取消仍向上传播。结果保存失败时只尝试保存错误回执，不重跑工具；错误回执也无法保存时传播存储故障。Tools/Delivery 仅在原 key 查询或 provider 幂等合同下恢复；后台发送失败必须关闭本次业务等待，不保留 unknown 未决状态。边界之外的数据库和内部契约异常仍向上传播。完整自愈、跳过、重试和中断规则见 [0063](decisions/0063-execution-failures-have-terminal-results.md)。
 
+ReAct 按同来源已提交调用的顺序统计连续失败；同一模型工具名和 JSON 参数（忽略对象键序）连续 3 次 error、denied 或协议拒绝后，后续相同调用不执行，保存可行动的纠正提示。连续两个模型响应仍请求该调用时，以带工具名和原错误的 failure 停止本轮。批内提示只计一个响应，保证模型至少有一次看到提示后改方案的机会。成功、中断、不同调用、新 Input、完成或放弃重置计数；其他来源不影响它。`max_steps=0` 仍表示不限制总步数，此保护不限制有进展的长任务，不改写或删除历史。
+
 默认消息工具调用按 [0100](decisions/0100-message-tool-calls-recover-at-turn-granularity.md) 使用 ToolCall/ToolResult 表达意图与终态；重启后未结调用不执行，补充结果未知的 error。ReAct 重启与用户显式重试使用当前材料发起新模型请求，不恢复旧请求，接受旧请求可能已处理所带来的重复付费。原消息、旧请求记录和工具回执保留。
 
 ## 7. 上下文和会话
