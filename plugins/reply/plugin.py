@@ -263,7 +263,8 @@ async def apply(ctx: Context) -> None:
     # 开机时等宿主就绪再追赶待回复来源：后加载插件的工具此前还没注册，菜单会缺工具。
     async def follow_settled() -> None:
         await ctx.require(HOST_INFO).settled()
-        await follow(ctx, ctx.require(MESSAGE_CATALOG), ctx.require(SOURCES), program, ctx.require(RESTART_GATE))
+        await follow(ctx, ctx.require(MESSAGE_CATALOG), ctx.require(SOURCES), program,
+                     ctx.require(RESTART_GATE), release_pending=release)
 
     async def start(_event: object) -> None:
         nonlocal watcher

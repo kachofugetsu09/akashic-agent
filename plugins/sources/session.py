@@ -488,7 +488,11 @@ class SourceSession:
                                 expected_source_head=head,
                                 on_commit=lambda message, created: self._changed(message, False) if created else None,
                             )
-                    await self._tasks.admit_async(self._key, failed)
+                    try:
+                        await self._tasks.admit_async(self._key, failed)
+                    except SourceHeadConflict as conflict:
+                        # The follower retries the receipt with the original program error.
+                        raise error from conflict
                     raise
 
             try:
@@ -511,20 +515,28 @@ class SourceSession:
     async def record_failure(self, error: BaseException, *, boundary: int | None = None) -> None:
         """补记 failure；固定前缀判定后仍由原 source-head 条件提交。"""
         async def admit(slot: TaskSlot) -> None:
-            state = await self._reader.read_async(lambda reader: _read_state(reader, self._source))
-            if not state.pending:
-                return
             if boundary is not None and boundary < 0:
                 raise ValueError("failure 回执不能绑定伪造的负边界")
-            through = state.head if boundary is None else min(boundary, state.head)
-            def committed(message: Message, created: bool) -> None:
-                if created:
-                    state.add(message)
-                    self._changed(message, state.pending)
-            _ = await self._controls.append_async(
-                uuid4().hex, Control("failure", through, str(error)), expected_source_head=state.head,
-                on_commit=committed,
-            )
+            # Draining tools can advance the head outside admission. Retry only this CAS.
+            for attempt in range(3):
+                state = await self._reader.read_async(lambda reader: _read_state(reader, self._source))
+                if not state.pending:
+                    return
+                through = state.head if boundary is None else min(boundary, state.head)
+                def committed(message: Message, created: bool) -> None:
+                    if created:
+                        state.add(message)
+                        self._changed(message, state.pending)
+                try:
+                    _ = await self._controls.append_async(
+                        uuid4().hex, Control("failure", through, str(error)), expected_source_head=state.head,
+                        on_commit=committed,
+                    )
+                except SourceHeadConflict:
+                    if attempt == 2:
+                        raise
+                else:
+                    return
         await self._tasks.admit_async(self._key, admit)
 
     async def wait_capacity(self) -> None:

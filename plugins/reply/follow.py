@@ -27,6 +27,8 @@ class _Wake:
     source: Source | None = None
     changed: bool = True
     event: asyncio.Event = field(default_factory=asyncio.Event)
+    retry: bool = False
+    failure: tuple[BaseException, int] | None = None
 
 
 @dataclass(slots=True)
@@ -245,12 +247,14 @@ class _Follower:
     def __init__(
         self, ctx: Context, catalog: MessageCatalog,
         sources: Sources, program: Program, restart_gate: RestartGate | None,
+        release_pending: Callable[[MessageReader, str], None] | None = None,
     ) -> None:
         self._ctx = ctx
         self._catalog = catalog
         self._sources = sources
         self._program = program
         self._restart_gate = restart_gate
+        self._release_pending = release_pending
         self._active: dict[tuple[str, str], _Wake] = {}
         self._group: asyncio.TaskGroup | None = None
         self._drive_tasks: set[asyncio.Task[None]] = set()
@@ -405,9 +409,11 @@ class _Follower:
 
     # 每个 Session 独立排空旧工作；并发通知只要求再次读取日志。
     async def _drive(self, session_id: str, source_name: str, wake: _Wake) -> None:
+        retries = 0
         try:
             while wake.changed:
                 wake.changed = False
+                wake.retry = False
                 source = wake.source
                 if source is None:
                     break
@@ -418,10 +424,38 @@ class _Follower:
                         break
                     wake.changed = True
                     continue
-                if not await self._drive_source(session_id, source, wake):
+                try:
+                    again = await self._drive_source(session_id, source, wake)
+                except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
+                    raise
+                except BaseException as error:
+                    logger.error("回复 lane 失败，等待恢复: session=%s source=%s", session_id, source_name, exc_info=error)
+                    wake.retry = True
+                    again = True
+                if wake.retry:
+                    retries += 1
+                    await self._retry_lane(session_id, source_name, retries)
+                    wake.changed = True
+                elif not again:
                     break
+                else:
+                    retries = 0
         finally:
             self._active.pop((session_id, source_name), None)
+
+    # Release passive delivery holds while a lane waits; other lanes keep running.
+    async def _retry_lane(self, session_id: str, source_name: str, attempt: int) -> None:
+        if self._release_pending is not None:
+            self._release_pending(self._catalog.reader(session_id), source_name)
+        if attempt == 1:
+            scope = await _enter_scope(self._ctx)
+            if scope is not None:
+                try:
+                    _ = self._ctx.report_incident("reply_lane_retry",
+                        f"回复来源暂时不可用，正在恢复: session={session_id} source={source_name}")
+                finally:
+                    await scope.__aexit__(None, None, None)
+        await asyncio.sleep((0.25, 1.0, 5.0, 30.0)[min(attempt - 1, 3)])
 
     # 一次 source drive；返回 False 时结束本 Session lane。
     async def _drive_source(self, session_id: str, source: Source, wake: _Wake) -> bool:
@@ -432,7 +466,7 @@ class _Follower:
         admission_boundary = self._catalog.reader(session_id).head(source=source.name)
         restart_after_cleanup = False
         try:
-            await self._start(state, session_id, source)
+            await self._start(state, session_id, source, wake)
             if state.task is None and not state.stop_drive:
                 restart_after_cleanup = (
                     self._restart_gate is not None and not self._restart_gate.accepting
@@ -447,14 +481,15 @@ class _Follower:
             state.pending_errors.append(error)
         finally:
             await self._release(state, session_id, source)
-        await self._record_failure(state, admission_boundary)
+        await self._record_failure(state, admission_boundary, wake)
         return await self._conclude(state, source, wake, restart_after_cleanup)
 
     # 1. 依次进入 reply 与 source scope，捕获后立即退出，再启动 Source Task。
-    async def _start(self, state: _Iteration, session_id: str, source: Source) -> None:
+    async def _start(self, state: _Iteration, session_id: str, source: Source, wake: _Wake) -> None:
         reply_scope_cm = await _enter_scope(self._ctx)
         if reply_scope_cm is None:
             state.stop_drive = True
+            wake.retry = True
             return
         try:
             state.reply_scope = self._ctx.capture_runtime_scope()
@@ -464,6 +499,7 @@ class _Follower:
         source_scope_cm = await _enter_scope(source.context)
         if source_scope_cm is None:
             state.stop_drive = True
+            wake.retry = True
             return
         try:
             state.source_scope = source.context.capture_runtime_scope()
@@ -471,7 +507,13 @@ class _Follower:
                 state.session = source.open(session_id)
             except TaskServiceClosed:
                 state.stop_drive = True
+                wake.retry = True
                 return
+            # Finish the previous failure before granting another model execution.
+            if wake.failure is not None:
+                error, boundary = wake.failure
+                await state.session.record_failure(error, boundary=boundary)
+                wake.failure = None
             state.add_monitor(state.reply_scope)
             state.add_monitor(state.source_scope)
 
@@ -482,6 +524,7 @@ class _Follower:
                 state.task = await state.session.start(wrapped_program)
             except TaskServiceClosed:
                 state.stop_drive = True
+                wake.retry = True
             if state.task is not None:
                 state.task.on_done(state.task_finished.set)
         finally:
@@ -565,27 +608,37 @@ class _Follower:
             state.cleanup_errors.append(error)
 
     # 4. 程序失败交给 Source 记录；记录成功即视为本 lane 已持久结算。
-    async def _record_failure(self, state: _Iteration, admission_boundary: int) -> None:
-        failure = next((error for error in state.pending_errors if isinstance(error, Exception)), None)
-        if failure is None and isinstance(state.task_error, Exception):
-            failure = state.task_error
+    async def _record_failure(self, state: _Iteration, admission_boundary: int, wake: _Wake) -> None:
+        errors = [*state.pending_errors, *state.monitor_errors, *state.cleanup_errors]
+        if state.task_error is not None:
+            errors.append(state.task_error)
+        failure = None
+        for error in errors:
+            if not isinstance(error, asyncio.CancelledError):
+                failure = error
+                break
+        if wake.failure is not None:
+            failure, admission_boundary = wake.failure
         if failure is None:
-            return
-        if state.session is None:
-            logger.warning("来源打开失败，封闭当前回复 lane", exc_info=failure)
-            state.pending_errors.clear()
-            state.stop_drive = True
             return
         boundary = state.task.boundary_hint if state.task is not None else admission_boundary
         if not isinstance(boundary, int):
             boundary = admission_boundary
+        wake.failure = (failure, boundary)
+        if state.session is None:
+            logger.warning("来源打开失败，等待重开后记录 failure", exc_info=failure)
+            state.pending_errors.clear()
+            state.stop_drive = True
+            wake.retry = True
+            return
         try:
             await state.session.record_failure(failure, boundary=boundary)
         except Exception as error:
             state.pending_errors = [RuntimeError(f"回复驱动没有持久进展 (no progress): {error}")]
         else:
+            wake.failure = None
             state.pending_errors.clear()
-            state.stop_drive = True
+            wake.changed = True
 
     # 5. 决定 lane 是否继续：抛出 follower 失败，或按停止/重启门决定下一轮。
     async def _conclude(
@@ -598,6 +651,9 @@ class _Follower:
             state.stop_drive = True
             return False
         errors = [*follower_errors, *state.source_settlement_errors]
+        if state.caller_cancellations or state.coalesced_caller_cancel:
+            cancelled = state.caller_cancellations[0] if state.caller_cancellations else asyncio.CancelledError()
+            raise cancelled from BaseExceptionGroup("回复取消时的结算结果", errors)
         if errors:
             if len(errors) == 1:
                 raise errors[0]
@@ -614,6 +670,7 @@ class _Follower:
 async def follow(
     ctx: Context, catalog: MessageCatalog,
     sources: Sources, program: Program, restart_gate: RestartGate | None = None,
+    *, release_pending: Callable[[MessageReader, str], None] | None = None,
 ) -> None:
     """从日志追赶可回复来源；空闲不保留 scope，不保存 cursor 或回复队列。"""
-    await _Follower(ctx, catalog, sources, program, restart_gate).run()
+    await _Follower(ctx, catalog, sources, program, restart_gate, release_pending).run()
