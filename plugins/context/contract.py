@@ -81,6 +81,14 @@ class ContextBuilder(Protocol):
 
 
 class MaterialView(Protocol):
+    """Each prepare call shares the context provider's deadline across contributors.
+
+    The provider defaults to 180 seconds, set by prepare_timeout_seconds. Timeout
+    names the material, drains its owner work, and fails without retry. Providers
+    must honor cancellation; cleanup may finish after the deadline. Synchronous
+    context building and summary reduction keep their own execution contracts.
+    """
+
     async def prepare(
         self,
         snapshot: tuple[Message, ...],
