@@ -36,4 +36,10 @@ Guardian 的进程管理不再叠加 Docker/systemd；容器使用 init。应用
 备份由该次授权决定，默认关闭。共享 SQLite/plugin-data 维持单写入者，接受短暂维护窗口。
 电源故障或外部强杀不能保证回合完成；缺失证据明确失败，不生成假交接。
 
+失败回传：worker 失败后（回退完成或停止前失败，Core 可用时）经 Gateway `jobs/host-notice`
+把失败登记为已结算的后台任务，目标默认是发起调用的会话，`submit --session` 可改为另一个对话会话。
+jobs 插件沿用后台任务规则：会话忙时注入当前回合，空闲时唤醒原会话并按原渠道回传，
+`max_consecutive_wakes` 限制连续唤醒。Core 未就绪时最多等 180 秒；会话不是对话会话或不存在时不重试，
+结果写在任务记录的 `notice` 字段。成功不回传；保留现场时 Core 已停，只能由部署者处理。
+
 操作流程由 [部署 Skill](../../plugins/skills/skills/deploy-akashic/SKILL.md) 拥有；随默认 skills 插件加载，执行依赖 shell 插件的命令工具。

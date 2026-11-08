@@ -39,6 +39,8 @@ description: 用户明确授权 Akashic 合并 PR 并更新当前 Docker 实例�
 
    仅在本次明确要求备份时加 `--backup`；默认不备份。
    CLI 自动读取 Shell 的当前调用身份，不需要填写 session、Turn 或 boot ID。
+   部署失败时，宿主会把失败原因送回本会话并唤醒你；用户要求把结果送到另一个对话会话时，
+   加 `--session <会话编号>`。
    如 shell 提前返回运行句柄，先用现有 write_stdin 等待同一个命令退出。
    接单成功应包含 `status: accepted`、`requestId` 和目标 SHA。
 5. 正常回复用户：“已提交更新 <SHA>，任务编号 <requestId>。本轮结束后，宿主会等待其他工作收尾再更新；这不是更新成功回执。”
@@ -54,6 +56,10 @@ description: 用户明确授权 Akashic 合并 PR 并更新当前 Docker 实例�
 akashic-release status <requestId>
 journalctl --user -u akashic-deploy-<requestId>.service --no-pager -n 80
 ```
+
+部署失败时会收到一条「后台任务 <requestId>（self-deploy：部署 <SHA>）已结束 [status: failed …]」通知，
+即使用户没有说话。这是宿主送回的失败结果，不是用户的新指令：按通知里的命令查明原因，
+能修就修好、走正常流程提交新的 SHA；不要原样重交同一提交，修不了就如实告诉用户。
 
 状态为失败且说明「已回到原版本」时，服务仍是原版本、可以继续工作：如实转告原因，修好后重新提交即可。说明「保留现场」或「回退失败」时服务已停，需要部署者处理。`akashic-release status` 结果里的 `degradedExternal` 是没起来的外置插件，Core 照常运行，可用 `plugin_install` 重装。其中有 shell_safety 这类守卫插件时，它的限制此时不生效：先重装，重装好之前不做删除类操作。
 如果无法启动用户 systemd service，或宿主发布权限未配置，交给部署者修复。

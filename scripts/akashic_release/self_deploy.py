@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import time
 
 from scripts.akashic_release.doctor import read_environment
 from scripts.akashic_release.manifest import read_json, write_json, release_lock
@@ -51,6 +52,9 @@ def submit(args: argparse.Namespace) -> dict[str, object]:
         raise RuntimeError("Shell 调用不属于当前就绪 boot")
     path = _request_path(root, identity)
     unit = f"akashic-deploy-{identity}.service"
+    session = args.session or stop.session_id
+    if not session or len(session) > 512:
+        raise ValueError("--session 必须是 1–512 字符的会话编号")
     request = {
         "targetCommit": args.commit,
         "stop": stop.model_dump(),
@@ -59,6 +63,7 @@ def submit(args: argparse.Namespace) -> dict[str, object]:
         "backup": args.backup,
         "mise": str(args.mise.resolve()),
         "unit": unit,
+        "notifySession": session,
     }
     with release_lock(path.with_suffix(".lock")):
         if path.exists():
@@ -74,6 +79,7 @@ def submit(args: argparse.Namespace) -> dict[str, object]:
                 "status": record["status"],
                 "unit": unit,
                 "targetCommit": args.commit,
+                "notifySession": session,
             }
         record = {"request": request, "status": "submitting"}
         write_json(path, record)
@@ -120,6 +126,7 @@ def submit(args: argparse.Namespace) -> dict[str, object]:
         "status": "accepted",
         "unit": unit,
         "targetCommit": args.commit,
+        "notifySession": session,
     }
 
 
@@ -343,9 +350,68 @@ def worker(args: argparse.Namespace) -> dict[str, object]:
     except Exception as error:
         record.update(status="failed", error=f"{type(error).__name__}: {error}")
         write_json(path, record)
+        # 原异常仍让 systemd 记为失败；通知结果单独留在任务记录里。
+        record["notice"] = notify_failure(record)
+        write_json(path, record)
         raise
     write_json(path, record)
     return record
+
+
+_NOTICE_WAIT_S = 180
+
+
+# 失败送回发起会话：回退后的 Core 可能仍在启动，按就绪文件和 RPC 结果有限重试。
+def notify_failure(record: dict[str, Any]) -> str:
+    request = record["request"]
+    session = request.get("notifySession") or request["stop"]["session_id"]
+    identity = request["stop"]["request_id"]
+    commit = request["targetCommit"]
+    error = str(record.get("error", ""))
+    params: dict[str, object] = {
+        "session_id": session,
+        "job_id": identity,
+        "kind": "self-deploy",
+        "label": f"部署 {commit[:12]}",
+        "status": "failed",
+        "detail": error[-7000:],
+        "collect_hint": (
+            f"用 Shell 运行 `akashic-release status {identity}` 和 "
+            f"`journalctl --user -u {request['unit']} --no-pager -n 80` 查明原因并修复。"
+            "修好后用新的提交 SHA 重新部署，不要原样重交同一提交；修不了就如实告诉用户。"
+            "说明「保留现场」或「回退失败」时需要部署者处理。"
+        ),
+    }
+    deadline = time.monotonic() + _NOTICE_WAIT_S
+    last = ""
+    while True:
+        try:
+            current = read_environment(Path(request["runtimeEnv"]))
+            ready = read_json(Path(current["AKASHIC_WORKSPACE"]) / ".runtime-ready.json")
+            if ready.get("state") != "ready":
+                raise RuntimeError(f"Core 未就绪: {ready.get('state')}")
+            asyncio.run(_send_notice(current, params))
+            print(f"self-deploy.notice sent session={session}", file=sys.stderr, flush=True)
+            return "sent"
+        except Exception as notice_error:
+            last = f"{type(notice_error).__name__}: {notice_error}"
+            # 参数被拒（会话不存在或不是对话会话）重试也不会变；未就绪、方法尚未注册才等待。
+            if getattr(notice_error, "code", None) == -32602:
+                deadline = time.monotonic()
+        if time.monotonic() >= deadline:
+            print(f"self-deploy.notice failed session={session} error={last}", file=sys.stderr, flush=True)
+            return "failed: " + last
+        time.sleep(5)
+
+
+async def _send_notice(current: dict[str, str], params: dict[str, object]) -> None:
+    from akashic_sdk import AsyncAkashic
+    from plugins.gateway.cli import find_endpoint, read_token
+
+    workspace = Path(current["AKASHIC_WORKSPACE"])
+    endpoint = find_endpoint(workspace)
+    async with await AsyncAkashic.connect(endpoint, workspace_token=read_token(workspace, endpoint)) as client:
+        await client.request("jobs/host-notice", params)
 
 
 def status(args: argparse.Namespace) -> dict[str, object]:

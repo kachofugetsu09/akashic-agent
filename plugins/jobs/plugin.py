@@ -17,13 +17,16 @@ from plugins.context.contract import MATERIALS_V4 as MATERIALS
 from plugins.conversation.contract import CONVERSATION_COMPLETE_V2 as CONVERSATION_COMPLETE
 from plugins.delivery.contract import DELIVERY_GUARDED_START as DELIVERY
 from plugins.delivery.contract import DELIVERY_SENDERS
+from plugins.gateway.contract import RpcMethod
 from plugins.ledger.contract import BINDINGS, MESSAGE_CATALOG, Control, Input, Message, MessageReader, json_value
 from plugins.reply.contract import REPLY_PROGRAM_V3 as REPLY_PROGRAM
 from plugins.sources.contract import SourceGuard
 from plugins.ui.contract import UI_SLOTS, Configuration, ModelSettings, PluginUiDefinition, PluginUiRpcInvalidRequest, mount_settings
 
+from core.common.file_io import run_file_io
+
 from .board import JobBoard, JobMirror, Notice
-from .contract import JOB_NOTICES, JobOutcome, JobSnapshot, JobWatch
+from .contract import JOB_NOTICES, JobOutcome, JobSnapshot, JobStatus, JobWatch
 
 logger = logging.getLogger(__name__)
 _STOPPED_BY_USER = "用户在界面上停止了此任务"
@@ -38,6 +41,21 @@ _CONVERSATION = "conversation"
 
 SETTINGS = ServiceKey[Configuration]("jobs.settings.v1")
 SETTING_FIELDS = ("completion_delivery", "max_consecutive_wakes")
+
+
+# 宿主进程（如自部署 worker）在 Core 之外结束的任务，经 Gateway 补登一条已结算的通知。
+HOST_NOTICE_METHOD = "jobs/host-notice"
+
+
+class HostNoticeParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    session_id: str = Field(min_length=1, max_length=512)
+    job_id: str = Field(pattern=r"^[0-9A-Za-z_-]{1,64}$")
+    kind: str = Field(min_length=1, max_length=64)
+    label: str = Field(min_length=1, max_length=200)
+    status: JobStatus
+    detail: str = Field(max_length=8000)
+    collect_hint: str = Field(default="", max_length=2000)
 
 
 class Config(BaseModel):
@@ -80,6 +98,26 @@ class Jobs:
 
     def origin_source(self, session_id: str, source: str) -> str:
         return self._board.origin_source(session_id, source)
+
+    # 宿主任务已在 Core 外结束：只接受有用户输入的对话会话，忙时注入当前回合，闲时按原配置唤醒。
+    async def host_notice(self, params: BaseModel) -> object:
+        notice = cast(HostNoticeParams, params)
+        catalog = self._ctx.require(MESSAGE_CATALOG)
+        if not await run_file_io(lambda: catalog.exists(notice.session_id)):
+            raise ValueError("目标会话不存在")
+        reader = catalog.reader(notice.session_id)
+        if reader.latest_input(_CONVERSATION, through_seq=reader.head()) is None:
+            raise ValueError("目标会话没有对话输入，无法注入或唤醒")
+        outcome = JobOutcome(notice.status, notice.detail)
+
+        async def settled() -> JobOutcome:
+            return outcome
+
+        self.watch(JobWatch(notice.session_id, _CONVERSATION, notice.job_id, notice.kind,
+                            notice.label, notice.collect_hint, settled))
+        logger.info("宿主任务通知已登记 job=%s session=%s status=%s", notice.job_id,
+                    notice.session_id, notice.status)
+        return {"accepted": True, "wake": self._config.completion_delivery == "wakeup"}
 
     # 1. 只停本会话登记、且生产方给了停止入口的运行中任务；2. 先进入停止中，再交给生产方终止；
     # 3. 结算时据 _stopped_by_user 注明是用户停止，通知照常送达模型，不让它以为任务还在跑。
@@ -233,6 +271,7 @@ async def apply(ctx: Context) -> None:
     _ = await ctx.spawn(jobs.run(), name="job-notices")
     _ = await ctx.effect(lambda: jobs.close, label="job-mirror")
     _ = await ctx.provide(JOB_NOTICES, jobs)
+    _ = await ctx.provide(RpcMethod.key(HOST_NOTICE_METHOD), RpcMethod(HostNoticeParams, jobs.host_notice))
     _ = await ctx.require(MATERIALS).register(ctx, name="job-notices", kind="context", prepare=jobs.materials)
     _ = await ctx.inject((UI_SLOTS,), lambda child: register_ui(child, jobs), name="plugin-ui")
 
