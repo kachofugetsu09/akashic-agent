@@ -10,6 +10,13 @@ from typing import Protocol
 from agent.plugin_composition import ServiceKey
 
 
+class ContextReadServices(Protocol):
+    async def active_context(self, now: datetime) -> tuple[Mapping[str, object], ...]: ...
+
+
+EVENTMAIL_CONTEXT_READ = ServiceKey[ContextReadServices]("eventmail.context_read.v1")
+
+
 class ContentWakeServicesV2(Protocol):
     async def snapshot(self, now: datetime) -> Mapping[str, object]: ...
 
