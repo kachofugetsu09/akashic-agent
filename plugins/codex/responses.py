@@ -234,6 +234,8 @@ async def _consume_stream(
 ) -> LLMResponse:
     content: list[str] = []
     thinking: list[str] = []
+    # done 事件只带单个分段的全文，按分段累积 delta 才能和它比对。
+    parts: dict[tuple[str, str, object], list[str]] = {}
     tool_args: dict[str, dict[str, str]] = {}
     new_items: list[dict[str, Any]] = []
     usage: ModelUsage | None = None
@@ -260,11 +262,13 @@ async def _consume_stream(
                 if delta:
                     progress.advance()
                 content.append(delta)
+                parts.setdefault(_part_key("content", event), []).append(delta)
                 delta_seen = True
                 await _emit(request.on_delta, {"content_delta": delta})
             elif event_type == "response.output_text.done":
                 advanced = await _append_done(
-                    content, event.get("text"), request.on_delta, "content_delta",
+                    content, parts.setdefault(_part_key("content", event), []),
+                    event.get("text"), request.on_delta, "content_delta",
                 )
                 if advanced:
                     progress.advance()
@@ -276,11 +280,13 @@ async def _consume_stream(
                 if delta:
                     progress.advance()
                 thinking.append(delta)
+                parts.setdefault(_part_key(event_type.removesuffix(".delta"), event), []).append(delta)
                 delta_seen = True
                 await _emit(request.on_delta, {"thinking_delta": delta})
             elif event_type == "response.reasoning_summary_text.done":
                 advanced = await _append_done(
-                    thinking, event.get("text"), request.on_delta, "thinking_delta",
+                    thinking, parts.setdefault(_part_key("response.reasoning_summary_text", event), []),
+                    event.get("text"), request.on_delta, "thinking_delta",
                 )
                 if advanced:
                     progress.advance()
@@ -388,18 +394,28 @@ async def _emit(
         raise _CallbackError(exc) from exc
 
 
+# 同一输出项的同一分段（content_index / summary_index）为一个 part。
+def _part_key(kind: str, event: Mapping[str, Any]) -> tuple[str, str, object]:
+    item = str(event.get("item_id") or event.get("output_index") or "")
+    index = event.get("summary_index", event.get("content_index"))
+    return kind, item, index
+
+
+# 用分段 done 全文补齐该分段漏收的尾部；分段前缀对不上说明流已损坏。
 async def _append_done(
     target: list[str],
+    part: list[str],
     done: object,
     callback: Callable[[dict[str, str]], Awaitable[None]] | None,
     key: str,
 ) -> bool:
-    current = "".join(target)
+    current = "".join(part)
     if isinstance(done, str):
         if not done.startswith(current):
             raise TransportError("Codex Responses done text 与已接收 delta 冲突").exception()
         suffix = done[len(current) :]
         if suffix:
+            part.append(suffix)
             target.append(suffix)
             await _emit(callback, {key: suffix})
             return True
