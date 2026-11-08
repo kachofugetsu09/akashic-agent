@@ -29,12 +29,12 @@ EventMail 另发布 `eventmail.context_read.v1` 窄只读合同，并通过可�
 ### Wake 在注入前查询
 
 Wake 依赖 `userinformation.read.v1`，与模型查询工具复用同一读取实现；不通过工具解锁协议调用。
-`information_queries` 显式配置最多 8 个 `{provider, query, arguments}`，默认空列表，
-避免来源安装后被自动读取。部署迁移时需配置所需来源的准确实例 ID；例如 EventMail 的 `current`
-可用 `source_ids` 筛选睡眠/游戏，OwnTracks 的 `latest` 读取最后位置，不配置历史轨迹。
-此变更不修改正式配置，因此上线前必须补齐所需查询，空列表不会保持旧版自动状态注入。
+`information_queries` 配置最多 8 个 `{provider, query, arguments}`。默认值是
+`eventmail@release` 的 `current`，与旧版自动注入 EventMail 当前状态等价；改成空列表即关闭预取。
+其他来源要写准确实例 ID，例如 OwnTracks 的 `latest` 读取最后位置，不配置历史轨迹。
 
-请求准备期并行查询，每项限 5 秒、结果限 8 KiB，失败和超限以不可用证据入档。
+请求准备期并行查询，每项限 5 秒、结果限 8 KiB，失败和超限以不可用证据入档，并记 `wake.information.*` 警告日志
+（超时、异常、超限、来源未注册或自报不可用）；每次快照另记一条成功数汇总。
 结果冻结到 `Request.information` 并作为 `user_information` 材料注入；恢复沿用归档值，不重新读。
 旧请求的 `events/context_events` 仍可渲染。来源失败不阻止必要告警，取消仍传播。
 工具目录、Core loop、Wake 模型步骤预算和工具授权保持不变。

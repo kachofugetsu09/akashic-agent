@@ -82,7 +82,8 @@ async def main():
                 InformationQuery(provider="sample_information", query="large"),
                 InformationQuery(provider="sample_information", query="slow"),
             ))
-            assert snapshot[2]["status"] == "unavailable"
+            # 来源抛错由统一入口收成该来源 unavailable，Wake 原样归档
+            assert snapshot[2]["response"]["status"] == "unavailable", snapshot[2]
             assert snapshot[3]["reason"] == "size_limit"
             assert snapshot[4]["status"] == "unavailable"
             assert snapshot[0]["response"]["result"]["evidence_ref"] == "fixture:observation"

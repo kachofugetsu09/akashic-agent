@@ -42,7 +42,9 @@ class Config(BaseModel):
     delivery: DeliveryTarget | None = None
     timezone: str = "Asia/Shanghai"
     investigation_tools: tuple[str, ...] = ("recall_memory", "web_fetch")
-    information_queries: tuple[InformationQuery, ...] = Field(default=(), max_length=8)
+    # 默认沿用旧版行为：每次唤醒带上 EventMail 当前有效状态（睡眠、Steam 等）。
+    information_queries: tuple[InformationQuery, ...] = Field(
+        default=(InformationQuery(provider="eventmail@release", query="current"),), max_length=8)
     model: ModelChoice = ModelChoice(follow="session")
 
     @field_validator("model")
