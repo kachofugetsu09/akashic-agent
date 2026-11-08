@@ -178,8 +178,6 @@ class Jobs:
 
     # 每一步准备材料时调用：当前输入领取未读结算，并在该输入的后续步骤中保持可回放。
     async def materials(self, snapshot: tuple[Message, ...], source: str) -> Mapping[str, object]:
-        if snapshot:
-            source = self.origin_source(snapshot[-1].session_id, source)
         latest = _latest_input(snapshot, source)
         if latest is None:
             return {}
