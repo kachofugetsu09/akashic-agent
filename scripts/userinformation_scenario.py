@@ -60,7 +60,7 @@ def sources(path):
     text = text[:start] + '''            steps = [
                 ("load_tools", {"plugin":"userinformation"}),
                 ("tool_call", {"name":"user_information_list","arguments":{}}),
-                ("tool_call", {"name":"user_information_query","arguments":{"provider":"sample_information","query":"current"}}),
+                ("tool_call", {"name":"user_information_query","arguments":{"provider":"sample_information","query":"current","params":{}}}),
             ]
             if len(calls) <= len(steps):
                 name, args = steps[len(calls)-1]

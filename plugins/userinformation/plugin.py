@@ -28,7 +28,8 @@ class Query(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     provider: str = Field(min_length=1)
     query: str = Field(min_length=1)
-    arguments: dict[str, object] = Field(default_factory=dict)
+    # 不叫 arguments：经 tool_call 间接调用时会和外层 arguments 同名，模型容易只填内层空对象。
+    params: dict[str, object] = Field(default_factory=dict, description="该 query 在 list 中声明的 parameters schema 对应的参数")
 
 
 class Empty(BaseModel):
@@ -54,7 +55,7 @@ class Providers:
         return await ctx.effect(setup, label=f"userinformation:{identity}")
 
     async def query(self, provider: str, query: str, arguments: Mapping[str, object]) -> Mapping[str, object]:
-        request = Query(provider=provider, query=query, arguments=dict(arguments))
+        request = Query(provider=provider, query=query, params=dict(arguments))
         return {"queried_at": datetime.now(UTC).isoformat(), **await self.call(provider, request)}
 
     async def call(self, identity: str, query: Query | None = None):
@@ -66,7 +67,7 @@ class Providers:
         # 1. 单个来源的任何失败都收成该来源的 unavailable，不能拖垮 list 里的其他来源；取消照常传播
         try:
             async with asyncio.timeout(20), owner.runtime_scope():
-                value = await provider.describe() if query is None else await provider.query(query.query, query.arguments)
+                value = await provider.describe() if query is None else await provider.query(query.query, query.params)
                 encoded = json.dumps(json_value(value), ensure_ascii=False, allow_nan=False)
         except TimeoutError:
             logger.warning("userinformation.provider_timeout provider=%s query=%s", identity, operation)
@@ -102,7 +103,7 @@ class InformationTool:
             value = {"queried_at": now, "providers": items}
         else:
             query = Query.model_validate(json_value(arguments))
-            value = dict(await self.providers.query(query.provider, query.query, query.arguments))
+            value = dict(await self.providers.query(query.provider, query.query, query.params))
         result = value.get("result")
         failed = "error" in value or (isinstance(result, dict) and "error" in result)
         return Result("error" if failed else "success", (ContentPart("text", json.dumps(value, ensure_ascii=False)),))
@@ -119,7 +120,7 @@ async def apply(ctx: Context) -> None:
     await catalog.declare_group(ctx, description=desc)
     for tool_name, listing, description in (
         ("user_information_list", True, "发现当前用户信息来源、可用查询及参数 schema；不读取完整隐私数据"),
-        ("user_information_query", False, "按 list 返回的 provider、query 和参数查询用户信息。结果是带时间的观测，不保证实时；缺失不能解释为清醒或离线"),
+        ("user_information_query", False, "按 list 返回的 provider、query 查询用户信息，该 query 的参数放在 params。结果是带时间的观测，不保证实时；缺失不能解释为清醒或离线"),
     ):
         @asynccontextmanager
         async def open_tool(state: Mapping[str, object], listing: bool = listing):
