@@ -869,7 +869,8 @@ class MessageProjection:
                     raise ValueError("模型 token 校准记录损坏")
                 fold.token_calibration = (estimated, actual)
             metadata = receipt.get("provider_metadata")
-            if metadata is not None and not value.get("content_transformed", False):
+            # Input transforms clear opaque continuation, not this new response's native parts.
+            if metadata is not None:
                 fold.response_metadata[message.message_id] = metadata
         previous = inherited.get(message.message_id)
         if previous is None or previous[0] is not message:
