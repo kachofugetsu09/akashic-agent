@@ -127,7 +127,7 @@ class MaterialView:
     async def reduce(
         self, snapshot: tuple[Message, ...], materials: MaterialData,
         request: ModelRequest, model: BoundChatModel, projection: ContextModel,
-        *, source: str, force: bool, on_status: ReductionStatus | None = None,
+        *, source: str, force: bool, required: bool = True, on_status: ReductionStatus | None = None,
         summary_limit: int | None = None,
     ) -> SummaryData | None:
         """只有同一个摘要 owner 能缩减；其余已取得材料保持原样。"""
@@ -135,8 +135,10 @@ class MaterialView:
         current = decode_material(materials)
         for _, owner in self._sources:
             if owner.reduce is not None:
-                # 可选参数只在有值时传入，未声明它们的旧摘要 owner 照常可用。
+                # Only pass optional values that this call needs to override.
                 options: _ReduceOptions = {}
+                if not required:
+                    options["required"] = False
                 if on_status is not None:
                     options["on_status"] = on_status
                 if summary_limit is not None:
@@ -168,6 +170,7 @@ class MaterialView:
 
 
 class _ReduceOptions(TypedDict, total=False):
+    required: bool
     on_status: ReductionStatus
     summary_limit: int
 

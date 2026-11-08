@@ -183,6 +183,9 @@ class ModelRequest:
     request_key: str | None = None
     # Long provider backoff ends this request; None keeps visible, cancellable waiting.
     max_retry_wait: float | None = None
+    # A caller may lower the connection budget when continuing the same model step.
+    max_attempts: int | None = None
+    reduce_on_empty: bool = False
     # 本次完整展示、尚无成功展示回执的消息内容位置；不发送给 provider。
     content_refs: tuple[tuple[str, int], ...] = ()
     content_transformed: bool = False
@@ -222,6 +225,10 @@ class ModelRequest:
             or not math.isfinite(self.max_retry_wait) or self.max_retry_wait <= 0
         ):
             raise ValueError("max_retry_wait must be a finite positive number or None")
+        if self.max_attempts is not None and (type(self.max_attempts) is not int or self.max_attempts < 1):
+            raise ValueError("max_attempts must be a positive integer or None")
+        if type(self.reduce_on_empty) is not bool:
+            raise ValueError("reduce_on_empty must be bool")
         object.__setattr__(self, "content_refs", self.read_content_refs(self.content_refs))
         if type(self.content_transformed) is not bool:
             raise ValueError("内容投影标记必须是 bool")
@@ -1065,6 +1072,13 @@ class EmptyResponseError(ModelError):
     """模型调用成功，但没有可提交的正文或工具调用。"""
 
     retryable: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class InputReductionRequired(ModelError):
+    """This key ended for an optional input reduction; only unused attempts may follow."""
+
+    remaining_attempts: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
