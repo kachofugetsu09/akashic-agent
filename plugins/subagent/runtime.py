@@ -327,9 +327,11 @@ class Subagents:
         self, request: Request, parent: MessageReader, message: Message, outcome: tuple[str, str],
     ) -> Message:
         assert isinstance(message.body, Control)
+        # Provider diagnostics stay in the Control and model call ledger.
+        category = {"failure": "回报生成失败", "abandon": "回报达到步数上限", "pause": "回报已停止"}[message.body.action]
         text = (f"后台任务「{request.label}」的自动回报失败。\n"
                 f"任务执行状态：{outcome[0]}；回报状态：{message.body.action}\n"
-                f"原因：{message.body.reason or '回报已停止'}\n"
+                f"原因：{category}\n"
                 f"原结果保存在 Session：{request.session_id}；任务消息：{request.input_id}。\n"
                 "自动回报已停止，执行名额已释放。请查看原结果，或明确要求重新汇报。")
         writer = self.ctx.require(MESSAGE_WRITERS).bind(
