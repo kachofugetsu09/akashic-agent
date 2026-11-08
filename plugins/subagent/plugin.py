@@ -13,6 +13,7 @@ from agent.plugin_composition import (
     RUNTIME_STARTED,
     RUNTIME_STOPPING,
     Context,
+    stop_spawned,
 )
 from plugins.ledger.contract import BINDINGS
 from plugins.ledger.contract import (
@@ -216,19 +217,26 @@ async def apply(ctx: Context) -> None:
 
     _ = await ctx.provide(SUBAGENT_PROGRAM, program)
 
+    # Retry the durable scan a bounded number of times; exhausted failures reach readiness.
+    async def follow() -> None:
+        for attempt in range(4):
+            try:
+                await jobs.follow()
+                return
+            except Exception as error:
+                _ = ctx.report_incident("subagent-watcher", f"attempt={attempt + 1}: {error!r}")
+                if attempt == 3:
+                    raise
+                await asyncio.sleep(2 ** attempt)
+
     async def start(_event: object) -> None:
         nonlocal watcher
-        watcher = asyncio.create_task(jobs.follow(), name="subagent-messages")
+        watcher = await ctx.spawn(follow(), name="subagent-messages")
 
     async def stop(_event: object) -> None:
         nonlocal watcher
-        if watcher is not None:
-            _ = watcher.cancel()
-            try:
-                await watcher
-            except asyncio.CancelledError:
-                pass
-            watcher = None
+        await stop_spawned(watcher)
+        watcher = None
 
     _ = await ctx.on(RUNTIME_STARTED, start)
     _ = await ctx.on(RUNTIME_STOPPING, stop)
