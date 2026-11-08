@@ -37,6 +37,9 @@ from plugins.models.contract import (
     RateLimitError,
     StreamCallbackError as _CallbackError,
     TransportError,
+    is_quota_error,
+    provider_stream_error,
+    response_error_details,
     mark_unsent_error as _unsent,
     optional_non_negative_int as _optional_int,
     parse_tool_arguments,
@@ -117,7 +120,7 @@ class CodexResponses:
                 _raise_status(response, token)
                 return await _consume_stream(
                     response, request, self._descriptor.binding_id, previous_items,
-                    progress_timeout=self._progress_timeout,
+                    progress_timeout=self._progress_timeout, secret=token,
                 )
         except asyncio.CancelledError:
             raise
@@ -232,6 +235,7 @@ async def _consume_stream(
     previous_items: tuple[dict[str, Any], ...],
     *,
     progress_timeout: float = 300.0,
+    secret: str = "",
 ) -> LLMResponse:
     content: list[str] = []
     thinking: list[str] = []
@@ -332,15 +336,23 @@ async def _consume_stream(
                 completed = True
                 await finish_response(lines)
                 break
-            elif event_type in {"response.failed", "response.incomplete"}:
+            elif event_type == "response.incomplete":
                 response_payload = event.get("response")
-                error = (
-                    response_payload.get("error")
-                    or response_payload.get("incomplete_details")
-                    if isinstance(response_payload, Mapping)
-                    else response_payload
-                )
-                _raise_stream_error(error)
+                if not isinstance(response_payload, Mapping):
+                    raise ModelError("Codex incomplete event is missing response").exception()
+                details = response_payload.get("incomplete_details")
+                if isinstance(details, Mapping) and details.get("reason") == "max_output_tokens":
+                    return LLMResponse(
+                        content="".join(content).strip() or None,
+                        thinking="".join(thinking).strip() or None,
+                        finish_reason="length", usage=_parse_usage(response_payload.get("usage")),
+                    )
+                _raise_stream_error(details, secret=secret)
+            elif event_type == "response.failed":
+                response_payload = event.get("response")
+                _raise_stream_error(response_payload.get("error") if isinstance(response_payload, Mapping) else response_payload, secret=secret)
+            elif event_type == "error":
+                _raise_stream_error(event.get("error", event), secret=secret)
     except asyncio.CancelledError as error:
         if delta_seen:
             # 取消保留 asyncio 的原类型；这里只携带已观察到的流进展。
@@ -355,6 +367,8 @@ async def _consume_stream(
         raise error from exc
     except Exception as exc:
         if delta_seen:
+            if ModelError.matches(exc):
+                raise ModelError.change(exc, response_delta_seen=True) from exc
             setattr(exc, "response_delta_seen", True)
         raise
     if not completed:
@@ -687,7 +701,7 @@ def _raise_status(response: httpx.Response, secret: str) -> None:
 def _status_error(response: httpx.Response, secret: str) -> Exception | None:
     if response.status_code < 400:
         return None
-    text = response.text.replace(secret, "[REDACTED]") if secret else response.text
+    code, text = response_error_details(response, secret)
     lowered = text.lower()
     detail = f"。服务返回：{text[:500]}"
     if response.status_code in {401, 403}:
@@ -702,7 +716,7 @@ def _status_error(response: httpx.Response, secret: str) -> Exception | None:
         return ContentSafetyError("Codex 请求被安全策略拒绝" + detail).exception()
     if response.status_code == 402 or (
         response.status_code == 429
-        and any(marker in lowered for marker in ("quota", "billing", "usage limit"))
+        and is_quota_error(code, text)
     ):
         return QuotaError("Codex 账号额度不足" + detail).exception()
     if response.status_code == 429:
@@ -714,19 +728,8 @@ def _status_error(response: httpx.Response, secret: str) -> Exception | None:
     return TransportError(f"Codex 服务失败 (HTTP {response.status_code}){detail}").exception()
 
 
-def _raise_stream_error(error: object) -> None:
-    code = ""
-    if isinstance(error, Mapping):
-        code = str(error.get("code") or "").lower()
-    if code in {"context_length_exceeded", "context_window_exceeded"}:
-        raise ContextLengthError("Codex 请求超过上下文窗口").exception()
-    if code in {"insufficient_quota", "usage_not_included"}:
-        raise QuotaError("Codex 账号额度不足").exception()
-    if code in {"rate_limit_exceeded", "rate_limit_error"}:
-        raise RateLimitError("Codex 请求被限流").exception()
-    if code in {"invalid_prompt", "bio_policy", "cyber_policy", "policy_violation"}:
-        raise ContentSafetyError(f"Codex 请求被安全策略拒绝: {code}").exception()
-    raise TransportError(f"Codex Responses 暂时失败: {code or 'unknown'}").exception()
+def _raise_stream_error(error: object, *, secret: str = "") -> None:
+    raise provider_stream_error(error, secret=secret)
 
 
 def _normalize_effort(value: str) -> str:

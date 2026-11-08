@@ -38,6 +38,7 @@ from plugins.models.contract import (
     ModelTimeoutError,
     RateLimitError,
     TransportError,
+    response_error_message,
 )
 from plugins.models.contract import ModelDriverDefinition, estimate_tokens
 
@@ -112,7 +113,7 @@ async def _discover(connection: DriverConnectionDescriptor, credential: Credenti
         async with asyncio.timeout(30):
             for _ in range(100):
                 response = await client.get('models', headers=headers, params={"pageToken": page} if page else {})
-                _status(response)
+                _status(response, secret=headers["x-goog-api-key"])
                 data = _object(response.json(), "Gemini 模型目录")
                 for item in _list(data.get("models"), "models"):
                     item = _object(item, "model")
@@ -168,8 +169,7 @@ class _Chat:
         except (RuntimeError, TimeoutError) as error:
             if not (ModelError.matches(error)):
                 raise
-            error = ModelError.change(error, send_evidence="unsent")
-            raise
+            raise ModelError.change(error, send_evidence="unsent") from error
         model = quote(self.descriptor.model.removeprefix('models/'), safe='/')
         parts: list[dict[str, Any]] = []
         usage = None
@@ -179,7 +179,7 @@ class _Chat:
             self.client.cookies.clear()
             if request.on_delta is None:
                 response = await self.client.post(f'models/{model}:generateContent', json=body, headers=headers)
-                _status(response)
+                _status(response, secret=headers["x-goog-api-key"])
                 data = _object(response.json(), "Gemini 响应")
                 current, finish, usage = _chunk(data)
                 parts.extend(current)
@@ -187,7 +187,7 @@ class _Chat:
                 async with self.client.stream('POST', f'models/{model}:streamGenerateContent', params={"alt": "sse"}, json=body, headers=headers) as response:
                     if response.is_error:
                         await response.aread()
-                    _status(response)
+                    _status(response, secret=headers["x-goog-api-key"])
                     event: list[str] = []
                     progress = StreamProgress(self._progress_timeout)
                     async for line in progress.read(response.aiter_lines()):
@@ -217,8 +217,7 @@ class _Chat:
         except RuntimeError as error:
             if not (ModelError.matches(error)):
                 raise
-            error = ModelError.change(error, response_delta_seen=bool(parts))
-            raise
+            raise ModelError.change(error, response_delta_seen=bool(parts)) from error
         except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout) as cause:
             error = TransportError(f"Gemini 连接未建立：{type(cause).__name__}").exception()
             error = ModelError.change(error, send_evidence="unsent")
@@ -400,7 +399,7 @@ def _answer(parts: list[dict[str, Any]], finish: str | None, usage: ModelUsage |
         usage=usage, provider_metadata={"gemini_content": {"role": "model", "parts": parts}})
 
 
-def _status(response: httpx.Response) -> None:
+def _status(response: httpx.Response, *, secret: str = "") -> None:
     """按 HTTP 状态给出失败语义，不把 5xx 当成远端未处理。"""
     status = response.status_code
     if 200 <= status < 300:
@@ -414,8 +413,8 @@ def _status(response: httpx.Response) -> None:
     elif status == 400 and any(term in response.text.lower() for term in ('input token count', 'context length', 'context_length_exceeded')):
         error = ContextLengthError("Gemini 拒绝请求：输入超过上下文限制").exception()
     else:
-        # 不透传可能包含密钥或完整请求的错误正文。
-        error = InvalidRequestError(f"Gemini 拒绝请求：HTTP {status}").exception()
+        detail = response_error_message(response, secret=secret)
+        error = InvalidRequestError(f"Gemini 拒绝请求：HTTP {status}；{detail}").exception()
     if status < 500:
         error = ModelError.change(error, send_evidence="rejected")
     if (value := ModelError.read(error)) is not None and value.retryable:
