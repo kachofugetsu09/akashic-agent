@@ -303,6 +303,29 @@
       "title": "UpdateIdParams",
       "type": "object"
     },
+    "programmatic/message/abandon": {
+      "additionalProperties": false,
+      "properties": {
+        "message_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Message Id",
+          "type": "string"
+        },
+        "session_id": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Session Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "message_id"
+      ],
+      "title": "PauseParams",
+      "type": "object"
+    },
     "programmatic/message/pause": {
       "additionalProperties": false,
       "properties": {
