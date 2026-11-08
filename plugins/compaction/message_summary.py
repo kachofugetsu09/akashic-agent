@@ -5,6 +5,7 @@ from plugins.models.contract import ModelError
 import json
 import logging
 from dataclasses import replace
+from bisect import bisect_right
 from collections.abc import Awaitable, Callable, Sequence
 
 from plugins.models.contract import ModelRequest
@@ -133,19 +134,24 @@ def closed_groups(
     settled_prefixes: Callable[[tuple[Message, ...]], tuple[int, ...]],
     after: int = 0,
 ) -> tuple[tuple[Message, ...], ...]:
-    """只在已结算批次后切分请求视图；持久 Turn 和学习边界保持完整。"""
+    """已结算批次或失败输入可供摘要；失败不改变持久 Turn 与学习资格。"""
     groups: list[tuple[Message, ...]] = []
     ends = set(settled_prefixes(messages))
+    seqs = tuple(message.seq for message in messages)
     start = after
     for index in range(after, len(messages)):
         message = messages[index]
         body = message.body
         closed = (isinstance(body, Output) and body.finish != "continue"
                   or isinstance(body, ToolResult)
-                  or isinstance(body, Control) and body.action == "abandon")
+                  or isinstance(body, Control) and body.action in {"abandon", "failure"})
         if closed and index + 1 in ends:
-            groups.append(tuple(messages[start:index + 1]))
-            start = index + 1
+            # A late failure only releases the prefix it actually observed.
+            end = (bisect_right(seqs, body.through_seq, lo=start, hi=index + 1)
+                   if isinstance(body, Control) and body.action == "failure" else index + 1)
+            if end > start and end in ends:
+                groups.append(tuple(messages[start:end]))
+                start = end
     return tuple(groups)
 
 

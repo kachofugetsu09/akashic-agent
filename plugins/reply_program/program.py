@@ -91,11 +91,11 @@ async def run_reply(
     def check(transaction: OwnerTransaction | None = None) -> None:
         check_admission(transaction=transaction)
 
-    def read_open(messages: Sequence[Message]) -> tuple[Message, ...]:
+    def read_open(messages: Sequence[Message]) -> tuple[tuple[Message, ...], tuple[str, ...]]:
         """同一短快照内只取未闭合 Turn 正文，历史分段只保留引用。"""
         turns = turn_projection.project(messages, source, include_closed=False)
         if not turns or turns[-1].status != "open":
-            return ()
+            return (), ()
         # 开放尾段的成员已经在这份固定视图里，直接复用，不再逐 ID 同步点查。
         index = {message.message_id: message for message in messages}
         members: list[Message] = []
@@ -104,7 +104,15 @@ async def run_reply(
             if message is None:
                 raise RuntimeError("同一快照中的 Turn 消息缺失")
             members.append(message)
-        return tuple(members)
+        # A new input may summarize earlier failed work; retry still keeps its original inputs.
+        latest_input = max((item.seq for item in members if isinstance(item.body, Input)), default=-1)
+        failed_before_input = max((item.body.through_seq for item in messages
+                                  if item.source == source and isinstance(item.body, Control)
+                                  and item.body.action == "failure"
+                                  and item.body.through_seq < latest_input), default=-1)
+        kept = tuple(item.message_id for item in members
+                     if isinstance(item.body, Input) and item.seq > failed_before_input)
+        return tuple(members), kept
 
     # Turn 投影与 react 共用同一份已提交前缀：history_view 持有共享读面直到
     # react 自己的快照接手，历史只解码一次。投影与成员提取是不受调用方约束的
@@ -116,12 +124,11 @@ async def run_reply(
         if covered is not None:
             window = await run_file_io(lambda: _clamp_window(reader, source, covered, through_seq))
     history_view = await reader.committed_window_async(window, through_seq=through_seq)
-    opened = await run_file_io(lambda: read_open(history_view))
+    opened, keep_input_ids = await run_file_io(lambda: read_open(history_view))
     chosen = selection.read(opened)
     if chosen is None:
         chosen = selection.read_saved(saved_selection or {})
     from_seq = min((message.seq for message in opened), default=source_head + 1)
-    keep_input_ids = tuple(item.message_id for item in opened if isinstance(item.body, Input))
     del opened
     mark("reply.selection.end", counts={"messages": len(history_view)})
     # 请求只看可见历史：其他来源未完成的轮次不进入请求；own 时只看本来源，不带会话摘要也不压缩整个会话。

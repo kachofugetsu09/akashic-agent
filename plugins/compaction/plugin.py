@@ -317,7 +317,8 @@ async def apply(ctx: Context) -> None:
                                 f"（目标 {config.keep_recent_tokens:,}），更早的内容改用摘要。"
                                 "当前输入和进行中的工具调用完整保留。", True)
         if selected is None:
-            raise SummaryError("当前输入与进行中的工具调用本身超出容量，没有可摘要的内容")
+            raise SummaryError("当前输入与进行中的工具调用本身超出容量，没有可摘要的内容。"
+                               "请放弃本轮后发送较短内容；对话可用 /abandon，程序可用 programmatic/message/abandon")
         inputs = summary_groups(groups[:selected], snapshot)
         if selected and not inputs:
             raise SummaryError("可选范围没有可用于摘要的资料")
@@ -387,7 +388,8 @@ async def apply(ctx: Context) -> None:
         if after >= before:
             raise SummaryError("摘要没有降低本次完整请求容量")
         if after + reserve > window:
-            raise SummaryError(f"摘要缩至最短后输入仍约 {after:,} tokens，当前输入与进行中的工具调用本身超出容量")
+            raise SummaryError(f"摘要缩至最短后输入仍约 {after:,} tokens，当前输入与进行中的工具调用本身超出容量。"
+                               "请放弃本轮后发送较短内容；对话可用 /abandon，程序可用 programmatic/message/abandon")
         record = record.model_copy(update={"tokens_after": after})
         # 3. binding 可以先固定，但读者只有在摘要事务成功后才取得此引用。
         reader = ctx.require(MESSAGE_CATALOG).reader(record.session_id)

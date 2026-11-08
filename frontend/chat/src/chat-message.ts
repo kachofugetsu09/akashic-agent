@@ -14,7 +14,7 @@ export interface ToolBlock {
   name: string;
   /** 注册该工具的插件；只有它能接手结果展示，归档里的调用没有。 */
   owner?: string;
-  status: "input-available" | "output-available" | "output-error";
+  status: "input-available" | "output-available" | "output-error" | "output-unknown";
   input: unknown;
   output: unknown;
   errorText: string | undefined;
