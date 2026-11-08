@@ -228,7 +228,7 @@ class MessageProjection:
         self._prepare_content = prepare_content
         self._tool_names = tool_names
         self._dynamic_content_kinds = dynamic_content_kinds
-        self._last_estimate: tuple[ModelRequest, int] | None = None
+        self._last_estimate: tuple[ModelRequest, int, tuple[int, int] | None] | None = None
         self._facts: dict[str, tuple[Message, Mapping[str, Any] | None]] = {}
         self._view: _RenderView | None = None
         self._fold: _Fold | None = None
@@ -242,12 +242,16 @@ class MessageProjection:
         return self._model.max_tool_schemas
 
     def estimate(self, request: ModelRequest) -> int:
-        # 估算是不可变请求的纯函数；构建链会对同一请求对象重复估算。
+        # 最近同来源、同 binding 的成功调用校准字符估算；换模型不沿用比例。
+        calibration = None if self._fold is None else self._fold.token_calibration
         saved = self._last_estimate
-        if saved is not None and saved[0] is request:
+        if saved is not None and saved[0] is request and saved[2] == calibration:
             return saved[1]
         value = self._model.estimate_context_tokens(request.messages, request.tools)
-        self._last_estimate = (request, value)
+        if calibration is not None:
+            estimated, actual = calibration
+            value = max(value, (value * actual + estimated - 1) // estimated)
+        self._last_estimate = (request, value, calibration)
         return value
 
     def facts(
@@ -795,6 +799,13 @@ class MessageProjection:
         if receipt["state"] != "success":
             raise ValueError("已提交模型事实必须引用成功结算的真实调用")
         if receipt["binding"]["binding_id"] == self._model.descriptor.binding_id:
+            estimated = receipt.get("estimated_input_tokens")
+            usage = receipt.get("usage")
+            actual = None if usage is None else usage["input_tokens"]
+            if message.source == self._source and estimated is not None and actual is not None:
+                if type(estimated) is not int or estimated <= 0 or type(actual) is not int or actual < 0:
+                    raise ValueError("模型 token 校准记录损坏")
+                fold.token_calibration = (estimated, actual)
             metadata = receipt.get("provider_metadata")
             if metadata is not None and not value.get("content_transformed", False):
                 fold.response_metadata[message.message_id] = metadata
@@ -846,7 +857,7 @@ class _Fold:
     __slots__ = (
         "count", "prefix", "inputs", "latest_input",
         "abandoned", "abandoned_calls", "facts", "recorded", "results",
-        "receipts", "response_metadata", "content_refs",
+        "receipts", "response_metadata", "content_refs", "token_calibration",
         "continuation", "cont_summary", "cont_seq", "cont_transformed",
     )
 
@@ -863,6 +874,7 @@ class _Fold:
         self.receipts: dict[str, Mapping[str, Any]] = {}
         self.response_metadata: dict[str, Mapping[str, Any]] = {}
         self.content_refs: set[tuple[str, int]] = set()
+        self.token_calibration: tuple[int, int] | None = None
         self.continuation: ModelContinuation | None = None
         self.cont_summary: str | None = None
         self.cont_seq = -1

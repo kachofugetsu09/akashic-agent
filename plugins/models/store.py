@@ -194,15 +194,19 @@ class ModelCallReader:
                 "json_extract(response_json,'$.provider_metadata')"
                 if "response_json" in columns else "NULL"
             )
+            estimate_column = "estimated_input_tokens" if "estimated_input_tokens" in columns else "NULL"
             rows = connection.execute(
                 "SELECT id,state,json_extract(binding_json,'$.binding_id') AS binding_id, "
-                f"{response_metadata} AS provider_metadata "
+                f"{response_metadata} AS provider_metadata, {estimate_column} AS estimated_input_tokens, "
+                "json_extract(usage_json,'$.input_tokens') AS input_tokens "
                 "FROM model_calls WHERE id IN (SELECT value FROM json_each(?))",
                 (json.dumps(missing),),
             ).fetchall() if missing else ()
         for row in rows:
             records[row["id"]] = _freeze_json({
                 "state": row["state"], "binding": {"binding_id": row["binding_id"]},
+                "estimated_input_tokens": row["estimated_input_tokens"],
+                "usage": {"input_tokens": row["input_tokens"]},
                 "provider_metadata": (
                     None if row["provider_metadata"] is None
                     else json.loads(row["provider_metadata"])
@@ -503,6 +507,7 @@ class ModelsStore:
         partial_response: bool | None = None,
         send_evidence: str | None = None,
         first_token_ms: float | None = None,
+        estimated_input_tokens: int | None = None,
     ) -> None:
         """只结算同一 started 记录；成功先耐久保存响应，未知 usage 不记成零。"""
         if not self.writable:
@@ -517,6 +522,7 @@ class ModelsStore:
         has_next = "next_attempt_at" in columns
         has_partial = "partial_response" in columns
         has_evidence = "send_evidence" in columns
+        has_estimate = "estimated_input_tokens" in columns
         update = (
             "UPDATE model_calls SET state=?,usage_json=?,failure=?,"
             "finished_at=CURRENT_TIMESTAMP,duration_ms=?,"
@@ -525,6 +531,7 @@ class ModelsStore:
             + (",next_attempt_at=?" if has_next else "")
             + (",partial_response=?" if has_partial else "")
             + (",send_evidence=?" if has_evidence else "")
+            + (",estimated_input_tokens=?" if has_estimate else "")
             + " WHERE id=? AND state='started'"
         )
         extras = (
@@ -535,6 +542,7 @@ class ModelsStore:
                 if has_partial else []
             )
             + ([send_evidence] if has_evidence else [])
+            + ([estimated_input_tokens] if has_estimate else [])
         )
         values = (state, encoded, failure, duration_ms, first_token_ms, *extras, call_id)
         commit_error: Exception | None = None
@@ -557,6 +565,7 @@ class ModelsStore:
             and record["failure"] == failure
             and record.get("usage") == (None if usage is None else asdict(usage))
             and (body is None or (response is not None and record.get("response") == _response_payload(response)))
+            and (not has_estimate or record.get("estimated_input_tokens") == estimated_input_tokens)
             and (
                 not has_partial
                 or record.get("partial_response")
@@ -1493,7 +1502,7 @@ def _missing_schema_additions(connection: sqlite3.Connection) -> tuple[str, ...]
     if call_columns:
         statements.extend(
             f"ALTER TABLE model_calls ADD COLUMN {name} {_MODEL_CALLS_ADDITIVE_TYPES[name]}"
-            for name in _MODEL_CALLS_ATTEMPT_COLUMNS
+            for name in _MODEL_CALLS_ADDITIVE_TYPES
             if name not in call_columns
         )
         if not any(row[1] == "model_calls_request_key" for row in connection.execute("PRAGMA index_list(model_calls)")):
@@ -2133,6 +2142,7 @@ _MODEL_CALLS_ADDITIVE_TYPES = {
     "next_attempt_at": "REAL",
     "partial_response": "INTEGER",
     "send_evidence": "TEXT",
+    "estimated_input_tokens": "INTEGER",
 }
 
 MODEL_CALLS_SCHEMA = """CREATE TABLE model_calls (
@@ -2152,7 +2162,8 @@ MODEL_CALLS_SCHEMA = """CREATE TABLE model_calls (
     response_json TEXT,
     next_attempt_at REAL,
     partial_response INTEGER,
-    send_evidence TEXT
+    send_evidence TEXT,
+    estimated_input_tokens INTEGER
 )"""
 
 
@@ -2195,10 +2206,11 @@ def require_model_calls_schema(connection: sqlite3.Connection) -> frozenset[str]
     attempt_columns = set(_MODEL_CALLS_ATTEMPT_COLUMNS) & set(info)
     if attempt_columns and attempt_columns != set(_MODEL_CALLS_ATTEMPT_COLUMNS):
         raise RuntimeError("model_calls attempt 记账列不完整，请先运行对应 yoyo 迁移")
-    for name in attempt_columns:
+    optional_columns = set(_MODEL_CALLS_ADDITIVE_TYPES) & set(info)
+    for name in optional_columns:
         if str(info[name][2]).upper() != _MODEL_CALLS_ADDITIVE_TYPES[name]:
             raise RuntimeError(f"model_calls.{name} 类型不匹配，请先运行对应 yoyo 迁移")
-    unknown = set(info) - set(_MODEL_CALLS_BASE_COLUMNS) - attempt_columns
+    unknown = set(info) - set(_MODEL_CALLS_BASE_COLUMNS) - optional_columns
     if unknown:
         raise RuntimeError(f"model_calls 存在未知列 {sorted(unknown)}，schema 不被本实现接受")
     columns = frozenset(info)
