@@ -121,7 +121,7 @@ TOOL_FAILURE_HINT_LIMIT = 2
 TOOL_FAILURE_HINT = "重复失败保护："
 
 
-def _tool_key(name: str, arguments: Mapping[str, object]) -> tuple[str, str]:
+def _tool_key(name: str, arguments: Mapping[str, object] | str) -> tuple[str, str]:
     return name, json.dumps(json_value(arguments), sort_keys=True, separators=(",", ":"))
 
 
@@ -190,7 +190,7 @@ class _ToolFailures:
             elif isinstance(part, ContentPart) and part.kind == "model.tool_rejection":
                 rejected = cast(Mapping[str, object], part.value)
                 error = cast(str, rejected["error"])
-                key = _tool_key(cast(str, rejected["name"]), cast(Mapping[str, object], rejected["arguments"]))
+                key = _tool_key(cast(str, rejected["name"]), cast(Mapping[str, object] | str, rejected["arguments"]))
                 attempt = _ToolAttempt(key, message_id, key[0], ready=True,
                                        error=error[:500], blocked=error.startswith(TOOL_FAILURE_HINT))
             else:
@@ -219,7 +219,7 @@ class _ToolFailures:
                 self._error = attempt.error
 
     # 达到失败门槛后，下一次相同请求只保存可行动的协议拒绝。
-    def rejection(self, name: str, arguments: Mapping[str, object]) -> str | None:
+    def rejection(self, name: str, arguments: Mapping[str, object] | str) -> str | None:
         if self._key != _tool_key(name, arguments) or self._count < TOOL_FAILURE_LIMIT:
             return None
         return (
