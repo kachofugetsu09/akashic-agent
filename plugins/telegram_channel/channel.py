@@ -107,7 +107,6 @@ class TelegramChannelAdapter:
         self._presentation: ChannelPresentationPorts | None = None
         self._provider_client: Any | None = None
         self._app: Application[Any, Any, Any, Any, Any, Any] | None = None
-        self._inbound_tasks: set[asyncio.Task[Any]] = set()
         self._known_chats: dict[str, str] = {}
         self._deduper = _MessageDeduper(_SEEN_LIMIT)
         self._limiter = TelegramOutboundLimiter()
@@ -177,6 +176,7 @@ class TelegramChannelAdapter:
             self._app.add_handler(
                 MessageHandler(filters.Document.ALL & ~filters.COMMAND, self._on_update)
             )
+            self._app.add_error_handler(self._on_update_error)
             await self._app.initialize()
             await self._app.start()
             updater = self._app.updater
@@ -281,14 +281,6 @@ class TelegramChannelAdapter:
         self._stopping = True
         self._admission_open = False
         failures: list[ChannelCleanupFailure] = []
-        tasks = tuple(self._inbound_tasks)
-        if tasks:
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            failures.extend(
-                self._cleanup_failure("inbound", result)
-                for result in results
-                if isinstance(result, BaseException) and not isinstance(result, asyncio.CancelledError)
-            )
         app = self._app
         if app is not None:
             updater = app.updater
@@ -299,6 +291,7 @@ class TelegramChannelAdapter:
                     failures.append(self._cleanup_failure("updater", error))
             if app.running:
                 try:
+                    # PTB drains callbacks and queued updates before closing its worker.
                     await app.stop()
                 except BaseException as error:
                     failures.append(self._cleanup_failure("application", error))
@@ -334,23 +327,23 @@ class TelegramChannelAdapter:
             retry_action="再次调用 Telegram channel.stop()",
         )
 
-    async def _on_update(
-        self,
-        update: Update,
-        context: ContextTypes.DEFAULT_TYPE,
+    # Preserve the failure and give the sender a way out when no turn can start.
+    async def _on_update_error(
+        self, update: object, context: ContextTypes.DEFAULT_TYPE,
     ) -> None:
-        if not self._admission_open:
+        logger.error("Telegram update 处理失败", exc_info=context.error)
+        if not isinstance(update, Update):
             return
-        task = asyncio.current_task()
-        if task is not None:
-            self._inbound_tasks.add(task)
-        try:
-            await self._handle_update(update, context)
-        finally:
-            if task is not None:
-                self._inbound_tasks.discard(task)
+        message = update.effective_message
+        user = update.effective_user
+        if message is None or user is None or not self._is_allowed(user):
+            return
+        _ = await message.reply_text(
+            "消息处理失败，未能确认是否已接收。请稍后查看会话；若消息未出现，请重新发送。",
+            do_quote=True,
+        )
 
-    async def _handle_update(
+    async def _on_update(
         self,
         update: Update,
         context: ContextTypes.DEFAULT_TYPE,
@@ -362,6 +355,12 @@ class TelegramChannelAdapter:
             return
         if not self._is_allowed(user):
             logger.warning("[telegram] 拒绝未授权用户 id=%s", user.id)
+            return
+        if not self._admission_open:
+            _ = await message.reply_text(
+                "服务正在启动或停止，这条消息尚未接收。请稍后重新发送。",
+                do_quote=True,
+            )
             return
         message_id = str(getattr(message, "message_id", "") or "").strip()
         if not message_id or self._deduper.seen(f"{chat.id}:{message_id}"):
