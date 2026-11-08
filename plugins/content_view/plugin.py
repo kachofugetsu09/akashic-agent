@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
+import json
 from typing import cast
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -30,7 +31,7 @@ class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
     # 已有安装可能保存此键；只兼容读取，不再控制任何投影行为。
     fold_after_chars: int = Field(default=8192, ge=1024, strict=True, deprecated=True,
-                                  description="已停用；工具结果始终完整展示")
+                                  description="已停用；模型结果上限由当前模型窗口决定，原始结果保留全文")
 
 
 class ReadInput(BaseModel):
@@ -57,16 +58,17 @@ def check_read(part: ContentPart) -> ContentReferences:
 
 
 def text_part(messages: Mapping[str, Message], message_id: str, index: int) -> str:
-    """只定位当前 Session 快照中的原始工具文本，不解析任意路径或外部 URI。"""
+    """读取同会话工具原文；结构内容以 JSON 回读，不打开任意路径或 URI。"""
     message = messages.get(message_id)
     if message is None or not isinstance(message.body, ToolResult):
         raise ValueError("引用不是当前会话中可读的工具结果")
     if index >= len(message.body.parts):
         raise ValueError("引用的内容位置不存在")
     part = message.body.parts[index]
-    if part.kind != "text":
-        raise ValueError("引用不是原始文本内容")
-    return cast(str, part.value)
+    if part.kind == "text":
+        return cast(str, part.value)
+    # Stable key order keeps character offsets valid after the ledger is reopened.
+    return json.dumps({"kind": part.kind, "value": json_value(part.value)}, ensure_ascii=False, sort_keys=True)
 
 
 def read_text(messages: Mapping[str, Message], ref: ReadReference) -> str:
@@ -108,12 +110,10 @@ class ReadContent:
         if part.kind == READ_KIND:
             original = ReadReference.model_validate(json_value(part.value))
             text = read_text(messages, original)
-        elif part.kind == "text":
-            text = cast(str, part.value)
+        else:
+            text = text_part(messages, target.message_id, requested.part_index)
             original = ReadReference(message_id=target.message_id, part_index=requested.part_index,
                                      start=0, end=len(text))
-        else:
-            return "该内容不是可回读的文本"
         end = len(text) if requested.end is None else requested.end
         if not 0 <= requested.start <= end <= len(text):
             return "范围必须满足 0 <= start <= end <= 原文字符数；不会静默截断"
@@ -170,6 +170,7 @@ async def apply(ctx: Context) -> None:
         ctx, name=READ_TOOL,
         description=("回读当前会话的工具结果。message_id/part_index 指向已有工具结果；"
                      "省略 start/end 读取全文，或指定字符区间 [start,end)。"
+                     "结构内容按 JSON 读取。结果过大时请缩小字符范围；模型视图仍受统一容量上限约束。"
                      "超出范围明确拒绝，不静默截断。不要重新执行原工具来找回结果。"),
         parameters=ReadInput.model_json_schema(), open=open_tool, idempotent=True, parallel=True,
     )
