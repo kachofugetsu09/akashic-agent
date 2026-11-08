@@ -272,7 +272,9 @@ export function ToggleKeepsPlace() {
   useEffect(() => {
     const onClick = (event: MouseEvent) => {
       const scroller = scrollRef.current;
-      const target = event.target instanceof Element ? event.target.closest("[aria-expanded], summary") : null;
+      // 只认真正的展开/收起控件：带 aria-haspopup 的是弹层入口（如回想按钮），
+      // 点开只是往 body 挂一个浮层，消息区高度不变，不该让这一轮丢跟随。
+      const target = event.target instanceof Element ? event.target.closest("[aria-expanded]:not([aria-haspopup]), summary") : null;
       if (scroller && target && scroller.contains(target)) stopScroll();
     };
     document.addEventListener("click", onClick, true);

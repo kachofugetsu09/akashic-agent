@@ -130,7 +130,7 @@ export function PreviewText({ text, tail, className }: { text: string; tail: boo
   const shown = diff ? <DiffLines lines={visible} /> : visible.join("\n");
   const clipped = full ? "" : tail ? " is-clipped-head" : " is-clipped-tail";
   const moreFirst = tail && !full;
-  const more = <button ref={moreRef} type="button" className="tool-result-more" onClick={() => {
+  const more = <button ref={moreRef} type="button" className="tool-result-more" aria-expanded={full} onClick={() => {
     pending.current = { height: preRef.current?.offsetHeight ?? 0, top: moreRef.current?.getBoundingClientRect().top ?? 0 };
     setFull(!full);
   }}>
