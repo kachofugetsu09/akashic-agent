@@ -526,9 +526,8 @@ class _BoundChat:
                     # 保留真实发送证据和未知 usage，不声称第一次请求没有计费。
                     original_failure = failure
                     model_failure = ModelError.read(failure)
-                    partial_response = first_token or (
-                        model_failure.response_delta_seen if model_failure is not None
-                        else bool(getattr(failure, "response_delta_seen", False))
+                    partial_response = first_token or bool(getattr(failure, "response_delta_seen", False)) or (
+                        model_failure is not None and model_failure.response_delta_seen
                     )
                     evidence = None if model_failure is None else model_failure.send_evidence
                     retryable = model_failure is not None and not callback_failed and (
@@ -562,7 +561,7 @@ class _BoundChat:
                         retry_at = time.time()
                     if model_failure is not None:
                         # 预算用完时先说结论和下一步，最后一次失败原因放在后面。
-                        failure = ModelError.change(failure, message=(
+                        failure = ModelError.change(failure, response_delta_seen=partial_response, message=(
                             f"上游连续失败 {len(records) + 1} 次，已停止重试；已完成的工具结果仍保留，"
                             f"可以发「继续」重试。\n最后一次失败：模型 {descriptor.model} 调用失败：{failure}"
                         ) if exhausted else (
@@ -606,6 +605,9 @@ class _BoundChat:
                     duration_ms=(monotonic_ns() - started) / 1_000_000,
                     response=response,
                     first_token_ms=first_token_ms,
+                    estimated_input_tokens=max(1, self.estimate_context_tokens(
+                        request.messages, request.tools,
+                    )) if not request.system_prompt else None,
                 ))
                 log_timing("model.response.committed", operation_id=call_id, request_id=request_key)
                 response = replace(response, call_record_id=call_id)

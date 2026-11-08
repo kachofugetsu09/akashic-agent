@@ -484,11 +484,9 @@ async def _complete(
             if failure is None:
                 raise
             previews.close()
-            # 强制缩减重试每代至多一次，且只适用于可证明的容量拒绝——
-            # send_evidence="rejected" 是 provider HTTP 拒绝应答的正面证据；
-            # HTTP 200 流内失败无论是否观察到 delta 都不得缩减后重发同一
-            # 请求。
-            if reduce is None or failure.send_evidence != "rejected":
+            # 类型化容量拒绝也可能来自 HTTP 200 的流内错误码。
+            # 已有输出的流仍保留未知效果；缩减后使用新 key，至多再生成一次。
+            if reduce is None or failure.response_delta_seen:
                 raise
             prepared, summary = await reduce_request(prepared, request, force=True)
             if summary is None or summary == prepared.get("summary"):
