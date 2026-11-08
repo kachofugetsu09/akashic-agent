@@ -130,6 +130,8 @@ def response_facts(
         facts["content_refs"] = content_refs
     if content_transformed:
         facts["content_transformed"] = True
+    if response.finish_reason in {"length", "malformed_function_call"}:
+        facts["generation_rejection"] = response.finish_reason
     if reminder_input_id is not None:
         if not reminder_input_id:
             raise ValueError("reminder Input 身份不能为空")
@@ -162,8 +164,10 @@ def check_facts(part: ContentPart) -> ContentReferences:
     old_fields = {"call_record_id", "tool_ids", "thinking", "continuation"}
     new_fields = old_fields | {"wire_tool_calls", "reminder"}
     reminder_identity_fields = {"reminder_input_id", "reminder_sha256"}
-    if set(value) - {"content_refs", "content_transformed"} not in (old_fields, new_fields, new_fields | reminder_identity_fields):
+    if set(value) - {"content_refs", "content_transformed", "generation_rejection"} not in (old_fields, new_fields, new_fields | reminder_identity_fields):
         raise ValueError("model.facts 字段无效")
+    if "generation_rejection" in value and value["generation_rejection"] not in ("length", "malformed_function_call"):
+        raise ValueError("模型生成拒绝类型无效")
     if not isinstance(value["call_record_id"], str) or not value["call_record_id"]:
         raise ValueError("model.facts 缺少调用记录")
     if "content_refs" in value:
