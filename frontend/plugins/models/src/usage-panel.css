@@ -38,7 +38,7 @@
 .usage-row.muted, .usage-note { color: var(--chat-faint); font-size: var(--chat-type-caption); }
 .usage-note { margin: 0; line-height: 1.5; text-wrap: pretty; }
 .usage-row button, .usage-back, .usage-seg button, .usage-tabs button {
-  min-height: 28px; padding-inline: 8px; border: 0; border-radius: 6px; background: transparent;
+  min-height: 28px; padding-inline: 8px; border: 0; border-radius: var(--ak-radius-sm); background: transparent;
   color: var(--chat-muted); font: inherit; font-size: var(--chat-type-caption); cursor: pointer;
 }
 .usage-back { justify-self: start; }
@@ -139,7 +139,7 @@ button.usage-item { cursor: pointer; }
 /* 命中率点排：与柱同样的宽度与间距，逐轮对齐；上下两条细线是 100% 与 0。 */
 .usage-trend-hit { display: flex; height: 40px; gap: 2px; padding: 4px 0; border-block: 1px solid var(--chat-chip); }
 .usage-trend-hit > span { position: relative; max-width: 14px; min-width: 3px; flex: 1 1 0; }
-.usage-trend-hit i { position: absolute; left: 50%; width: 8px; height: 8px; margin: 0 0 -4px -4px; border-radius: 50%; background: var(--usage-miss); box-shadow: 0 0 0 2px var(--chat-surface, transparent); }
+.usage-trend-hit i { position: absolute; left: 50%; width: 8px; height: 8px; margin: 0 0 -4px -4px; border-radius: 50%; background: var(--usage-miss); }
 .usage-trend-hit > span[data-picked] i { outline: 1px solid var(--chat-faint); outline-offset: 1px; }
 .usage-step { display: grid; gap: 8px; padding-top: 8px; border-top: 1px solid var(--chat-chip); }
 @media (max-width: 520px) { .usage-context-head { grid-template-columns: 1fr; justify-items: center; } .usage-legend-grid[data-compact] { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

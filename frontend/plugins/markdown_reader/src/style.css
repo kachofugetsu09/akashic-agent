@@ -21,7 +21,7 @@
 .md-reader button {
   padding: 4px 8px;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--ak-radius-sm);
   background: transparent;
   color: var(--ak-ink-secondary);
   font: inherit;
@@ -124,7 +124,7 @@
   min-width: 0;
   padding: 5px 8px;
   border: 1px solid var(--ak-rule-default);
-  border-radius: 8px;
+  border-radius: var(--ak-radius-sm);
   background: var(--ak-paper-sheet);
   color: var(--ak-ink-primary);
   font: inherit;
@@ -253,7 +253,7 @@
 
 .md-reader article code {
   padding: 1px 4px;
-  border-radius: 4px;
+  border-radius: var(--ak-radius-xs);
   background: var(--ak-paper-sheet);
   font-family: var(--ak-type-technical);
   font-size: 0.86em;
@@ -263,7 +263,7 @@
   max-width: 100%;
   overflow: auto;
   padding: 14px 16px;
-  border-radius: 8px;
+  border-radius: var(--ak-radius-sm);
   background: var(--ak-paper-sheet);
   line-height: 1.6;
   white-space: pre;

@@ -36,8 +36,11 @@
   --ak-radius-lg: 16px;
   --ak-radius-full: 999px;
 
-  /* Surfaces: one scrim and one overlay elevation for every dialog. */
+  /* Surfaces: one scrim and three elevation steps, always from the shadow color
+     so dark themes never get a light glow. See design.md §2.2. */
   --ak-scrim-overlay: color-mix(in srgb, var(--ak-color-shadow) 28%, transparent);
+  --ak-elevation-raised: 0 1px 2px color-mix(in oklab, var(--ak-color-shadow) 12%, transparent);
+  --ak-elevation-float: 0 8px 24px color-mix(in oklab, var(--ak-color-shadow) 12%, transparent);
   --ak-elevation-overlay: 0 12px 32px color-mix(in oklab, var(--ak-color-shadow) 14%, transparent);
 
   /* Typography: three roles, each owning one job.

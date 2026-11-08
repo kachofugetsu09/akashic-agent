@@ -65,7 +65,7 @@ function readFavorites(): string[] {
 }
 
 /** 面板几何 + 缩放锚点：锚点走自定义属性，和 Radix 浮层用的是同一套表达。 */
-type PanelStyle = CSSProperties & Record<"--ak-pop-origin", string>;
+type PanelStyle = CSSProperties & Record<"--models-pop-origin", string>;
 
 // 紧凑浮层贴触发器定位：上下择宽处展开，横向钳在视口内边距里。
 function useFixedPanelStyle(open: boolean, triggerRef: RefObject<HTMLElement | null>, width: number) {
@@ -89,8 +89,8 @@ function useFixedPanelStyle(open: boolean, triggerRef: RefObject<HTMLElement | n
       const originX = Math.max(8, Math.min(rect.left + rect.width / 2 - left, width - 8));
       setStyle(
         openUp
-          ? { left, width, maxHeight, bottom: window.innerHeight - rect.top + PANEL_GAP, top: "auto", "--ak-pop-origin": `${originX}px bottom` }
-          : { left, width, maxHeight, top: rect.bottom + PANEL_GAP, bottom: "auto", "--ak-pop-origin": `${originX}px top` },
+          ? { left, width, maxHeight, bottom: window.innerHeight - rect.top + PANEL_GAP, top: "auto", "--models-pop-origin": `${originX}px bottom` }
+          : { left, width, maxHeight, top: rect.bottom + PANEL_GAP, bottom: "auto", "--models-pop-origin": `${originX}px top` },
       );
     }
     place();

@@ -35,6 +35,7 @@ Akashic 的设计语言由六条轴组成：纸面、墨色、规则线、字体
 | 墨色 | `--ak-ink-*` | primary / secondary / muted |
 | 规则线 | `--ak-rule-*` | subtle / default / strong / focus |
 | 形状 | `--ak-radius-*` | xs / sm / md / lg / full，见 2.1 |
+| 高度 | `--ak-elevation-*` | raised / float / overlay，见 2.2 |
 | 字体 | `--ak-type-*` | reading / technical |
 | 状态 | `--ak-color-status-*` / `--ak-sys-color-*` | success / warning / error / trace / info |
 | 动效 | `--ak-sys-motion-*` / `--ak-sys-duration-*` | 曲线与时长 |
@@ -49,7 +50,9 @@ Akashic 的设计语言由六条轴组成：纸面、墨色、规则线、字体
 | 输入卡文字 inset | `.chat-main` 的 `--composer-text-inset` | 宽屏 composer padding、stats 行；手机单行卡附件钮在文字前，文字位置由 `--composer-control-inset` 与附件钮决定；单行里输入框至少占 `min(45%, 9rem)`，模型名过长时模型钮省略 |
 | 侧栏留白 | `--chat-rail-inline` | 侧栏所有行的左竖线 |
 | 浮层遮罩 | `:root` 的 `--ak-scrim-overlay` | 设置弹窗、模型弹窗、窄屏侧栏与模型/思考强度抽屉（`--chat-scrim` 转接） |
-| 浮层阴影 | `:root` 的 `--ak-elevation-overlay` | 设置弹窗、模型弹窗、配置确认弹窗 |
+| 对话框阴影 | `:root` 的 `--ak-elevation-overlay` | 设置弹窗、模型弹窗、配置确认弹窗 |
+| 浮层阴影 | `:root` 的 `--ak-elevation-float` | 菜单、面板、提示、悬浮条 |
+| 贴面阴影 | `:root` 的 `--ak-elevation-raised` | 附件卡、开关拇指、分段选中项 |
 
 遮罩只压暗、不提亮：基于 `--ak-color-shadow`（深色主题为黑），不得用墨色混色——深色主题的墨色是浅色，会把背景刷灰。深色底需要更高不透明度（22% / 45%，`light-dark()`，不支持时 28%）。浮层阴影同样基于 `--ak-color-shadow`，深色主题不产生浅色光晕。
 
@@ -77,6 +80,19 @@ Akashic 的设计语言由六条轴组成：纸面、墨色、规则线、字体
 - 裁切不吃圆角：子元素要贴近父级边缘（负外边距外扩）时，父级不能用 `overflow: hidden` 把它裁回直角；要么放开裁切，要么不外扩。
 - 圆角不超过短边的一半；超过后浏览器会等比缩小所有角，内层再按原值推导就不同心了。
 - 会长高的胶囊只有一种形状：输入卡的圆角取单行高度的一半（`--composer-radius`：桌面 48→24、平板与矮屏 56→28、手机 52→26），单行时是胶囊，长高后保持同一圆角，不在聚焦或换行时从胶囊变成方卡。卡内按钮离外缘等距（`--composer-control-inset`），做成圆形，与卡片同心。
+
+### 2.2 外观依赖合同
+
+插件和宿主的外观只通过公开 token 相连。`npm run check:css-tokens`（`scripts/check_css_tokens.mjs`）检查入库的源码 CSS，CI 同样会跑；它按目录判断 owner，不认识任何具体插件（[0147](../docs/decisions/0147-appearance-dependencies-are-machine-checked.md)）。
+
+- 依赖方向：变量只能解析到自己或宿主。插件之间不共享私有变量，宿主不依赖任何插件。
+- 命名空间：`--ak-*`、`--md-*`、`--chat-*` 归宿主。插件的私有变量用自己的前缀。
+- 没有定义的变量算错误，有回退值也一样：回退值会把失效的 token 藏起来。
+- 圆角取 `--ak-radius-*`，不写回退值。例外：`0`、`50%`、`100%`，以及小于 `xs`（4px）的细线、刻度和数据标记。
+- 带模糊的外投影取 `--ak-elevation-*`，它们都基于 `--ak-color-shadow`，深色主题不产生浅色光晕。内描边和焦点环（模糊为 0）是结构线，不算高度。
+- 确需例外时在声明前写 `/* token-exempt: 理由 */`，理由不能为空。
+
+已知范围：检查只覆盖本仓库的 CSS 声明。外置插件的仓库、JS 内联样式、裸颜色和裸字号不在其中；选择器伸进别人结构的情况只能靠评审。
 
 ## 3. 布局与对齐合同
 

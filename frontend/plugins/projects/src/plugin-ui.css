@@ -6,7 +6,7 @@
   min-width: 0;
   height: 44px;
   border: 1px solid var(--ak-rule-default);
-  border-radius: 8px;
+  border-radius: var(--ak-radius-sm);
   padding-inline: 12px;
   color: inherit;
   background: var(--ak-paper-canvas);
@@ -27,7 +27,7 @@
 .projects-ui-pending button {
   min-height: 44px;
   border: 1px solid var(--ak-rule-default);
-  border-radius: 8px;
+  border-radius: var(--ak-radius-sm);
   padding: 8px 12px;
   color: inherit;
   background: transparent;
@@ -45,7 +45,7 @@
   overflow-y: auto;
   margin: 4px 6px 10px;
   border: 1px solid var(--ak-rule-subtle);
-  border-radius: 8px;
+  border-radius: var(--ak-radius-sm);
   padding: 10px;
   color: var(--ak-ink-secondary);
   font-size: 0.75rem;

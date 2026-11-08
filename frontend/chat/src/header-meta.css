@@ -31,7 +31,7 @@
 /* 会话信息面板：桌面锚在说明行下方，紧凑外壳是底部抽屉；每个范围一节，子项按层级缩进。 */
 .header-meta-panel { position: fixed; z-index: 60; display: grid; gap: 2px; inline-size: min(26rem, calc(100vw - 32px));
   max-block-size: min(28rem, calc(100dvh - 8rem)); overflow: auto; padding: 4px 6px 8px; border: 1px solid var(--chat-line);
-  border-radius: var(--ak-radius-md); background: var(--ak-paper-canvas); box-shadow: 0 8px 24px color-mix(in oklab, var(--ak-ink-primary) 12%, transparent);
+  border-radius: var(--ak-radius-md); background: var(--ak-paper-canvas); box-shadow: var(--ak-elevation-float);
   color: var(--chat-muted); font-size: var(--chat-type-control, 0.875rem); }
 .header-meta-panel[data-sheet] { inset: auto 0 0; inline-size: auto; max-block-size: 78dvh;
   padding: 8px 8px max(16px, env(safe-area-inset-bottom, 0px)); border-radius: var(--ak-radius-lg) var(--ak-radius-lg) 0 0; }

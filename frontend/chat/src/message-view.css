@@ -278,7 +278,7 @@
 }
 
 .reading-file-link:focus-visible {
-  border-radius: 0.3125rem;
+  border-radius: var(--ak-radius-xs);
   outline: 2px solid var(--ak-rule-focus);
   outline-offset: 1px;
 }
@@ -1013,6 +1013,7 @@
   color: var(--ak-ink-muted);
   background: var(--ak-paper-quiet);
   /* 贴住块的右上角，不留露出滚动文字的缝；横滚的长行在按钮左侧 16px 内淡出，不被硬切。 */
+  /* token-exempt: 这是用纸面色做的渐隐遮罩，不是高度 */
   box-shadow: -16px 0 12px -4px var(--ak-paper-quiet);
   cursor: pointer;
 }
@@ -2437,7 +2438,7 @@ button.tool-step-summary:active {
   border-radius: var(--ak-radius-full);
   color: var(--ak-color-bg-canvas);
   background: var(--ak-ink-primary);
-  box-shadow: 0 2px 8px color-mix(in oklab, var(--ak-ink-primary) 18%, transparent);
+  box-shadow: var(--ak-elevation-float);
   font-size: 0.8125rem;
   cursor: pointer;
   translate: -50% -100%;
@@ -2502,7 +2503,6 @@ button.tool-step-summary:active {
 .composer-reference__notice {
   padding: 4px 12px 0;
   color: var(--md-sys-color-on-surface-variant);
-  font-size: var(--md-sys-typescale-body-small-size);
 }
 
 /* 拖会话进来时整张卡片描边；文件拖放用的是另一层遮罩，两者互不覆盖。 */

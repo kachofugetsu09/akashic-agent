@@ -21,7 +21,7 @@
 
 .terminal-tool {
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--ak-radius-sm);
   color: var(--ak-ink-secondary);
   background: transparent;
   font: 12px/1.2 "JetBrains Mono", ui-monospace, monospace;
@@ -45,7 +45,7 @@
   min-width: 0;
   padding: 5px 8px;
   border: 1px solid var(--ak-rule-default);
-  border-radius: 6px;
+  border-radius: var(--ak-radius-sm);
   color: var(--ak-ink-primary);
   background: var(--ak-paper-canvas);
   font: 12px/1.2 "JetBrains Mono", ui-monospace, monospace;

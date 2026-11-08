@@ -148,10 +148,12 @@
   /* --band-indicator-x uses physical offsetLeft in both writing directions. */
   left: 0;
   bottom: 0;
+  /* token-exempt: 顶栏归 shell_ui 所有，这份样式待迁出 theme */
   width: var(--band-indicator-w, 0);
   height: 2px;
   border-radius: 1px 1px 0 0;
   background: var(--ak-rule-focus);
+  /* token-exempt: 顶栏归 shell_ui 所有，这份样式待迁出 theme */
   transform: translateX(var(--band-indicator-x, 0));
   transition:
     transform var(--ak-sys-duration-medium) var(--ak-sys-motion-emphasized),

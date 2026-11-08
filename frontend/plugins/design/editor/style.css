@@ -56,7 +56,7 @@ body {
   max-width: 24ch;
   padding: 4px 6px;
   border: 1px solid var(--ak-rule-default);
-  border-radius: 6px;
+  border-radius: var(--ak-radius-sm);
   color: inherit;
   background: var(--ak-paper-canvas);
 }
@@ -72,7 +72,7 @@ body {
 .design-status.is-error { color: var(--ak-color-status-error); }
 .design-status.is-alert {
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--ak-radius-sm);
   padding: 4px 8px;
   color: var(--ak-color-status-warning);
   background: transparent;
@@ -90,7 +90,7 @@ body {
   width: 32px;
   height: 32px;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--ak-radius-sm);
   color: var(--ak-ink-secondary);
   background: transparent;
   cursor: pointer;
@@ -157,9 +157,9 @@ body {
   gap: 2px;
   padding: 4px;
   border: 1px solid var(--ak-rule-default);
-  border-radius: 12px;
+  border-radius: var(--ak-radius-md);
   background: var(--ak-paper-sheet);
-  box-shadow: 0 4px 16px rgb(0 0 0 / 12%);
+  box-shadow: var(--ak-elevation-float);
   transform: translateX(-50%);
 }
 
@@ -187,7 +187,7 @@ body {
 .design-primary {
   padding: 8px 16px;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--ak-radius-sm);
   color: var(--ak-paper-sheet);
   background: var(--ak-ink-primary);
   font: inherit;
@@ -211,7 +211,7 @@ body {
     position: absolute;
     inset-block: 0;
     z-index: 2;
-    box-shadow: 0 8px 24px rgb(0 0 0 / 16%);
+    box-shadow: var(--ak-elevation-float);
   }
 
   .design-panel-start { inset-inline-start: 0; }
@@ -242,7 +242,7 @@ body {
   width: 24px;
   height: 24px;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--ak-radius-sm);
   color: var(--ak-ink-secondary);
   background: transparent;
   cursor: pointer;
@@ -268,7 +268,7 @@ body {
   width: 100%;
   padding: 6px 8px;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--ak-radius-sm);
   color: inherit;
   background: transparent;
   font: inherit;
@@ -282,7 +282,7 @@ body {
   gap: 4px;
   min-height: 28px;
   padding-inline-end: 4px;
-  border-radius: 6px;
+  border-radius: var(--ak-radius-sm);
   cursor: default;
 }
 
@@ -314,7 +314,7 @@ body {
   width: 22px;
   height: 22px;
   border: 0;
-  border-radius: 4px;
+  border-radius: var(--ak-radius-xs);
   color: var(--ak-ink-muted);
   background: transparent;
   opacity: 0;
@@ -330,7 +330,7 @@ body {
   min-width: 0;
   padding: 4px 6px;
   border: 1px solid var(--ak-rule-default);
-  border-radius: 6px;
+  border-radius: var(--ak-radius-sm);
   color: inherit;
   background: var(--ak-paper-canvas);
   font: inherit;
@@ -379,14 +379,14 @@ body {
   gap: 2px;
   margin-inline-start: 8px;
   padding: 2px;
-  border-radius: 8px;
+  border-radius: var(--ak-radius-sm);
   background: var(--ak-paper-raised);
 }
 
 .design-view {
   padding: 3px 10px;
   border: 0;
-  border-radius: 6px;
+  border-radius: calc(var(--ak-radius-sm) - 2px);
   color: var(--ak-ink-secondary);
   background: transparent;
   font: inherit;
@@ -397,7 +397,7 @@ body {
 .design-view[aria-pressed="true"] {
   color: var(--ak-ink-primary);
   background: var(--ak-paper-sheet);
-  box-shadow: 0 1px 2px rgb(0 0 0 / 10%);
+  box-shadow: var(--ak-elevation-raised);
 }
 
 .design-view:focus-visible {
@@ -410,7 +410,7 @@ body {
   margin-inline-start: 8px;
   padding: 3px 10px;
   border: 1px solid var(--ak-rule-default);
-  border-radius: 6px;
+  border-radius: var(--ak-radius-sm);
   color: var(--ak-ink-primary);
   background: var(--ak-paper-sheet);
   font: inherit;

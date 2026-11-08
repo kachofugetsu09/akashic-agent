@@ -23,7 +23,7 @@
   overflow: hidden;
   list-style: none;
   border: 1px solid var(--ak-rule-subtle);
-  border-radius: 12px;
+  border-radius: var(--ak-radius-md);
   background: var(--ak-paper-sheet);
 }
 
@@ -174,7 +174,7 @@
   min-height: 44px;
   padding-inline: 10px;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--ak-radius-sm);
   background: transparent;
   color: var(--ak-ink-muted);
   font: inherit;
@@ -235,7 +235,7 @@
   min-width: 132px;
   padding-inline: 22px;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--ak-radius-sm);
   background: var(--ak-color-action-primary);
   color: var(--ak-paper-editing);
   font: inherit;
@@ -334,7 +334,7 @@
   gap: 4px 16px;
   padding: 16px 18px;
   border: 1px solid var(--ak-rule-default);
-  border-radius: 12px;
+  border-radius: var(--ak-radius-md);
   background: var(--ak-paper-editing);
   transition: border-color 160ms ease, background-color 160ms ease;
 }
@@ -372,7 +372,7 @@
   margin-top: 2px;
   padding: 0;
   border: 0;
-  border-radius: 999px;
+  border-radius: var(--ak-radius-full);
   background: var(--ak-rule-strong);
   cursor: pointer;
   transition: background-color 180ms ease;
@@ -394,7 +394,7 @@
   height: 20px;
   border-radius: 50%;
   background: var(--ak-paper-editing);
-  box-shadow: 0 1px 2px rgb(0 0 0 / 0.25);
+  box-shadow: var(--ak-elevation-raised);
   transition: transform 200ms var(--ak-sys-motion-standard, cubic-bezier(0.2, 0, 0, 1));
 }
 
@@ -411,7 +411,7 @@
   grid-row: 1;
   align-self: start;
   padding: 2px 10px;
-  border-radius: 999px;
+  border-radius: var(--ak-radius-full);
   background: color-mix(in oklab, var(--ak-color-status-success) 12%, transparent);
   color: var(--ak-color-status-success);
   font-size: 0.75rem;
@@ -423,7 +423,7 @@
   gap: 8px;
   margin-top: 12px;
   padding: 12px 14px;
-  border-radius: 8px;
+  border-radius: var(--ak-radius-sm);
   background: var(--ak-paper-quiet);
   font-size: 0.875rem;
 }
@@ -462,7 +462,7 @@
   gap: 4px;
   margin: 0;
   padding: 14px 16px;
-  border-radius: 8px;
+  border-radius: var(--ak-radius-sm);
   background: rgb(var(--ak-color-status-warning-rgb) / 0.08);
   color: var(--ak-ink-secondary);
   font-size: 0.9375rem;

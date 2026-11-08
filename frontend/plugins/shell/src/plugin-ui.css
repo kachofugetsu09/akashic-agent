@@ -3,7 +3,7 @@
   display: grid;
   gap: 4px;
   min-width: 0;
-  border-radius: 8px;
+  border-radius: var(--ak-radius-sm);
   padding: 8px 10px 4px;
   background: color-mix(in oklab, var(--ak-ink-primary) 4%, transparent);
 }

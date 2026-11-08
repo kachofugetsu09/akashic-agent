@@ -17,6 +17,7 @@
     "baseline:webui-performance:build": "node scripts/webui-performance/run-build-baseline.mjs --update-baseline",
     "baseline:webui-performance:browser": "node scripts/webui-performance/run-browser-scenarios.mjs --update-baseline",
     "typecheck": "tsc --noEmit && tsc --noEmit -p frontend/plugins/design/editor/tsconfig.json",
+    "check:css-tokens": "node scripts/check_css_tokens.mjs",
     "check:narrow-ui": "node scripts/check_narrow_ui.mjs"
   },
   "devDependencies": {
