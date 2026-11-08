@@ -9,8 +9,8 @@ from typing import cast
 from agent.plugin_composition.tasks import TaskAdmission, TaskSlot
 from core.common.file_io import run_file_io
 from .api import Denied, MessageReply, Result, durable_call_key
-from .execution import _fingerprint, finish
-from plugins.ledger.contract import MessageCatalog, MessageReader, OwnerStore, OwnerTransaction
+from .execution import _fingerprint, commit_message, finish
+from plugins.ledger.contract import MessageCatalog, MessageReader, OwnerRecord, OwnerStore, OwnerTransaction
 from plugins.ledger.contract import CallRef, ContentPart, Control, Message, Output, ToolCall, ToolResult
 
 
@@ -28,8 +28,29 @@ def _existing_result(reader: MessageReader, call_ref: CallRef) -> ToolResult | N
     return reader.scan(first, after_seq=-1 if call is None else call.seq)
 
 
-class LegacyReplyIdentityUnavailable(ValueError):
-    """旧回执使用自定义结果身份，但没有保存可恢复的明文身份。"""
+# 旧回执无法解释时保留原记录，由调用消息身份追加明确的未知效果终态。
+def _reply_target(reply: MessageReply, record: OwnerRecord | None) -> MessageReply:
+    if record is None:
+        return reply
+    phase = record.value.get("phase")
+    if not isinstance(phase, str) or phase not in {"requested", "prepared", "started", "done"}:
+        raise ValueError("工具回执阶段无效")
+    if "reply_id" in record.value:
+        identity = record.value["reply_id"]
+        if not isinstance(identity, str):
+            raise ValueError("消息工具回执缺少结果身份")
+        target = replace(reply, message_id=identity)
+    else:
+        target = reply
+        result = record.value.get("result")
+        if record.value["phase"] == "done" and isinstance(result, Mapping):
+            identity = cast(Mapping[str, object], result).get("message_id")
+            if isinstance(identity, str):
+                target = replace(reply, message_id=identity)
+    call = target.request()
+    if record.value.get("request") != _fingerprint(call.binding_id, call.arguments, target):
+        raise ValueError("旧工具回执缺少可恢复的结果身份或与原请求不一致")
+    return target
 
 
 async def abandon_call(
@@ -43,46 +64,33 @@ async def abandon_call(
     key = durable_call_key(reply.call_ref)
 
     async def settle(slot: TaskSlot) -> Result:
-        # 回执与已有结果的读取放进 worker：启动扫描时机械盘冷读曾让事件循环停顿 2.2s。
-        record = await run_file_io(lambda: state.read(key))
-        if record is None:
-            existing = await run_file_io(lambda: _existing_result(reply.reader, reply.call_ref))
-            if existing is not None:
-                if slot.current is not None:
-                    slot.current.cancel()
-                return Result(existing.outcome, existing.parts)
-        if record is not None and "reply_id" in record.value:
-            identity = record.value["reply_id"]
-            if not isinstance(identity, str):
-                raise ValueError("消息工具回执缺少结果身份")
-            target = replace(reply, message_id=identity)
-        else:
-            target = reply
-            if record is not None and record.value["phase"] == "done":
-                result = record.value.get("result")
-                if isinstance(result, Mapping) and isinstance(result.get("message_id"), str):
-                    target = replace(reply, message_id=cast(str, result["message_id"]))
-        call = await run_file_io(target.request)
-        fingerprint = _fingerprint(call.binding_id, call.arguments, target)
-        if record is not None:
-            if record.value["request"] != fingerprint:
-                if "reply_id" not in record.value:
-                    raise LegacyReplyIdentityUnavailable(
-                        f"旧工具回执缺少可恢复的结果身份 call={reply.call_ref.message_id}:{reply.call_ref.part_index}"
-                    )
-                raise ValueError("放弃的工具回执与原请求不一致")
-            if record.value["phase"] == "done":
-                if slot.current is not None:
-                    slot.current.cancel()
-                done = record.value["result"]
-                return await run_file_io(lambda: target.read(done))
-            if record.value["phase"] not in {"requested", "prepared", "started"}:
-                raise ValueError("工具回执阶段无效")
-        # 无阶段回执不能证明未执行；重启后内存 Task 已丢失，仍须保留效果不确定性。
-        may_have_started = record is None or record.value["phase"] == "started"
         def cancel_after_commit(_result: Result) -> None:
             if slot.current is not None:
                 slot.current.cancel()
+
+        # 回执与已有结果的读取放进 worker：启动扫描时机械盘冷读曾让事件循环停顿 2.2s。
+        record = await run_file_io(lambda: state.read(key))
+        existing = await run_file_io(lambda: _existing_result(reply.reader, reply.call_ref))
+        if existing is not None:
+            result = Result(existing.outcome, existing.parts)
+            cancel_after_commit(result)
+            return result
+        try:
+            target = await run_file_io(lambda: _reply_target(reply, record))
+            if record is not None and record.value["phase"] == "done":
+                done = record.value.get("result")
+                result = await run_file_io(lambda: target.read(done))
+                cancel_after_commit(result)
+                return result
+        except ValueError as error:
+            return await commit_message(state, reply, Result("error", (ContentPart(
+                "text", f"用户已放弃此工作；旧工具回执无法恢复，结果未知: {error}。"
+                "可能已产生副作用，请先检查当前状态，不要直接重复原操作。",
+            ),)), on_commit=cancel_after_commit)
+        call = await run_file_io(target.request)
+        fingerprint = _fingerprint(call.binding_id, call.arguments, target)
+        # 无阶段回执不能证明未执行；重启后内存 Task 已丢失，仍须保留效果不确定性。
+        may_have_started = record is None or record.value["phase"] == "started"
 
         result = await finish(
             state, key, record,
@@ -180,10 +188,7 @@ async def follow_abandon(
                         for ref in refs:
                             try:
                                 async with reply(reader, control.source, ref) as target:
-                                    try:
-                                        _ = await abandon_call(state, tasks, target, task_key=task_key)
-                                    except LegacyReplyIdentityUnavailable as error:
-                                        _ = report_incident("legacy_tool_reply_identity", str(error))
+                                    _ = await abandon_call(state, tasks, target, task_key=task_key)
                             except asyncio.CancelledError:
                                 raise
                             except Exception as error:

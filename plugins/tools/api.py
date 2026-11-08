@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
+import re
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from typing import Literal, cast
@@ -8,6 +9,7 @@ from typing import Literal, cast
 from plugins.ledger.contract import MessageReader, MessageWriter, OwnerStore
 from plugins.ledger.contract import (
     CallRef,
+    ContentPart,
     Control,
     Output,
     ToolCall,
@@ -34,11 +36,15 @@ def result_message_id(call_ref: CallRef) -> str:
 
 def coerce_result(value: object) -> Result:
     """在 tools 执行边界接纳 provider 结果并重新校验内容。"""
-    if isinstance(value, Result):
-        return value
     if not isinstance(value, ResultLike):
         raise TypeError("工具结果必须提供 outcome 和 parts")
-    return Result(value.outcome, tuple(value.parts))
+    # JSON 可携带被 UTF-16 截断的文本；替换孤立代理字符后才能写入 UTF-8 账本。
+    parts = tuple(
+        ContentPart("text", re.sub(r"[\ud800-\udfff]", "\ufffd", part.value))
+        if part.kind == "text" and isinstance(part.value, str) else part
+        for part in value.parts
+    )
+    return Result(value.outcome, parts)
 
 
 @dataclass(frozen=True, slots=True)

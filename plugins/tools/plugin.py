@@ -78,11 +78,13 @@ def _batch_error(bindings: Bindings, source: CallSource) -> str | None:
     if not isinstance(output, Output):
         raise ValueError("工具调用来源必须是 Output")
     calls = tuple(part for part in output.parts if isinstance(part, ToolCall))
-    if len(calls) > 1 and any(
-        cast(Mapping[str, object], bindings.describe(call.binding_id, TOOLS)["tool"]).get("exclusive_batch") is True
-        for call in calls
-    ):
-        return "此批次包含要求独占的工具；整批未执行，请单独调用该工具。"
+    if len(calls) > 1:
+        exclusive = tuple(
+            str(description["name"]) for call in calls
+            if (description := cast(Mapping[str, object], bindings.describe(call.binding_id, TOOLS)["tool"])).get("exclusive_batch") is True
+        )
+        if exclusive:
+            return f"此批次包含要求独占的工具 {', '.join(exclusive)}；整批未执行，请分别单独调用这些工具。"
     return None
 
 

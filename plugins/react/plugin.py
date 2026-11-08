@@ -670,16 +670,18 @@ async def react(
             actual_calls: list[ToolCall | ContentPart] = []
             calls = () if rejection is not None else response.tool_calls
             decoded_calls = tuple(tools.decode(call) for call in calls)
-            mixed_exclusive = len(decoded_calls) > 1 and any(
-                decoded.binding_id is not None and decoded.exclusive_batch
+            exclusive_names = tuple(
+                tools.name(decoded.binding_id)
                 for decoded in decoded_calls
+                if decoded.binding_id is not None and decoded.exclusive_batch
             )
+            mixed_exclusive = len(decoded_calls) > 1 and bool(exclusive_names)
             for call, decoded_call in zip(calls, decoded_calls, strict=True):
                 indices.append(len(parts))
                 if mixed_exclusive:
                     actual = ContentPart("model.tool_rejection", {
                         "name": call.name, "arguments": call.arguments,
-                        "error": "此批次包含要求独占的工具；整批未执行，请单独调用该工具。",
+                        "error": f"此批次包含要求独占的工具 {', '.join(exclusive_names)}；整批未执行，请分别单独调用这些工具。",
                     })
                 elif decoded_call.rejection is not None:
                     actual = ContentPart("model.tool_rejection", decoded_call.rejection)
