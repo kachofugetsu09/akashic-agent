@@ -6,6 +6,7 @@ import json
 from collections.abc import Awaitable, Callable, Hashable, Mapping
 from contextlib import AsyncExitStack
 from typing import cast
+from types import TracebackType
 
 from agent.plugin_composition.tasks import Task, TaskAdmission, TaskSlot
 from agent.plugin_composition.tasks import ExternalRootPermit
@@ -31,6 +32,30 @@ from .api import (
     coerce_result, durable_call_key, result_message_id,
 )
 from plugins.tools.contract import PROCESS_STARTED_AT
+
+
+# Turn provider cleanup failures into receipts without hiding invoke cancellation.
+class _MessageToolScope(AsyncExitStack):
+    async def __aexit__(
+        self, exc_type: type[BaseException] | None, exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> bool | None:
+        try:
+            return await super().__aexit__(exc_type, exc, traceback)
+        except Exception as error:
+            if error is exc:
+                raise
+            result = _tool_failure(
+                "工具资源清理失败；效果可能已发生，请先检查状态，不要重复原操作", error,
+            )
+            original: BaseException = error
+            if isinstance(exc, _Failed):
+                result = Result(exc.result.outcome, (*exc.result.parts, *result.parts))
+                original = exc.original
+            elif exc is not None and not isinstance(exc, Exception):
+                result = Result("interrupted", result.parts)
+                original = exc
+            raise _Failed(result, original) from error
 
 
 class ToolExecution:
@@ -266,7 +291,7 @@ class ToolExecution:
         self, task: Task, key: str, binding_id: str, arguments: Mapping[str, object],
         reply: MessageReply, source: CallSource | None, mark: Callable[[str], None],
     ) -> Result:
-        async with AsyncExitStack() as stack:
+        async with _MessageToolScope() as stack:
             try:
                 tool = await stack.enter_async_context(self._open_tool(binding_id))
             except Exception as error:
