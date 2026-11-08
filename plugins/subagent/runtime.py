@@ -303,6 +303,46 @@ class Subagents:
             return True
         return False
 
+    # Save report failure under the child source before releasing the parent lane.
+    async def _report_failure(
+        self, request: Request, parent: MessageReader, reason: str, check_admission: SourceGuard,
+    ) -> Message:
+        writer = self.ctx.require(MESSAGE_WRITERS).bind(
+            self.ctx, author="subagent", source=request.session_id, body_types=(Control,), content={},
+        )(parent.session_id)
+        try:
+            head = parent.head(source=request.session_id)
+            prepared = await writer.prepare_async(
+                request.input_id + ":report-failure", Control("failure", parent.head(), reason),
+            )
+            def commit(tx: OwnerTransaction) -> Message:
+                check_admission(transaction=tx)
+                return tx.append_prepared(prepared, expected_source_head=head)
+            return await self.ctx.require(OWNER_STATE).open(self.ctx).transact_async(commit)
+        finally:
+            writer.expire()
+
+    # Turn a saved report control into sendable text without another model call.
+    async def _report_notice(
+        self, request: Request, parent: MessageReader, message: Message, outcome: tuple[str, str],
+    ) -> Message:
+        assert isinstance(message.body, Control)
+        text = (f"后台任务「{request.label}」的自动回报失败。\n"
+                f"任务执行状态：{outcome[0]}；回报状态：{message.body.action}\n"
+                f"原因：{message.body.reason or '回报已停止'}\n"
+                f"原结果保存在 Session：{request.session_id}；任务消息：{request.input_id}。\n"
+                "自动回报已停止，执行名额已释放。请查看原结果，或明确要求重新汇报。")
+        writer = self.ctx.require(MESSAGE_WRITERS).bind(
+            self.ctx, author="subagent", source=request.session_id, body_types=(Output,),
+            content={"text": self.ctx.require(CONTENT).check_text},
+        )(parent.session_id)
+        try:
+            return await writer.append_async(
+                message.message_id + ":notice", Output((ContentPart("text", text),), "complete"),
+            )
+        finally:
+            writer.expire()
+
     async def _announce(self, key: str, request: Request, reader: MessageReader, outcome: tuple[str, str]) -> bool:
         """主程序读取低信任结果；原最终消息和发送回执共同承担崩溃恢复。"""
         ctx = self.ctx
@@ -311,8 +351,10 @@ class Subagents:
         async def finished() -> Message | None:
             messages = await parent.snapshot_async(through_seq=parent.head())
             return next((item for item in reversed(messages)
-                         if item.source == source and isinstance(item.body, Output)
-                         and item.body.finish in {"complete", "quiet"}), None)
+                         if item.source == source and (
+                             isinstance(item.body, Output) and item.body.finish in {"complete", "quiet"}
+                             or isinstance(item.body, Control) and item.body.action in {"failure", "abandon", "pause"}
+                         )), None)
 
         # 1. 原 job 独占来源；已完成的主回复不因发送失败再调用模型。
         message = await finished()
@@ -332,8 +374,19 @@ class Subagents:
                 message = await finished()
                 if message is not None:
                     return message
-                return await ctx.require(REPLY_PROGRAM)(task, current, source, extra, check_admission=check_admission)
+                try:
+                    return await ctx.require(REPLY_PROGRAM)(task, current, source, extra, check_admission=check_admission)
+                except (Exception, asyncio.CancelledError) as error:
+                    if not task.active:
+                        raise
+                    async with ctx.runtime_scope():
+                        return await self._report_failure(
+                            request, current, str(error) or type(error).__name__, check_admission,
+                        )
             message = await ctx.require(CONVERSATION_COMPLETE)(parent.session_id, report)
+
+        if isinstance(message.body, Control):
+            message = await self._report_notice(request, parent, message, outcome)
 
         # 2. 原发送成功或失败都关闭通知；失败回执保留，不重复回传。
         assert request.sink is not None
