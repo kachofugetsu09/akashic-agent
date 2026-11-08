@@ -7,6 +7,7 @@ from contextlib import AbstractContextManager, AsyncExitStack, nullcontext
 from typing import cast
 
 from agent.plugin_composition.tasks import Task, TaskAdmission, TaskSlot
+from agent.plugin_composition import CompositionError
 from plugins.ledger.contract import MessageCatalog, MessageReader, MessageWriter, OwnerRecord
 from plugins.delivery.contract import (
     StartGuard,
@@ -35,6 +36,9 @@ class Deliveries:
     async def prepare_async(self, reader: MessageReader, message: Message,
                             sinks: tuple[Sink | Mapping[str, object], ...], *, passive: bool = False) -> Selection:
         return await self._records.prepare_async(reader, message, sinks, passive=passive)
+
+    async def reject_async(self, reader: MessageReader, message: Message, reason: str) -> Selection:
+        return await self._records.reject_async(reader, message, reason)
 
     async def publish_async(self, writer: MessageWriter, message_id: str, body: Body,
                             sinks: tuple[Sink | Mapping[str, object], ...], *, passive: bool = False) -> tuple[Message, Selection]:
@@ -193,7 +197,21 @@ class Deliveries:
             if delivery.phase in {"delivered", "rejected", "failed"}:
                 assert delivery.receipt is not None
                 return delivery.receipt
-            sender = await scope.enter_async_context(self._open_sender(delivery.sink.binding_id))
+            # Opening has no external send effect; retry briefly, then close the record visibly.
+            for attempt in range(3):
+                try:
+                    sender = await scope.enter_async_context(self._open_sender(delivery.sink.binding_id))
+                    break
+                except (CompositionError, KeyError, OSError, ValueError) as error:
+                    if attempt < 2:
+                        await asyncio.sleep(2 ** attempt)
+                        continue
+                    result = Receipt(status="rejected" if delivery.phase == "prepared" else "failed",
+                        error=f"发送者无法打开（{type(error).__name__}）；"
+                              + ("尚未发送" if delivery.phase == "prepared" else "原发送结果未知，不自动重发"))
+                    _ = await self._records.save_async(message_id, record, Delivery(
+                        sink=delivery.sink, phase=result.status, receipt=result))
+                    return result
             # 1. 恢复已开始的发送；查询原回执，只有幂等协议允许重发。
             if delivery.phase == "started":
                 found = await sender.query(key, delivery.sink.address)

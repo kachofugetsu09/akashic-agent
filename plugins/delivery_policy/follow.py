@@ -15,6 +15,10 @@ logger = logging.getLogger(__name__)
 Select = Callable[[MessageReader, Message], tuple[Mapping[str, object], ...] | None]
 
 
+class RouteError(ValueError):
+    """An input route cannot currently name a valid sender."""
+
+
 @dataclass(slots=True)
 class _Wake:
     changed: bool = True
@@ -26,6 +30,7 @@ class _Destination:
     position: int
     changed: asyncio.Event = field(default_factory=asyncio.Event)
     recovery: list[tuple[int, str]] = field(default_factory=list)
+    running: bool = False
 
 
 async def follow(
@@ -52,6 +57,16 @@ async def follow(
                 settled(message_id, sink)
 
     async def send_destination(session_id: str, sink: str, destination: _Destination) -> None:
+        try:
+            await drain_destination(session_id, sink, destination)
+        except Exception as error:
+            # Keep this destination's position for the next wake; other workers stay alive.
+            _ = ctx.report_incident("delivery-destination", f"session={session_id} sink={sink}: {error!r}")
+            logger.exception("投递目标暂停，等待下次唤醒 session=%s sink=%s", session_id, sink)
+        finally:
+            destination.running = False
+
+    async def drain_destination(session_id: str, sink: str, destination: _Destination) -> None:
         """Read this destination's ordered backlog from durable selections."""
         reader = catalog.reader(session_id)
         for _, message_id in sorted(destination.recovery):
@@ -81,7 +96,9 @@ async def follow(
         destination = destinations.get(key)
         if destination is None:
             destination = destinations[key] = _Destination(owner, position)
-            group.create_task(send_destination(session_id, sink, destination))
+        if not destination.running:
+            destination.running = True
+            _ = group.create_task(send_destination(session_id, sink, destination))
         destination.changed.set()
         return destination
 
@@ -101,11 +118,15 @@ async def follow(
                     async with ctx.runtime_scope():
                         delivery = execution()
                         # 整批选择一次事务提交；选路事实仍按消息逐条固定。
-                        batch = tuple(
-                            (message, select(reader, message) if delivery.selection(message.message_id) is None else ())
-                            for message in messages
-                        )
-                        selected_batch = await delivery.consume_batch_async(reader, batch, passive=True)
+                        batch: list[tuple[Message, tuple[Mapping[str, object], ...] | None]] = []
+                        for message in messages:
+                            try:
+                                sinks = select(reader, message) if delivery.selection(message.message_id) is None else ()
+                            except RouteError as error:
+                                _ = await delivery.reject_async(reader, message, str(error))
+                                sinks = ()
+                            batch.append((message, sinks))
+                        selected_batch = await delivery.consume_batch_async(reader, tuple(batch), passive=True)
                     for message, selected in zip(messages, selected_batch):
                         if selected is not None:
                             for sink in selected.sinks:

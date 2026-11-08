@@ -1,4 +1,4 @@
-"""每个 Telegram 请求只发送一次；不确定效果交还 Delivery。"""
+"""仅重试明确未发送的 Telegram 请求；不确定效果交还 Delivery。"""
 import asyncio
 import json
 from dataclasses import dataclass
@@ -149,14 +149,17 @@ class TelegramSender:
         if not requests:
             return SendResult(status="rejected", error="消息没有可发送正文或附件")
 
-        # 2. 不重试超时、断连或已成功前缀；错误文本不包含凭据 URL。
+        # 2. Each chunk retries only before a confirmed effect; sent prefixes never replay.
         provider_ids: list[str] = []
         for index, request in enumerate(requests):
             if index:
                 # Telegram 建议同一 chat 每秒最多一条；这里只平滑本条消息的分片。
                 await asyncio.sleep(1.05)
             try:
-                status, body = await self._post(request)
+                status, body = await self._post_with_retry(request)
+            except aiohttp.ClientConnectorError:
+                return SendResult(status="failed" if provider_ids else "rejected", provider_ids=tuple(provider_ids),
+                                  error="Telegram 连接建立失败，已用尽重试；当前分片未发送")
             except (aiohttp.ClientError, TimeoutError):
                 return SendResult(status="failed", provider_ids=tuple(provider_ids), error="Telegram 连接或回执未确认")
             try:
@@ -176,6 +179,37 @@ class TelegramSender:
                 return SendResult(status="failed", provider_ids=tuple(provider_ids), error="Telegram 回执缺少已确认消息")
             provider_ids.append(str(data["message_id"]))
         return SendResult(status="delivered", provider_ids=tuple(provider_ids))
+
+    # Flood-control refusals and connector failures precede a send effect; cap retries and waiting.
+    async def _post_with_retry(self, request: Request) -> tuple[int, bytes]:
+        waited = 0
+        for attempt in range(4):
+            try:
+                status, body = await self._post(request)
+            except aiohttp.ClientConnectorError:
+                if attempt == 3:
+                    raise
+                delay = 2 ** attempt
+            else:
+                if status != 429 or attempt == 3:
+                    return status, body
+                try:
+                    parsed: object = json.loads(body)
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    return status, body
+                if not isinstance(parsed, dict):
+                    return status, body
+                result = cast(dict[str, object], parsed)
+                if result.get("ok") is not False:
+                    return status, body
+                parameters = result.get("parameters")
+                retry_after = cast(dict[str, object], parameters).get("retry_after") if isinstance(parameters, dict) else None
+                if type(retry_after) is not int or retry_after < 0 or waited + retry_after > 30:
+                    return status, body
+                delay = retry_after
+            waited += delay
+            await asyncio.sleep(delay)
+        raise AssertionError("retry loop must return or raise")
 
 
     async def _post(self, request: Request) -> tuple[int, bytes]:

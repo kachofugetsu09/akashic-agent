@@ -82,6 +82,9 @@ class GuardedDeliveries(Protocol):
 
     async def prepare_async(self, reader: MessageReader, message: Message,
                             sinks: tuple[Mapping[str, object], ...], *, passive: bool = False) -> Selection: ...
+    async def reject_async(self, reader: MessageReader, message: Message, reason: str) -> Selection:
+        """Save a routing failure and a visible notice without inventing a destination."""
+        ...
     async def publish_async(self, writer: MessageWriter, message_id: str, body: Body,
                             sinks: tuple[Mapping[str, object], ...], *, passive: bool = False) -> tuple[Message, Selection]: ...
     async def consume_async(self, reader: MessageReader, message: Message,
