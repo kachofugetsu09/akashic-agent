@@ -2,7 +2,8 @@ from functools import partial
 
 from agent.plugin_composition import Context
 from plugins.ledger.contract import BINDINGS
-from plugins.ledger.contract import MESSAGE_CATALOG, OWNER_STATE, OwnerStore
+from plugins.ledger.contract import MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, OwnerStore, Output
+from plugins.content.contract import CONTENT
 from agent.plugin_composition.tasks import TASKS, TaskAdmission
 from plugins.delivery.contract import (
     DELIVERY_GUARDED_START,
@@ -18,7 +19,7 @@ api_version = 3
 name = "delivery"
 version = "1.0.0"
 desc = "独立发送已保存消息，固定原目的地与出站绑定并恢复真实效果"
-inject = (BINDINGS, MESSAGE_CATALOG, OWNER_STATE, TASKS)
+inject = (BINDINGS, MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, TASKS, CONTENT)
 
 class DeliveryAdmission:
     """按实际消费者签发恢复范围，发送记录和 Task 仍由 Delivery 独占。"""
@@ -29,13 +30,16 @@ class DeliveryAdmission:
         self._ctx = ctx
         self._state = state
         self._tasks = tasks
+        self._notice_writer = ctx.entrypoint(ctx.require(MESSAGE_WRITERS).bind(
+            ctx, author="delivery", source="delivery", body_types=(Output,),
+            content={"text": ctx.require(CONTENT).check_text}))
 
     def open(self, consumer: Context) -> Deliveries:
         owner = consumer.require_runtime_identity(DELIVERY_GUARDED_START, self).plugin_id
         ctx = self._ctx
         bindings = ctx.require(BINDINGS)
         return Deliveries(
-            DeliveryRecords(self._state, owner),
+            DeliveryRecords(self._state, owner, notice_writer=self._notice_writer),
             ctx.require(MESSAGE_CATALOG), self._tasks,
             partial(open_sender, bindings), task_key="delivery",
         )

@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Mapping
+import hashlib
+from collections.abc import AsyncGenerator, Callable, Mapping
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Annotated, Literal, Protocol, Self, cast, runtime_checkable
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
 from plugins.ledger.contract import MessageConflict, MessageReader, MessageWriter, OwnerRecord, OwnerStore, OwnerTransaction
-from plugins.ledger.contract import Body, Message, Output
+from plugins.ledger.contract import Body, ContentPart, Message, Output, PreparedAppend
 from plugins.ledger.contract import json_value
 from core.common.file_io import run_file_io
 
@@ -25,6 +27,7 @@ class Selection(BaseModel):
     recovery_owner: Text
     passive: bool
     sinks: tuple[Text, ...]
+    error: Text | None = None
 
 
 class Delivery(BaseModel):
@@ -94,9 +97,11 @@ def _identity(key: str, prefix: str) -> tuple[str, str]:
 class DeliveryRecords:
     """选路、prepared 与消费进度同事务提交；正文只按 Message 引用读取。"""
 
-    def __init__(self, state: OwnerStore, recovery_owner: str):
+    def __init__(self, state: OwnerStore, recovery_owner: str, *,
+                 notice_writer: Callable[[str], MessageWriter] | None = None):
         self._state = state
         self.recovery_owner = recovery_owner
+        self._notice_writer = notice_writer
         # cursor 只由本 owner 的消费事务单调推进；缓存只可能滞后，滞后由消费路径的
         # 已消费分支兼容（读回既有选择，不重复发送）。
         self._cursor_cache: dict[str, int] = {}
@@ -166,6 +171,36 @@ class DeliveryRecords:
                             sinks: tuple[Sink | Mapping[str, object], ...], *, passive: bool = False) -> Selection:
         fixed = _normalize_sinks(sinks)
         return await run_file_io(lambda: self._prepare_message(reader, message, fixed, passive=passive))
+
+    # A bad route is a durable zero-target selection, not an unconsumed queue head.
+    async def reject_async(self, reader: MessageReader, message: Message, reason: str) -> Selection:
+        self._check_message(reader, message, ())
+        async with self._notice(reader.session_id, message.message_id, "route", reason) as notice:
+            def commit(tx: OwnerTransaction) -> Selection:
+                if self.selection(message.message_id) is not None:
+                    return self.check_owner(message.message_id)
+                selected = Selection(session_id=reader.session_id, recovery_owner=self.recovery_owner,
+                                     passive=True, sinks=(), error=reason)
+                _ = tx.save("selection:" + message.message_id, selected.model_dump(mode="json"), expected_version=None)
+                if notice is not None:
+                    _ = tx.append_prepared(notice)
+                return selected
+            return await self._state.transact_async(commit)
+
+    # The notice shares the failure transaction and uses ordinary chat text on its own source.
+    @asynccontextmanager
+    async def _notice(self, session_id: str, message_id: str, attempt: str, reason: str | None) -> AsyncGenerator[PreparedAppend | None]:
+        if self._notice_writer is None or reason is None:
+            yield None
+            return
+        writer = self._notice_writer(session_id)
+        identity = hashlib.sha256(json.dumps([message_id, attempt]).encode()).hexdigest()
+        text = (f"[投递失败] 回复 {message_id} 未确认送达。{reason}\n"
+                "原回复已保留。请检查渠道后决定是否重新发送；结果未知时先核实，避免重复。")
+        try:
+            yield await writer.prepare_async("delivery-failure:" + identity, Output((ContentPart("text", text),), "complete"))
+        finally:
+            writer.expire()
 
     async def publish_async(self, writer: MessageWriter, message_id: str, body: Body,
                             sinks: tuple[Sink | Mapping[str, object], ...], *, passive: bool = False) -> tuple[Message, Selection]:
@@ -342,9 +377,18 @@ class DeliveryRecords:
 
     async def save_async(self, message_id: str, previous: OwnerRecord, delivery: Delivery, *,
                          on_commit: Callable[[OwnerRecord], None] | None = None) -> OwnerRecord:
-        return await self._state.transact_async(
-            lambda tx: self._save(tx, message_id, previous, delivery), on_commit=on_commit,
-        )
+        reason = None
+        if delivery.phase in {"failed", "rejected"}:
+            assert delivery.receipt is not None
+            reason = f"渠道 {delivery.sink.name}: {delivery.receipt.error or delivery.phase}"
+        async with self._notice(self.check_owner(message_id).session_id, message_id,
+                                f"{delivery.sink.name}:{previous.version}", reason) as notice:
+            def commit(tx: OwnerTransaction) -> OwnerRecord:
+                saved = self._save(tx, message_id, previous, delivery)
+                if notice is not None:
+                    _ = tx.append_prepared(notice)
+                return saved
+            return await self._state.transact_async(commit, on_commit=on_commit)
 
     async def cancel_prepared_async(self, message_id: str, sink: str, receipt: Receipt, *,
                                     on_commit: Callable[[bool], None]) -> bool:
