@@ -1442,22 +1442,33 @@ def redact_secret_text(message: str, secret: str) -> str:
 
 
 # Keep provider diagnostics bounded while retaining the machine-readable code.
-def _provider_error_details(error: object, secret: str = "") -> tuple[str, str]:
+def _provider_error_details(error: object, secret: str = "") -> tuple[str, str, type[ModelError] | None]:
+    kind = None
     if isinstance(error, Mapping):
         raw = cast(Mapping[str, object], error)
         code = str(raw.get("code") or raw.get("reason") or raw.get("type") or "")
+        metadata = raw.get("metadata")
+        error_type = metadata.get("error_type") if isinstance(metadata, Mapping) else None
         message = raw.get("message")
-        detail = ": ".join(value for value in (code, message) if isinstance(value, str) and value)
+        detail = ": ".join(value for value in (code, error_type, message) if isinstance(value, str) and value)
+        if isinstance(error_type, str) and error_type:
+            kind = _PROVIDER_ERROR_TYPES.get(error_type.lower(), ModelError)
     else:
         code, detail = "", error if isinstance(error, str) else ""
-    return code.lower(), redact_secret_text(detail or "unknown provider error", secret)[:500]
+    return code.lower(), redact_secret_text(detail or "unknown provider error", secret)[:500], kind
 
 
 def response_error_details(response: httpx.Response, secret: str) -> tuple[str, str]:
+    code, message, _ = _response_error_details(response, secret)
+    return code, message
+
+
+# Parse the HTTP error once and retain its structured classification.
+def _response_error_details(response: httpx.Response, secret: str) -> tuple[str, str, type[ModelError] | None]:
     try:
         payload = response.json()
     except (json.JSONDecodeError, UnicodeDecodeError):
-        return "", redact_secret_text(response.text, secret)[:500] or f"HTTP {response.status_code}"
+        return "", redact_secret_text(response.text, secret)[:500] or f"HTTP {response.status_code}", None
     raw = payload.get("error", payload.get("detail", payload)) if isinstance(payload, Mapping) else payload
     return _provider_error_details(raw, secret)
 
@@ -1476,9 +1487,43 @@ def is_quota_error(code: str, message: str) -> bool:
     )
 
 
+# OpenRouter's typed code owns classification; unknown types fail without guessing.
+_PROVIDER_ERROR_TYPES: Mapping[str, type[ModelError]] = {
+    "context_length_exceeded": ContextLengthError,
+    "max_tokens_exceeded": OutputLengthError,
+    "token_limit_exceeded": QuotaError,
+    "string_too_long": InvalidRequestError,
+    "authentication": AuthenticationError,
+    "permission_denied": AuthenticationError,
+    "payment_required": QuotaError,
+    "rate_limit_exceeded": RateLimitError,
+    "provider_overloaded": TransportError,
+    "provider_unavailable": TransportError,
+    "invalid_request": InvalidRequestError,
+    "invalid_prompt": InvalidRequestError,
+    "not_found": InvalidRequestError,
+    "precondition_failed": InvalidRequestError,
+    "payload_too_large": InvalidRequestError,
+    "unprocessable": InvalidRequestError,
+    "content_policy_violation": ContentSafetyError,
+    "refusal": ContentSafetyError,
+    "invalid_image": InvalidRequestError,
+    "image_too_large": InvalidRequestError,
+    "image_too_small": InvalidRequestError,
+    "unsupported_image_format": InvalidRequestError,
+    "image_not_found": InvalidRequestError,
+    "image_download_failed": InvalidRequestError,
+    "server": TransportError,
+    "timeout": ModelTimeoutError,
+    "unmapped": ModelError,
+}
+
+
 # Stream errors are generation failures; they do not prove an HTTP rejection.
 def provider_stream_error(error: object, *, secret: str = "") -> Exception:
-    code, message = _provider_error_details(error, secret)
+    code, message, kind = _provider_error_details(error, secret)
+    if kind is not None:
+        return kind(message).exception()
     lowered = message.lower()
     if code in {"500", "502", "503", "504", "server_error", "internal_error", "overloaded_error", "server_is_overloaded", "interrupted"}:
         return TransportError(message).exception()
@@ -1524,7 +1569,9 @@ def http_status_error(
 ) -> Exception | None:
     if response.status_code < 400:
         return None
-    code, message = response_error_details(response, secret)
+    code, message, kind = _response_error_details(response, secret)
+    if kind is not None:
+        return kind(message).exception()
     lowered = message.lower()
     if response.status_code in {401, 403}:
         text = auth_message or (
