@@ -25,7 +25,6 @@ from plugins.models.contract import (
     LLMResponse,
     ModelRequest,
     ModelUsage,
-    ToolCall,
 )
 from plugins.models.contract import (
     BoundModelDescriptor,
@@ -71,7 +70,6 @@ from plugins.models.contract import (
     normalize_http_base_url as _normalize_base_url,
     optional_non_negative_int as _optional_int,
     parse_openai_usage as _usage,
-    parse_tool_arguments as _tool_arguments,
     positive_float_config as _positive_float,
     raise_http_status as _raise_status,
     redact_secret_text as _redact_secret,
@@ -129,16 +127,7 @@ class _BoundChat:
         # 未带 request_key 的直调同样不得隐式重发（§6.3）。max_retries
         # 连接配置只留给 /models discovery 等非生成路径。
         connection = replace(self._connection, max_retries=0)
-        if request.on_delta is None:
-            payload = await _request_json(
-                connection,
-                self._credential,
-                "POST",
-                "/chat/completions",
-                body=body,
-                http=self._http,
-            )
-            return _parse_chat_response(payload)
+        # 摘要等无观察者的调用也聚合 SSE，让读取期限约束流中空闲。
         body["stream"] = True
         body["stream_options"] = {"include_usage": True}
         return await _stream_chat(
@@ -792,7 +781,7 @@ async def _stream_chat(
     connection: _ConnectionConfig,
     credential: CredentialHandle,
     body: Mapping[str, Any],
-    on_delta: Callable[[dict[str, str]], Awaitable[None]],
+    on_delta: Callable[[dict[str, str]], Awaitable[None]] | None,
     http: HttpClient,
 ) -> LLMResponse:
     last_error: Exception | None = None
@@ -830,7 +819,7 @@ async def _stream_chat(
 
 async def _consume_stream(
     response: httpx.Response,
-    on_delta: Callable[[dict[str, str]], Awaitable[None]],
+    on_delta: Callable[[dict[str, str]], Awaitable[None]] | None,
     *,
     progress_timeout: float = 300.0,
     secret: str = "",
@@ -927,9 +916,11 @@ async def _consume_stream(
 
 
 async def _emit_delta(
-    on_delta: Callable[[dict[str, str]], Awaitable[None]],
+    on_delta: Callable[[dict[str, str]], Awaitable[None]] | None,
     delta: dict[str, str],
 ) -> None:
+    if on_delta is None:
+        return
     try:
         await on_delta(delta)
     except asyncio.CancelledError:
@@ -951,51 +942,6 @@ def _client(connection: _ConnectionConfig, token: str | None = None) -> httpx.As
         headers=headers,
         timeout=timeout,
         follow_redirects=False,
-    )
-
-
-def _parse_chat_response(payload: Mapping[str, Any]) -> LLMResponse:
-    choices = payload.get("choices")
-    if not isinstance(choices, list) or not choices or not isinstance(choices[0], Mapping):
-        raise TransportError("chat response is missing first choice").exception()
-    choice = cast(Mapping[str, Any], choices[0])
-    message = choice.get("message")
-    if not isinstance(message, Mapping):
-        raise TransportError("chat response is missing message").exception()
-    content = message.get("content")
-    if content is not None and not isinstance(content, str):
-        raise TransportError("chat message content must be string or null").exception()
-    thinking = message.get("reasoning_content")
-    if thinking is None:
-        thinking = message.get("reasoning")
-    if thinking is not None and not isinstance(thinking, str):
-        raise TransportError("chat reasoning content must be string or null").exception()
-    raw_calls = message.get("tool_calls", [])
-    calls: list[ToolCall] = []
-    if not isinstance(raw_calls, list):
-        raise TransportError("chat tool_calls must be an array").exception()
-    for raw in (() if choice.get("finish_reason") == "length" else raw_calls):
-        if not isinstance(raw, Mapping):
-            raise TransportError("chat tool call must be an object").exception()
-        function = raw.get("function")
-        if not isinstance(function, Mapping):
-            raise TransportError("chat tool call is missing function").exception()
-        calls.append(
-            ToolCall(
-                id=_required_string(raw.get("id"), "tool call id"),
-                name=_required_string(function.get("name"), "tool call name"),
-                arguments=_tool_arguments(function.get("arguments")),
-            )
-        )
-    raw_usage = payload.get("usage")
-    usage = _usage(raw_usage) if isinstance(raw_usage, Mapping) else None
-    finish = choice.get("finish_reason")
-    return LLMResponse(
-        content=content,
-        thinking=thinking,
-        tool_calls=calls,
-        finish_reason=None if finish is None else str(finish),
-        usage=usage,
     )
 
 

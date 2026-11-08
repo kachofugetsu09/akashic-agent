@@ -33,7 +33,7 @@ PROMPT = """更新当前长任务的上下文压缩摘要。
 用户消息是理解目标、要求、偏好和关系的核心证据。只有 actor=user 的原话能够建立这些用户事实；actor=automation 是插件自动产生的输入，不是用户原话。
 助手消息只记录助手的判断、计划和执行过程；不得用助手转述或猜测补全用户没有表达的上下文。
 区分用户原话、助手判断及工具/后台结果，保留重要来源身份；转述不能升级成用户事实或偏好。
-必须严格使用以下标题，不得增加标题：
+建议使用以下标题组织摘要，可按资料调整：
 """ + "\n".join(HEADINGS) + """
 
 保留路径、符号、命令、错误、数值、外部效果和验证结果。
@@ -60,20 +60,20 @@ def _excerpt(body: dict[str, object], chars: int) -> object:
 
 
 def clip_summary(text: str, ratio: float) -> str:
-    """按固定标题重建摘要，每节正文（含标题前的正文）只留前 ratio 比例；0 时只剩标题。"""
-    bodies: list[list[str]] = [[] for _ in HEADINGS]
-    index = 0
+    """保留实际标题，每节正文只留前 ratio 比例；无标题正文也可缩短。"""
+    blocks: list[tuple[str, list[str]]] = [("", [])]
     for line in text.splitlines():
-        if line.strip() in HEADINGS:
-            index = HEADINGS.index(line.strip())
+        if line.lstrip().startswith("#"):
+            blocks.append((line, []))
         else:
-            bodies[index].append(line)
+            blocks[-1][1].append(line)
     sections: list[str] = []
-    for heading, body in zip(HEADINGS, bodies):
+    for heading, body in blocks:
         content = "\n".join(body).strip()
         keep = content[:int(len(content) * ratio)].rstrip()
-        sections.append(heading + ("\n" + keep if keep else "") + ("…（篇幅所限已截断）" if keep != content else ""))
-    return "\n".join(sections)
+        sections.append("\n".join(part for part in (heading, keep) if part)
+                        + ("…（篇幅所限已截断）" if keep != content else ""))
+    return "\n".join(section for section in sections if section)
 
 
 def recoverable(error: BaseException) -> bool:
@@ -235,11 +235,10 @@ async def _summarize(model: BoundChatModel, groups: tuple[tuple[Message, ...], .
     summary, selected, excerpt = _fit_inputs(model, groups, previous, limit)
     response = await model.complete(_request(model, summary, selected, limit, excerpt))
 
-    # 只接纳成功调用的真实正文；格式错误不会用空摘要掩盖。
+    # 只接纳成功调用的真实正文；标题差异不影响内容与调用出处。
     text = (response.content or "").strip()
-    headings = tuple(line.strip() for line in text.splitlines() if line.lstrip().startswith("#"))
-    if response.tool_calls or headings != HEADINGS:
-        raise SummaryError("摘要响应没有遵守固定标题合同")
+    if response.tool_calls or not text:
+        raise SummaryError("摘要响应必须有正文且不能包含工具调用")
     if response.call_record_id is None:
         raise SummaryError("摘要响应缺少成功模型调用出处")
     return text, (response.call_record_id,), selected

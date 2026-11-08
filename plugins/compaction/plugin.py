@@ -1,10 +1,13 @@
 """候选 Message 摘要入口；正式 manifest 在完整迁移验收后切换。"""
 from __future__ import annotations
 
+import asyncio
+from dataclasses import dataclass
 from functools import partial
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 import logging
 from uuid import uuid4
+from weakref import WeakKeyDictionary
 
 from core.common.file_io import run_file_io
 
@@ -18,10 +21,6 @@ from agent.plugin_composition import (
 from plugins.models.contract import (
     CHAT_MODELS, MODEL_CATALOG, BoundChatModel, ContextModel, ModelChoice, ModelError, ModelExecution,
     ModelRequest, ModelUnavailableError, ModelUse, model_options,
-    ContextLengthError,
-    ModelTimeoutError,
-    RateLimitError,
-    TransportError,
 )
 from plugins.context.contract import CONTEXT, MATERIALS_V4, OUTPUT_RESERVE_TOKENS, MaterialData, ReductionStatus, SUMMARY_SOFT_LIMIT, output_reserve, summary_due
 from plugins.ledger.contract import BINDINGS
@@ -29,7 +28,7 @@ from plugins.ledger.contract import MESSAGE_CATALOG, OWNER_STATE
 from plugins.ledger.contract import HistoryWindow, Input, Message
 
 from .records import StoredSummary, SummaryLookup, SummaryRecord, SummaryRecords
-from .message_summary import SummaryError, clip_summary, closed_groups, recoverable, source_text, summarize, summary_groups, window_starts
+from .message_summary import SummaryError, clip_summary, closed_groups, source_text, summarize, summary_groups, window_starts
 from plugins.compaction.contract import COMPACTION_READER, COMPACTION_SUMMARIES
 from plugins.turn_projection.contract import TURN_PROJECTION, TurnProjection
 from agent.plugin_composition.plugin_config import PLUGIN_CONFIG
@@ -50,6 +49,14 @@ SETTING_FIELDS = ("model", "keep_recent_tokens")
 # 摘要默认跟随本轮对话的模型（窗口与业务一致）；也可跟随默认或指定一个更便宜的模型。
 # 摘要输入按摘要模型自己的窗口裁剪，所以必须是上下文窗口已确认的模型。
 SUMMARY_MODEL = ModelUse("compaction", "上下文压缩", follows=("session", "default"), needs=frozenset({"context_window"}))
+MAX_SUMMARY_FAILURES = 3
+
+
+@dataclass
+class _SummaryFailures:
+    boundary: tuple[str, str, str, str | None]
+    count: int = 0
+    detail: str = ""
 
 
 class Config(BaseModel):
@@ -111,6 +118,20 @@ async def apply(ctx: Context) -> None:
     await mount_settings(ctx, SETTINGS, ModelSettings(ctx, Config, SETTING_FIELDS,
                                                        status=model_options(ctx, {"model": SUMMARY_MODEL})))
     context = ctx.require(CONTEXT)
+    # 失败预算只属于当前执行 Task；新输入或换模型重新尝试，结束后不保留会话引用。
+    failures: WeakKeyDictionary[asyncio.Task[object], _SummaryFailures] = WeakKeyDictionary()
+
+    # 同一执行内的工具步共享预算，避免每一步重复调用已失败的摘要模型。
+    def failure_state(snapshot: tuple[Message, ...], source: str, model: BoundChatModel) -> _SummaryFailures:
+        task = asyncio.current_task()
+        assert task is not None
+        latest_input = next((message.message_id for message in reversed(snapshot)
+                             if message.source == source and isinstance(message.body, Input)), None)
+        boundary = (snapshot[0].session_id, source, model.descriptor.binding_id, latest_input)
+        state = failures.get(task)
+        if state is None or state.boundary != boundary:
+            state = failures[task] = _SummaryFailures(boundary)
+        return state
 
     def records() -> SummaryRecords:
         return SummaryRecords(ctx.require(OWNER_STATE).open(ctx))
@@ -352,13 +373,13 @@ async def apply(ctx: Context) -> None:
             try:
                 shorter, more, _ = await generate((), text, max(1, limit // 2))
             except (RuntimeError, TimeoutError, SummaryError) as failure:
-                if not recoverable(failure):
+                if not (ModelError.matches(failure) or isinstance(failure, SummaryError)):
                     raise
                 logger.warning("摘要缩写失败，改为按比例截断已有摘要: %s", failure)
             else:
                 text, calls = shorter, calls + more
                 record, summary, after = measure(text, calls, summarized)
-        # 已有合法摘要时本地按比例截断各节正文，直到放得下；只剩标题仍放不下才是真正的容量边界。
+        # 已有真实摘要时本地按比例截断各节正文；最短版本仍放不下才是容量边界。
         for ratio in (0.5, 0.25, 0.0):
             if fits(after):
                 break
@@ -366,7 +387,7 @@ async def apply(ctx: Context) -> None:
         if after >= before:
             raise SummaryError("摘要没有降低本次完整请求容量")
         if after + reserve > window:
-            raise SummaryError(f"摘要只保留标题后输入仍约 {after:,} tokens，当前输入与进行中的工具调用本身超出容量")
+            raise SummaryError(f"摘要缩至最短后输入仍约 {after:,} tokens，当前输入与进行中的工具调用本身超出容量")
         record = record.model_copy(update={"tokens_after": after})
         # 3. binding 可以先固定，但读者只有在摘要事务成功后才取得此引用。
         reader = ctx.require(MESSAGE_CATALOG).reader(record.session_id)
@@ -384,8 +405,16 @@ async def apply(ctx: Context) -> None:
         before = projection.estimate(request)
         if window is None or not snapshot or not summary_due(before, window, force=force):
             return None
+        state = failure_state(snapshot, source, model)
+        hard_limit = force or before + output_reserve(request.max_output_tokens, window) > window
         budget = (f"模型 {model.descriptor.model_id}；窗口 {window:,}；输入估算 {before:,}；"
                   f"输出预留 {output_reserve(request.max_output_tokens, window):,}；原文目标 {config.keep_recent_tokens:,} tokens")
+        recovery = "请检查摘要模型的认证、额度或可用性，或切换摘要模型后重试。"
+        paused = f"本轮上下文压缩连续失败 {MAX_SUMMARY_FAILURES} 次，已暂停自动压缩；新输入或更换模型后重新尝试。"
+        if state.count >= MAX_SUMMARY_FAILURES:
+            if hard_limit:
+                raise SummaryError(state.detail + budget + "。" + paused + "本次请求被阻断，未继续业务生成。" + recovery)
+            return None
         if on_status is not None:
             await on_status("正在压缩上下文：" + budget, False)
         notices: list[str] = []
@@ -396,17 +425,22 @@ async def apply(ctx: Context) -> None:
                 await on_status(text, retain)
 
         try:
-            return await compact(snapshot, materials, request, model, projection,
-                                 source=source, force=force, on_status=report, summary_limit=summary_limit)
+            summary = await compact(snapshot, materials, request, model, projection,
+                                    source=source, force=force, on_status=report, summary_limit=summary_limit)
         except (RuntimeError, TimeoutError, SummaryError) as error:
-            if not (ModelError.matches(error, ContextLengthError, ModelTimeoutError, RateLimitError, TransportError) or isinstance(error, SummaryError)):
+            if not (ModelError.matches(error) or isinstance(error, SummaryError)):
                 raise
-            detail = f"上下文压缩失败：{type(error).__name__}: {error}。{budget}。"
-            if force or before + output_reserve(request.max_output_tokens, window) > window:
-                raise SummaryError("\n".join((*notices, detail + "本次请求被阻断，未继续业务生成。"))) from error
+            state.count += 1
+            state.detail = f"上下文压缩失败：{type(error).__name__}: {error}。"
+            detail = state.detail + budget + "。"
+            if hard_limit:
+                raise SummaryError("\n".join((*notices, detail + "本次请求被阻断，未继续业务生成。" + recovery))) from error
             if on_status is not None:
-                await on_status(detail + "原请求仍满足硬容量，本次继续生成。", True)
+                await on_status(detail + "原请求仍满足硬容量，本次继续生成。"
+                                + (paused if state.count >= MAX_SUMMARY_FAILURES else ""), True)
             return None
+        state.count, state.detail = 0, ""
+        return summary
 
     _ = await ctx.require(MATERIALS_V4).register(ctx, kind="context", name="compaction", prepare=prepare, reduce=reduce,
                                                  history_start=history_start, priority=500)

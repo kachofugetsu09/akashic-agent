@@ -177,39 +177,33 @@ class _Chat:
         tool_seen = False
         try:
             self.client.cookies.clear()
-            if request.on_delta is None:
-                response = await self.client.post(f'models/{model}:generateContent', json=body, headers=headers)
+            # 无预览的生成也逐块读取，避免完整响应等待超过 read_timeout。
+            async with self.client.stream('POST', f'models/{model}:streamGenerateContent', params={"alt": "sse"}, json=body, headers=headers) as response:
+                if response.is_error:
+                    await response.aread()
                 _status(response, secret=headers["x-goog-api-key"])
-                data = _object(response.json(), "Gemini 响应")
-                current, finish, usage = _chunk(data)
-                parts.extend(current)
-            else:
-                async with self.client.stream('POST', f'models/{model}:streamGenerateContent', params={"alt": "sse"}, json=body, headers=headers) as response:
-                    if response.is_error:
-                        await response.aread()
-                    _status(response, secret=headers["x-goog-api-key"])
-                    event: list[str] = []
-                    progress = StreamProgress(self._progress_timeout)
-                    async for line in progress.read(response.aiter_lines()):
-                        if line.startswith('data:'):
-                            event.append(line[5:].lstrip())
-                        elif not line and event:
-                            raw = '\n'.join(event)
-                            event.clear()
-                            if raw == '[DONE]':
-                                continue
-                            current, reason, current_usage = _chunk(_object(json.loads(raw), "Gemini SSE"))
-                            if any(part.get("text") or "functionCall" in part or part.get("thoughtSignature") for part in current):
-                                progress.advance()
-                            parts.extend(current)
-                            finish = reason or finish
-                            usage = current_usage or usage
-                            for part in current:
-                                tool_seen = tool_seen or 'functionCall' in part
-                                if part.get('text') and not tool_seen:
-                                    await request.on_delta({"thinking_delta" if part.get('thought') else "content_delta": part['text']})
-                    if event or finish is None:
-                        raise TransportError("Gemini SSE 未完整结束").exception()
+                event: list[str] = []
+                progress = StreamProgress(self._progress_timeout)
+                async for line in progress.read(response.aiter_lines()):
+                    if line.startswith('data:'):
+                        event.append(line[5:].lstrip())
+                    elif not line and event:
+                        raw = '\n'.join(event)
+                        event.clear()
+                        if raw == '[DONE]':
+                            continue
+                        current, reason, current_usage = _chunk(_object(json.loads(raw), "Gemini SSE"))
+                        if any(part.get("text") or "functionCall" in part or part.get("thoughtSignature") for part in current):
+                            progress.advance()
+                        parts.extend(current)
+                        finish = reason or finish
+                        usage = current_usage or usage
+                        for part in current:
+                            tool_seen = tool_seen or 'functionCall' in part
+                            if request.on_delta is not None and part.get('text') and not tool_seen:
+                                await request.on_delta({"thinking_delta" if part.get('thought') else "content_delta": part['text']})
+                if event or finish is None:
+                    raise TransportError("Gemini SSE 未完整结束").exception()
             return _answer(parts, finish, usage)
         except TimeoutError as cause:
             error = ModelTimeoutError(f"Gemini 模型流超过 {self._progress_timeout:g} 秒没有有效进展").exception()

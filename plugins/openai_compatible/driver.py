@@ -30,7 +30,6 @@ from plugins.models.contract import (
     LLMResponse,
     ModelRequest,
     ModelUsage,
-    ToolCall,
 )
 from plugins.models.contract import (
     BoundModelDescriptor,
@@ -71,11 +70,9 @@ from plugins.models.contract import (
     normalize_http_base_url as _normalize_base_url,
     optional_non_negative_int as _optional_int,
     parse_openai_usage as _usage,
-    parse_tool_arguments as _tool_arguments,
     positive_float_config as _positive_float,
     raise_http_status as _raise_status,
     redact_secret_text as _redact_secret,
-    required_non_empty_string as _required_string,
     response_error_message as _response_error_message,
     response_json_object as _json_object,
     message_size,
@@ -160,17 +157,7 @@ class _BoundChat:
         body = _chat_body(
             self._descriptor, connection, request,
         )
-        if request.on_delta is None and connection.thinking_format != "deepseek":
-            payload = await _request_json(
-                connection,
-                self._credential,
-                "POST",
-                "/chat/completions",
-                body_bytes=self._encode_body(body, request),
-                http=self._http,
-            )
-            return _parse_chat_response(payload)
-        # V4 长生成可能超过网关非流式等待窗口；无观察者时也完整聚合 SSE。
+        # 长生成可能超过网关非流式等待窗口；无观察者时也完整聚合 SSE。
         body["stream"] = True
         body["stream_options"] = {"include_usage": True}
         return await _stream_chat(
@@ -1011,56 +998,6 @@ def _client(connection: _ConnectionConfig, token: str | None = None) -> httpx.As
         headers=headers,
         timeout=timeout,
         follow_redirects=False,
-    )
-
-
-def _parse_chat_response(payload: Mapping[str, Any]) -> LLMResponse:
-    choices = payload.get("choices")
-    if (
-        not isinstance(choices, list)
-        or not choices
-        or not isinstance(choices[0], Mapping)
-    ):
-        raise TransportError("chat response is missing first choice").exception()
-    choice = cast(Mapping[str, Any], choices[0])
-    message = choice.get("message")
-    if not isinstance(message, Mapping):
-        raise TransportError("chat response is missing message").exception()
-    content = message.get("content")
-    if content is not None and not isinstance(content, str):
-        raise TransportError("chat message content must be string or null").exception()
-    thinking = message.get("reasoning_content")
-    if thinking is None:
-        thinking = message.get("reasoning")
-    if thinking is not None and not isinstance(thinking, str):
-        raise TransportError("chat reasoning content must be string or null").exception()
-    raw_calls = message.get("tool_calls", [])
-    calls: list[ToolCall] = []
-    if not isinstance(raw_calls, list):
-        raise TransportError("chat tool_calls must be an array").exception()
-    for raw in (() if choice.get("finish_reason") == "length" else raw_calls):
-        if not isinstance(raw, Mapping):
-            raise TransportError("chat tool call must be an object").exception()
-        function = raw.get("function")
-        if not isinstance(function, Mapping):
-            raise TransportError("chat tool call is missing function").exception()
-        calls.append(
-            ToolCall(
-                id=_required_string(raw.get("id"), "tool call id"),
-                name=_required_string(function.get("name"), "tool call name"),
-                arguments=_tool_arguments(function.get("arguments")),
-            )
-        )
-    raw_usage = payload.get("usage")
-    usage = _usage(raw_usage) if isinstance(raw_usage, Mapping) else None
-    finish = choice.get("finish_reason")
-    content, thinking = _split_tagged_thinking(content, thinking)
-    return LLMResponse(
-        content=content,
-        thinking=thinking,
-        tool_calls=calls,
-        finish_reason=None if finish is None else str(finish),
-        usage=usage,
     )
 
 
