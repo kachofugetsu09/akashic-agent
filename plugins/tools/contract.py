@@ -317,11 +317,6 @@ TOOL_LOADING_PRESENTATION = ServiceKey[
 ]("tools.loading.presentation.v1")
 
 
-TOOL_LOADING_RESTORE = ServiceKey[
-    Callable[[Mapping[str, Mapping[str, object]], tuple[Mapping[str, object], ...]], ToolPresentation]
-]("tools.loading.restore.v1")
-
-
 class ToolMenu(Protocol):
     @property
     def schemas(self) -> tuple[Mapping[str, Any], ...]: ...

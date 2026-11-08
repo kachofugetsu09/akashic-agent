@@ -26,6 +26,19 @@ EventMail 另发布 `eventmail.context_read.v1` 窄只读合同，并通过可�
 第一版聚合权限是整组授予：授予 query 即允许访问已注册来源；不声称已实现逐主题 ACL。
 该入口不代理来源的写入工具。未来来源应明确提交只读能力，不能自动收集所有公开工具。
 
+### Wake 在注入前查询
+
+Wake 依赖 `userinformation.read.v1`，与模型查询工具复用同一读取实现；不通过工具解锁协议调用。
+`information_queries` 显式配置最多 8 个 `{provider, query, arguments}`，默认空列表，
+避免来源安装后被自动读取。部署迁移时需配置所需来源的准确实例 ID；例如 EventMail 的 `current`
+可用 `source_ids` 筛选睡眠/游戏，OwnTracks 的 `latest` 读取最后位置，不配置历史轨迹。
+此变更不修改正式配置，因此上线前必须补齐所需查询，空列表不会保持旧版自动状态注入。
+
+请求准备期并行查询，每项限 5 秒、结果限 8 KiB，失败和超限以不可用证据入档。
+结果冻结到 `Request.information` 并作为 `user_information` 材料注入；恢复沿用归档值，不重新读。
+旧请求的 `events/context_events` 仍可渲染。来源失败不阻止必要告警，取消仍传播。
+工具目录、Core loop、Wake 模型步骤预算和工具授权保持不变。
+
 ## 1. 最终结果
 
 旧 `proactive_v2`、default proactive island、Wake 私有 proactive loop 和 proactive MCP 聚合桥全部退出运行代码。Wake、Drift、Content 与来源插件变成普通 v3 插件，只组合同一套 Core 原子：

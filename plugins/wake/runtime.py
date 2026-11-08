@@ -11,7 +11,6 @@ from typing import cast
 from core.common.file_io import run_file_io
 
 from agent.plugin_composition import Context
-from plugins.tools.contract import TOOL_LOADING_PRESENTATION
 from plugins.ledger.contract import BINDINGS
 from plugins.ledger.contract import (
     MESSAGE_CATALOG,
@@ -42,6 +41,7 @@ from .legacy_rules import read_archived_rules
 from .messages import recent_context
 from .request import SKILL_TOOL, TOOLS as WAKE_TOOLS, WAKE_PROGRAM, Request
 from .source import Pointer, Source
+from .information import snapshot_information
 from .state import WakeState, WakeStateReader
 
 
@@ -183,17 +183,13 @@ class Runtime:
         model = await ctx.require(CHAT_MODELS).resolve(WAKE_MODEL, self.config.model, saved)
         catalog = ctx.require(TOOLS)
         # 每类职责都可读取 proactive-wake 技能；Content 另有配置的调查工具。
-        allowed = {SKILL_TOOL, "user_information_list", "user_information_query",
-                   *(self.config.investigation_tools if owner == "content" else ())}
+        allowed = {SKILL_TOOL, *(self.config.investigation_tools if owner == "content" else ())}
         view: ToolView = catalog.view(
             *ctx.require(WAKE_TOOLS_VIEW).refs,
             *(ref for ref in ctx.require(ALL_TOOLS)().refs if ref.name in allowed),
         )
         names = (*WAKE_TOOLS[owner], *(ref.name for ref in view.refs
                  if ref.name in allowed and ref.name not in WAKE_TOOLS[owner]))
-        view, presentation = ctx.require(TOOL_LOADING_PRESENTATION)(view)
-        names = tuple(ref.name for ref in view.refs)
-        groups = presentation.configuration("load_tools") or {}
         # 近期对话与送达历史是纯读取，放进 worker；作用域内的服务先在循环上取得。
         message_catalog, delivery_read, session_id = ctx.require(MESSAGE_CATALOG), ctx.require(DELIVERY_READ), target.session_id
         return Request(
@@ -205,7 +201,7 @@ class Runtime:
             sink=sink,
             program_binding=bindings.bind(WAKE_PROGRAM, {}),
             tools={
-                name: await catalog.bind_scoped(view.select(name), bindings, configuration=presentation.configuration(name))
+                name: await catalog.bind_scoped(view.select(name), bindings)
                 for name in names
             },
             snapshot_seq=admission.pool.snapshot_seq,
@@ -215,7 +211,7 @@ class Runtime:
             rules=read_archived_rules(ctx.data_root) or "",
             history=await run_file_io(lambda: recent_context(
                 message_catalog, delivery_read, target=session_id, now=now)),
-            events=(), tool_groups=cast(tuple[dict[str, object], ...], groups.get("groups", ())))
+            information=await snapshot_information(ctx, self.config.information_queries))
 
     async def follow(self) -> None:
         """先恢复原请求，再独立运行到期检查与五分钟池维护。"""

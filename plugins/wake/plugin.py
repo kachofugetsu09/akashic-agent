@@ -13,7 +13,7 @@ from agent.plugin_composition import (
     Context,
     ServiceKey,
 )
-from plugins.tools.contract import TOOL_LOADING_PRESENTATION, TOOL_LOADING_RESTORE
+from plugins.userinformation.contract import USER_INFORMATION_READ
 from plugins.assets.contract import INSTALLED_ASSETS
 from plugins.ledger.contract import BINDINGS
 from plugins.ledger.contract import (
@@ -56,7 +56,7 @@ desc = "主动联系：按 proactive-wake 技能在中心循环里初筛、调�
 function_inject = (
     MODEL_SELECTION, MODEL_CONTENT, MODEL_CATALOG, CHAT_MODELS, USAGE_SOURCES,
     REPLY_EXECUTE, SOURCE_CHECK,
-    BINDINGS, TOOL_LOADING_PRESENTATION, TOOL_LOADING_RESTORE,
+    BINDINGS, USER_INFORMATION_READ,
     TASKS,
     MESSAGE_CATALOG,
     MESSAGE_WRITERS,

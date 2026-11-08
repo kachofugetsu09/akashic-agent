@@ -56,14 +56,14 @@ class Request(BaseModel):
     reasoning_effort: str | None = Field(default=None, min_length=1)
     rules: str
     history: str
-    events: tuple[dict[str, object], ...] = ()  # historical requests only
-    tool_groups: tuple[dict[str, object], ...] = ()
+    events: tuple[dict[str, object], ...] = ()  # legacy frozen Context events
+    information: tuple[dict[str, object], ...] = ()
 
     @model_validator(mode="after")
     def check_choices(self) -> Self:
         extra = set(self.tools) - set(TOOLS[self.owner])
         if (not set(TOOLS[self.owner]) <= set(self.tools)
-                or (self.owner != "content" and not extra <= {SKILL_TOOL, "load_tools", "user_information_list", "user_information_query"})
+                or (self.owner != "content" and not extra <= {SKILL_TOOL})
                 or any(not name or not value for name, value in self.tools.items())):
             raise ValueError("Wake 原工具集合与职责不一致")
         if (

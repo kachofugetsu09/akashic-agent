@@ -23,6 +23,11 @@ async def apply(ctx):
         async def describe(self):
             return {"queries":{"current":{"parameters":{"type":"object","properties":{}}}}}
         async def query(self, query, arguments):
+            if query == "fail": raise ValueError("fixture failure")
+            if query == "large": return {"data": "x" * 9000}
+            if query == "slow":
+                import asyncio
+                await asyncio.sleep(30)
             return {"observed_at":"2026-11-08T07:00:00Z","status":"unknown","evidence_ref":"fixture:observation"}
     await ctx.require(USER_INFORMATION).register(ctx, Provider())
 '''
@@ -68,6 +73,24 @@ async def main():
     with tempfile.TemporaryDirectory(prefix='userinformation-') as directory:
         async with application(Path(directory), replying=True, extra_sources=sources) as (log, host):
             root = host.live_root
+            from plugins.wake.information import snapshot_information
+            from plugins.wake.api import InformationQuery
+            snapshot = await snapshot_information(root.context, (
+                InformationQuery(provider="sample_information", query="current"),
+                InformationQuery(provider="missing", query="current"),
+                InformationQuery(provider="sample_information", query="fail"),
+                InformationQuery(provider="sample_information", query="large"),
+                InformationQuery(provider="sample_information", query="slow"),
+            ))
+            assert snapshot[2]["status"] == "unavailable"
+            assert snapshot[3]["reason"] == "size_limit"
+            assert snapshot[4]["status"] == "unavailable"
+            assert snapshot[0]["response"]["result"]["evidence_ref"] == "fixture:observation"
+            assert snapshot[1]["response"]["status"] == "unavailable"
+            saved = Path(directory) / 'frozen-information.json'
+            saved.write_text(json.dumps(snapshot))
+            assert json.loads(saved.read_text()) == list(snapshot)
+            print('Wake prefetch: real registered provider and absent provider, frozen JSON roundtrip passed')
             await root.context.require(CHANNEL_INPUT_V2)('test:room','u1',
                 ChannelInboundMessage('test','user','room','read user information',datetime.now(UTC),{}))
             async def finished():

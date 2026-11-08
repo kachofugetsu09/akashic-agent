@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from agent.plugin_composition import Context
 from plugins.ledger.contract import ContentPart, json_value
 from plugins.tools.contract import TOOLS, CallSource, Result
-from .contract import USER_INFORMATION, InformationProvider
+from .contract import USER_INFORMATION, USER_INFORMATION_READ, InformationProvider
 
 logger = logging.getLogger(__name__)
 RESULT_LIMIT = 131072
@@ -52,6 +52,10 @@ class Providers:
                 del self.entries[identity]
             return close
         return await ctx.effect(setup, label=f"userinformation:{identity}")
+
+    async def query(self, provider: str, query: str, arguments: Mapping[str, object]) -> Mapping[str, object]:
+        request = Query(provider=provider, query=query, arguments=dict(arguments))
+        return {"queried_at": datetime.now(UTC).isoformat(), **await self.call(provider, request)}
 
     async def call(self, identity: str, query: Query | None = None):
         entry = self.entries.get(identity)
@@ -98,8 +102,9 @@ class InformationTool:
             value = {"queried_at": now, "providers": items}
         else:
             query = Query.model_validate(json_value(arguments))
-            value = {"queried_at": now, **await self.providers.call(query.provider, query)}
-        failed = "error" in value or (isinstance(value.get("result"), dict) and "error" in value["result"])
+            value = dict(await self.providers.query(query.provider, query.query, query.arguments))
+        result = value.get("result")
+        failed = "error" in value or (isinstance(result, dict) and "error" in result)
         return Result("error" if failed else "success", (ContentPart("text", json.dumps(value, ensure_ascii=False)),))
 
     async def query(self, key: str):
@@ -109,6 +114,7 @@ class InformationTool:
 async def apply(ctx: Context) -> None:
     providers = Providers(ctx)
     await ctx.provide(USER_INFORMATION, providers)
+    await ctx.provide(USER_INFORMATION_READ, providers)
     catalog = ctx.require(TOOLS)
     await catalog.declare_group(ctx, description=desc)
     for tool_name, listing, description in (

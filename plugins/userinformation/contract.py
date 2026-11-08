@@ -19,3 +19,12 @@ class InformationProviders(Protocol):
 
 
 USER_INFORMATION = ServiceKey[InformationProviders]("userinformation.providers.v1")
+
+
+class InformationRead(Protocol):
+    async def query(self, provider: str, query: str, arguments: Mapping[str, object]) -> Mapping[str, object]:
+        """Bounded read of one provider; returns timestamped evidence or explicit failure."""
+        ...
+
+
+USER_INFORMATION_READ = ServiceKey[InformationRead]("userinformation.read.v1")
