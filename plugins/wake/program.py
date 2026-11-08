@@ -7,7 +7,6 @@ from collections.abc import Mapping
 
 from agent.plugin_composition import Context
 from plugins.ledger.contract import MESSAGE_WRITERS, MessageReader
-from plugins.models.contract import ModelError
 from agent.plugin_composition.tasks import Task
 from plugins.ledger.contract import Control, Message
 from plugins.models.contract import (
@@ -62,12 +61,12 @@ async def run(ctx: Context, task: Task, reader: MessageReader, request: Request)
             exclude_material_kinds=frozenset({"recall", "profile"}) if phase.stage == "alert" else frozenset(),
             prompt_hints=(HINTS[phase.stage],),
         )
-    except (RuntimeError, TimeoutError) as error:
-        failure = ModelError.read(error)
-        if failure is None:
-            raise
-        reason = WakeFailure(message=str(error), retryable=failure.retryable).model_dump_json()
-    # 此处只结算本层已知的失败；未知工具效果和存储错误保持原事实并向上传播。
+    except Exception as error:
+        # Models owns bounded retries. A failed Wake round must not start that budget again.
+        detail = f"{type(error).__name__}: {error}"
+        reason = WakeFailure(message=detail, retryable=False).model_dump_json()
+        _ = ctx.report_incident("wake_program_failed", f"flow={request.flow_id} {detail}")
+    # Keep tool receipts intact; this control ends only the failed program.
     writer = ctx.require(MESSAGE_WRITERS).bind(ctx, author="wake", source="wake", body_types=(Control,), content={})(reader.session_id)
     task.on_close(writer.expire)
     try:

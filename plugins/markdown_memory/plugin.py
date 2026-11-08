@@ -5,6 +5,7 @@ import asyncio
 import fcntl
 import json
 import logging
+import hashlib
 from datetime import UTC, datetime
 from contextlib import aclosing, asynccontextmanager
 from pathlib import Path
@@ -31,6 +32,11 @@ from plugins.models.contract import LLMResponse
 from plugins.models.contract import (
     ContextLengthError,
     ModelError,
+    AuthenticationError,
+    QuotaError,
+    RateLimitError,
+    DriverUnavailableError,
+    ModelUnavailableError,
 )
 from plugins.models.contract import (
     BoundChatModel,
@@ -284,7 +290,37 @@ def _recover_profile(store: MarkdownProfileStore, scope: str | None) -> Workspac
     return store.workspace(scope)
 
 
-async def consolidate(store: MarkdownProfileStore, models: ChatModels, lock_path: Path, config: Config) -> None:
+# Stop repeated model work on unchanged memory; credentials and file conflicts remain recoverable.
+async def consolidate(store: MarkdownProfileStore, models: ChatModels, lock_path: Path, config: Config) -> str | None:
+    def identity() -> str:
+        files = {str(path.relative_to(store.root)): path.read_text() for path in sorted(store.root.rglob("*.md"))}
+        payload = json.dumps([files, config.model_dump(mode="json")], sort_keys=True)
+        return "maintenance:" + hashlib.sha256(payload.encode()).hexdigest()
+
+    reference = await run_file_io(identity)
+    if await run_file_io(lambda: store.learning_stopped(reference)):
+        return None
+    try:
+        await _consolidate(store, models, lock_path, config)
+    except (RuntimeError, TimeoutError) as error:
+        if await _stop_learning(store, reference, error):
+            return f"Markdown 整理已停止重试，修改记忆或模型配置后再处理: {reference} {error}"
+        raise
+    return None
+
+
+# Only bounded model failures consume the per-input budget; service outages pause learning.
+async def _stop_learning(store: MarkdownProfileStore, reference: str, error: Exception) -> bool:
+    failure = ModelError.read(error)
+    if failure is None or isinstance(failure, (AuthenticationError, QuotaError, RateLimitError,
+                                               DriverUnavailableError, ModelUnavailableError)):
+        return False
+    return await run_file_io(lambda: store.record_learning_failure(
+        reference, str(error), retryable=failure.retryable,
+    ))
+
+
+async def _consolidate(store: MarkdownProfileStore, models: ChatModels, lock_path: Path, config: Config) -> None:
     """到期时逐 scope 整理：只把重复或相互矛盾的旧条目合并为一条，不引入新事实。"""
     await prune_memory(store, models, lock_path, config)
     if not config.consolidate:
@@ -754,7 +790,7 @@ async def project(
     summaries: SummaryLookup,
     compaction: CompactionReader | None,
     evaluated: set[str],
-) -> None:
+) -> str | None:
     """只处理已提交的模型 Output；操作先落 receipt，再幂等叠加到当前文件。"""
     sources = config.sources
     # 开机按全部历史重放：先做内存判断，只有引用摘要的 Output 才查会话属性。
@@ -776,7 +812,7 @@ async def project(
     if record_ref in evaluated:
         return
     evaluated.add(record_ref)
-    if await run_file_io(lambda: store.is_applied(record_ref)):
+    if await run_file_io(lambda: store.is_applied(record_ref) or store.learning_stopped(record_ref)):
         return
     scope = _scope_key(reader)
     # 2. 更新串行；文件锁只保护已提交档案的读取和安装，不覆盖模型等待。
@@ -800,9 +836,14 @@ async def project(
         selected = tuple(message for group in groups for message in group)
         # 模型属于当前 Markdown 作用域；摘要读取完成后才等待模型，不持有历史 provider。
         if draft is None:
-            draft = await prepare_profile_draft(
-                groups, workspace, models, compaction=compaction, config=config,
-            )
+            try:
+                draft = await prepare_profile_draft(
+                    groups, workspace, models, compaction=compaction, config=config,
+                )
+            except (RuntimeError, TimeoutError) as error:
+                if await _stop_learning(store, record_ref, error):
+                    return f"Markdown 已跳过失败摘要，原消息保留: {record_ref} {error}"
+                raise
         elif draft.get("version") != 3:
             raise ValueError("不支持的 Markdown 草稿版本")
         else:
@@ -932,12 +973,15 @@ async def apply(ctx: Context) -> None:
                                 for message in messages:
                                     try:
                                         compaction = ctx.get(COMPACTION_READER)
-                                        await project(message, reader=reader, bindings=ctx.require(BINDINGS),
+                                        stopped = await project(message, reader=reader, bindings=ctx.require(BINDINGS),
                                                       store=store, models=ctx.require(CHAT_MODELS), lock_path=lock_path,
                                         config=config, projection=ctx.require(TURN_PROJECTION),
                                         content=ctx.require(CONTENT), context=context,
                                         summaries=ctx.require(COMPACTION_SUMMARIES),
                                         compaction=compaction, evaluated=evaluated)
+                                        if stopped is not None:
+                                            _ = ctx.report_incident("markdown_learning_stopped", stopped)
+                                            logger.error("%s", stopped)
                                     except (RuntimeError, TimeoutError) as error:
                                         failure = ModelError.read(error)
                                         if not isinstance(error, ConcurrentChange) and failure is None:
@@ -962,7 +1006,10 @@ async def apply(ctx: Context) -> None:
                     try:
                         async with ctx.runtime_scope():
                             assert store is not None
-                            await consolidate(store, ctx.require(CHAT_MODELS), lock_path, config)
+                            stopped = await consolidate(store, ctx.require(CHAT_MODELS), lock_path, config)
+                            if stopped is not None:
+                                _ = ctx.report_incident("markdown_learning_stopped", stopped)
+                                logger.error("%s", stopped)
                     except (RuntimeError, TimeoutError) as error:
                         failure = ModelError.read(error)
                         if not isinstance(error, ConcurrentChange) and failure is None:

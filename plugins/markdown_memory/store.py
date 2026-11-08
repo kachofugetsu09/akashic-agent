@@ -155,6 +155,28 @@ class MarkdownProfileStore:
     def read_draft(self, source_ref: str) -> dict[str, object] | None:
         return self._read_receipt(source_ref, "markdown_ops_v1")
 
+    # Failed learning has its own receipt; it never claims that memory was applied.
+    def learning_stopped(self, source_ref: str) -> bool:
+        receipt = self._read_receipt(source_ref, "markdown_learning_failure_v1")
+        return receipt is not None and receipt["stopped"] is True
+
+    # Count failures durably so a restart cannot renew the same input's budget.
+    def record_learning_failure(self, source_ref: str, error: str, *, retryable: bool) -> bool:
+        with closing(sqlite3.connect(str(self.receipts_path), timeout=30.0)) as conn, conn:
+            _ = conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT payload FROM consolidation_writes WHERE source_ref=? AND kind=?",
+                               (source_ref, "markdown_learning_failure_v1")).fetchone()
+            attempts = 1 if row is None else json.loads(row[0])["attempts"] + 1
+            stopped = not retryable or attempts >= 3
+            payload = json.dumps({"attempts": attempts, "stopped": stopped, "error": error}, ensure_ascii=False)
+            _ = conn.execute(
+                "INSERT INTO consolidation_writes (source_ref, kind, payload, trailing_blank_line, done_at) "
+                "VALUES (?, ?, ?, 0, datetime('now')) ON CONFLICT(source_ref, kind) DO UPDATE SET "
+                "payload=excluded.payload, done_at=excluded.done_at",
+                (source_ref, "markdown_learning_failure_v1", payload),
+            )
+        return stopped
+
     def write_draft(self, source_ref: str, payload: dict[str, object], *,
                     session_key: str, generation: int) -> dict[str, object]:
         # 操作与会话进度同一事务提交，恢复时不会出现只有操作的提炼 draft。

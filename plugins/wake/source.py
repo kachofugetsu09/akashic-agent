@@ -24,6 +24,7 @@ from plugins.ledger.contract import (
 from agent.plugin_composition.tasks import TASKS, Task, TaskSlot
 from plugins.ledger.contract import (
     ContentPart,
+    Control,
     Input,
     Message,
     Output,
@@ -57,7 +58,6 @@ from .request import (
     check_phase,
     check_request,
     read_request,
-    retryable,
 )
 from .selection import propose_content
 from .state import WakeState
@@ -132,14 +132,41 @@ class Source:
             if request.owner == "content":
                 return await self._content(task, request, reader)
             return await self._alert(task, request, reader)
-        except Exception:
+        except Exception as error:
             # 原发送已失败便关闭来源领取；程序异常仍由 Task 报告。
             delivery = self.ctx.require(DELIVERY).open(self.ctx)
             if delivery.selection(request.notification_id) is not None:
                 receipt = delivery.receipt(request.notification_id, request.sink["name"])
                 if receipt is not None and receipt.status == "failed":
                     await self._fail_notification(request, reader)
-            raise
+                    return "failed"
+                # Unknown delivery effects keep their original recovery path.
+                raise
+            await self._fail_program(request, reader, error)
+            return "failed"
+
+    # Close only this flow and its exact claim; no delivery has started here.
+    async def _fail_program(self, request: Request, reader: MessageReader, error: Exception) -> None:
+        ctx = self.ctx
+        detail = f"{type(error).__name__}: {error}"
+        writer = ctx.require(MESSAGE_WRITERS).bind(
+            ctx, author="wake", source="wake", body_types=(Control,), content={},
+        )(request.session_id)
+        try:
+            _ = await writer.append_async("wake-failure:" + request.flow_id,
+                Control("failure", reader.head(source="wake"), detail))
+        finally:
+            writer.expire()
+        domain = ctx.require(EVENTMAIL_WAKE)
+        if request.owner == "alert":
+            assert request.alert_ref is not None
+            _ = await domain.change_alert(request.alert_ref, request.accepted, "skip", self.now())
+        else:
+            selected = await domain.selection(request.accepted)
+            if selected is not None and selected.get("status") in {"selected", "ready_for_delivery"}:
+                await self._change_content(_string(selected.get("selection_token"), "selection_token"), "failed")
+        _ = ctx.report_incident("wake_flow_failed", f"flow={request.flow_id} {detail}")
+        await self._settled(request, reader)
 
     async def _fail_notification(self, request: Request, reader: MessageReader) -> None:
         """按原领取结束失败通知，不影响来源已经发布的新版本。"""
@@ -260,8 +287,8 @@ class Source:
             try:
                 chosen = _selected_content_refs(selected, value.items)
             except ValueError:
-                await self._record(request, "defer", "分享引用了原批次之外的候选")
-                await self._change_content(token, "defer")
+                await self._record(request, "skip", "分享引用了原批次之外的候选，已结束本次处理")
+                await self._change_content(token, "failed")
             else:
                 await self._record(request, "share", value.message)
                 await self._change_content(token, "ready_for_delivery", refs=chosen)
@@ -269,9 +296,8 @@ class Source:
             await self._record(request, "skip", value.reason)
             await self._change_content(token, "release")
         else:
-            await self._record(request, "defer", "没有提交唯一有效决定")
-            action = "invalidated" if retryable(finished(reader, request, "content")) is False else "defer"
-            await self._change_content(token, action)
+            await self._record(request, "skip", "没有提交唯一有效决定，已结束本次处理")
+            await self._change_content(token, "failed")
         return await self._finish_domain(task, request, reader, "content")
 
     # 面板记录实际初筛；没有进入模型或初筛无效时只记录候选数。
@@ -364,12 +390,10 @@ class Source:
         )
         value = decision(reader, request, "alert", ("share_alert",))
         if not isinstance(value, Alert):
-            action = "skip" if retryable(finished(reader, request, "alert")) is False else "defer"
-            await self._record(request, action, "告警没有提交唯一有效 share_alert")
-            _ = await domain.change_alert(ref, request.accepted, action, self.now(),
-                                    not_before=self.now() + timedelta(minutes=5) if action == "defer" else None)
+            await self._record(request, "skip", "告警没有提交唯一有效 share_alert，已结束本次处理")
+            _ = await domain.change_alert(ref, request.accepted, "skip", self.now())
             await self._settled(request, reader)
-            return "model_skip" if action == "skip" else "deferred"
+            return "failed"
         await self._record(request, "share", value.message)
         # 模型期间来源可能已经换版；不得发送旧版本的新通知或关闭新 projection。
         if await domain.alert_status(ref["source_id"], ref["event_id"], mail_id=ref["mail_id"]) != "selected":
