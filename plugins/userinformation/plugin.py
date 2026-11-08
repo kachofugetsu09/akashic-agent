@@ -5,6 +5,7 @@ from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 import json
+import logging
 from typing import cast
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -12,6 +13,9 @@ from agent.plugin_composition import Context
 from plugins.ledger.contract import ContentPart, json_value
 from plugins.tools.contract import TOOLS, CallSource, Result
 from .contract import USER_INFORMATION, InformationProvider
+
+logger = logging.getLogger(__name__)
+RESULT_LIMIT = 131072
 
 api_version = 3
 name = "userinformation"
@@ -54,15 +58,26 @@ class Providers:
         if entry is None:
             return {"status": "unavailable", "provider": identity, "error": "Provider not registered"}
         owner, provider = entry
+        operation = "describe" if query is None else query.query
+        # 1. 单个来源的任何失败都收成该来源的 unavailable，不能拖垮 list 里的其他来源；取消照常传播
         try:
             async with asyncio.timeout(20), owner.runtime_scope():
                 value = await provider.describe() if query is None else await provider.query(query.query, query.arguments)
                 encoded = json.dumps(json_value(value), ensure_ascii=False, allow_nan=False)
-                if len(encoded.encode()) > 131072:
-                    raise ValueError("Provider result exceeds 128 KiB; narrow or paginate the query")
-                return {"provider": identity, "result": json.loads(encoded)}
-        except (TimeoutError, OSError) as error:
-            return {"provider": identity, "status": "unavailable", "error": str(error) or type(error).__name__}
+        except TimeoutError:
+            logger.warning("userinformation.provider_timeout provider=%s query=%s", identity, operation)
+            return {"provider": identity, "status": "unavailable", "error": "Provider timed out"}
+        except Exception as error:
+            # 异常文本可能带来源内部细节，只记日志；模型侧只看到类型。
+            logger.warning("userinformation.provider_failed provider=%s query=%s", identity, operation, exc_info=True)
+            return {"provider": identity, "status": "unavailable", "error": f"Provider failed: {type(error).__name__}"}
+        # 2. 超限明确告诉模型缩小或分页
+        size = len(encoded.encode())
+        if size > RESULT_LIMIT:
+            logger.warning("userinformation.result_too_large provider=%s query=%s bytes=%d", identity, operation, size)
+            return {"provider": identity, "status": "too_large", "bytes": size,
+                    "error": "Provider result exceeds 128 KiB; narrow or paginate the query"}
+        return {"provider": identity, "result": json.loads(encoded)}
 
 
 class InformationTool:

@@ -27,11 +27,27 @@ async def apply(ctx):
     await ctx.require(USER_INFORMATION).register(ctx, Provider())
 '''
 
+BROKEN = '''from plugins.userinformation.contract import USER_INFORMATION
+api_version=3
+name="broken_information"
+version="1.0.0"
+inject=(USER_INFORMATION,)
+async def apply(ctx):
+    class Provider:
+        async def describe(self):
+            raise KeyError("fixture broken provider")
+        async def query(self, query, arguments):
+            raise KeyError("fixture broken provider")
+    await ctx.require(USER_INFORMATION).register(ctx, Provider())
+'''
+
 
 def sources(path):
     shutil.copytree(ROOT/'plugins/userinformation', path/'userinformation')
     (path/'sample_information').mkdir()
     (path/'sample_information/plugin.py').write_text(PROVIDER)
+    (path/'broken_information').mkdir()
+    (path/'broken_information/plugin.py').write_text(BROKEN)
     p = path/'test_provider/plugin.py'
     text = p.read_text()
     start = text.index('            if len(calls) == 1:')
@@ -64,6 +80,10 @@ async def main():
             for r in results: print(r.outcome, r.parts)
             assert len(results)==3 and all(r.outcome=='success' for r in results)
             assert 'fixture:observation' in str(results[-1].parts)
+            listing = json.loads(results[1].parts[0].value)
+            broken = [p for p in listing['providers'] if p['provider'].startswith('broken_information')]
+            assert broken and broken[0]['status'] == 'unavailable', listing
+            print('broken provider isolated in list:', broken[0])
             print(json.dumps({'real_reply_loop':'passed','persisted_tool_results':len(results)}))
 
 if __name__=='__main__': asyncio.run(main())
