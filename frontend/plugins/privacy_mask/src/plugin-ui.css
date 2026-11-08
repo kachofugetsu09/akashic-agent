@@ -9,8 +9,8 @@
 }
 
 .privacy-mask-marker .header-marker__trigger[data-active="true"] {
-  background: color-mix(in srgb, var(--ak-accent-primary, #2e5a88) 10%, transparent);
-  color: var(--ak-accent-primary, #2e5a88);
+  background: color-mix(in srgb, var(--ak-color-action-primary) 10%, transparent);
+  color: var(--ak-color-action-primary);
   font-weight: 500;
 }
 
@@ -35,7 +35,7 @@
 .privacy-mask-panel__kbd {
   padding: 1px 6px;
   border: 1px solid var(--chat-line, var(--ak-rule-subtle));
-  border-radius: 5px;
+  border-radius: var(--ak-radius-xs);
   background: var(--chat-chip, var(--ak-paper-sheet));
   color: var(--chat-faint, var(--ak-ink-muted));
   font-size: 0.6875rem;
@@ -56,7 +56,7 @@
   gap: 12px;
   padding: 7px 8px;
   border: 0;
-  border-radius: var(--ak-radius-sm, 8px);
+  border-radius: var(--ak-radius-sm);
   background: transparent;
   color: inherit;
   font: inherit;
@@ -106,21 +106,21 @@
   flex: 0 0 auto;
   align-items: center;
   padding: 2px;
-  border-radius: 999px;
+  border-radius: var(--ak-radius-full);
   background: color-mix(in srgb, var(--ak-ink-primary, #1b1916) 18%, transparent);
   transition: background-color var(--ak-sys-duration-short, 140ms) var(--ak-sys-motion-standard, ease);
 }
 
 .privacy-mask-scope[aria-checked="true"] .privacy-mask-switch {
-  background: var(--ak-accent-primary, #2e5a88);
+  background: var(--ak-color-action-primary);
 }
 
 .privacy-mask-switch__thumb {
   width: 14px;
   height: 14px;
-  border-radius: 999px;
+  border-radius: var(--ak-radius-full);
   background: var(--ak-paper-canvas, #fbf9f5);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.16);
+  box-shadow: var(--ak-elevation-raised);
   transform: translateX(0);
   transition: transform var(--ak-sys-duration-short, 140ms) var(--ak-sys-motion-standard, ease);
 }
@@ -204,7 +204,7 @@ html[data-privacy-titles="true"] :is(
   height: 0.54em;
   width: 62%;
   max-width: calc(100% - 8px);
-  border-radius: 999px;
+  border-radius: var(--ak-radius-full);
   background: color-mix(in srgb, var(--ak-ink-primary, #1b1916) 22%, transparent);
   pointer-events: none;
 }

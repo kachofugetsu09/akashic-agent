@@ -8,7 +8,7 @@
   }
   *::-webkit-scrollbar { width: 8px; height: 8px; }
   *::-webkit-scrollbar-track { background: transparent; }
-  *::-webkit-scrollbar-thumb { border-radius: 4px; background: color-mix(in oklab, var(--ak-ink-primary) 22%, transparent); }
+  *::-webkit-scrollbar-thumb { border-radius: var(--ak-radius-xs); background: color-mix(in oklab, var(--ak-ink-primary) 22%, transparent); }
   *::-webkit-scrollbar-thumb:hover { background: color-mix(in oklab, var(--ak-ink-primary) 34%, transparent); }
 
   /* 纵向一列：可选的撤回提示与顶栏按内容占高，页面栈吃掉其余高度。
@@ -86,7 +86,7 @@
     max-height: none;
     padding: 0;
     border: 1px solid var(--ak-rule-default);
-    border-radius: 12px;
+    border-radius: var(--ak-radius-md);
     background: var(--ak-paper-sheet);
     color: var(--ak-ink-primary);
     box-shadow: var(--ak-elevation-overlay);
@@ -134,7 +134,7 @@
     font: inherit;
     font-size: 14px;
     border: 0;
-    border-radius: 12px;
+    border-radius: var(--ak-radius-md);
     background: transparent;
     color: inherit;
     text-align: start;
@@ -186,7 +186,7 @@
     place-items: center;
     padding: 0;
     border: 0;
-    border-radius: 8px;
+    border-radius: var(--ak-radius-sm);
     background: transparent;
     color: var(--ak-ink-secondary);
     cursor: pointer;
@@ -249,7 +249,7 @@
     font: inherit;
     font-size: 13px;
     border: 0;
-    border-radius: 8px;
+    border-radius: var(--ak-radius-sm);
     background: transparent;
     color: var(--ak-ink-secondary);
     cursor: pointer;
@@ -279,7 +279,7 @@
     overflow: hidden;
     list-style: none;
     border: 1px solid var(--ak-rule-subtle);
-    border-radius: 12px;
+    border-radius: var(--ak-radius-md);
     background: var(--ak-paper-sheet);
   }
 
@@ -373,7 +373,7 @@
   /* 插件列表：分组标题 + 发丝线分隔的行；状态只在例外时出现文字。 */
   .shell-inventory { display: grid; gap: 20px; }
   .shell-inventory-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; }
-  .shell-inventory-toolbar input { flex: 1 1 220px; min-height: 36px; padding: 0 12px; font: inherit; font-size: 14px; border: 1px solid var(--ak-rule-default); border-radius: 8px; background: transparent; color: inherit; }
+  .shell-inventory-toolbar input { flex: 1 1 220px; min-height: 36px; padding: 0 12px; font: inherit; font-size: 14px; border: 1px solid var(--ak-rule-default); border-radius: var(--ak-radius-sm); background: transparent; color: inherit; }
   .shell-inventory-filter { display: flex; gap: 16px; }
   .shell-inventory-filter button,
   .shell-inventory-empty button { padding: 4px 0; font: inherit; font-size: 13px; border: 0; background: transparent; color: var(--ak-ink-muted); cursor: pointer; }
@@ -383,7 +383,7 @@
   .shell-inventory-group h4 span,
   .shell-inventory-sub-head > span:not(.shell-inventory-chevron) { margin-inline-start: 4px; font-weight: 400; color: var(--ak-ink-muted); font-variant-numeric: tabular-nums; }
   /* 插件列表同样收进分组卡：名称下一行是说明，展开的详情就地出现在行内。 */
-  .shell-inventory-rows { margin: 0; padding: 0; overflow: hidden; list-style: none; border: 1px solid var(--ak-rule-subtle); border-radius: 12px; background: var(--ak-paper-sheet); }
+  .shell-inventory-rows { margin: 0; padding: 0; overflow: hidden; list-style: none; border: 1px solid var(--ak-rule-subtle); border-radius: var(--ak-radius-md); background: var(--ak-paper-sheet); }
   .shell-inventory-row + .shell-inventory-row { border-block-start: 1px solid var(--ak-rule-subtle); }
   .shell-inventory-name { display: grid; flex: 1 1 auto; min-width: 0; gap: 1px; padding-block: 8px; }
   .shell-inventory-name small { overflow: hidden; font-size: 13px; line-height: 18px; color: var(--ak-ink-muted); text-overflow: ellipsis; white-space: nowrap; }
@@ -409,7 +409,7 @@
   .shell-inventory-error { margin: 0; white-space: pre-wrap; color: var(--ak-color-status-error); }
   .shell-inventory-hint, .shell-inventory-switch small { color: var(--ak-ink-muted); }
   .shell-inventory-switch { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; color: var(--ak-ink-primary); cursor: pointer; }
-  .shell-inventory-switch input { appearance: none; position: relative; width: 36px; height: 20px; margin: 0; border-radius: 999px; background: var(--ak-rule-strong); cursor: pointer; }
+  .shell-inventory-switch input { appearance: none; position: relative; width: 36px; height: 20px; margin: 0; border-radius: var(--ak-radius-full); background: var(--ak-rule-strong); cursor: pointer; }
 
   /* deslop-ignore-next-line 19 */
   .shell-inventory-switch input::after { content: ""; position: absolute; inset: 2px auto auto 2px; width: 16px; height: 16px; border-radius: 50%; background: var(--ak-paper-sheet); transition: transform 150ms ease; }
@@ -537,7 +537,7 @@
       font: inherit;
       font-size: 15px;
       border: 0;
-      border-radius: 12px;
+      border-radius: var(--ak-radius-md);
       background: transparent;
       color: var(--ak-ink-secondary);
       cursor: pointer;

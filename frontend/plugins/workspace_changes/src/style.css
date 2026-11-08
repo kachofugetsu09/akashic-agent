@@ -23,7 +23,7 @@
   max-width: 60%;
   padding: 4px 8px;
   border: 1px solid var(--ak-rule-default);
-  border-radius: 8px;
+  border-radius: var(--ak-radius-sm);
   background: var(--ak-paper-sheet);
   color: var(--ak-ink-primary);
   font: inherit;
@@ -66,7 +66,7 @@
   margin: 8px;
   padding: 5px 8px;
   border: 1px solid var(--ak-rule-default);
-  border-radius: 8px;
+  border-radius: var(--ak-radius-sm);
   background: var(--ak-paper-sheet);
   color: var(--ak-ink-primary);
   font: inherit;
@@ -193,9 +193,9 @@
   margin: 4px 12px 8px 4.5em;
   padding: 8px;
   border: 1px solid var(--ak-rule-default);
-  border-radius: 8px;
+  border-radius: var(--ak-radius-sm);
   background: var(--ak-paper-sheet);
-  font-family: var(--ak-type-body, inherit);
+  font-family: inherit;
   white-space: normal;
 }
 
@@ -205,7 +205,7 @@
   min-height: 52px;
   padding: 6px 8px;
   border: 1px solid var(--ak-rule-default);
-  border-radius: 8px;
+  border-radius: var(--ak-radius-sm);
   background: var(--ak-paper-canvas);
   color: var(--ak-ink-primary);
   font: inherit;
@@ -227,7 +227,7 @@
   flex: none;
   padding: 4px 10px;
   border: 1px solid var(--ak-rule-default);
-  border-radius: 8px;
+  border-radius: var(--ak-radius-sm);
   background: transparent;
   color: var(--ak-ink-primary);
   font: inherit;
@@ -236,7 +236,7 @@
   cursor: pointer;
 }
 
-.changes-action.is-primary { border-color: transparent; background: var(--ak-color-action-primary); color: var(--ak-color-action-on-primary, #fff); }
+.changes-action.is-primary { border-color: transparent; background: var(--ak-color-action-primary); color: var(--ak-color-on-action-primary); }
 
 .changes-empty { margin: 0; padding: 16px 12px; color: var(--ak-ink-secondary); }
 .changes-empty.is-error { color: var(--ak-color-status-error); }

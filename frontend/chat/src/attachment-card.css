@@ -29,7 +29,7 @@
   padding: 8px 12px 8px 8px;
   color: var(--ak-ink-primary);
   background: var(--ak-paper-quiet);
-  box-shadow: 0 0 0 1px var(--ak-rule-subtle), 0 1px 2px rgb(var(--ak-color-shadow-rgb) / 0.05);
+  box-shadow: 0 0 0 1px var(--ak-rule-subtle), var(--ak-elevation-raised);
   font: inherit;
   text-align: start;
   cursor: pointer;
@@ -39,7 +39,7 @@
 .ak-attachment__surface:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 2px; }
 .ak-attachment__surface:disabled { cursor: default; }
 @media (hover: hover) {
-  .ak-attachment__surface:hover:not(:disabled) { box-shadow: 0 0 0 1px var(--ak-rule-default), 0 1px 2px rgb(var(--ak-color-shadow-rgb) / 0.08); }
+  .ak-attachment__surface:hover:not(:disabled) { box-shadow: 0 0 0 1px var(--ak-rule-default), var(--ak-elevation-raised); }
 }
 /* 没有预览可开的文件（PDF、压缩包）只是一张信息卡。 */
 .ak-attachment__surface[data-static] { cursor: default; }

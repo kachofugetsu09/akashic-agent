@@ -65,6 +65,9 @@ jobs:
       - name: Install Node dependencies
         run: npm ci
 
+      - name: Check CSS appearance contract
+        run: npm run check:css-tokens
+
       - name: Run Python regressions
         timeout-minutes: 35
         env:

@@ -58,7 +58,7 @@
   border: 1px solid var(--chat-line);
   border-radius: var(--ak-radius-md);
   background: var(--ak-paper-canvas);
-  box-shadow: 0 8px 24px color-mix(in oklab, var(--ak-ink-primary) 12%, transparent);
+  box-shadow: var(--ak-elevation-float);
   color: var(--chat-ink);
   font-size: var(--chat-type-control);
   animation: sidebar-panels-in 160ms cubic-bezier(0.2, 0, 0, 1);

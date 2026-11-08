@@ -402,10 +402,10 @@
 }
 dialog.settings-scrim {
   width: 100%;
-  height: calc(100% - var(--shell-band-height, 48px) - env(safe-area-inset-top, 0px));
+  height: calc(100% - 48px - env(safe-area-inset-top, 0px));
   max-width: none;
   max-height: none;
-  margin: calc(var(--shell-band-height, 48px) + env(safe-area-inset-top, 0px)) 0 0;
+  margin: calc(48px + env(safe-area-inset-top, 0px)) 0 0;
   border: 0;
   color: inherit;
 }
@@ -600,7 +600,7 @@ dialog.settings-scrim::backdrop { background: transparent; }
 .settings-dialog-footer-note { display: inline-flex; align-items: center; gap: 0.4rem; color: var(--md-sys-color-on-surface-variant); font-size: var(--md-sys-typescale-body-medium-size); }
 
 .settings-toast-region { position: fixed; z-index: 100; inset: auto 1.25rem 1.25rem auto; }
-.settings-toast { display: flex; min-width: min(22rem, calc(100vw - 2.5rem)); align-items: center; gap: 0.7rem; border-radius: var(--ak-radius-sm); padding: 0.75rem 0.875rem; color: var(--ak-sys-color-on-success-container); background: var(--ak-sys-color-success-container); box-shadow: 0 0.8rem 2.4rem color-mix(in oklab, var(--ak-ink-primary) 14%, transparent); }
+.settings-toast { display: flex; min-width: min(22rem, calc(100vw - 2.5rem)); align-items: center; gap: 0.7rem; border-radius: var(--ak-radius-sm); padding: 0.75rem 0.875rem; color: var(--ak-sys-color-on-success-container); background: var(--ak-sys-color-success-container); box-shadow: var(--ak-elevation-raised); }
 .settings-toast > span { display: grid; flex: 1; }
 .settings-toast strong { font-size: var(--md-sys-typescale-body-medium-size); }
 .settings-toast button { display: grid; width: 2rem; height: 2rem; place-items: center; border: 0; border-radius: 50%; color: inherit; background: transparent; cursor: pointer; }
@@ -906,7 +906,7 @@ dialog.settings-scrim::backdrop { background: transparent; }
 /* 节标题栏：小号灰字标题，右侧是查找框与文字操作；不用大号标题加说明段落。 */
 .settings-section-bar { display: flex; min-height: 2.25rem; align-items: center; gap: 0.75rem; margin-block-end: 0.5rem; padding-inline: 0.125rem; }
 .settings-section-label { margin: 0; color: var(--ak-ink-secondary); font-size: var(--models-type-caption); font-weight: 600; letter-spacing: 0.04em; }
-.settings-section-hint { color: var(--ak-ink-tertiary, var(--ak-ink-secondary)); font-size: var(--models-type-caption); }
+.settings-section-hint { color: var(--ak-ink-secondary); font-size: var(--models-type-caption); }
 .settings-find { display: flex; width: min(15rem, 50%); min-height: 2rem; align-items: center; gap: 0.4rem; margin-inline-start: auto; border: 1px solid var(--ak-rule-default); border-radius: var(--ak-radius-sm); padding-inline: 0.625rem; color: var(--ak-ink-secondary); background: var(--ak-paper-editing); }
 .settings-find:focus-within { border-color: var(--ak-rule-focus); }
 @media (pointer: coarse) { .settings-find { min-height: 2.75rem; } }

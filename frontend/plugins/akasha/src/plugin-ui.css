@@ -37,7 +37,7 @@
   min-height: 32px;
   padding-inline: 8px;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--ak-radius-sm);
   background: transparent;
   color: var(--ak-ink-primary);
   font: inherit;
@@ -54,10 +54,10 @@
   max-height: min(420px, calc(100vh - 24px));
   overflow-y: auto;
   border: 1px solid var(--ak-rule-subtle);
-  border-radius: 12px;
+  border-radius: var(--ak-radius-md);
   color: var(--ak-ink-primary);
   background: var(--ak-paper-canvas);
-  box-shadow: 0 1px 2px rgb(0 0 0 / 6%), 0 8px 24px rgb(0 0 0 / 12%);
+  box-shadow: var(--ak-elevation-float);
   font: 400 0.8125rem/1.5 system-ui, sans-serif;
   animation: akasha-recall-in 160ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
@@ -82,7 +82,7 @@
 .akasha-recall-more {
   width: 100%;
   border: 0;
-  border-radius: 7px;
+  border-radius: var(--ak-radius-sm);
   background: none;
   color: var(--ak-ink-secondary);
   font: inherit;
@@ -139,7 +139,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  border-radius: 999px;
+  border-radius: var(--ak-radius-full);
   padding-inline: 6px;
   color: var(--chat-muted);
   background: var(--chat-chip);

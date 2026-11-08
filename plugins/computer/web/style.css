@@ -94,7 +94,7 @@
   min-width: 4.5rem;
   height: 30px;
   padding-inline: 10px 4px;
-  border-radius: 8px;
+  border-radius: var(--ak-radius-sm);
   color: var(--ak-ink-secondary);
   background: transparent;
   font-size: 0.8125rem;
@@ -110,7 +110,7 @@
   width: 20px;
   height: 20px;
   margin-inline-start: auto;
-  border-radius: 4px;
+  border-radius: var(--ak-radius-xs);
   opacity: 0;
 }
 
@@ -177,7 +177,7 @@
   height: 28px;
   margin-inline: 4px 2px;
   padding-inline-start: 8px;
-  border-radius: 8px;
+  border-radius: var(--ak-radius-sm);
   color: var(--ak-ink-secondary);
   background: transparent;
   transition: background-color 120ms var(--computer-ease), box-shadow 120ms var(--computer-ease);
@@ -261,7 +261,7 @@
   place-items: center;
   padding: 0;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--ak-radius-sm);
   color: var(--ak-ink-secondary);
   background: transparent;
 }
@@ -282,16 +282,16 @@
   min-width: 11rem;
   padding: 4px;
   border: 1px solid var(--ak-rule-default);
-  border-radius: 8px;
+  border-radius: var(--ak-radius-sm);
   background: var(--ak-paper-sheet);
-  box-shadow: 0 8px 24px color-mix(in oklab, var(--ak-color-shadow) 12%, transparent);
+  box-shadow: var(--ak-elevation-float);
 }
 
 .computer-menu-item {
   min-height: 32px;
   padding-inline: 10px;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--ak-radius-sm);
   background: transparent;
   font-size: 0.8125rem;
   text-align: start;
@@ -314,9 +314,9 @@
   min-height: 32px;
   padding: 3px 3px 3px 12px;
   border: 1px solid var(--ak-rule-default);
-  border-radius: 999px;
+  border-radius: var(--ak-radius-full);
   background: var(--ak-paper-sheet);
-  box-shadow: 0 4px 16px color-mix(in oklab, var(--ak-color-shadow) 14%, transparent);
+  box-shadow: var(--ak-elevation-float);
   font-size: 0.8125rem;
   white-space: nowrap;
   translate: -50% 0;
@@ -351,7 +351,7 @@
 .computer-status .computer-action {
   min-height: 26px;
   padding-inline: 12px;
-  border-radius: 999px;
+  border-radius: var(--ak-radius-full);
 }
 
 .computer-action {
@@ -361,7 +361,7 @@
   min-height: 36px;
   padding-inline: 14px;
   border: 1px solid var(--ak-rule-default);
-  border-radius: 8px;
+  border-radius: var(--ak-radius-sm);
   background: var(--ak-paper-editing);
   font-size: 0.8125rem;
   white-space: nowrap;
@@ -478,7 +478,7 @@
   inset-block-end: 22px;
   inset-inline-start: 50%;
   padding: 4px 12px;
-  border-radius: 999px;
+  border-radius: var(--ak-radius-full);
   color: var(--ak-paper-canvas);
   background: var(--ak-ink-primary);
   font-size: 0.75rem;
@@ -588,7 +588,7 @@
 .computer-connection-details pre {
   margin: 6px 0 0;
   padding: 8px;
-  border-radius: 8px;
+  border-radius: var(--ak-radius-sm);
   background: rgb(0 0 0 / 35%);
   font: 0.75rem/1.5 var(--ak-type-technical);
   white-space: pre-wrap;
@@ -609,10 +609,10 @@
   padding: 12px;
   overflow: auto;
   border: 1px solid var(--ak-rule-default);
-  border-radius: 12px;
+  border-radius: var(--ak-radius-md);
   color: var(--ak-ink-primary);
   background: var(--ak-paper-raised);
-  box-shadow: 0 4px 12px color-mix(in oklab, var(--ak-color-shadow) 10%, transparent);
+  box-shadow: var(--ak-elevation-float);
 }
 
 .computer-clipboard-header {
@@ -640,7 +640,7 @@
   resize: vertical;
   padding: 8px 10px;
   border: 1px solid var(--ak-rule-default);
-  border-radius: 8px;
+  border-radius: var(--ak-radius-sm);
   color: var(--ak-ink-primary);
   background: var(--ak-paper-editing);
   font: inherit;
@@ -660,7 +660,7 @@
   min-height: 36px;
   padding-inline: 12px;
   border: 1px solid var(--ak-rule-default);
-  border-radius: 8px;
+  border-radius: var(--ak-radius-sm);
   background: var(--ak-paper-editing);
   font-size: 0.8125rem;
   white-space: nowrap;
@@ -757,10 +757,10 @@
   max-width: 90px;
   padding: 3px 8px 3px 4px;
   overflow: hidden;
-  border-radius: 999px;
+  border-radius: var(--ak-radius-full);
   color: rgb(255 255 255);
   background: var(--computer-agent);
-  box-shadow: 0 2px 8px color-mix(in oklab, var(--ak-color-shadow) 16%, transparent);
+  box-shadow: var(--ak-elevation-float);
   font-size: 0.75rem;
   line-height: 18px;
   white-space: nowrap;
@@ -787,7 +787,7 @@
   inset: auto 8px 8px;
   z-index: 1;
   padding: 4px 8px;
-  border-radius: 8px;
+  border-radius: var(--ak-radius-sm);
   color: var(--ak-ink-primary);
   background: var(--ak-paper-raised);
   font-size: 0.75rem;
