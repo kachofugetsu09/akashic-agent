@@ -191,7 +191,7 @@ class ContextMaterials:
     def __init__(
         self, ctx: Context, *, prompt_sources: Mapping[str, str],
         summary_source: tuple[str, str] | None = None,
-        prepare_timeout_seconds: float = 180.0,
+        prepare_timeout_seconds: float = 900.0,
     ):
         self._ctx = ctx
         self._prompt_sources = dict(prompt_sources)

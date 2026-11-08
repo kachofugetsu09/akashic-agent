@@ -46,7 +46,7 @@ class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
     prompt_sources: dict[str, str] = Field(default_factory=dict)
     summary_source: tuple[str, str] | tuple[()] = ()
-    prepare_timeout_seconds: float = Field(default=180.0, gt=0, allow_inf_nan=False,
+    prepare_timeout_seconds: float = Field(default=900.0, gt=0, allow_inf_nan=False,
         description="Total seconds for all materials in one preparation; timeout ends the request without retry.")
 
     @field_validator("prompt_sources")

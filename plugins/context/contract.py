@@ -83,8 +83,9 @@ class ContextBuilder(Protocol):
 class MaterialView(Protocol):
     """Each prepare call shares the context provider's deadline across contributors.
 
-    The provider defaults to 180 seconds, set by prepare_timeout_seconds. Timeout
-    names the material, drains its owner work, and fails without retry. Providers
+    The provider defaults to 900 seconds, set by prepare_timeout_seconds, leaving
+    room for graph replay, queued learning, and slow disk work. Timeout names the
+    material, drains its owner work, and fails without retry. Providers
     must honor cancellation; cleanup may finish after the deadline. Synchronous
     context building and summary reduction keep their own execution contracts.
     """
