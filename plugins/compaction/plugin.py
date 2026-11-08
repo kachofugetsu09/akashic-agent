@@ -317,6 +317,8 @@ async def apply(ctx: Context) -> None:
                                 f"（目标 {config.keep_recent_tokens:,}），更早的内容改用摘要。"
                                 "当前输入和进行中的工具调用完整保留。", True)
         if selected is None:
+            if before + output_reserve(request.max_output_tokens, window) <= window:
+                return None
             raise SummaryError("当前输入与进行中的工具调用本身超出容量，没有可摘要的内容。"
                                "请放弃本轮后发送较短内容；对话可用 /abandon，程序可用 programmatic/message/abandon")
         inputs = summary_groups(groups[:selected], snapshot)
@@ -400,6 +402,7 @@ async def apply(ctx: Context) -> None:
 
     async def reduce(snapshot: tuple[Message, ...], materials: MaterialData, request: ModelRequest,
                      model: BoundChatModel, projection: ContextModel, *, source: str, force: bool,
+                     required: bool = True,
                      on_status: ReductionStatus | None = None,
                      summary_limit: int | None = None) -> MaterialData | None:
         """软水位失败可继续；硬容量或 provider 明确拒绝必须保留失败原因。"""
@@ -407,8 +410,11 @@ async def apply(ctx: Context) -> None:
         before = projection.estimate(request)
         if window is None or not snapshot or not summary_due(before, window, force=force):
             return None
+        hard_limit = (force and required) or before + output_reserve(request.max_output_tokens, window) > window
+        # An optional shrink must not rewrite a request already within the raw-history target.
+        if force and not hard_limit and before <= config.keep_recent_tokens:
+            return None
         state = failure_state(snapshot, source, model)
-        hard_limit = force or before + output_reserve(request.max_output_tokens, window) > window
         budget = (f"模型 {model.descriptor.model_id}；窗口 {window:,}；输入估算 {before:,}；"
                   f"输出预留 {output_reserve(request.max_output_tokens, window):,}；原文目标 {config.keep_recent_tokens:,} tokens")
         recovery = "请检查摘要模型的认证、额度或可用性，或切换摘要模型后重试。"

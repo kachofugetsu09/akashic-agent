@@ -183,7 +183,7 @@ class ModelRequest:
     request_key: str | None = None
     # Long provider backoff ends this request; None keeps visible, cancellable waiting.
     max_retry_wait: float | None = None
-    # A caller may lower the connection budget after changing the input once.
+    # A caller may lower the connection budget when continuing the same model step.
     max_attempts: int | None = None
     reduce_on_empty: bool = False
     # 本次完整展示、尚无成功展示回执的消息内容位置；不发送给 provider。
@@ -1076,7 +1076,7 @@ class EmptyResponseError(ModelError):
 
 @dataclass(frozen=True, slots=True)
 class InputReductionRequired(ModelError):
-    """Three empty responses ended this key; only the unused attempts may follow a reduction."""
+    """This key ended for an optional input reduction; only unused attempts may follow."""
 
     remaining_attempts: int | None = None
 

@@ -566,7 +566,7 @@ class _BoundChat:
                         remaining = None if budget is None else budget - len(records) - 1
                         if empty_count >= 3 and (remaining is None or remaining > 0):
                             failure = InputReductionRequired(
-                                "模型连续 3 次返回空响应；需要缩减输入后再试，无法缩减时请换模型或减少输入。",
+                                "模型连续 3 次返回空响应；先尝试缩减输入，随后只使用本步剩余尝试额度。",
                                 remaining_attempts=remaining,
                             ).exception()
                     model_failure = ModelError.read(failure)
@@ -603,6 +603,8 @@ class _BoundChat:
                     elif retryable:
                         stop_reason = "自动重试次数已用完；已完成的工具结果仍保留"
                         exhausted = budget is not None and budget > 1
+                    elif isinstance(model_failure, InputReductionRequired):
+                        stop_reason = "已将缩减选择交回调用方；本步未使用的尝试额度仍保留"
                     else:
                         stop_reason = "当前错误无法自动恢复；已完成的工具结果仍保留"
                     if isinstance(failure, asyncio.CancelledError) and (

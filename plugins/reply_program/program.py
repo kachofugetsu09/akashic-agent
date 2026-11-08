@@ -225,6 +225,7 @@ async def run_reply(
         async def reduce(
             snapshot: tuple[Message, ...], prepared: MaterialData, request: ModelRequest,
             model: BoundChatModel, projection: ContextModel, *, source: str, force: bool,
+            required: bool = True,
             on_status: ReductionStatus | None = None, summary_limit: int | None = None,
         ) -> SummaryData | None:
             # 压缩要在完整历史上选择覆盖范围；窗口只在确实会压缩时换成同一上界的完整读面。
@@ -239,7 +240,7 @@ async def run_reply(
                 summary_limit -= sum(index < summary_limit for index in hidden)
             snapshot = tuple(message for index, message in enumerate(snapshot) if index not in hidden)
             result = await material_view.reduce(snapshot, prepared, request, model, projection,
-                                                source=source, force=force, on_status=on_status,
+                                                source=source, force=force, required=required, on_status=on_status,
                                                 summary_limit=summary_limit)
             check()
             return result

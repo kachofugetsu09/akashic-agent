@@ -573,7 +573,9 @@ async def _complete(
         mark("context.build.end")
         return result
 
-    async def reduce_request(mats: Materials, request: ModelRequest, *, force: bool) -> tuple[Materials, Mapping[str, object] | None]:
+    async def reduce_request(
+        mats: Materials, request: ModelRequest, *, force: bool, required: bool = True,
+    ) -> tuple[Materials, Mapping[str, object] | None]:
         """压缩预览只显示状态；可见诊断随冻结材料进入最终 Output。"""
         assert reduce is not None
         notices = list(cast(Sequence[str], mats.get("notices", ())))
@@ -587,8 +589,9 @@ async def _complete(
                     await callback({"retry_status": text})
 
             mark("context.reduce.begin")
-            summary = await reduce(tuple(snapshot), mats, request, model, projection,
-                                   source=source, force=force, on_status=report)
+            reducer = reduce if required else partial(reduce, required=False)
+            summary = await reducer(tuple(snapshot), mats, request, model, projection,
+                                    source=source, force=force, on_status=report)
             mark("context.reduce.end")
         return ({**mats, "notices": tuple(notices)} if notices else mats), summary
 
@@ -632,17 +635,22 @@ async def _complete(
             if failure is None:
                 raise
             previews.close()
-            # 类型化容量拒绝也可能来自 HTTP 200 的流内错误码。
-            # 已有输出的流仍保留未知效果；缩减后使用新 key，至多再生成一次。
+            # A capacity refusal requires a real reduction; empty output only asks for an optimization.
+            # The follow-up key spends the remaining budget and cannot request another empty-output reduction.
             if reduce is None or isinstance(failure, ContextLengthError) and failure.response_delta_seen:
                 raise
-            prepared, summary = await reduce_request(prepared, request, force=True)
-            if summary is None or summary == prepared.get("summary"):
+            required = isinstance(failure, ContextLengthError)
+            prepared, summary = await reduce_request(prepared, request, force=True, required=required)
+            if summary is not None and summary != prepared.get("summary"):
+                prepared = {**prepared, "summary": summary}
+                request, rejection = await run_file_io(lambda: build(prepared))
+                if rejection is not None:
+                    raise ContextLengthError(rejection).exception()
+            elif required:
                 raise
-            prepared = {**prepared, "summary": summary}
-            request, rejection = await run_file_io(lambda: build(prepared))
-            if rejection is not None:
-                raise ContextLengthError(rejection).exception()
+            else:
+                notices = cast(Sequence[str], prepared.get("notices", ()))
+                prepared = {**prepared, "notices": (*notices, "本次压缩优化未缩减输入，保留原请求并继续本步剩余尝试额度。")}
             message_id, request_key, callback = begin()
             # 第二次调用在 except 内；再次拒绝直接上抛，不产生第三次请求。
             response = await generate(
