@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+from pathlib import Path
 from importlib import import_module
 from collections.abc import AsyncGenerator, Iterable, Mapping, Sequence
 from contextlib import aclosing
@@ -14,8 +16,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from agent.plugin_composition import CompositionError, Context, ServiceKey
 from agent.plugin_composition.plugin_config import PLUGIN_CONFIG
 from agent.plugin_composition.tasks import Task, independent_task_context
-from plugins.context.contract import MATERIALS_V4 as MATERIALS
 from plugins.content.contract import CONTENT
+from plugins.context.contract import MATERIALS_V4 as MATERIALS
 from plugins.conversation.contract import CONVERSATION_COMPLETE_V2 as CONVERSATION_COMPLETE
 from plugins.delivery.contract import DELIVERY_GUARDED_START as DELIVERY
 from plugins.delivery.contract import DELIVERY_SENDERS
@@ -31,7 +33,8 @@ from plugins.ui.contract import UI_SLOTS, Configuration, ModelSettings, PluginUi
 from core.common.file_io import run_file_io
 
 from .board import DEFAULT_MAX_WAKES, JobBoard, JobMirror, Notice
-from .contract import JOB_NOTICES, JobOutcome, JobSnapshot, JobStatus, JobWatch
+from .contract import JOB_NOTICES, JobOutcome, JobSnapshot, JobWatch
+from .host_notices import HostNoticeParams, SavedNotice, read_failure
 
 logger = logging.getLogger(__name__)
 _STOPPED_BY_USER = "用户在界面上停止了此任务"
@@ -52,17 +55,6 @@ SETTING_FIELDS = ("completion_delivery", "max_consecutive_wakes")
 
 # 宿主进程（如自部署 worker）在 Core 之外结束的任务，经 Gateway 补登一条已结算的通知。
 HOST_NOTICE_METHOD = "jobs/host-notice"
-
-
-class HostNoticeParams(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    session_id: str = Field(min_length=1, max_length=512)
-    job_id: str = Field(pattern=r"^[0-9A-Za-z_-]{1,64}$")
-    kind: str = Field(min_length=1, max_length=64)
-    label: str = Field(min_length=1, max_length=200)
-    status: JobStatus
-    detail: str = Field(max_length=8000)
-    collect_hint: str = Field(default="", max_length=2000)
 
 
 class Config(BaseModel):
@@ -108,6 +100,12 @@ class Jobs:
         self._queue: asyncio.Queue[JobWatch] = asyncio.Queue()
         self._running: dict[str, JobWatch] = {}
         self._stopped_by_user: set[str] = set()
+        self._host_store = ctx.require(OWNER_STATE).open_scoped(ctx, "host-notices")
+        self._host_scheduled: set[str] = set()
+        self._host_received: set[str] = set()
+        self._host_writer = ctx.entrypoint(ctx.require(MESSAGE_WRITERS).bind(
+            ctx, author="jobs", source="jobs:host", body_types=(Output,),
+            content={"text": ctx.require(CONTENT).check_text}))
 
     def watch(self, job: JobWatch) -> None:
         job = replace(job, source=self.origin_source(job.session_id, job.source))
@@ -132,16 +130,83 @@ class Jobs:
         reader = catalog.reader(notice.session_id)
         if await reader.read_async(lambda current: _latest_user_input(current, current.head())) is None:
             raise ValueError("目标会话没有对话输入，无法注入或唤醒")
-        outcome = JobOutcome(notice.status, notice.detail)
+        saved = await self._save_host_notice(notice)
+        self._host_received.add(notice.job_id)
+        message = reader.get("host-notice:" + notice.job_id)
+        assert message is not None
+        await self._deliver(message)
+        if not saved.handled:
+            self._schedule_host(saved.notice)
+        return {"accepted": True, "wake": self._config.completion_delivery == "wakeup"}
 
+    # Persist the visible failure and pending wake together before acknowledging the host.
+    async def _save_host_notice(self, notice: HostNoticeParams) -> SavedNotice:
+        writer = self._host_writer(notice.session_id)
+        text = f"[宿主任务 {notice.status}] {notice.label}：{notice.detail}\n{notice.collect_hint}"
+        try:
+            prepared = await writer.prepare_async("host-notice:" + notice.job_id, Output((ContentPart("text", text),), "complete"))
+            def commit(tx: OwnerTransaction) -> SavedNotice:
+                row = tx.read(notice.job_id)
+                saved = SavedNotice(notice=notice) if row is None else SavedNotice.model_validate(json_value(row.value))
+                if saved.notice != notice:
+                    raise ValueError("同一宿主任务编号不能改写通知")
+                if row is None:
+                    _ = tx.save(notice.job_id, saved.model_dump(mode="json"), expected_version=None)
+                    _ = tx.append_prepared(prepared)
+                return saved
+            return await self._host_store.transact_async(commit)
+        finally:
+            writer.expire()
+
+    def _schedule_host(self, notice: HostNoticeParams) -> None:
+        if notice.job_id in self._host_scheduled:
+            return
+        self._host_scheduled.add(notice.job_id)
         async def settled() -> JobOutcome:
-            return outcome
-
+            return JobOutcome(notice.status, notice.detail)
         self.watch(JobWatch(notice.session_id, _CONVERSATION, notice.job_id, notice.kind,
                             notice.label, notice.collect_hint, settled))
-        logger.info("宿主任务通知已登记 job=%s session=%s status=%s", notice.job_id,
-                    notice.session_id, notice.status)
-        return {"accepted": True, "wake": self._config.completion_delivery == "wakeup"}
+
+    # Non-host jobs have no record here; host wakes remain recoverable until observed.
+    async def _finish_host(self, job_id: str) -> None:
+        if job_id not in self._host_scheduled:
+            return
+        def finish(tx: OwnerTransaction) -> None:
+            row = tx.read(job_id)
+            assert row is not None
+            saved = SavedNotice.model_validate(json_value(row.value))
+            if not saved.handled:
+                _ = tx.save(job_id, {**saved.model_dump(mode="json"), "handled": True}, expected_version=row.version)
+        await self._host_store.transact_async(finish)
+
+    # The shared host-bridge directory already contains self-deploy records in Docker installs.
+    async def _recover_host_notices(self) -> None:
+        for job_id, row in await run_file_io(self._host_store.list):
+            saved = SavedNotice.model_validate(json_value(row.value))
+            self._host_received.add(job_id)
+            if not saved.handled:
+                _ = await self._ctx.entrypoint(self.host_notice)(saved.notice)
+        socket = os.environ.get("AKASHIC_HOST_BRIDGE_SOCKET")
+        if not socket:
+            return
+        directory = Path(socket).parent / "self-deploy"
+        errors: dict[Path, str] = {}
+        while True:
+            for path in await run_file_io(lambda: tuple(sorted(directory.glob("*.json")))):
+                if path.stem in self._host_received:
+                    continue
+                try:
+                    notice = await run_file_io(lambda: read_failure(path))
+                    if notice is not None:
+                        _ = await self._ctx.entrypoint(self.host_notice)(notice)
+                    _ = errors.pop(path, None)
+                except (OSError, ValueError) as error:
+                    # One invalid task does not hide later failures; report changes, then retry.
+                    detail = f"{path.name}: {type(error).__name__}: {error}"
+                    if errors.get(path) != detail:
+                        _ = self._ctx.report_incident("host-notice-recovery", detail)
+                        errors[path] = detail
+            await asyncio.sleep(5)
 
     # 1. 只停本会话登记、且生产方给了停止入口的运行中任务；2. 先进入停止中，再交给生产方终止；
     # 3. 结算时据 _stopped_by_user 注明是用户停止，通知照常送达模型，不让它以为任务还在跑。
@@ -170,6 +235,7 @@ class Jobs:
     async def run(self) -> None:
         """插件任务持有全部等待者；卸载先取消并排空，再释放运行许可。"""
         async with asyncio.TaskGroup() as tasks:
+            _ = tasks.create_task(self._recover_host_notices(), name="host-notice-recovery")
             while True:
                 job = await self._queue.get()
                 _ = tasks.create_task(
@@ -184,6 +250,8 @@ class Jobs:
         notices = self._board.claim(latest.session_id, source, latest.message_id)
         if not notices:
             return {}
+        for notice in notices:
+            await self._finish_host(notice.job.job_id)
         return {"reminders": tuple(
             {"name": "job-" + notice.job.job_id, "text": notice.text(), "priority": 450, "replay": True}
             for notice in notices
@@ -256,6 +324,7 @@ class Jobs:
             board.release_wake(notice)
             return
         board.finish_wake(notice)
+        await self._finish_host(job.job_id)
         await self._deliver(message)
 
     # Save one visible notice per user input without another model or tool turn.
@@ -326,7 +395,7 @@ async def apply(ctx: Context) -> None:
     _ = await ctx.spawn(jobs.run(), name="job-notices")
     _ = await ctx.effect(lambda: jobs.close, label="job-mirror")
     _ = await ctx.provide(JOB_NOTICES, jobs)
-    _ = await ctx.provide(RpcMethod.key(HOST_NOTICE_METHOD), RpcMethod(HostNoticeParams, jobs.host_notice))
+    _ = await ctx.provide(RpcMethod.key(HOST_NOTICE_METHOD), RpcMethod(HostNoticeParams, ctx.entrypoint(jobs.host_notice)))
     _ = await ctx.require(MATERIALS).register(ctx, name="job-notices", kind="context", prepare=jobs.materials)
     _ = await ctx.inject((UI_SLOTS,), lambda child: register_ui(child, jobs), name="plugin-ui")
 

@@ -115,7 +115,7 @@ def submit(args: argparse.Namespace) -> dict[str, object]:
                 if isinstance(error, subprocess.CalledProcessError)
                 else str(error)
             )
-            record.update(status="failed", error=detail)
+            record.update(status="failed", error=detail, notice="not-accepted")
             write_json(path, record)
             raise RuntimeError(f"部署未接纳：{record['error']}") from error
         # worker 通过同一把锁等待此提交，不覆盖后来阶段。
@@ -361,27 +361,14 @@ def worker(args: argparse.Namespace) -> dict[str, object]:
 _NOTICE_WAIT_S = 180
 
 
-# 失败送回发起会话：回退后的 Core 可能仍在启动，按就绪文件和 RPC 结果有限重试。
+# Try prompt delivery; Core also reads the durable task after a delayed boot.
 def notify_failure(record: dict[str, Any]) -> str:
+    from plugins.jobs.host_notices import failure_notice
+
     request = record["request"]
-    session = request.get("notifySession") or request["stop"]["session_id"]
-    identity = request["stop"]["request_id"]
-    commit = request["targetCommit"]
-    error = str(record.get("error", ""))
-    params: dict[str, object] = {
-        "session_id": session,
-        "job_id": identity,
-        "kind": "self-deploy",
-        "label": f"部署 {commit[:12]}",
-        "status": "failed",
-        "detail": error[-7000:],
-        "collect_hint": (
-            f"用 Shell 运行 `akashic-release status {identity}` 和 "
-            f"`journalctl --user -u {request['unit']} --no-pager -n 80` 查明原因并修复。"
-            "修好后用新的提交 SHA 重新部署，不要原样重交同一提交；修不了就如实告诉用户。"
-            "说明「保留现场」或「回退失败」时需要部署者处理。"
-        ),
-    }
+    notice = failure_notice(record)
+    params = notice.model_dump(mode="json")
+    session = notice.session_id
     deadline = time.monotonic() + _NOTICE_WAIT_S
     last = ""
     while True:
@@ -400,7 +387,7 @@ def notify_failure(record: dict[str, Any]) -> str:
                 deadline = time.monotonic()
         if time.monotonic() >= deadline:
             print(f"self-deploy.notice failed session={session} error={last}", file=sys.stderr, flush=True)
-            return "failed: " + last
+            return "pending Core recovery: " + last
         time.sleep(5)
 
 

@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-from pydantic import Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .protocol.models import StrictModel
-from plugins.ledger.contract import MESSAGE_CATALOG
-from plugins.ledger.contract import CallRef, Input, Output, ToolCall, ToolResult
+from plugins.ledger.contract import MESSAGE_CATALOG, OWNER_STATE, OwnerTransaction
+from plugins.ledger.contract import CallRef, Input, Message, MessageReader, Output, ToolCall, ToolResult, is_user_input, json_value
 from plugins.delivery.contract import (
     FINAL_OUTPUT_DELIVERY,
     FinalOutputDelivery,
@@ -33,6 +33,39 @@ class CancelStopParams(StopParams):
     pass
 
 
+class _DeployBudget(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    input_id: str
+    requests: list[str] = Field(max_length=3)
+
+
+# Reserve each request once against the real input, so a Core restart cannot reset the chain.
+async def _reserve_deploy(ctx: Context, reader: MessageReader, call: Message, request_id: str) -> None:
+    messages = await reader.snapshot_async(through_seq=call.seq)
+    origin = next((message for message in reversed(messages) if is_user_input(message)
+                   or call.source == "programmatic" and message.source == call.source and isinstance(message.body, Input)), None)
+    if origin is None:
+        raise ValueError("部署需要原用户输入；请在新的用户对话回合提交")
+    with ctx.borrow(OWNER_STATE) as states:
+        if states is None:
+            raise RuntimeError("部署接纳需要持久预算存储")
+        store = states.open_scoped(ctx, "self-deploy")
+        def reserve(tx: OwnerTransaction) -> None:
+            previous = tx.read(reader.session_id)
+            budget = (_DeployBudget(input_id=origin.message_id, requests=[]) if previous is None else
+                      _DeployBudget.model_validate(json_value(previous.value)))
+            if budget.input_id != origin.message_id:
+                budget = _DeployBudget(input_id=origin.message_id, requests=[])
+            if request_id in budget.requests:
+                return
+            if len(budget.requests) == 3:
+                raise ValueError("本次用户请求已接纳 3 次部署，自动重试已停止；请汇报原因并等待用户新消息")
+            budget.requests.append(request_id)
+            _ = tx.save(reader.session_id, budget.model_dump(mode="json"),
+                        expected_version=None if previous is None else previous.version)
+        await store.transact_async(reserve)
+
+
 async def prepare_stop(ctx: Context, params: StopParams) -> dict[str, object]:
     """固定原 boot/Root，等待真实结束；失败时恢复尚未开始关闭的准入。"""
     gate = ctx.require(RESTART_GATE)
@@ -49,7 +82,12 @@ async def prepare_stop(ctx: Context, params: StopParams) -> dict[str, object]:
         raise ValueError("停止请求没有原 ToolCall")
     if not isinstance(call.body.parts[ref.part_index], ToolCall):
         raise ValueError("停止请求引用的不是 ToolCall")
+    if call.source != "programmatic":
+        with ctx.borrow(FINAL_OUTPUT_DELIVERY) as delivery:
+            if delivery is None or not delivery.supports(call.source):
+                raise ValueError(f"来源 {call.source!r} 不支持部署所需的最终送达；请在新的用户对话回合提交，勿在本轮重复部署")
     claim = ctx.require(CONTROL_FRAMES).claim_for(params.session_id, ref)
+    await _reserve_deploy(ctx, reader, call, params.request_id)
     if params.arm_only:
         if call.source == "programmatic" and claim is None:
             messages = await reader.read_async(lambda snapshot: snapshot.snapshot())

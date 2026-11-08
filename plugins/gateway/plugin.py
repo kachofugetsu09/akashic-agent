@@ -8,7 +8,7 @@ from plugins.ledger.contract import CHANNEL_ATTACHMENT_READ
 from plugins.channels.contract import CHANNEL_INPUT_V2
 from .contract import CONTROL_FRAMES
 from agent.plugin_composition.host import HOST_INFO
-from plugins.ledger.contract import MESSAGE_CATALOG
+from plugins.ledger.contract import MESSAGE_CATALOG, OWNER_STATE
 from agent.plugin_composition.plugin_updates import PLUGIN_UPDATES
 from agent.plugin_composition.tasks import RESTART_GATE
 from .factory import build_control_service
@@ -89,5 +89,5 @@ async def apply(ctx: Context) -> None:
             await context.endpoint("gateway", protocol="jsonrpc+tcp" if is_tcp_endpoint(str(server.endpoint)) else "jsonrpc+unix",
                                    address=str(server.endpoint))
 
-    await ctx.inject((HOST_INFO, MESSAGE_CATALOG, CHANNEL_INPUT_V2, CHANNEL_ATTACHMENT_READ,
+    await ctx.inject((HOST_INFO, MESSAGE_CATALOG, OWNER_STATE, CHANNEL_INPUT_V2, CHANNEL_ATTACHMENT_READ,
                       PLUGIN_UPDATES, RESTART_GATE, CONTROL_FRAMES), listen, name="listener")
