@@ -104,3 +104,19 @@ Provider 如果执行额外远端业务效果，必须按其协议分类恢复�
 | model_calls | 不改 schema；默认上限进入 `max_attempts` 核对，最后一次失败的 `next_attempt_at` 为空 |
 | Reply preview | 新增 `attempt`（序号、上限、首次失败时间、短原因、原文、下次允许时间），scope 结束即释放 |
 
+
+## 2026-11-09 修订：单次生成总期限
+
+Models 为每次物理生成执行总期限，默认 3600 秒。连接的 `driver_config.generation_timeout`
+可设置为有限正数（秒）；Models 在配置边界校验并消费该字段，不把它传给 provider driver。
+总期限覆盖 driver 的一次 complete，包括持续收到有效增量的流；有效进展不能刷新它。
+它不限制整个 ReAct 任务，也不把多个模型步合成一个期限。
+
+到期产生不可自动重试的 `GenerationTimeoutError`，当前 key 耐久结算 error，
+`next_attempt_at` 为空；不能再领取默认 11 次重试。同 key 重开也不会重发。
+已收到的正文和推理以未完成响应保存在失败调用记录中，usage 未知时仍为未知；
+这些片段不提交为成功 Output，也不授予工具执行权。来源保存可见 failure，
+新输入或显式恢复可授权新的模型准备。普通 idle/transport 超时仍按既有预算恢复。
+
+期限通过取消当前 driver await 实现，支持正常遵守取消的驱动；不承诺强制终止
+吞掉取消且永不返回的第三方代码。工具执行仍沿用自身期限与手动停止合同。

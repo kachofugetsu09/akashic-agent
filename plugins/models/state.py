@@ -72,6 +72,7 @@ from plugins.models.contract import (
     RevisionConflictError,
     ModelUnavailableError,
     ModelTimeoutError,
+    GenerationTimeoutError,
     SavedEmbedding,
 )
 from plugins.models.contract import (
@@ -192,12 +193,14 @@ class _BoundChat:
         *,
         root_instance: str = _LOCAL_ROOT,
         max_attempts: int | None = 1,
+        generation_timeout: float = 3600.0,
     ) -> None:
         self._descriptor = descriptor
         self._driver = driver
         self._store = store
         self._root_instance = root_instance
         self._max_attempts = None if max_attempts is None else max(1, max_attempts)
+        self._generation_timeout = generation_timeout
         self._request_encodings: dict[int, tuple[object, bytes]] = {}
 
     @property
@@ -479,6 +482,8 @@ class _BoundChat:
             first_token_ms: float | None = None
             response: LLMResponse | None = None
             callback_failed = False
+            content_parts: list[str] = []
+            thinking_parts: list[str] = []
 
             async def publish(value: dict[str, str]) -> None:
                 nonlocal callback_failed
@@ -492,6 +497,10 @@ class _BoundChat:
             async def delta(value: dict[str, str]) -> None:
                 nonlocal first_token, first_token_ms
                 assert started is not None
+                if value.get("content_delta"):
+                    content_parts.append(value["content_delta"])
+                if value.get("thinking_delta"):
+                    thinking_parts.append(value["thinking_delta"])
                 if not first_token and (
                     value.get("content_delta") or value.get("thinking_delta")
                 ):
@@ -507,7 +516,7 @@ class _BoundChat:
                 try:
                     # driver 恒单次尝试：accounted 调用统一置 key，重试预算只由 Models 持有。
                     driver_request = replace(
-                        request, on_delta=None if request.on_delta is None else delta,
+                        request, on_delta=delta,
                         request_key=request_key,
                     )
                     if request.on_delta is not None:
@@ -516,7 +525,23 @@ class _BoundChat:
                         )})
                     started = monotonic_ns()
                     log_timing("model.driver.begin", operation_id=call_id, request_id=request_key)
-                    response = await self._driver.complete(driver_request)
+                    deadline = asyncio.timeout(self._generation_timeout)
+                    try:
+                        async with deadline:
+                            response = await self._driver.complete(driver_request)
+                    except TimeoutError:
+                        if not deadline.expired():
+                            raise
+                    if deadline.expired():
+                        response = LLMResponse(
+                            "".join(content_parts) or None,
+                            thinking="".join(thinking_parts) or None,
+                            finish_reason="timeout",
+                        )
+                        raise GenerationTimeoutError(
+                            f"本次模型生成已达到 {self._generation_timeout:g} 秒总期限，已停止且不会自动重试；"
+                            "已接收的部分输出保存在调用记录中，未执行其中的工具。请调整模型或任务后重新发起。"
+                        ).exception()
                     log_timing("model.driver.end", operation_id=call_id, request_id=request_key)
                     # 空生成没有可交付输出；使用同一请求恢复，不能把它提交为 quiet。
                     if (response.finish_reason not in {"length", "malformed_function_call"}
@@ -588,6 +613,7 @@ class _BoundChat:
                             duration_ms=None if started is None else (monotonic_ns() - started) / 1_000_000,
                             next_attempt_at=retry_at,
                             partial_response=partial_response,
+                            response=response if ModelError.matches(failure, GenerationTimeoutError) else None,
                             send_evidence=evidence,
                             first_token_ms=first_token_ms,
                         ), failure if isinstance(failure, asyncio.CancelledError) else None)
@@ -1565,6 +1591,7 @@ class ModelsState:
             self.store,
             root_instance=self._root_instance,
             max_attempts=max_attempts,
+            generation_timeout=_generation_timeout(connection.driver_config),
         )
 
     async def _bind_embedding(
@@ -1796,7 +1823,7 @@ class ModelsState:
                 descriptor = DriverConnectionDescriptor(
                     connection_id=connection.connection_id, name=connection.name,
                     driver_id=connection.driver_id, endpoint=connection.endpoint,
-                    auth_identity=connection.auth_identity, config=connection.driver_config,
+                    auth_identity=connection.auth_identity, config=_driver_config(connection.driver_config),
                 )
                 credential = _MemoryCredential(connection.connection_id, connection.auth_identity, connection.credential)
             else:
@@ -1886,7 +1913,7 @@ class ModelsState:
             driver_id=connection.driver_id,
             endpoint=connection.endpoint,
             auth_identity=connection.auth_identity,
-            config=connection.driver_config,
+            config=_driver_config(connection.driver_config),
         )
         credential = _MemoryCredential(
             connection.connection_id,
@@ -2419,8 +2446,23 @@ def _driver_connection_descriptor(
         driver_id=connection.driver_id,
         endpoint=connection.endpoint,
         auth_identity=connection.auth_identity,
-        config=connection.driver_config,
+        config=_driver_config(connection.driver_config),
     )
+
+
+# Models consumes its own deadline before passing provider config to a driver.
+def _driver_config(config: Mapping[str, Any]) -> Mapping[str, Any]:
+    _generation_timeout(config)
+    return {key: value for key, value in config.items() if key != "generation_timeout"}
+
+
+# A finite per-generation deadline is separate from idle time and retry waiting.
+def _generation_timeout(config: Mapping[str, Any]) -> float:
+    value = config.get("generation_timeout", 3600.0)
+    if (isinstance(value, bool) or not isinstance(value, (int, float))
+            or not math.isfinite(value) or value <= 0):
+        raise ValueError("generation_timeout must be a finite positive number of seconds")
+    return float(value)
 
 
 # 未配置时与 Claude Code DEFAULT_MAX_RETRIES 一致：首次加 10 次重试。

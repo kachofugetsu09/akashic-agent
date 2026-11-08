@@ -1049,6 +1049,13 @@ class ModelTimeoutError(ModelError):
 
 
 @dataclass(frozen=True, slots=True)
+class GenerationTimeoutError(ModelTimeoutError):
+    """One generation reached its total deadline and must not be sent again under this key."""
+
+    retryable: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class TransportError(ModelError):
     retryable: bool = True
 
