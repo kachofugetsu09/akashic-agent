@@ -199,6 +199,11 @@ class Spawn:
             return '子任务不能为空'
         if source is None:
             return 'spawn 需要已提交的父消息调用'
+        if args.run_in_background:
+            parent = source.messages[-1]
+            rejection = self.jobs.check_background_spawn(parent.session_id, parent.source)
+            if rejection is not None:
+                return rejection
         origin = None
         for message in reversed(source.messages):
             if isinstance(message.body, Input):

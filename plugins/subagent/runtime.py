@@ -34,6 +34,7 @@ from .contract import SUBAGENT_PROGRAM
 logger = logging.getLogger(__name__)
 DEFAULT_MAX_ACTIVE = 3
 DEFAULT_RESULT_CHARS = 100_000
+MAX_BACKGROUND_DEPTH = 3
 
 
 class SubagentBusy(RuntimeError):
@@ -65,6 +66,27 @@ class Subagents:
         if (request.session_id, request.input_id) != (reader.session_id, message.message_id):
             raise ValueError("子任务请求与恢复指针不一致")
         return record, request, reader
+
+    # Read the saved parent calls so report chains stay bounded across restarts.
+    def check_background_spawn(self, session_id: str, source: str) -> str | None:
+        parents: dict[str, Request] = {}
+        for key, _ in self.ctx.require(OWNER_STATE).open(self.ctx).list():
+            found = self.read(key)
+            assert found is not None
+            request = found[1]
+            if request.background and request.parent_session_id == session_id:
+                parents[request.session_id] = request
+        reader = self.ctx.require(MESSAGE_CATALOG).reader(session_id)
+        depth = 0
+        while source in parents:
+            depth += 1
+            if depth >= MAX_BACKGROUND_DEPTH:
+                return f"后台子任务链已达到 {MAX_BACKGROUND_DEPTH} 层；请汇报已有结果，等待用户决定是否继续。"
+            parent = reader.get(parents[source].parent_message_id)
+            if parent is None:
+                raise ValueError("后台子任务的父调用消息缺失")
+            source = parent.source
+        return None
 
     async def accept(self, key: str, request: Request, text: str) -> None:
         """同一来源准入锁覆盖容量检查与持久提交，重放不再占额。"""
@@ -210,7 +232,7 @@ class Subagents:
             if isinstance(message.body, Output) and message.body.finish != "continue":
                 return "completed", "\n".join(cast(str, part.value) for part in message.body.parts
                     if isinstance(part, ContentPart) and part.kind == "text")
-            if isinstance(message.body, Control) and message.body.action in {"pause", "failure"}:
+            if isinstance(message.body, Control) and message.body.action in {"pause", "failure", "abandon"}:
                 return ("cancelled", "子任务已按请求取消。") if message.body.action == "pause" else (
                     "failed", message.body.reason or "子任务执行失败")
         return None
@@ -248,7 +270,7 @@ class Subagents:
                     nonlocal stopped
                     stopped = slot.current
                     if stopped is not None:
-                        stopped.cancel()
+                        stopped.cancel(interrupt=True)
 
                 # 读期间可能完成；只对检查过的来源前缀提交 pause。
                 while True:
