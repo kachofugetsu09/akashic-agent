@@ -257,6 +257,8 @@ class _History:
         self._succeeded: set[CallRef] = set()
         self._terminal_calls: list[tuple[CallRef, int, str]] = []
         self._outputs: list[int] = []
+        # Own Input/resume grants a new budget; complete/abandon closes the old one.
+        self.generation_rejections: list[tuple[int, str]] = []
 
     def update(self, messages: Sequence[Message]) -> None:
         """已提交读面证明前缀；普通序列仍逐条核对真实 Message 身份。"""
@@ -279,10 +281,12 @@ class _History:
             body = message.body
             if isinstance(body, Input):
                 self.reminder_input_id = message.message_id
+                self.generation_rejections.clear()
             elif isinstance(body, Output):
                 if body.finish != "continue":
                     self._boundary = message.seq
                     self._outputs.clear()
+                    self.generation_rejections.clear()
                 elif any(isinstance(part, ContentPart) and part.kind == "model.facts"
                          for part in body.parts):
                     self._outputs.append(message.seq)
@@ -293,10 +297,17 @@ class _History:
                             self._calls[ref] = message.seq
                         if body.finish == "continue":
                             self._terminal_calls.append((ref, message.seq, part.binding_id))
+                    elif isinstance(part, ContentPart) and part.kind == "model.facts" and body.finish == "continue":
+                        facts = cast(Mapping[str, object], part.value)
+                        if "generation_rejection" in facts:
+                            self.generation_rejections.append((message.seq, cast(str, facts["generation_rejection"])))
             elif isinstance(body, Control) and body.action == "abandon":
                 self._boundary = max(self._boundary, body.through_seq)
                 self._abandoned_upto = max(self._abandoned_upto, body.through_seq)
                 self._outputs = [seq for seq in self._outputs if seq > body.through_seq]
+                self.generation_rejections = [(seq, kind) for seq, kind in self.generation_rejections if seq > body.through_seq]
+            elif isinstance(body, Control) and body.action == "resume":
+                self.generation_rejections.clear()
             elif isinstance(body, ToolResult):
                 self._results.add(body.call_ref)
                 self._calls.pop(body.call_ref, None)
@@ -635,15 +646,25 @@ async def _complete(
 
 
 # Rejected generations become durable feedback, never executable tool calls.
-def _response_rejection(response: LLMResponse, budget: int) -> str | None:
-    if response.finish_reason == "length":
+def _response_rejection(reason: str | None, budget: int) -> str | None:
+    if reason == "length":
         return (
             f"上次模型生成达到长度限制（输出预算 {budget} tokens，含推理）；"
             "回复未完成，全部工具调用均未执行。请减少推理和单次输出，分段完成任务。"
         )
-    if response.finish_reason == "malformed_function_call":
+    if reason == "malformed_function_call":
         return "上次模型生成了无法解析的工具调用，全部调用均未执行。请按工具 schema 重新生成完整的 JSON 参数。"
     return None
+
+
+# Enforce the same limit after a commit and before resuming a crashed generation.
+def _check_generation_recovery(count: int, reason: str | None, budget: int) -> None:
+    if count <= 3:
+        return
+    rejection = _response_rejection(reason, budget)
+    assert rejection is not None
+    failure = OutputLengthError if reason == "length" else ModelError
+    raise failure(rejection + " 已尝试 3 次恢复，现已停止；请调整输出预算或任务要求后继续。").exception()
 
 
 async def react(
@@ -682,7 +703,6 @@ async def react(
     if reader.session_id != writer.session_id:
         raise ValueError("ReAct reader 与 writer 必须属于同一 Session")
     history = _History(writer.source, tools.name)
-    recovery_count = 0
     while True:
         operation_id = uuid4().hex
         mark = partial(log_timing, session_id=reader.session_id, source=writer.source, operation_id=operation_id)
@@ -765,6 +785,10 @@ async def react(
         failure = history.failures.failure()
         if failure is not None:
             raise ModelError(failure).exception()
+        if history.generation_rejections:
+            _check_generation_recovery(
+                len(history.generation_rejections), history.generation_rejections[-1][1], max_output_tokens,
+            )
         if max_steps > 0 and history.steps >= max_steps:
             # 门槛落在请求之前：本轮没有任何模型输出，未完成区段全部来自更早的轮次。
             # 只有「从未落过回执」的调用会被放弃结算，它们的真实效果未知，
@@ -791,9 +815,8 @@ async def react(
             operation_id=operation_id, max_retry_wait=max_retry_wait,
         ) as (response, prepared, message_id, request):
             # 3. Keep rejection feedback in history before another model request.
-            rejection = _response_rejection(response, request.max_output_tokens)
+            rejection = _response_rejection(response.finish_reason, request.max_output_tokens)
             if rejection is not None:
-                recovery_count += 1
                 response = replace(response, tool_calls=(), continuation=None, provider_metadata=None)
             decoded, metadata = await content.decode(
                 rejection or response.content or "",
@@ -859,9 +882,9 @@ async def react(
                 raise asyncio.CancelledError from None
             mark("output.committed", request_id=response.call_record_id or "", parent_operation_id=message.message_id, counts={"seq": message.seq, "tool_calls": len(indices)})
             if rejection is not None:
-                if recovery_count > 3:
-                    failure = OutputLengthError if response.finish_reason == "length" else ModelError
-                    raise failure(rejection + " 已尝试 3 次恢复，现已停止；请调整输出预算或任务要求后继续。").exception()
+                _check_generation_recovery(
+                    len(history.generation_rejections) + 1, response.finish_reason, request.max_output_tokens,
+                )
             elif not indices:
                 return message
         # Loop 保留当前历史，直到下轮真实快照替换它；弱解码缓存才能复用旧消息。
