@@ -17,8 +17,9 @@ Agent 需要把长任务（例如 `codex exec`、`claude -p`）派发出去，�
    回合结束和放弃时的工具收尾（shell 的 `release`）只回收回合分区，后台进程由 `task_stop`、显式硬超时或宿主停止回收（0133 起后台默认不设硬超时）。
    `write_stdin` / `task_stop` 先查回合分区，再查后台分区。唤醒回复仍记为 `job:<id>`，
    但后台分区通过 `jobs.notices.v1.origin_source(session_id, source)` 取得登记时的原来源。
-   查询只匹配本会话当前领取的唤醒；其他来源、其他会话和普通回合分区不变。
-   唤醒中新建的后台任务也登记到原来源，避免下一次结算失去回传入口。
+   有对话输入的会话统一归到 `conversation`，包括 jobs 唤醒、子任务回报和 scheduler 回合。
+   `watch` 在登记边界统一执行此归属，外部 delegate 等生产方也不会漏掉通知。
+   没有对话输入的内部会话仍保留原来源；普通回合分区不变。
 3. **结算判定不消费输出。** 进程运行时新增 `execution_states(owner)`：已退出且没有调用方
    正在等待它的终态才算结算。首个窗口和 `write_stdin` 等待期间都登记为等待者，
    因此模型自己收走的终态不会再通知（对应 DSH 的 `awaited`）。Host Bridge 增加同名短 RPC，
@@ -29,8 +30,10 @@ Agent 需要把长任务（例如 `codex exec`、`claude -p`）派发出去，�
 5. **闲时唤醒：** 结算后经 `conversation.complete.v2` 等待原会话槽空闲，在槽内再次核对：
    已被某个回合领取的结算不唤醒；否则以 `job:<id>` 来源运行一轮回复，并按最近输入的渠道显式投递。
    新输入抢占或生成失败时，在本次程序退出前释放领取，供新回合注入或槽内重试。
-6. **自激约束：** `max_consecutive_wakes`（默认不封顶）按用户输入连续计数，耗尽后留给下一次
-   用户输入注入；`completion_delivery: quiet` 只注入不唤醒。
+6. **自激约束：** `max_consecutive_wakes` 默认三次；显式 `null` 仍表示不封顶。
+   预算只由账本认定的真实用户 Input 重置，goal 等自动输入不重置，也不覆盖原用户渠道。
+   耗尽时不再运行模型，保存并投递一条包含待查看数量的提示；同一用户输入只提示一次。
+   未领取结果留给下一次对话，用户新发言后恢复预算；`completion_delivery: quiet` 只注入不唤醒。
 
 ```text
 shell(run_in_background) ──► watch(JobWatch) ──► settled()
