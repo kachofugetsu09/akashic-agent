@@ -78,10 +78,10 @@ class ModelUsage:
 class ToolCall:
     id: str
     name: str
-    arguments: Mapping[str, Any]
+    arguments: Mapping[str, Any] | str
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "arguments", cast(Mapping[str, Any], freeze_json(self.arguments)))
+        object.__setattr__(self, "arguments", cast(Mapping[str, Any] | str, freeze_json(self.arguments)))
 
 
 @dataclass(frozen=True, slots=True)
@@ -1561,15 +1561,16 @@ def is_driver_retryable(error: Exception) -> bool:
     )
 
 
-def parse_tool_arguments(value: object) -> Mapping[str, Any]:
+# Preserve invalid model output for the tool owner to reject with feedback.
+def parse_tool_arguments(value: object) -> Mapping[str, Any] | str:
     if not isinstance(value, str):
         raise TransportError("tool call arguments must be a JSON string").exception()
     try:
         parsed = json.loads(value)
-    except json.JSONDecodeError as error:
-        raise TransportError("tool call arguments are invalid JSON").exception() from error
+    except json.JSONDecodeError:
+        return value
     if not isinstance(parsed, dict):
-        raise TransportError("tool call arguments must decode to an object").exception()
+        return value
     return cast(dict[str, Any], parsed)
 
 

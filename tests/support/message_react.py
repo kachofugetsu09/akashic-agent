@@ -92,6 +92,7 @@ async def runtime(tmp_path, complete, invoke, *, max_steps=4, authorize_hook=Non
 
         def decode(self, call: ModelToolCall):
             if call.name == "tool_call":
+                assert isinstance(call.arguments, Mapping)
                 assert call.arguments["name"] == "example"
                 return ToolCallDecode("tool", call.arguments["arguments"])
             decoded = NativePresentation({"example": {}}).decode(call)

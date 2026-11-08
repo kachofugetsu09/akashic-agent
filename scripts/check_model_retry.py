@@ -357,19 +357,18 @@ async def run(args: argparse.Namespace) -> dict:
                         store.close()
 
         async def gemini_malformed():
-            """真实原生 HTTP 与账本覆盖两种响应、次数耗尽、取消和永久拒绝。"""
+            """生成格式失败交回调用者修正；HTTP 与账本不消耗传输重试预算。"""
             from plugins.gemini.driver import _Chat
             native = replace(descriptor, driver_id="gemini")
             async with httpx.AsyncClient(base_url=endpoint + '/', trust_env=False) as client:
                 physical = _Chat(client, GeminiCredential(), native)
-                for name, reason, streaming, budget, cancel in (
-                    ("malformed-json", "MALFORMED_FUNCTION_CALL", False, None, False),
-                    ("malformed-sse", "MALFORMED_FUNCTION_CALL", True, None, False),
-                    ("malformed-budget", "MALFORMED_FUNCTION_CALL", True, 2, False),
-                    ("malformed-cancel", "MALFORMED_FUNCTION_CALL", True, None, True),
-                    ("unexpected", "UNEXPECTED_TOOL_CALL", True, None, False),
-                    ("safety", "SAFETY", True, None, False),
-                    ("invalid-request", None, True, None, False),
+                for name, reason, streaming, budget in (
+                    ("malformed-json", "MALFORMED_FUNCTION_CALL", False, None),
+                    ("malformed-sse", "MALFORMED_FUNCTION_CALL", True, None),
+                    ("malformed-budget", "MALFORMED_FUNCTION_CALL", True, 2),
+                    ("unexpected", "UNEXPECTED_TOOL_CALL", True, None),
+                    ("safety", "SAFETY", True, None),
+                    ("invalid-request", None, True, None),
                 ):
                     server.replies = deque([(400 if reason is None else 200, reason)] * (budget or 1) + [(200, None)])
                     server.received = []
@@ -378,36 +377,30 @@ async def run(args: argparse.Namespace) -> dict:
                     store.initialize()
                     bound = _BoundChat(native, physical, store, max_attempts=budget)
                     request = ModelRequest([{"role": "user", "content": "scenario"}], request_key=name)
-                    recovering = reason == "MALFORMED_FUNCTION_CALL" and budget is None and not cancel
+                    malformed = reason == "MALFORMED_FUNCTION_CALL"
                     try:
                         try:
                             if streaming:
-                                def stop():
-                                    task = asyncio.current_task()
-                                    assert task is not None
-                                    task.cancel()
-                                response = await complete_with_preview(bound, request, on_retry=stop if cancel else None)
+                                response = await complete_with_preview(bound, request)
                             else:
                                 response = await bound.complete(request)
-                        except asyncio.CancelledError:
-                            assert cancel
                         except (RuntimeError, TimeoutError) as error:
                             if not (ModelError.matches(error)):
                                 raise
-                            assert not recovering and not cancel
+                            assert not malformed
                             failure = ModelError.read(error)
-                            assert failure is not None and failure.retryable == (reason == "MALFORMED_FUNCTION_CALL")
-                            if budget is not None:
-                                assert "已停止重试" in str(error)
+                            assert failure is not None and not failure.retryable
                         else:
-                            assert recovering and response.content == "local-result" and not response.tool_calls
-                            assert (await bound.complete(request)).content == response.content
+                            assert malformed and response.finish_reason == "malformed_function_call"
+                            assert response.content is None and not response.tool_calls
+                            assert (await bound.complete(request)).finish_reason == response.finish_reason
                         records = store.calls_for_key(name)
-                        expected = 2 if recovering else budget or 1
+                        expected = 1
                         assert len(records) == len(server.received) == expected
                         first = records[0]
-                        assert first["state"] == "error" and first["response"] is None
-                        assert (first["next_attempt_at"] is not None) == (recovering or cancel or budget == 2)
+                        assert first["state"] == ("success" if malformed else "error")
+                        assert (first["response"] is not None) == malformed
+                        assert first["next_attempt_at"] is None
                         if budget is not None:
                             assert records[-1]["next_attempt_at"] is None
                         assert first["send_evidence"] == ("rejected" if reason is None else None)

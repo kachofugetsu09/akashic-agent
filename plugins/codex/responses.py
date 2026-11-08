@@ -39,6 +39,7 @@ from plugins.models.contract import (
     TransportError,
     mark_unsent_error as _unsent,
     optional_non_negative_int as _optional_int,
+    parse_tool_arguments,
 )
 
 from .auth import headers
@@ -361,12 +362,7 @@ async def _consume_stream(
         if delta_seen:
             error = ModelError.change(error, response_delta_seen=True)
         raise error
-    try:
-        calls = [_tool_call(item) for item in tool_args.values() if item.get("name")]
-    except Exception as exc:
-        if delta_seen and hasattr(exc, "retryable"):
-            setattr(exc, "retryable", False)
-        raise
+    calls = [_tool_call(item) for item in tool_args.values() if item.get("name")]
     continuation_items = (*previous_items, *new_items)
     return LLMResponse(
         content="".join(content).strip() or None,
@@ -629,16 +625,10 @@ def _thaw(value: Any) -> Any:
 
 
 def _tool_call(raw: Mapping[str, str]) -> ToolCall:
-    try:
-        arguments: Any = json.loads(raw.get("arguments") or "{}")
-    except json.JSONDecodeError as exc:
-        raise TransportError("Codex tool arguments are invalid JSON").exception() from exc
-    if not isinstance(arguments, Mapping):
-        raise TransportError("Codex tool arguments must decode to an object").exception()
     return ToolCall(
         id=raw.get("id", ""),
         name=raw["name"],
-        arguments=dict(arguments),
+        arguments=parse_tool_arguments(raw.get("arguments") or "{}"),
     )
 
 

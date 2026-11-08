@@ -342,14 +342,11 @@ def _chunk(data: Mapping[str, Any]) -> tuple[list[dict[str, Any]], str | None, M
         _string(reason, "finishReason")
     if reason in {'SAFETY', 'RECITATION', 'BLOCKLIST', 'PROHIBITED_CONTENT', 'SPII'}:
         raise ContentSafetyError(f"Gemini 输出被拒绝：{reason}").exception()
-    if reason == 'MALFORMED_FUNCTION_CALL':
-        # 上游生成失败，不是请求 schema 错误；丢弃整次候选，由 Models 恢复生成。
-        error = ModelError(f"Gemini 生成了无法解析的工具调用：{reason}").exception()
-        error = ModelError.change(error, retryable=True)
-        raise error
     if reason == 'UNEXPECTED_TOOL_CALL':
         raise ModelError(f"Gemini 工具协议失败：{reason}").exception()
     content = _object(candidate.get('content', {}), "content")
+    if reason == 'MALFORMED_FUNCTION_CALL':
+        content = {}  # The provider rejected this candidate; none of its calls may run.
     if content.get('role', 'model') != 'model':
         raise ModelError("Gemini 候选角色必须为 model").exception()
     parts = []
@@ -387,7 +384,9 @@ def _chunk(data: Mapping[str, Any]) -> tuple[list[dict[str, Any]], str | None, M
 
 def _answer(parts: list[dict[str, Any]], finish: str | None, usage: ModelUsage | None) -> LLMResponse:
     """展示文本与工具请求各取所需；签名和原部件仍由账本完整保存。"""
-    if finish is None or (not parts and finish != 'MAX_TOKENS'):
+    if finish in {'MAX_TOKENS', 'MALFORMED_FUNCTION_CALL'}:
+        return LLMResponse(None, finish_reason='length' if finish == 'MAX_TOKENS' else 'malformed_function_call', usage=usage)
+    if finish is None or not parts:
         raise TransportError("Gemini 返回了未结束或空的响应").exception()
     if finish not in {'STOP', 'MAX_TOKENS'}:
         raise ModelError(f"Gemini 未正常完成生成：{finish}").exception()
