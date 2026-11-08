@@ -175,6 +175,7 @@ def _parser() -> argparse.ArgumentParser:
     submit_parser.add_argument("--mise", type=Path, default=_DEFAULT_MISE)
     submit_parser.add_argument("--timeout", type=int, default=600)
     submit_parser.add_argument("--backup", action="store_true")
+    submit_parser.add_argument("--session", help="部署失败时注入并唤醒的会话；默认是发起调用的会话")
     submit_parser.set_defaults(handler=submit)
     status_parser = subparsers.add_parser("status", help="查询宿主部署任务，不启动模型回合")
     status_parser.add_argument("request_id")
