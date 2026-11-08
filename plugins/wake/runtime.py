@@ -4,6 +4,7 @@ from plugins.models.contract import MODEL_CATALOG
 
 import asyncio
 import hashlib
+import logging
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import cast
@@ -43,6 +44,8 @@ from .request import SKILL_TOOL, TOOLS as WAKE_TOOLS, WAKE_PROGRAM, Request
 from .source import Pointer, Source
 from .information import snapshot_information
 from .state import WakeState, WakeStateReader
+
+logger = logging.getLogger(__name__)
 
 
 class DashboardView:
@@ -286,17 +289,33 @@ class Runtime:
                         assert result is not None
                         outcome = result
                     await self._finish(flow_id, outcome, owner, admission.detail)
+            except Exception as error:
+                await self._close_error(flow_id, owner, error)
+                async with self.ctx.runtime_scope():
+                    _ = self.ctx.report_incident("wake_attempt_failed", f"flow={flow_id} {type(error).__name__}: {error}")
+                logger.exception("Wake attempt failed: %s", flow_id)
+                await asyncio.sleep(30)
             except BaseException as error:
                 await self._close_error(flow_id, owner, error)
                 raise
 
     async def _run(self, flow_id: str) -> str | None:
         """来源循环关闭时撤销并排空自己接纳的 Task，保留原 Input 供新进程恢复。"""
-        task = await self.source.start(flow_id)
+        try:
+            task = await self.source.start(flow_id)
+        except Exception as error:
+            _ = self.ctx.report_incident("wake_recovery_failed", f"flow={flow_id} {type(error).__name__}: {error}")
+            logger.exception("Wake flow could not open: %s", flow_id)
+            return "failed"
         if task is None:
             return None
         try:
             return cast(str, await task.join())
+        except Exception as error:
+            # Storage or unknown delivery failures retain their facts, without stopping other flows.
+            _ = self.ctx.report_incident("wake_flow_failed", f"flow={flow_id} {type(error).__name__}: {error}")
+            logger.exception("Wake flow needs recovery: %s", flow_id)
+            return "failed"
         except asyncio.CancelledError:
             task.cancel()
             while not task.done:

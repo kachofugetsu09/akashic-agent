@@ -83,7 +83,14 @@ async def run(folder: Path) -> None:
                 pruning_requests += 1
                 # 两次未知编号都必须拒绝；正式 follower 无新消息延时重试后才给有效编号。
                 assert store.read("MEMORY.md") == before_pruning
-                assert receipts(database) == before_pruning_receipts
+                current_receipts = receipts(database)
+                diagnostics = [row for row in current_receipts if row[1] == "markdown_learning_failure_v1"]
+                assert [row for row in current_receipts if row not in diagnostics] == before_pruning_receipts
+                # The rejected draft adds a retry receipt, never a memory write or applied receipt.
+                assert len(diagnostics) == int(pruning_requests > 2)
+                if diagnostics:
+                    saved = json.loads(diagnostics[0][2])
+                    assert saved["attempts"] == 1 and saved["stopped"] is False
                 ops = [{"op": "prune", "doc": "MEMORY.md", "old": "999" if pruning_requests <= 2 else "2"}]
             body = json.dumps({"text": json.dumps({"ops": ops}, ensure_ascii=False)}).encode()
             writer.write(f"HTTP/1.1 200 OK\r\nContent-Length: {len(body)}\r\nConnection: close\r\n\r\n".encode() + body)

@@ -10,7 +10,6 @@ from plugins.ledger.contract import MESSAGE_CATALOG, MESSAGE_WRITERS
 from agent.plugin_composition.tasks import TASKS, Task, TaskSlot
 from plugins.timer.contract import TIMERS
 from plugins.sources.contract import SourceGuard
-from plugins.models.contract import ModelError
 from .inputs import CONTENT, CONVERSATION_COMPLETE, DELIVERY, DELIVERY_SENDERS
 from plugins.ledger.contract import BINDINGS
 from plugins.ledger.contract import MessageReader, MessageWriter
@@ -96,8 +95,11 @@ class SchedulerRuntime:
         async def run(task: Task) -> None:
             try:
                 await self._fire(task, fire.key)
-            except Exception:
-                # 未处理的磁盘或绑定错误不伪造业务终态，也不在本进程无界重试。
+            except Exception as error:
+                # End this fire once; keep original messages and delivery receipts for inspection.
+                detail = f"{type(error).__name__}: {error}"
+                await self.store.settle(fire.key, "failed", now=self._now(), error=detail)
+                _ = self._ctx.report_incident("scheduler_fire_failed", f"fire={fire.key} {detail}")
                 logger.exception("调度触发失败，原消息与发送回执已保留 fire=%s", fire.key)
             finally:
                 _ = self._active.pop(fire.key, None)
@@ -207,13 +209,12 @@ class SchedulerRuntime:
                 _ = await writer.append_async(fire.input_id, Input((ContentPart("text", text),)))
             try:
                 return await self._program(task, reader, check_admission, fire)
-            except (RuntimeError, TimeoutError) as error:
-                if ModelError.read(error) is None:
-                    raise
-                # Save a model failure before settling the fire, so restart cannot repeat it.
+            except Exception as error:
+                # Save every program failure before settling, so restart cannot repeat it.
                 check_admission()
+                _ = self._ctx.report_incident("scheduler_program_failed", f"fire={fire.key} {type(error).__name__}: {error}")
                 return await writer.append_async("scheduler-failure:" + fire.key,
-                    Control("failure", reader.head(source=fire.source), str(error)))
+                    Control("failure", reader.head(source=fire.source), f"{type(error).__name__}: {error}"))
         return run
 
 
