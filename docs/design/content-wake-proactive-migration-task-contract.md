@@ -12,6 +12,20 @@
 - 关联设计：[Content / Wake 现有原子能力与第一阶段](content-wake-existing-atoms-first-stage.md)
 - 关联决策：[0039](../decisions/0039-react-core-atoms-keep-sources-unprivileged.md)、[0040](../decisions/0040-wake-duty-gate-lives-in-scoped-react.md)
 
+## 用户信息查询扩展
+
+`userinformation` 是普通工具插件，不改 Core loop。模型通过 `load_tools` 解锁该插件后，
+调用 `user_information_list` 发现来源及 query 参数 schema，再用 `user_information_query` 查询。
+来源以 `userinformation.providers.v1` 登记只读 provider，身份取自提供方 Context，随 Effect 注销；
+调用期间持有来源 runtime scope。中心不采集、不写来源数据库，不硬编码健康、游戏或位置。
+查询凭据只属于来源，工具参数不能覆盖 URL、token 或插件身份。
+
+EventMail 另发布 `eventmail.context_read.v1` 窄只读合同，并通过可选子 Fiber 贡献 current 查询。
+原 Context envelope、投影、过期与 Alert/Content 结算保持不变。读取成功只表示取得最近观测，
+不表示上游刚采集；缺失可表示过期、未知或不可用。历史查询由来源声明、分页，不能冒充当前状态。
+第一版聚合权限是整组授予：授予 query 即允许访问已注册来源；不声称已实现逐主题 ACL。
+该入口不代理来源的写入工具。未来来源应明确提交只读能力，不能自动收集所有公开工具。
+
 ## 1. 最终结果
 
 旧 `proactive_v2`、default proactive island、Wake 私有 proactive loop 和 proactive MCP 聚合桥全部退出运行代码。Wake、Drift、Content 与来源插件变成普通 v3 插件，只组合同一套 Core 原子：
