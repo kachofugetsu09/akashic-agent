@@ -235,6 +235,9 @@ async def _summarize(model: BoundChatModel, groups: tuple[tuple[Message, ...], .
     summary, selected, excerpt = _fit_inputs(model, groups, previous, limit)
     response = await model.complete(_request(model, summary, selected, limit, excerpt))
 
+    # None is the shared response contract's unspecified normal completion.
+    if response.finish_reason not in (None, "stop"):
+        raise SummaryError(f"摘要生成未正常完成：{response.finish_reason}")
     # 只接纳成功调用的真实正文；标题差异不影响内容与调用出处。
     text = (response.content or "").strip()
     if response.tool_calls or not text:
