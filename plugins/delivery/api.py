@@ -44,6 +44,9 @@ class FinalOutputDelivery:
     def __init__(self) -> None:
         self._providers: dict[str, FinalOutputWaiter] = {}
 
+    def supports(self, source: str) -> bool:
+        return source in self._providers
+
     def register(self, source: str, provider: FinalOutputWaiter) -> None:
         if not source or source in self._providers:
             raise ValueError("最终 Output provider 已有 owner")

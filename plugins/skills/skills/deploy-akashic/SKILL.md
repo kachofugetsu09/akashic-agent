@@ -22,8 +22,10 @@ description: 用户明确授权 Akashic 合并 PR 并更新当前 Docker 实例�
 运行用户的 systemd manager 已启动并启用 linger，现有发布器所需的
 非交互 sudo、Docker、mise 和 Git 权限已验证。旧 Supervisor 版本需先由
 部署者更新一次；Agent 不尝试在缺少停止协议的旧实例内自举。
-提交会先保留原调用的送达凭据；`--timeout`（默认 600 秒）包含凭据保留预算，
+提交会先检查来源是否支持最终送达，并保留原调用的送达凭据；`--timeout`（默认 600 秒）包含凭据保留预算，
 构建较慢时在最后提交命令显式提高，最大 3600 秒。
+同一真实用户输入最多接纳三个不同部署请求，预算跨 Core 重启保留；同一请求重放不重复计数。
+来源不支持或预算已用尽时，接单前直接返回可行动错误，不启动部署 worker。
 
 1. 从用户请求确定允许合并的 PR 和备份选择；“提 PR”不授权合并或部署。
 2. 用 Shell 的 `gh pr view` / `gh pr checks` 核对目标 head、依赖和 CI。
@@ -59,9 +61,12 @@ journalctl --user -u akashic-deploy-<requestId>.service --no-pager -n 80
 
 部署失败时会收到一条「后台任务 <requestId>（self-deploy：部署 <SHA>）已结束 [status: failed …]」通知，
 即使用户没有说话。这是宿主送回的失败结果，不是用户的新指令：按通知里的命令查明原因，
-能修就修好、走正常流程提交新的 SHA；不要原样重交同一提交，修不了就如实告诉用户。
+只在原授权范围内修复并汇报。默认的 job、子任务等通知来源没有最终送达 provider，
+请等用户新对话回合再提交部署；不要在被拒的来源反复换 SHA 重交。
+部署失败记录保留在宿主任务目录，Core 启动后及运行中会补领，RPC 登记与待唤醒状态持久化；
+Core 长时间不可用时，仍需部署者查询 status 或 systemd 日志。
 
-状态为失败且说明「已回到原版本」时，服务仍是原版本、可以继续工作：如实转告原因，修好后重新提交即可。说明「保留现场」或「回退失败」时服务已停，需要部署者处理。`akashic-release status` 结果里的 `degradedExternal` 是没起来的外置插件，Core 照常运行，可用 `plugin_install` 重装。其中有 shell_safety 这类守卫插件时，它的限制此时不生效：先重装，重装好之前不做删除类操作。
+状态为失败且说明「已回到原版本」时，服务仍是原版本、可以继续工作：如实转告原因，修复后按上述来源和次数限制提交。说明「保留现场」或「回退失败」时服务已停，需要部署者处理。`akashic-release status` 结果里的 `degradedExternal` 是没起来的外置插件，Core 照常运行，可用 `plugin_install` 重装。其中有 shell_safety 这类守卫插件时，它的限制此时不生效：先重装，重装好之前不做删除类操作。
 如果无法启动用户 systemd service，或宿主发布权限未配置，交给部署者修复。
 不使用 sleep、nohup、后台 shell、kill、docker restart 或直接 systemctl stop 来更新自己。
 宿主等待超时、发送失败或旧 boot 被替换时会拒绝更新；既有消息保留。
