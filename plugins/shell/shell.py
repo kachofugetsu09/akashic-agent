@@ -73,7 +73,7 @@ class Command(BaseModel):
     login: bool = True
     tty: bool = Field(default=False, description="需要交互输入时启用 PTY。")
     yield_time_ms: int = DEFAULT_INITIAL_YIELD_TIME_MS
-    max_output_tokens: int = Field(default=DEFAULT_MAX_OUTPUT_TOKENS, ge=0)
+    max_output_tokens: int = Field(default=DEFAULT_MAX_OUTPUT_TOKENS, ge=0, le=200_000)
     timeout: int = Field(
         default=0, ge=0,
         description="硬截止秒数，到时终止整个进程组；0 不设截止。前台命令默认见 default，后台运行默认不设截止。",
@@ -97,7 +97,7 @@ class Stdin(BaseModel):
     execution_id: int
     chars: str = ""
     yield_time_ms: int | None = None
-    max_output_tokens: int = Field(default=DEFAULT_MAX_OUTPUT_TOKENS, ge=0)
+    max_output_tokens: int = Field(default=DEFAULT_MAX_OUTPUT_TOKENS, ge=0, le=200_000)
 
 
 class Stop(BaseModel):

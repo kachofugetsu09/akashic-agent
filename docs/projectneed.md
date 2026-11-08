@@ -328,6 +328,8 @@ D 类效果只能由拥有 prepared、committed、failed 和必要补偿语义�
 
 Prompt 历史不得从孤立 tool result 开始。assistant 工具调用和对应结果成对保留；摘要提供前文时，近期原文可以从 assistant 消息开始。当前工作 Input 逐字保留。长工具结果只允许在临时模型视图中截短。
 
+工具文本在首次进入模型请求前统一限量，同一 Output 的全部工具结果共享预览预算：最多 50,000 UTF-8 字节，且不超过已知模型窗口的四分之一；各调用均分，必要的回读地址和截断说明始终保留。超大结果给头尾预览，并明确提示缩小范围或用 `read_content` 按原消息的 `message_id/part_index/start/end` 分段读取。回读展开后的文本同样受限；没有回读工具时说明目录缺口，不假造可用能力。原始 ToolResult 和页面全文不变，不新增归档副本；预览不得记作完整展示的 content ref，也不得续接基于不同内容的 opaque continuation。未超限结果持续完整可见，不按 seen 状态自动折叠。
+
 Turn 是按 source 过滤的 Message 日志上的无状态读投影：`Output.finish=complete|quiet` 关闭一段，`Control.abandon` 在 `through_seq` 处关闭被放弃前缀；暂停和一次 provider 失败不能把消息日志拆成多个 Turn。Turn 投影返回消息引用和状态，不拥有执行、取消或写入权限。Context 可以复用同一分组，但必须保留工具请求/结果配对。
 
 已送达的 proactive assistant 消息进入 prompt history 时保留完整正文，不得施加 proactive 专属字符预算或改写成 preview。整体请求超限时，由通用 prompt history 按 CTX-007 的安全批次边界缩小窗口。

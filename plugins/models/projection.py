@@ -49,6 +49,45 @@ DisplayRenderer = Callable[[ContentPart], Mapping[str, object]]
 MODEL_DISPLAY = ServiceKey[DisplayRenderer]("message.display:model.facts")
 
 
+# Limit the model view, keeping the full ToolResult at its existing read_content address.
+def _limit_tool_text(
+    message: Message, parts: tuple[tuple[Mapping[str, Any], ...], ...],
+    budget: int, *, can_read: bool,
+) -> tuple[tuple[Mapping[str, Any], ...], bool]:
+    blocks = tuple(chain.from_iterable(parts))
+    size = sum(len(block["text"].encode("utf-8")) for block in blocks if block.get("type") == "text")
+    if size <= budget:
+        return blocks, False
+    # 1. One notice per result keeps many content parts from multiplying the overhead.
+    if can_read:
+        address = json.dumps({"message_id": message.message_id, "part_index": 0},
+                             ensure_ascii=False, separators=(",", ":"))
+        recovery = f"回读位置 read_content({address})；调用时按需调整 part_index，并指定较小的 start/end 字符区间。"
+    else:
+        recovery = "请缩小查询范围；当前工具目录没有 read_content，需获授该工具后才能按原消息回读。"
+    notice = (f"结果已截断：原结果有 {len(parts)} 个内容块、文本共 {size} UTF-8 字节。"
+              f"全文保留在原消息，part_index 从 0 开始。{recovery}"
+              "不要为找回结果重复执行原操作。\n")
+    text = "\n".join(
+        f"[part_index={index}]\n" + "\n".join(block["text"] for block in group if block.get("type") == "text")
+        for index, group in enumerate(parts) if any(block.get("type") == "text" for block in group)
+    ).encode("utf-8")
+    remaining = max(0, budget - len(notice.encode("utf-8")) - len("\n…\n".encode("utf-8")))
+    head = text[:remaining // 2].decode("utf-8", errors="ignore")
+    tail = text[-(remaining - remaining // 2):].decode("utf-8", errors="ignore") if remaining else ""
+    # 2. Preserve non-text blocks and put the bounded preview at the first text position.
+    preview = {"type": "text", "text": notice + head + "\n…\n" + tail}
+    result: list[Mapping[str, Any]] = []
+    inserted = False
+    for block in blocks:
+        if block.get("type") != "text":
+            result.append(block)
+        elif not inserted:
+            result.append(preview)
+            inserted = True
+    return tuple(result), True
+
+
 def response_facts(
     response: LLMResponse,
     call_indices: Sequence[int],
@@ -500,6 +539,11 @@ class MessageProjection:
         """把一条可见消息及其工具观察编译成冻结行；不保存实时上下文。"""
         # 1. 转换器每轮由完整历史准备；首显候选在装配时与持久 seen 求差。
         changed_content = False
+        limited_content = False
+        # A whole batch shares one text budget, including parallel and multi-part results.
+        batch_limit = min(50_000, self.context_window // 4) if self.context_window is not None else 50_000
+        call_count = sum(isinstance(part, ToolCall) for part in message.body.parts) if isinstance(message.body, Output) else 0
+        result_limit = batch_limit // max(1, call_count)
 
         def render(message: Message, index: int,
                    out_refs: list[tuple[str, int]]) -> tuple[Mapping[str, Any], ...]:
@@ -522,6 +566,20 @@ class MessageProjection:
             if rendered.blocks and rendered.complete:
                 out_refs.append((message.message_id, index))
             return rendered.blocks
+
+        def render_result(observation: Message) -> tuple[Mapping[str, Any], ...]:
+            nonlocal limited_content
+            result = cast(ToolResult, observation.body)
+            refs: list[tuple[str, int]] = []
+            parts = tuple(render(observation, index, refs) for index in range(len(result.parts)))
+            blocks, limited = _limit_tool_text(
+                observation, parts, result_limit, can_read="read_content" in self._tool_names,
+            )
+            limited_content |= limited
+            # A preview is not evidence that the model has seen the full content.
+            if not limited:
+                msg_refs.extend(refs)
+            return blocks
 
         def encode_arguments(arguments: Mapping[str, Any]) -> str:
             return json.dumps(json_value(arguments), ensure_ascii=False, separators=(",", ":"))
@@ -587,15 +645,13 @@ class MessageProjection:
                             "一次工具调用在放弃前已完成，真实结果如下；"
                             "外部效果已经发生。"
                         )})
-                        for item_index, _item in enumerate(settled.parts):
-                            blocks.extend(render(observation, item_index, msg_refs))
+                        blocks.extend(render_result(observation))
                     else:
                         blocks.append({"type": "text", "text": (
                             f"一次工具调用随来源前缀放弃，结算为 {settled.outcome}："
                             "外部效果可能已经发生，不能据此重跑。"
                         )})
-                        for item_index, _item in enumerate(settled.parts):
-                            blocks.extend(render(observation, item_index, msg_refs))
+                        blocks.extend(render_result(observation))
                 else:
                     blocks.append({"type": "text", "text": (
                         "一次工具调用随来源前缀放弃而中断；外部效果未结算，状态未知，"
@@ -638,8 +694,7 @@ class MessageProjection:
                 if result.outcome in {"error", "interrupted"}:
                     status += "。原调用可能已经产生效果；先检查当前状态，再决定下一步，不要直接重复执行原操作。"
                 result_blocks.append({"type": "text", "text": status})
-            for item_index, _item in enumerate(result.parts):
-                result_blocks.extend(render(observation, item_index, msg_refs))
+            result_blocks.extend(render_result(observation))
             observations.append(
                 {"role": "tool", "tool_call_id": identity, "content": result_blocks}
             )
@@ -679,7 +734,8 @@ class MessageProjection:
         return _RenderedMessage(
             message, position, reminder,
             cast(tuple[Mapping[str, Any], ...], freeze_json(msg_rows)),
-            tuple(msg_refs), tuple(msg_used), changed_content, dynamic,
+            # The fixed model and immutable batch keep a limited plain-text view cacheable.
+            tuple(msg_refs), tuple(msg_used), changed_content or limited_content, dynamic,
         )
 
     def _fold_rebuild(
@@ -813,7 +869,8 @@ class MessageProjection:
                     raise ValueError("模型 token 校准记录损坏")
                 fold.token_calibration = (estimated, actual)
             metadata = receipt.get("provider_metadata")
-            if metadata is not None and not value.get("content_transformed", False):
+            # Input transforms clear opaque continuation, not this new response's native parts.
+            if metadata is not None:
                 fold.response_metadata[message.message_id] = metadata
         previous = inherited.get(message.message_id)
         if previous is None or previous[0] is not message:
