@@ -35,6 +35,7 @@ class OrderedReact(Protocol):
         tools: ToolMenu,
         max_output_tokens: int,
         max_steps: int,
+        max_retry_wait: float | None = None,
         reduce: SummaryReducer | None = None,
         preview: Preview | None = None,
         terminal_tools: frozenset[str] = frozenset(),

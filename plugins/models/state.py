@@ -424,6 +424,10 @@ class _BoundChat:
             attempt_status = _attempt_status(records, budget)
             if isinstance(next_at, (int, float)) and not isinstance(next_at, bool):
                 delay = float(next_at) - time.time()
+                if request.max_retry_wait is not None and delay > request.max_retry_wait:
+                    raise ModelUnavailableError(
+                        f"剩余重试等待 {math.ceil(delay)} 秒超过本请求的 {request.max_retry_wait:g} 秒上限；已停止，请稍后重新发起任务。"
+                    ).exception()
                 if delay > 0:
                     if request.on_delta is not None and attempt_status is not None and last is not None:
                         # 首行是状态标题，其后是原始失败原因；前端按行分开排版。
@@ -548,8 +552,15 @@ class _BoundChat:
                             candidate = now + float(hint)
                         else:
                             candidate = now + _backoff_seconds(len(records) + 1)
-                        retry_at = candidate
-                        stop_reason = "将自动恢复当前模型请求；此前生成的 usage 可能未知"
+                        if request.max_retry_wait is not None and candidate - now > request.max_retry_wait:
+                            stop_reason = (
+                                f"上游要求等待 {math.ceil(candidate - now)} 秒，超过本请求的 {request.max_retry_wait:g} 秒上限；"
+                                "已停止自动重试，请在上游允许后重新发起任务"
+                            )
+                            failure = ModelError.change(failure, retryable=False, retry_safe=False, retry_at=None, retry_after=None)
+                        else:
+                            retry_at = candidate
+                            stop_reason = "将自动恢复当前模型请求；此前生成的 usage 可能未知"
                     elif retryable:
                         stop_reason = "自动重试次数已用完；已完成的工具结果仍保留"
                         exhausted = budget is not None and budget > 1
