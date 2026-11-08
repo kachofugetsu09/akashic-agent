@@ -628,7 +628,8 @@ class MessageProjection:
             })
             observation = results.get(ref)
             if observation is None:
-                raise ValueError("模型请求包含未结算的工具调用")
+                raise ValueError("模型请求包含未结算的工具调用。外部效果可能已经发生，请先检查状态。"
+                                 "确认放弃本轮后再继续；对话可用 /abandon，程序可用 programmatic/message/abandon")
             if observation.seq <= message.seq:
                 raise ValueError("工具结果不能早于调用")
             result = cast(ToolResult, observation.body)

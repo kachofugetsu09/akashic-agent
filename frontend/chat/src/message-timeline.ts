@@ -518,7 +518,7 @@ type FailureRun = {
   input: TimelineMessage | null | undefined;
   failures: TimelineMessage[];
   tail: TimelineMessage;
-  /** 本段曾撞步数上限且还有未回执调用：只有放弃能解开，重试会再撞同一条门槛。 */
+  /** 同一输入的确定性失败：重试不会解开容量或未回执调用。 */
   stuck: boolean;
 };
 
@@ -535,6 +535,14 @@ export function isStepLimitFailure(message: TimelineMessage): boolean {
   const body = message.body;
   return body.kind === "control" && body.action === "failure"
     && (body.reason ?? "").startsWith(STEP_LIMIT_FAILURE_REASON);
+}
+
+// These failures need a new, smaller input or explicit abandonment, not the same retry.
+function needsAbandon(message: TimelineMessage): boolean {
+  const body = message.body;
+  return isStepLimitFailure(message) || body.kind === "control" && body.action === "failure"
+    && ["当前输入与进行中的工具调用本身超出容量", "模型请求包含未结算的工具调用"]
+      .some(reason => (body.reason ?? "").includes(reason));
 }
 
 // 放弃入口只作用于 conversation 来源：/abandon 走的是 conversation 的控制接纳，
@@ -570,9 +578,8 @@ export function timelineFailureRetries(messages: TimelineMessage[]): TimelineFai
         earlier.set(message.id, [...run.failures]);
       }
       run.failures.push(message);
-      // 撞过步数上限就一直算卡住，直到 abandon 或真正的完成边界。
-      // 之后的普通失败不会让计数自愈，它继承同一段未完成工作。
-      if (isStepLimitFailure(message)) run.stuck = true;
+      // 同一输入上的普通失败不撤销先前的确定性失败。
+      if (needsAbandon(message)) run.stuck = true;
     }
   }
   // 5. 只有来源最后一条仍是失败时才给出口；正在恢复或已有新输入都不再提供。

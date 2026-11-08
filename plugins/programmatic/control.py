@@ -13,11 +13,13 @@ from plugins.gateway.contract import (
 from plugins.ledger.contract import (
     MESSAGE_CATALOG,
     SESSION_ADMISSION,
+    Message,
     MessageReader,
     SessionAttributes,
 )
 from plugins.gateway.contract import RequestTransport, RpcMethod
-from plugins.ledger.contract import ContentPart, Input
+from plugins.ledger.contract import ContentPart, Control, Input
+from plugins.sources.contract import GuardedSourceSession
 from plugins.delivery.contract import (
     FinalOutputTurn as FinalOutputTurn,
 )
@@ -30,6 +32,7 @@ PARAMS: dict[str, type[BaseModel]] = {
     "programmatic/session/admit": AdmitParams,
     "programmatic/message/send": SendParams,
     "programmatic/message/pause": PauseParams,
+    "programmatic/message/abandon": PauseParams,
     "programmatic/message/resume": ResumeParams,
     "programmatic/message/result": ResultParams,
 }
@@ -176,6 +179,24 @@ class Programmatic:
         check_session(session_id)
         return await self._call(method, params, transport, session_id)
 
+    # Reuse source admission and the original prefix when the caller retries its control ID.
+    async def _abandon(self, source: GuardedSourceSession, params: PauseParams) -> Message:
+        reader = self.ctx.require(MESSAGE_CATALOG).reader(params.session_id)
+        def read(reader: MessageReader) -> tuple[Control, int]:
+            existing = reader.get(params.message_id)
+            head = reader.head(source="programmatic")
+            if existing is not None:
+                if not isinstance(existing.body, Control) or existing.body.action != "abandon":
+                    raise ValueError("放弃身份已被其他消息使用")
+                return existing.body, head
+            if head < 0:
+                raise ValueError("当前来源没有可放弃的消息")
+            return Control("abandon", head, "调用方放弃本轮未完成的工作；外部效果不会撤销。"), head
+        body, head = await reader.read_async(read)
+        task = await source.active_task()
+        return await source.control(params.message_id, body, expected_head=head,
+                                    handle=None if task is None else task.handle)
+
     async def _call(
         self, method: str, params: BaseModel,
         transport: RequestTransport | None, session_id: str,
@@ -228,6 +249,8 @@ class Programmatic:
                 raise
         elif method == "programmatic/message/pause":
             message = await source.pause(cast(PauseParams, params).message_id)
+        elif method == "programmatic/message/abandon":
+            message = await self._abandon(source, cast(PauseParams, params))
         elif method == "programmatic/message/resume":
             resume = cast(ResumeParams, params)
             stage = self._stage_before_resume(session_id, resume.input_id, transport)

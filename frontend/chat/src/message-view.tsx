@@ -126,7 +126,7 @@ export function ReplyActivityView({ activity, committed, onError, onStop, proces
   const preview = activity.preview ?? (activity.active ? lastPreview : null);
   const draft = preview && !committed.has(preview.message_id) ? preview : null;
   if (preview && !draft && !processMessages.length) return null;
-  const flow = timelineFlow(processMessages, undefined, toolResults);
+  const flow = timelineFlow(processMessages, undefined, toolResults, activity.active);
   const text = draft?.text ?? "";
   // 重试中的整次尝试都显示一行进度；退避等待仍由状态卡负责。
   const attemptLine = activity.active && draft?.attempt && !draft.retry_status
@@ -311,7 +311,7 @@ type FlowItem =
   | { kind: "part"; key: string; origin: TimelineMessage; index: number; part: TimelinePart };
 
 /** 组内全部成员按 part 顺序展开成独立流项：思考、工具、中途正文、末条正文各归原位。 */
-function timelineFlow(messages: TimelineMessage[], finalId: string | undefined, toolResults: ReadonlyMap<string, TimelineMessage>): FlowItem[] {
+function timelineFlow(messages: TimelineMessage[], finalId: string | undefined, toolResults: ReadonlyMap<string, TimelineMessage>, active = false): FlowItem[] {
   return messages.flatMap((origin) => origin.body.kind !== "output" ? [] :
     origin.body.parts.map((part, index) => ({ part, index }))
     // 上下文提示发生在生成之前，排在思考之前；思考再排在正文之前。
@@ -338,8 +338,9 @@ function timelineFlow(messages: TimelineMessage[], finalId: string | undefined, 
           kind: "tool", callId: key, name: part.name, owner: part.owner, input: part.arguments,
           output: result ? timelineToolOutput(result) : undefined,
           attachments: toolImages(result),
-          status: outcome === null ? "input-available" : outcome === "success" ? "output-available" : "output-error",
-          errorText: outcome && outcome !== "success" ? outcomeLabels[outcome] : undefined } }];
+          status: outcome === null ? active ? "input-available" : "output-unknown" : outcome === "success" ? "output-available" : "output-error",
+          errorText: outcome === null && !active ? "未收到工具回执；外部效果可能已经发生，请先检查状态。"
+            : outcome && outcome !== "success" ? outcomeLabels[outcome] : undefined } }];
       }
       if (part.kind === "context.notice") return [{ kind: "notice", key, origin, index, part, text: part.value.text }];
       if (origin.id === finalId) {
@@ -1367,6 +1368,8 @@ const ToolStep = memo(function ToolStep({
   // 成功是默认结果，不再逐行写"完成"；只有运行中、失败和耗时值得占位。
   const stateLabel = block.status === "input-available"
     ? "运行中"
+    : block.status === "output-unknown"
+      ? "状态未知"
     : block.status === "output-error"
       ? "失败"
       : block.durationMs === undefined

@@ -1045,6 +1045,10 @@ pool mass 超过固定 threshold 时才进入 Wake Turn，不使用随机
 
 新 programmatic session 使用当前运行图；不提供 `latest`、候选或旧版本选择器。学习资格在 `programmatic/session/admit` 首次创建 Session 时固定：`persist_memory` 省略或 false 为 `learning=excluded`，显式 true 为 `learning=eligible`。同一 Session ID 与相同属性的重试幂等，属性冲突必须失败；后续 send、pause/resume、retry 和 result 不得改变资格。普通 Session 的既有默认不变。
 
+`programmatic/message/abandon` 接受 `session_id` 与新的 `message_id`，显式放弃当前 programmatic 前缀，沿用来源控制的撤权、工具结算与原文保留规则；同一控制 ID 重试不放弃后来接纳的工作。它不撤销外部效果，也不改变学习资格。来源同时前进导致冲突时，调用方重新读取结果后再决定是否放弃。
+
+失败不自动作废工具调用，也不成为成功学习样本。没有未回执调用的失败前缀可以进入上下文摘要；同来源新 Input 不再强制保留此前失败输入的全文，重试原输入仍保留它。容量或未结算调用导致的确定性失败必须展示放弃出口，未收到工具回执且没有活动回复时显示状态未知。
+
 Session 无论是否可学习，都正常持久化 Input、Control、工具调用及结果、Output 与终态。Akasha 和 Markdown 只有在 Session 为 eligible 且各自来源配置允许时才学习；不为 programmatic 新建逐 Turn suppress scope。历史消息的排除事实仍按 MEM-009 只读处理。Prompt 是否读取既有记忆与 Tool 是否可用分别由 `disabled_prompt_sections` 和 `ToolGrant` 决定，均不由学习资格推断。
 
 验证 CLI 默认 attached，控制连接在 terminal 前关闭时 runtime 必须取消其拥有的 turn 并释放运行实例引用；显式 detached 必须先返回可恢复的 thread/turn handle。系统不再提供候选验证或晋升入口；普通 programmatic 调用可用于测试已安装插件，不因调用目的建立特殊路径。

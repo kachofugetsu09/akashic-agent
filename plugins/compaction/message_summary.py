@@ -133,7 +133,7 @@ def closed_groups(
     settled_prefixes: Callable[[tuple[Message, ...]], tuple[int, ...]],
     after: int = 0,
 ) -> tuple[tuple[Message, ...], ...]:
-    """只在已结算批次后切分请求视图；持久 Turn 和学习边界保持完整。"""
+    """已结算批次或失败输入可供摘要；失败不改变持久 Turn 与学习资格。"""
     groups: list[tuple[Message, ...]] = []
     ends = set(settled_prefixes(messages))
     start = after
@@ -142,7 +142,7 @@ def closed_groups(
         body = message.body
         closed = (isinstance(body, Output) and body.finish != "continue"
                   or isinstance(body, ToolResult)
-                  or isinstance(body, Control) and body.action == "abandon")
+                  or isinstance(body, Control) and body.action in {"abandon", "failure"})
         if closed and index + 1 in ends:
             groups.append(tuple(messages[start:index + 1]))
             start = index + 1
