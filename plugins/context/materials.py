@@ -46,9 +46,10 @@ class _Source:
 class MaterialView:
     """固定本次请求的贡献者；只收集材料，不调用模型或修改消息。"""
 
-    def __init__(self, ctx: Context, sources: tuple[tuple[str, _Source], ...]):
+    def __init__(self, ctx: Context, sources: tuple[tuple[str, _Source], ...], prepare_timeout_seconds: float):
         self._ctx = ctx
         self._sources = sources
+        self._prepare_timeout_seconds = prepare_timeout_seconds
         self._active = True
 
     def close(self) -> None:
@@ -80,19 +81,28 @@ class MaterialView:
             collect(caller.runtime.plugin_id, decode_material({"reminders": reminders}).reminders)
         summary: Summary | None = None
         references: dict[str, Mapping[str, object]] = {}
-        async def prepare_owner(owner: _Source) -> Materials | Exception:
+        # One preparation owns one deadline, shared by every concurrent contributor.
+        deadline = asyncio.get_running_loop().time() + self._prepare_timeout_seconds
+        async def prepare_owner(name: str, owner: _Source) -> Materials | Exception:
             """Keep each independent contribution inside its actual owner scope."""
+            budget = asyncio.timeout_at(deadline)
             try:
-                async with owner.context.runtime_scope():
+                async with owner.context.runtime_scope(), budget:
                     return decode_material(await owner.prepare(snapshot, source))
+            except TimeoutError as error:
+                if budget.expired():
+                    return TimeoutError(
+                        f"材料 {owner.plugin_id}/{name} 准备超过 {self._prepare_timeout_seconds:g} 秒总期限，"
+                        "已停止且不会自动重试；请检查材料 provider 后发送新输入。")
+                return error
             except Exception as error:
                 # Drain every started owner, then report errors in frozen order.
                 return error
 
         # Preparation may overlap; merging still follows the frozen source order.
         async with asyncio.TaskGroup() as group:
-            tasks = [group.create_task(prepare_owner(owner), context=child_task_context())
-                     for _, owner in self._sources]
+            tasks = [group.create_task(prepare_owner(name, owner), context=child_task_context())
+                     for name, owner in self._sources]
         for (name, owner), task in zip(self._sources, tasks, strict=True):
             material = task.result()
             if isinstance(material, Exception):
@@ -181,10 +191,12 @@ class ContextMaterials:
     def __init__(
         self, ctx: Context, *, prompt_sources: Mapping[str, str],
         summary_source: tuple[str, str] | None = None,
+        prepare_timeout_seconds: float = 900.0,
     ):
         self._ctx = ctx
         self._prompt_sources = dict(prompt_sources)
         self._summary_source = summary_source
+        self._prepare_timeout_seconds = prepare_timeout_seconds
         self._sources: dict[str, _Source] = {}
 
     async def register(
@@ -281,7 +293,7 @@ class ContextMaterials:
             async with AsyncExitStack() as scopes:
                 for context in contributors:
                     await scopes.enter_async_context(context.runtime_scope())
-                view = MaterialView(self._ctx, selected)
+                view = MaterialView(self._ctx, selected, self._prepare_timeout_seconds)
                 try:
                     yield view
                 finally:

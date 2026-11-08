@@ -46,6 +46,8 @@ class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
     prompt_sources: dict[str, str] = Field(default_factory=dict)
     summary_source: tuple[str, str] | tuple[()] = ()
+    prepare_timeout_seconds: float = Field(default=900.0, gt=0, allow_inf_nan=False,
+        description="Total seconds for all materials in one preparation; timeout ends the request without retry.")
 
     @field_validator("prompt_sources")
     @classmethod
@@ -287,5 +289,6 @@ async def apply(ctx: Context) -> None:
     _ = await ctx.provide(CONTEXT_NOTICE_DISPLAY, display_notice)
     # 自己写入的内部材料不进聊天正文；宿主不维护按插件列举的隐藏名单。
     _ = await ctx.provide(part_display_key("context.summary"), hidden_part)
-    materials = ContextMaterials(ctx, prompt_sources=config.prompt_sources, summary_source=config.summary_source or None)
+    materials = ContextMaterials(ctx, prompt_sources=config.prompt_sources,
+        summary_source=config.summary_source or None, prepare_timeout_seconds=config.prepare_timeout_seconds)
     _ = await ctx.provide(MATERIALS_V4, materials, binding_contributors=materials.binding_contributors)
