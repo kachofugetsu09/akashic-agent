@@ -194,6 +194,7 @@ def test_board_claim_is_stable_within_one_input_and_retired_by_the_next():
     assert board.claim("s", "conversation", "input-1") == (notice,)
     assert board.claim("other", "conversation", "input-1") == ()
     assert board.claim("s", "subagent", "input-1") == ()
+    board.confirm(notice, "input-1")
     assert board.claim("s", "conversation", "input-2") == ()
     assert board.pending("s") == ()
 

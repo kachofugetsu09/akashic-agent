@@ -18,6 +18,13 @@ class Notice:
     job: JobWatch
     outcome: JobOutcome
     claimed_by: str | None = None
+    confirmed: bool = False
+
+    # Keep the wake claim format inside the board.
+    @property
+    def claimed_input(self) -> str | None:
+        value = self.claimed_by
+        return value if value is not None and not value.startswith(_WAKE) else None
 
     # 通知只说明结算事实与读取方式；结果正文仍由生产方的读取工具交付。
     def text(self) -> str:
@@ -54,19 +61,27 @@ class JobBoard:
                 return notice.job.source
         return source
 
-    # 同一输入的后续步骤看到同一组通知；新输入出现后，旧输入领取过的通知退出。
+    # Keep a claim until its reminder is saved; only confirmed claims retire on new input.
     def claim(self, session_id: str, source: str, input_id: str) -> tuple[Notice, ...]:
         visible: list[Notice] = []
         for notice in tuple(self._notices):
             if notice.job.session_id != session_id or notice.job.source != source:
                 continue
-            if notice.claimed_by is None:
-                notice.claimed_by = input_id
-            if notice.claimed_by == input_id:
-                visible.append(notice)
-            elif not notice.claimed_by.startswith(_WAKE):
-                self._notices.remove(notice)
+            if notice.claimed_by is not None and notice.claimed_by != input_id:
+                if notice.claimed_by.startswith(_WAKE):
+                    continue
+                if notice.confirmed:
+                    self._notices.remove(notice)
+                    continue
+            notice.claimed_by = input_id
+            visible.append(notice)
         return tuple(visible)
+
+    # Restore or confirm a claim from its saved reminder, without replacing a newer claim.
+    def confirm(self, notice: Notice, input_id: str) -> None:
+        if notice in self._notices and notice.claimed_by in {None, input_id}:
+            notice.claimed_by = input_id
+            notice.confirmed = True
 
     # 在会话槽内决定是否唤醒：已被回合领取或连续唤醒预算耗尽时，留给下一次用户输入注入。
     def take_wake(self, notice: Notice, input_id: str | None) -> bool:

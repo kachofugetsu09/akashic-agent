@@ -26,7 +26,9 @@ Agent 需要把长任务（例如 `codex exec`、`claude -p`）派发出去，�
    不使用会阻塞 manager 排空的长轮询。
 4. **忙时注入：** jobs 插件注册 `context` 材料。react 每一步都会重新准备材料，
    当前用户输入领取未读结算，以 `replay=True` 提醒进入请求；同一输入的后续步骤保持同一组提醒，
-   新输入出现后旧领取退出。不修改 AgentCore 或 react。
+   只有含该提醒的 Output 成功落账才确认消费；新输入出现后已确认的旧领取退出，
+   未确认的通知交给新输入。确认读取原账本中的 model.facts，不依赖当前 Prompt 窗口，
+   宿主通知的 handled 也在确认后才更新。不修改 AgentCore 或 react。
 5. **闲时唤醒：** 结算后经 `conversation.complete.v2` 等待原会话槽空闲，在槽内再次核对：
    已被某个回合领取的结算不唤醒；否则以 `job:<id>` 来源运行一轮回复，并按最近输入的渠道显式投递。
    新输入抢占或生成失败时，在本次程序退出前释放领取，供新回合注入或槽内重试。
@@ -65,7 +67,8 @@ shell(run_in_background) ──► watch(JobWatch) ──► settled()
 ## 已知限制
 
 - 结算落在模型最后一步生成期间时，本回合看不到它，回合结束后由唤醒补上。
-- 回合领取后若该回合失败且没有后续步骤，下一次用户输入会让这条领取退出。
+- 普通 watch 通知仍只在进程内；失败或取消且未保存含通知的 Output 时，下一输入重新领取。
+  已保存的提醒在同一 Input 后续步骤继续重放，新 Input 不再额外注入；历史重放仍由 Models 拥有。
 - 后台子任务（subagent）仍使用自己的持久回传路径；本决定不改变它。
 - 内置 `codex-delegate` skill 改为主会话直接后台 Shell 启动 `codex exec`（bypass 模式），
   不再包一层阻塞等待的 subagent；续聊用 `codex exec resume <thread_id>`，同一会话串行。
