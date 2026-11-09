@@ -425,6 +425,8 @@ class _BoundChat:
                     f"该请求已终结失败，同一请求不会自动重发。上次失败：{last['failure']}"
                 ).exception()
             limit = "" if budget is None else f"/{budget}"
+            # 调用方续接同一步时预算只是剩余额度，序号不是本步的总次数。
+            attempts_note = "" if request.max_attempts is None else "（本步剩余额度，此前的尝试另计）"
             next_at = None if last is None else last.get("next_attempt_at")
             # 已有失败时，退避与随后整次尝试都携带可见进度，直到这次尝试结束。
             attempt_status = _attempt_status(records, budget)
@@ -438,7 +440,7 @@ class _BoundChat:
                     if request.on_delta is not None and attempt_status is not None and last is not None:
                         # 首行是状态标题，其后是原始失败原因；前端按行分开排版。
                         await request.on_delta({"retry_status": (
-                            f"模型暂时不可用，约 {math.ceil(delay)} 秒后进行第 {len(records) + 1}{limit} 次尝试\n"
+                            f"模型暂时不可用，约 {math.ceil(delay)} 秒后进行第 {len(records) + 1}{limit} 次尝试{attempts_note}\n"
                             f"{last['failure']}"
                         ), "attempt_status": replace(attempt_status, next_attempt_at=float(next_at)).encode()})
                     # 等待可取消；已结算的失败与允许时间保留，恢复按剩余额度继续。
@@ -620,7 +622,7 @@ class _BoundChat:
                             f"可以发「继续」重试。\n最后一次失败：模型 {descriptor.model} 调用失败：{failure}"
                         ) if exhausted else (
                             f"模型 {descriptor.model} 调用失败：{failure}\n"
-                            f"已尝试 {len(records) + 1}{limit} 次。{stop_reason}"
+                            f"已尝试 {len(records) + 1}{limit} 次{attempts_note}。{stop_reason}"
                         ))
                     try:
                         await self._finish_call(partial(self._store.finish_call,

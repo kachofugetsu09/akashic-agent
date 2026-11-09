@@ -101,7 +101,7 @@ STEP_LIMIT_FAILURE = "步数上限失败"
 def step_limit_abandon_reason(max_steps: int) -> str:
     return (
         f"{STEP_LIMIT_ABANDON}：本轮连续 {max_steps} 次模型请求都没有收尾，"
-        "这些工作已经作废；接下来的一句话将重新开始计数。"
+        "本轮到此结束，未完成的工作不再继续；接下来的一句话将重新开始计数。"
     )
 
 
@@ -109,7 +109,7 @@ def step_limit_failure_reason(max_steps: int, unfinished: int) -> str:
     return (
         f"{STEP_LIMIT_FAILURE}：本轮连续 {max_steps} 次模型请求都没有收尾，已经停下。"
         f"其中 {unfinished} 个工具调用没有拿到回执，状态未知（可能已部分执行），"
-        "所以没有自动作废。请先检查当前状态；重试不会生效，计数不会自愈。"
+        "所以没有自动作废。请先检查当前状态；重试不会生效，发新消息会重新开始计数并接着结算这些调用。"
         "确实要丢掉这一轮，请点「放弃本轮未完成的工作」或发送 /abandon。"
     )
 
@@ -872,7 +872,7 @@ async def react(
             if aborted is not None:
                 return await aborted(step_limit_abandon_reason(max_steps))
             # 没有写控制能力的调用方只能得到明确失败，来源仍会记录 failure；
-            # 计数不会自愈，与修复前一致。
+            # 重试不重置计数，与修复前一致；新输入才会。
             raise StepLimit(f"本来源未完成工作已达到 {max_steps} 个模型输出").exception()
 
         # 2. 重启和显式重试都用当前材料发新请求，不恢复旧请求身份。
