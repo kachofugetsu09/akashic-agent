@@ -14,10 +14,16 @@ from plugins.models.contract import (
     ContextLengthError,
     ModelTimeoutError,
     RateLimitError,
+    REJECTED_CALL_NOTICE,
+    REJECTED_INPUT_NOTICE,
+    REJECTED_KEEP_KINDS,
+    REJECTED_OUTPUT_NOTICE,
     TransportError,
+    rejected_result_notice,
+    rejected_segments,
 )
 from plugins.models.contract import BoundChatModel, LLMResponse
-from plugins.ledger.contract import CallRef, ContentPart, Control, Message, Output, ToolCall, ToolResult, origin
+from plugins.ledger.contract import CallRef, ContentPart, Control, Input, Message, Output, Part, ToolCall, ToolResult, origin
 from plugins.ledger.contract import body_to_dict
 from plugins.turn_projection.contract import TurnProjection
 
@@ -180,6 +186,30 @@ def closed_groups(
     return tuple(groups)
 
 
+# Summaries must not carry what the abandon took out of the model view; outcomes stay as facts.
+def _without_rejected(message: Message, hidden: frozenset[str]) -> Message:
+    body = message.body
+    if isinstance(body, ToolResult) and body.call_ref.message_id in hidden:
+        notice = ContentPart("text", rejected_result_notice(body.outcome))
+        return replace(message, body=replace(body, parts=(notice,)))
+    if message.message_id not in hidden:
+        return message
+    if isinstance(body, Input):
+        return replace(message, body=Input((ContentPart("text", REJECTED_INPUT_NOTICE),)))
+    assert isinstance(body, Output)
+    parts: list[Part] = []
+    for part in body.parts:
+        if isinstance(part, ToolCall):
+            parts.append(replace(part, arguments={}))
+        elif part.kind == "model.tool_rejection":
+            parts.append(ContentPart("text", REJECTED_CALL_NOTICE))
+        elif part.kind in REJECTED_KEEP_KINDS:
+            parts.append(part)
+        elif not any(isinstance(item, ContentPart) and item.value == REJECTED_OUTPUT_NOTICE for item in parts):
+            parts.append(ContentPart("text", REJECTED_OUTPUT_NOTICE))
+    return replace(message, body=replace(body, parts=tuple(parts)))
+
+
 def summary_groups(groups: tuple[tuple[Message, ...], ...],
                    snapshot: tuple[Message, ...]) -> tuple[tuple[Message, ...], ...]:
     """摘要不重新引入已放弃调用的迟到正文；调用归属从完整日志确定。"""
@@ -201,7 +231,8 @@ def summary_groups(groups: tuple[tuple[Message, ...], ...],
                              if call.source == message.source and call.seq <= body.through_seq)
             pending = {ref: call for ref, call in pending.items() if ref not in abandoned}
     # 2. 只改变本次摘要材料；原分组仍用于耐久覆盖范围和 raw tail 选择。
-    selected = tuple(tuple(message for message in group if message.message_id not in excluded)
+    hidden = rejected_segments(snapshot)
+    selected = tuple(tuple(_without_rejected(message, hidden) for message in group if message.message_id not in excluded)
                      for group in groups)
     return tuple(group for group in selected if group)
 

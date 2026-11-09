@@ -19,8 +19,8 @@ from plugins.models.contract import (
 )
 from agent.plugin_composition.tasks import Task
 from plugins.context.contract import MaterialView, ReductionStatus, summary_due
-from plugins.models.contract import ContentTransform, PrepareContent, ReadMessage
-from plugins.ledger.contract import ContentPart, Control, HistoryWindow, Input, Message, MessageSnapshot, Output
+from plugins.models.contract import ContentTransform, PrepareContent, ReadMessage, rejected_segments
+from plugins.ledger.contract import ContentPart, Control, HistoryWindow, Input, Message, MessageSnapshot, Output, ToolResult
 
 from plugins.sources.contract import (
     SourceGuard,
@@ -205,9 +205,13 @@ async def run_reply(
                 summary = cast(SummaryData | None, result.get("summary"))
                 covered = set() if summary is None else set(cast(tuple[str, ...], summary["source_message_ids"]))
                 # 附件关系逐条查库，留在 worker 内，不占事件循环。
+                # 已从模型视图隐藏的内容不会渲染，它的附件不占本次视图预算。
+                rejected = rejected_segments(messages)
                 identities = tuple(
                     message.message_id for message in messages
-                    if message.message_id not in covered or message.message_id in keep_input_ids
+                    if (message.message_id not in covered or message.message_id in keep_input_ids)
+                    and message.message_id not in rejected
+                    and not (isinstance(message.body, ToolResult) and message.body.call_ref.message_id in rejected)
                 )
                 refs = await run_file_io(lambda: reader.attachments_for(identities))
                 if refs:

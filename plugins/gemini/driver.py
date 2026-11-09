@@ -420,7 +420,7 @@ def _status(response: httpx.Response, *, secret: str = "") -> None:
         detail = response_error_message(response, secret=secret)
         error = InvalidRequestError(f"Gemini 拒绝请求：HTTP {status}；{detail}").exception()
     if status < 500:
-        error = ModelError.change(error, send_evidence="rejected")
+        error = ModelError.change(error, send_evidence="rejected", http_status=status)
     if (value := ModelError.read(error)) is not None and value.retryable:
         error = ModelError.change(error, retry_at=retry_after_time(response.headers.get("retry-after")))
     raise error

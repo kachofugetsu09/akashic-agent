@@ -30,12 +30,15 @@ from plugins.models.contract import (
     StreamCallback,
 )
 from plugins.models.contract import (
+    ContentSafetyError,
     ContextLengthError,
     EmptyResponseError,
     InputReductionRequired,
     OutputLengthError,
     ModelError,
     RetryWaitInterrupted,
+    content_rejection_reason,
+    is_content_rejection,
 )
 from plugins.models.contract import BoundChatModel
 from plugins.ledger.contract import (
@@ -656,10 +659,17 @@ async def _complete(
             *, max_attempts: int | None = None, reduce_on_empty: bool = False,
         ) -> LLMResponse:
             mark("model.begin", request_id=request_key)
-            response = await model.complete(replace(
-                request, on_delta=callback, request_key=request_key, max_retry_wait=max_retry_wait,
-                retry_wake=retry_wake, max_attempts=max_attempts, reduce_on_empty=reduce_on_empty,
-            ))
+            try:
+                response = await model.complete(replace(
+                    request, on_delta=callback, request_key=request_key, max_retry_wait=max_retry_wait,
+                    retry_wake=retry_wake, max_attempts=max_attempts, reduce_on_empty=reduce_on_empty,
+                ))
+            except (RuntimeError, TimeoutError) as error:
+                if not is_content_rejection(error):
+                    raise
+                raise ModelError.change(error, message=content_rejection_reason(
+                    str(error), may_be_config=not ModelError.matches(error, ContentSafetyError),
+                )) from error
             mark("model.end", request_id=request_key)
             return response
 
