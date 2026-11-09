@@ -378,7 +378,7 @@ async def _consume_stream(
             setattr(exc, "response_delta_seen", True)
         raise
     if not completed:
-        # 未见 data 帧的正文没有可用的 Responses 结果，payload 只会抛分类后的失败或确认真断流。
+        # Codex 只走 SSE：未见 data 帧的正文（含完整 Responses JSON）一律按错误或未知响应结束，真断流才返回。
         _ = body.payload(secret=secret)
         error = TransportError("Codex Responses 在 completed 事件前断流").exception()
         if delta_seen:

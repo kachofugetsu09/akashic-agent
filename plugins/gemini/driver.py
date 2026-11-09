@@ -408,7 +408,7 @@ def _status(response: httpx.Response, *, secret: str = "") -> None:
     status = response.status_code
     if 200 <= status < 300:
         return
-    if status in {401, 403}:
+    if status in {401, 403} or status == 400 and 'api_key_invalid' in response.text.lower():
         error = AuthenticationError(f"Gemini 授权失败：HTTP {status}").exception()
     elif status == 429:
         error = RateLimitError("Gemini 请求限流：HTTP 429").exception()
