@@ -876,7 +876,9 @@ class MessageProjection:
             if message.source == self._source and estimated is not None and actual is not None:
                 if type(estimated) is not int or estimated <= 0 or type(actual) is not int or actual < 0:
                     raise ValueError("模型 token 校准记录损坏")
-                fold.token_calibration = (estimated, actual)
+                # 字符估算最多差约 3 倍（1 字符 1 token）。远超它的 usage 与请求大小无关：压缩后比例只会更离谱，
+                # 用它校准会让每条输入都付一次摘要费。这里不看窗口，静默超窗（200 + 超窗 usage）仍能触发压缩。
+                fold.token_calibration = None if actual > estimated * _MAX_USAGE_RATIO else (estimated, actual)
             metadata = receipt.get("provider_metadata")
             # Input transforms clear opaque continuation, not this new response's native parts.
             if metadata is not None:
@@ -921,6 +923,9 @@ _EXTERNAL_PART_KINDS = frozenset({"artifact_ref", "reply_ref"})
 
 class _FoldStale(Exception):
     """追加尾部出现 abandon：编排折叠失效，回退全量重建。"""
+
+
+_MAX_USAGE_RATIO = 8
 
 
 class _Fold:
