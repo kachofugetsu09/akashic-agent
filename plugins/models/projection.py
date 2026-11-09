@@ -293,7 +293,11 @@ class MessageProjection:
         value = self._model.estimate_context_tokens(request.messages, request.tools)
         if calibration is not None:
             estimated, actual = calibration
-            value = max(value, (value * actual + estimated - 1) // estimated)
+            calibrated = (value * actual + estimated - 1) // estimated
+            # usage 可能异常：校准只负责提前触发压缩，不单独造成本地拒发；窗口的 3/4 高于软水位、
+            # 加输出预留（至多 1/4）也不越窗。provider 是最终裁判，下一次成功会刷新校准。
+            window = self.context_window
+            value = max(value, calibrated if window is None else min(calibrated, window - window // 4))
         self._last_estimate = (request, value, calibration)
         return value
 
