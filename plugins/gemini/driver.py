@@ -235,7 +235,7 @@ class _Chat:
 
 
 def _body(request: ModelRequest, model: BoundModelDescriptor) -> dict[str, Any]:
-    """将消息投影转成原生内容；同 binding 的历史部件原样返回。"""
+    """将消息投影转成原生内容；同模型的历史部件原样返回。"""
     if request.continuation is not None:
         raise InvalidRequestError("Gemini 不接受服务端 continuation").exception()
     contents = []

@@ -66,6 +66,9 @@ SUMMARY_MODEL = ModelUse("compaction", "上下文压缩", follows=("session", "d
 MAX_SUMMARY_FAILURES = 3
 # 空闲压缩挡在回合前且本不必要：期限短，到期软失败。
 IDLE_DEADLINE_SECONDS = 120.0
+# 软水位摘要挡在业务生成之前，但失败只是保留原文继续，真超窗还有硬路径兜底：
+# 期限取能容纳一次正常摘要、又不让用户空等一小时的折中，比阻断回合的硬路径短。
+SOFT_DEADLINE_SECONDS = 300.0
 # 按计划节省不到请求估算的这一比例时不值得花钱（新摘要按父摘要原长估算）。
 IDLE_MIN_SAVING = 0.2
 
@@ -547,9 +550,9 @@ async def apply(ctx: Context) -> None:
             if text and on_status is not None:
                 await on_status(text, False)
 
-        # 阻断回合和空闲路径各有总期限；软水位摘要迟早要做，只受模型自身的生成期限约束。
-        seconds = SUMMARY_DEADLINE_SECONDS if hard_limit else None if soft_due else IDLE_DEADLINE_SECONDS
-        deadline = None if seconds is None else asyncio.get_running_loop().time() + seconds
+        # 三条路径都有总期限，只有阻断回合的硬路径值得等满。
+        seconds = SUMMARY_DEADLINE_SECONDS if hard_limit else SOFT_DEADLINE_SECONDS if soft_due else IDLE_DEADLINE_SECONDS
+        deadline = asyncio.get_running_loop().time() + seconds
 
         async def generate(groups: tuple[tuple[Message, ...], ...], previous: str, limit: int,
                            call: SummaryCall) -> tuple[str, tuple[str, ...], tuple[tuple[Message, ...], ...]]:
@@ -568,7 +571,7 @@ async def apply(ctx: Context) -> None:
             except TimeoutError as failure:
                 if ModelError.matches(failure):
                     raise
-                raise ModelTimeoutError("摘要调用超时" if seconds is None else f"摘要超过 {seconds:g} 秒总期限").exception() from failure
+                raise ModelTimeoutError(f"摘要超过 {seconds:g} 秒总期限").exception() from failure
 
         limit = max(1, min(room, OUTPUT_RESERVE_TOKENS))
         # 只有阻断回合的摘要才值得等重试；可选压缩和下面的缩写失败都有退路，不挡在回合前退避。
