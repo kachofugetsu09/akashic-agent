@@ -145,7 +145,7 @@ class _ToolFailures:
         self._name = tool_name
         self.reset()
 
-    # 新输入、收尾或放弃开启新的失败计数，迟到的旧结果不参与。
+    # 新输入、停止、收尾或放弃开启新的失败计数，迟到的旧结果（含「未执行」回执）不参与。
     def reset(self) -> None:
         self._pending: dict[CallRef, _ToolAttempt] = {}
         self._queue: deque[_ToolAttempt] = deque()
@@ -159,7 +159,7 @@ class _ToolFailures:
     # 回执可能晚于同批协议拒绝；等前驱就绪后再按调用位置计数。
     def update(self, message: Message) -> None:
         body = message.body
-        if isinstance(body, Input) or isinstance(body, Control) and body.action == "abandon":
+        if isinstance(body, Input) or isinstance(body, Control) and body.action in {"abandon", "pause"}:
             self.reset()
         elif isinstance(body, Output):
             if body.finish != "continue":
@@ -255,6 +255,9 @@ class _History:
         self.reminder_input_id: str | None = None
         self._boundary = -1
         self._abandoned_upto = -1
+        # 停止覆盖它之前已提交的全部调用；resume 只撤销新输入到来之前的停止。
+        self._stopped_upto = -1
+        self._stop_floor = -1
         self._calls: dict[CallRef, int] = {}
         self._results: set[CallRef] = set()
         self._succeeded: set[CallRef] = set()
@@ -285,6 +288,7 @@ class _History:
             if isinstance(body, Input):
                 self.reminder_input_id = message.message_id
                 self.generation_rejections.clear()
+                self._stop_floor = self._stopped_upto
                 # 同一回合内只有用户插话会写 Input，后台来源的 Input 各有自己的回合预算。
                 self._outputs.clear()
             elif isinstance(body, Output):
@@ -311,7 +315,10 @@ class _History:
                 self._abandoned_upto = max(self._abandoned_upto, body.through_seq)
                 self._outputs = [seq for seq in self._outputs if seq > body.through_seq]
                 self.generation_rejections = [(seq, kind) for seq, kind in self.generation_rejections if seq > body.through_seq]
+            elif isinstance(body, Control) and body.action == "pause":
+                self._stopped_upto = message.seq
             elif isinstance(body, Control) and body.action == "resume":
+                self._stopped_upto = self._stop_floor
                 self.generation_rejections.clear()
             elif isinstance(body, ToolResult):
                 self._results.add(body.call_ref)
@@ -325,11 +332,11 @@ class _History:
         return len(self._outputs)
 
     def open_calls(self) -> tuple[tuple[CallRef, ...], tuple[CallRef, ...]]:
-        """保留调用顺序；已关闭但未结算的旧调用仍可由之后的 abandon 结算。"""
+        """保留调用顺序；已关闭但未结算的旧调用仍可由之后的 abandon 结算，停止只结算未闭段。"""
         pending: list[CallRef] = []
         abandoned: list[CallRef] = []
         for ref, seq in self._calls.items():
-            if seq <= self._abandoned_upto:
+            if seq <= self._abandoned_upto or self._boundary < seq < self._stopped_upto:
                 abandoned.append(ref)
             elif seq > self._boundary:
                 pending.append(ref)
@@ -778,7 +785,7 @@ async def react(
         operation_id = uuid4().hex
         mark = partial(log_timing, session_id=reader.session_id, source=writer.source, operation_id=operation_id)
         mark("react.begin")
-        # 1. 放弃区保持串行结算；未闭段里连续的 parallel 调用才重叠。
+        # 1. 放弃与停止区保持串行结算；未闭段里连续的 parallel 调用才重叠。
         initial = await reader.committed_window_async(window)
         head_before = initial.through_seq
         history.update(initial)

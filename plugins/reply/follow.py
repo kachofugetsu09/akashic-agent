@@ -11,7 +11,6 @@ from agent.plugin_composition import Context, RuntimeScope
 from plugins.ledger.contract import MessageCatalog, MessageReader
 from agent.plugin_composition.model import CompositionError
 from agent.plugin_composition.tasks import RestartGate, Task, TaskServiceClosed
-from plugins.ledger.contract import Control, Input, Output
 from plugins.sources.contract import (
     AsyncSource as Source,
     SourcesV5 as Sources,
@@ -530,7 +529,7 @@ class _Follower:
         finally:
             await source_scope_cm.__aexit__(None, None, None)
 
-    # 2. 等 Task 完成；期间若日志已有终态且出现后续输入，则分离旧 Task。
+    # 2. 等 Task 完成；每次日志变化都复查，已有终态且出现后续输入时分离旧 Task。
     async def _await_task(
         self, state: _Iteration, session_id: str, source: Source,
         wake: _Wake, admission_boundary: int,
@@ -539,18 +538,22 @@ class _Follower:
         joined = asyncio.create_task(state.wait_task())
         notified = asyncio.create_task(wake.event.wait())
         try:
-            done, _ = await asyncio.wait((joined, notified), return_when=asyncio.FIRST_COMPLETED)
-            if joined in done:
-                await joined
-            elif (
-                self._still_current(wake, source)
-                and await self._terminal_committed(session_id, source.name, admission_boundary)
-                and self._still_current(wake, source)
-            ):
-                state.detached = True
-                state.task.cancel()
-            else:
-                await joined
+            while True:
+                done, _ = await asyncio.wait((joined, notified), return_when=asyncio.FIRST_COMPLETED)
+                if joined in done:
+                    await joined
+                    break
+                # 先清事件再读日志：读之后才提交的消息会再次唤醒，不会漏掉。
+                wake.event.clear()
+                notified = asyncio.create_task(wake.event.wait())
+                if (
+                    self._still_current(wake, source)
+                    and await self._terminal_committed(session_id, source.name, admission_boundary)
+                    and self._still_current(wake, source)
+                ):
+                    state.detached = True
+                    state.task.cancel()
+                    break
         finally:
             wake.event.clear()
             for waiter in (joined, notified):
@@ -567,18 +570,14 @@ class _Follower:
         reader = self._catalog.reader(session_id)
 
         def read(reader: MessageReader) -> bool:
-            terminal = False
-
-            def consume(rows) -> bool:
-                nonlocal terminal
-                for message in rows:
-                    if isinstance(message.body, Output) and message.body.finish != "continue" or isinstance(message.body, Control):
-                        terminal = True
-                    if terminal and isinstance(message.body, Input):
-                        return True
+            # 「终态之后有输入」等价于「最新输入之前有终态」；回合内每条提交都会来复查，全走索引不解码日志。
+            latest = reader.latest_input_seq(source_name, through_seq=reader.head())
+            if latest is None or latest <= boundary:
                 return False
-
-            return reader.scan(consume, after_seq=boundary, source=source_name)
+            if reader.latest_finished_output_seq(source_name, after_seq=boundary, through_seq=latest) is not None:
+                return True
+            control = reader.latest_control(source_name, through_seq=latest)
+            return control is not None and control.seq > boundary
 
         return await reader.read_async(read)
 

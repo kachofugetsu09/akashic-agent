@@ -1,17 +1,21 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Callable, Hashable, Iterable, Mapping
 from contextlib import AbstractAsyncContextManager
 from dataclasses import replace
 from typing import cast
 
-from agent.plugin_composition.tasks import TaskAdmission, TaskSlot
+from agent.plugin_composition.tasks import Task, TaskAdmission, TaskSlot
 from core.common.file_io import run_file_io
 from .api import Denied, MessageReply, Result, durable_call_key
-from .execution import _fingerprint, commit_message, finish
+from .execution import STOPPED_NOT_STARTED, _fingerprint, commit_message, finish
 from plugins.ledger.contract import MessageCatalog, MessageReader, OwnerRecord, OwnerStore, OwnerTransaction
 from plugins.ledger.contract import CallRef, ContentPart, Control, Message, Output, ToolCall, ToolResult
+from plugins.tools.contract import PROCESS_STARTED_AT, invoked_unrecorded
+
+logger = logging.getLogger(__name__)
 
 
 # 结果只可能在调用消息之后；流式扫描命中即停，不为每个被放弃的调用解码整段会话。
@@ -59,11 +63,17 @@ async def abandon_call(
     """Tools 先提交终态再协作取消；真实效果与清理仍由原 Task 持有。"""
     state.check_access(reply.reader, reply.writer)
     # 放弃判定会扫调用之后的整段前缀，与下方回执读取一样放进 worker。
-    if not await run_file_io(reply.abandoned):
-        raise ValueError("工具没有已接纳的放弃控制")
+    stopped = not await run_file_io(reply.abandoned)
+    if stopped and not await run_file_io(reply.stopped):
+        raise ValueError("工具没有已接纳的放弃或停止控制")
     key = durable_call_key(reply.call_ref)
+    actor = "用户已停止此工作" if stopped else "用户已放弃此工作"
 
-    async def settle(slot: TaskSlot) -> Result:
+    async def settle(slot: TaskSlot) -> Result | Task:
+        # 停止不跳过收尾：还在运行或排空的调用等原 Task 写终态，新回合才继续。
+        if stopped and slot.current is not None and not slot.current.done:
+            return slot.current
+
         def cancel_after_commit(_result: Result) -> None:
             if slot.current is not None:
                 slot.current.cancel()
@@ -84,27 +94,55 @@ async def abandon_call(
                 return result
         except ValueError as error:
             return await commit_message(state, reply, Result("error", (ContentPart(
-                "text", f"用户已放弃此工作；旧工具回执无法恢复，结果未知: {error}。"
+                "text", f"{actor}；旧工具回执无法恢复，结果未知: {error}。"
                 "可能已产生副作用，请先检查当前状态，不要直接重复原操作。",
             ),)), on_commit=cancel_after_commit)
         call = await run_file_io(target.request)
         fingerprint = _fingerprint(call.binding_id, call.arguments, target)
         # 无阶段回执不能证明未执行；重启后内存 Task 已丢失，仍须保留效果不确定性。
         may_have_started = record is None or record.value["phase"] == "started"
-
-        result = await finish(
+        if stopped and record is None:
+            # 停止可以证明的只有本进程内从未进入 invoke 的调用。
+            may_have_started = key in invoked_unrecorded or await run_file_io(lambda: _before_process(reply))
+        return await finish(
             state, key, record,
             Result("interrupted" if may_have_started else "denied", (ContentPart(
-                "text", "用户已放弃此工作；工具可能已部分执行。请先检查当前状态，再决定是否重试。"
-                if may_have_started else "用户已放弃此工作，工具未启动。",
+                "text", f"{actor}；工具可能已部分执行。请先检查当前状态，再决定是否重试。"
+                if may_have_started else _not_started(stopped),
             ),)), target,
             initial={"version": 1, "request": fingerprint, "binding": call.binding_id,
                      "reply_id": target.message_id, "arguments": call.arguments},
             on_commit=cancel_after_commit,
         )
-        return result
 
-    return await tasks.admit_async((task_key, key), settle)
+    while True:
+        outcome = await tasks.admit_async((task_key, key), settle)
+        if isinstance(outcome, Result):
+            invoked_unrecorded.discard(key)
+            return outcome
+        await _join_stopped(outcome)
+
+
+def _not_started(stopped: bool) -> str:
+    return STOPPED_NOT_STARTED if stopped else "用户已放弃此工作，工具未启动。"
+
+
+# 调用消息早于本进程：内存里没有它的执行记录，不能证明未开始。
+def _before_process(reply: MessageReply) -> bool:
+    call = reply.reader.get(reply.call_ref.message_id)
+    return call is None or call.recorded_at < PROCESS_STARTED_AT
+
+
+# 原 Task 的取消或失败由它自己的回执表达；只有等待者自身被取消才向上传播。
+async def _join_stopped(task: Task) -> None:
+    try:
+        _ = await task.join()
+    except asyncio.CancelledError:
+        caller = asyncio.current_task()
+        if caller is not None and caller.cancelling():
+            raise
+    except Exception:
+        logger.info("停止结算等待的工具 Task 以失败结束", exc_info=True)
 
 
 # 区间内任一来源出现 abandon Control；按来源走 kind 索引，只解码 Control。

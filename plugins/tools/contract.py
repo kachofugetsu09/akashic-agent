@@ -263,6 +263,10 @@ class CommitAfter(Protocol):
 # 本进程首次加载 Tools 公共合同的时刻（ADR-0100）；公共合同不随实现热更新。
 PROCESS_STARTED_AT = datetime.now(timezone.utc)
 
+# 本进程已进入 invoke、回执尚未落盘的默认消息调用；结算据此不把它们重跑或写成「未执行」。
+# 与上面同理放在公共合同：实现模块热更新不能把执行事实清空。
+invoked_unrecorded: set[str] = set()
+
 
 class StartCheck(Protocol):
     def __call__(self, transaction: OwnerTransaction | None, /) -> None:

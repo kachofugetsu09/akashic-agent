@@ -87,7 +87,7 @@ interaction 仍按正常 U/A 规则学习。本设计不把 proactive assistant 
 - Mobile resume：客户端上报本地 `active_turns`，Core 必须在冻结 durable replay 窗口前读取 SessionDB 权威 turn。`interrupted`、`cancelled`、`failed` 补发定向 `turn.interrupted`；`completed` 继续由 `message.final` 或 history 恢复，不能伪装成中断。
 - Mobile stop：同一 turn 已在 SessionDB 终态时，`turn.stop` 幂等返回 `already_terminal`。只有 `terminal_status` 为 `interrupted`、`cancelled` 或 `failed` 时，Android 才把精确匹配的本地 streaming 消息和运行中 block 在同一 Room 事务内收敛，并删除对应 stop 意图。`completed` 必须由携带 `control_turn_id` 的 canonical `message.final` 或 history 迁移，不能伪装成中断；`turn_not_active`、`stale_turn`、未知 turn 或会话不匹配保留未确认投影并明确失败。
 - Mobile shutdown：计划停止 channel 时先 flush delta 并持久发布未完成 turn 的 `turn.interrupted`，再清理进程内 active map。异常退出遗漏的终态由下一次 resume 对账修复。
-- Telegram、QQ、Web Chat：`/stop` 或现有 stop command 结束 active attempt；终态后的下一条普通消息自动续接未完成 interaction。
+- Telegram、QQ、Web Chat：`/stop` 或现有 stop command 结束 active attempt；终态后的下一条普通消息续接未完成 interaction，停止之前未开始的工具调用按 ADR 0059 结算为未执行，不再自动执行。
 - Programmatic control：`turn/start` 在 active 时返回 busy；只有 `turn/interrupt` 能改变 active attempt。
 
 ## 6. 失败语义

@@ -31,7 +31,44 @@ from .api import (
     Authorize, Denied, MessageReply, OpenTool, Outcome, Result,
     coerce_result, durable_call_key, result_message_id,
 )
-from plugins.tools.contract import PROCESS_STARTED_AT
+from plugins.tools.contract import PROCESS_STARTED_AT, invoked_unrecorded
+
+
+# 工具结果已产生：等提交门并落盘后才响应取消，回执不丢、下一步不重跑。
+# 重复取消只重入同一次提交，已落盘的结果由冲突路径读回；前驱中止仍照常上抛。
+async def _commit_before_cancel(
+    commit_after: CommitAfter | None, commit: Callable[[], Awaitable[Result]],
+) -> Result:
+    cancelled: asyncio.CancelledError | None = None
+    while True:
+        try:
+            if commit_after is not None:
+                await commit_after.wait()
+            finished = await commit()
+            break
+        except asyncio.CancelledError as cancellation:
+            cancelled = cancellation
+        except MessageConflict:
+            raise
+        except Exception as error:
+            # 已被取消时，门中止或提交失败不能顶替取消，否则关闭流程把它当成 Task 失败而中断清理。
+            if cancelled is None:
+                raise
+            raise cancelled from error
+    if cancelled is not None:
+        raise cancelled
+    return finished
+
+
+# 取消路径上读日志：重复取消不能丢掉判定，读失败按未停止处理，不能顶替取消。
+async def _stopped_during_cancel(reply: MessageReply) -> bool:
+    while True:
+        try:
+            return await run_file_io(reply.stopped)
+        except asyncio.CancelledError:
+            continue
+        except (Exception, BaseExceptionGroup):
+            return False
 
 
 # Turn provider cleanup failures into receipts without hiding invoke cancellation.
@@ -237,12 +274,10 @@ class ToolExecution:
 
         async def commit(result: Result) -> Result:
             mark("tool.commit.wait")
-            if commit_after is not None:
-                await commit_after.wait()
-            mark("tool.commit.begin")
-            finished = await _commit_result(
+            finished = await _commit_before_cancel(commit_after, lambda: _commit_result(
                 lambda value: commit_message(self._state, reply, value, on_commit=publish), result,
-            )
+            ))
+            invoked_unrecorded.discard(key)
             mark("tool.committed")
             return finished
 
@@ -253,6 +288,7 @@ class ToolExecution:
             existing = await run_file_io(lambda: existing_result(reply))
             if existing is None:
                 raise
+            invoked_unrecorded.discard(key)
             return existing
 
     async def _settle_message(
@@ -261,6 +297,7 @@ class ToolExecution:
     ) -> Result:
         existing = existing_result(reply)
         if existing is not None:
+            invoked_unrecorded.discard(key)
             return existing
         call = reply.reader.get(reply.call_ref.message_id)
         if call is None:
@@ -272,10 +309,21 @@ class ToolExecution:
             refusal = self._check_batch(source)
             if refusal is not None:
                 return await commit(Result("denied", (ContentPart("text", refusal),)))
-        if call.recorded_at < PROCESS_STARTED_AT:
+        # 上个进程发出的，或本进程已发出但回执没落盘（提交失败、清理被取消、前驱中止）：都不重跑。
+        if call.recorded_at < PROCESS_STARTED_AT or key in invoked_unrecorded:
             return await commit(Result("error", (ContentPart("text", _UNKNOWN_OUTCOME),)))
         try:
             result = await self._invoke_message(task, key, binding_id, arguments, reply, source, mark)
+        except asyncio.CancelledError as cancelled:
+            # 用户停止时还没进入 invoke：当场写「未执行」放行同批后继，它们已完成的结果才能按序提交。
+            if key not in invoked_unrecorded and await _stopped_during_cancel(reply):
+                try:
+                    _ = await commit(Result("denied", (ContentPart("text", STOPPED_NOT_STARTED),)))
+                except MessageConflict:
+                    raise
+                except Exception as error:
+                    raise cancelled from error
+            raise
         except _Failed as failure:
             try:
                 finished = await commit(failure.result)
@@ -329,6 +377,7 @@ class ToolExecution:
                     return Result("denied", (ContentPart("text", str(error)),))
             try:
                 mark("tool.invoke.begin")
+                invoked_unrecorded.add(key)
                 result = coerce_result(await tool.invoke(key, final_arguments))
                 mark("tool.invoke.end")
                 return result
@@ -337,7 +386,7 @@ class ToolExecution:
                 raise _Failed(_invocation_failure(failure), failure) from failure
 
     async def settle_abandoned(self, reply: MessageReply) -> Result:
-        """放弃调用的窄幂等结算入口；ReAct 与后台 watcher 共用同一回执。"""
+        """放弃或停止调用的窄幂等结算入口；ReAct 与后台 watcher 共用同一回执。"""
         from .abandon import abandon_call
 
         return await abandon_call(self._state, self._tasks, reply, task_key=self._task_key)
@@ -409,16 +458,13 @@ class ToolExecution:
         # 同批重叠调用只并发执行；结果提交仍等前驱完成。
         async def commit(record: OwnerRecord | None, result: Result) -> Result:
             mark("tool.commit.wait")
-            if commit_after is not None:
-                await commit_after.wait()
-            mark("tool.commit.begin")
-            finished = await _commit_result(
+            finished = await _commit_before_cancel(commit_after, lambda: _commit_result(
                 lambda value: finish(self._state, key, record, value, reply, initial={
                     "version": 1, "request": fingerprint, "binding": binding_id,
                     "reply_id": None if reply is None else reply.message_id,
                     "arguments": arguments,
                 }, on_commit=on_commit), result,
-            )
+            ))
             mark("tool.committed")
             return finished
 
@@ -662,9 +708,10 @@ async def finish(
 
 
 _UNKNOWN_OUTCOME = (
-    "工具调用在进程重启前已发出，结果未知。只读操作可以重新执行；"
+    "工具调用已发出，但结果在保存前丢失（进程重启或提交中断），结果未知。只读操作可以重新执行；"
     "可能有副作用的操作先检查当前状态，不要直接重复。"
 )
+STOPPED_NOT_STARTED = "用户已停止，未执行"
 
 
 class _Failed(Exception):
