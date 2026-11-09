@@ -20,7 +20,7 @@ from agent.plugin_composition.config_input import save_config
 from agent.plugin_composition.tasks import TASKS
 from plugins.channels.contract import CHANNEL_INPUT_V2 as CHANNEL_INPUT, ChannelInboundMessage
 from plugins.content.plugin import check_text
-from plugins.ledger.contract import ContentPart, Control, Input, Output, SessionAttributes, ToolResult
+from plugins.ledger.contract import ContentPart, Control, Input, Output, ToolResult
 from plugins.scheduler.schedule import ScheduledJob
 from plugins.scheduler.store import JobStore, fire_key
 from plugins.scheduler.tools import cancel_fires
@@ -30,14 +30,13 @@ from tests.test_default_reply import application
 
 PROVIDER = '''from contextlib import asynccontextmanager
 from plugins.tools.contract import TOOLS, Result
-from plugins.ledger.contract import ARTIFACT_IMPORT, AttachmentKind, ContentPart
+from plugins.ledger.contract import ContentPart
 api_version = 3
 name = "NAME"
 version = "1.0.0"
-inject = (TOOLS, ARTIFACT_IMPORT)
+inject = (TOOLS,)
 async def apply(ctx):
     catalog = ctx.require(TOOLS)
-    artifacts = ctx.require(ARTIFACT_IMPORT)
     await catalog.declare_group(ctx, description="读取隔离样本文件")
     class ReadSample:
         idempotent = True
@@ -49,12 +48,9 @@ async def apply(ctx):
                 (ctx.data_root / "holding").touch()
                 await asyncio.sleep(0.05)
             value = (ctx.data_root / "sample.txt").read_text()
-            html_path = ctx.data_root / "card.html"
-            html_path.write_text("<div>card:" + value + "</div>")
-            ref = await artifacts.import_source(str(html_path), AttachmentKind.FILE)
             with (ctx.data_root / "calls.jsonl").open("a") as stream:
                 stream.write(key + "\\n")
-            return Result("success", (ContentPart("text", value), ContentPart("artifact_ref", ref.artifact_id)))
+            return Result("success", (ContentPart("text", value),))
         async def query(self, key):
             return None
     @asynccontextmanager
@@ -217,12 +213,8 @@ async def run(directory: Path) -> dict[str, object]:
                         fire = state.fires.get(fire_key(job))
                         if fire is not None and fire.status != "pending":
                             assert fire.status == "delivered", fire
-                            assert log.reader(fire.session_id).attributes.visibility == "internal"
-                            target_messages = [m for m in log.reader(job.session_id).snapshot() if m.source == fire.source]
-                            assert len(target_messages) == 1 and isinstance(target_messages[0].body, Output)
-                            if job.id == "late":
-                                assert any(p.kind == "artifact_ref" for p in target_messages[0].body.parts), target_messages[0]
-                            return list(log.reader(fire.session_id).snapshot())
+                            messages = log.reader(job.session_id).snapshot()
+                            return [message for message in messages if message.source == fire.source]
                         await asyncio.sleep(0.02)
 
             def seed(session_id: str) -> None:
@@ -230,15 +222,15 @@ async def run(directory: Path) -> dict[str, object]:
                            content={"text": check_text}).append(
                     "seed:" + session_id, Output((ContentPart("text", "history-secret"),), "complete"))
 
-            # 2. scheduler 已启动后安装 provider；真实模型加载并调用其工具，每次触发在独立 internal Session 中运行。
+            # 2. scheduler 已启动后安装 provider；真实模型加载并调用其工具。
             await install(late)
             first = await finish(await schedule("late"))
             history = await finish(await schedule("history", "session"))
-            assert all("history-secret" not in str(call["messages"]) for call in requests["late"]), "独立 scheduler session 不应看到主会话历史"
-            assert all("history-secret" not in str(call["messages"]) for call in requests["history"]), "独立 scheduler session 始终与主会话历史隔离"
+            assert all("history-secret" not in str(call["messages"]) for call in requests["late"]), "context=none 不应看到会话历史"
+            assert "history-secret" in str(requests["history"][0]["messages"]), "context=session 应带会话历史"
             assert any(isinstance(message.body, Output) and message.body.finish == "complete" for message in history)
 
-            # 任务的工具还在执行时用户发来消息：后台独立运行不阻塞主对话，两边都完成且互不破坏。
+            # 任务的工具还在执行时用户发来消息：对话先等任务让出，两边都完成且互不破坏。
             data = workspace / "plugin-data/late-lab"
             (data / "hold").touch()
             pending = await schedule("interrupt")
@@ -254,15 +246,14 @@ async def run(directory: Path) -> dict[str, object]:
                 while not any(isinstance(row.body, Output) and row.source == "conversation" and "pong" in str(row.body.parts)
                               for row in log.reader("test:interrupt").snapshot()):
                     await asyncio.sleep(0.02)
-            # 进行中的任务轮次不在目标会话里，不进入对话请求。
+            # 进行中的任务轮次不进入对话请求；完成后对话能看到它。
             assert "case:interrupt" not in str(requests["ping"][0]["messages"]), "进行中的任务不应进入对话请求"
             assert any(isinstance(message.body, Output) and message.body.finish == "complete" for message in interrupted)
 
-            # Cancel during a tool batch, then verify the saved round closes in the internal session and later input still runs.
+            # Cancel during a tool batch, then verify the saved round closes and later input still runs.
             (data / "holding").unlink()
             (data / "hold").touch()
             cancelled = await schedule("cancelled")
-            cancelled_fire_session = "scheduler:" + fire_key(cancelled)
             async with asyncio.timeout(10):
                 while not (data / "holding").exists():
                     await asyncio.sleep(0.02)
@@ -273,7 +264,7 @@ async def run(directory: Path) -> dict[str, object]:
             (data / "hold").unlink()
             async with asyncio.timeout(10):
                 while not any(isinstance(row.body, Control) and row.body.action == "abandon"
-                              for row in log.reader(cancelled_fire_session).snapshot()):
+                              for row in log.reader(cancelled.session_id).snapshot()):
                     await asyncio.sleep(0.02)
             assert set(before_cancel).issubset(rows(workspace))
             await root.context.require(CHANNEL_INPUT)(cancelled.session_id, "after-cancel", ChannelInboundMessage(
@@ -283,22 +274,21 @@ async def run(directory: Path) -> dict[str, object]:
                               for row in log.reader(cancelled.session_id).snapshot()):
                     await asyncio.sleep(0.02)
 
-            # A model capacity rejection must leave a saved failure in the internal session, not a permanently pending round.
+            # A model capacity rejection must leave a saved failure, not a permanently pending round.
             failed = await schedule("failed")
             async with asyncio.timeout(10):
                 while (failure := (await asyncio.to_thread(store.read)).fires.get(fire_key(failed))) is None or failure.status == "pending":
                     await asyncio.sleep(0.02)
             assert failure.status == "failed" and "scenario context limit" in str(failure.error), failure
             assert any(isinstance(row.body, Control) and row.body.action == "failure"
-                       for row in log.reader("scheduler:" + fire_key(failed)).snapshot())
+                       for row in log.reader(failed.session_id).snapshot())
 
             # Restore the crash window after saving a failure but before settling the fire.
             recovery = ScheduledJob(id="failure-recovery", action="run", trigger="at", channel="test", chat_id="recovery",
                                     session_id="test:recovery", text="case:recovery", timezone="UTC", fire_at=datetime.now(UTC))
             seed(recovery.session_id)
             key = fire_key(recovery)
-            log.ensure_session("scheduler:" + key, SessionAttributes(visibility="internal", learning="excluded"))
-            writer = log.writer("scheduler:" + key, author="scheduler", source="scheduler:" + key,
+            writer = log.writer(recovery.session_id, author="scheduler", source="scheduler:" + key,
                                 body_types=(Input, Control), content={"text": check_text})
             admitted = writer.append("scheduler-input:" + key, Input((ContentPart("text", recovery.text),)))
             writer.append("scheduler-failure:" + key, Control("failure", admitted.seq, "saved capacity error"))
