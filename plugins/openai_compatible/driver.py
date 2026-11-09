@@ -961,12 +961,14 @@ async def _consume_stream(
     parsed_content, parsed_thinking = _split_tagged_thinking(
         stream_text("".join(content), finish_reason),
         "".join(thinking).strip() or None,
+        finish_reason,
     )
     if not native_reasoning_seen and not tool_seen:
         if legacy_candidate is not None:
             candidate_content, candidate_thinking = _split_tagged_thinking(
                 legacy_candidate,
                 None,
+                finish_reason,
             )
             if candidate_thinking:
                 await _emit_delta(on_delta, {"thinking_delta": candidate_thinking})
@@ -988,7 +990,7 @@ async def _consume_stream(
 # 完整响应沿用流式路径的旧式 <think> 标签拆分。
 def _tagged_completion(payload: Mapping[str, Any]) -> LLMResponse:
     reply = chat_completion_response(payload)
-    content, thinking = _split_tagged_thinking(reply.content, reply.thinking)
+    content, thinking = _split_tagged_thinking(reply.content, reply.thinking, reply.finish_reason)
     return replace(reply, content=content, thinking=thinking)
 
 
@@ -1025,6 +1027,7 @@ def _client(connection: _ConnectionConfig, token: str | None = None) -> httpx.As
 def _split_tagged_thinking(
     content: str | None,
     thinking: str | None,
+    finish_reason: str | None,
 ) -> tuple[str | None, str | None]:
     """Read legacy think tags only when the provider has no reasoning field."""
 
@@ -1032,6 +1035,10 @@ def _split_tagged_thinking(
         return content, thinking
     match = _THINK_RE.search(content)
     if match is None:
+        # 思考中途被长度截断：还没有正文，其余内容都是推理，不能落进回答。
+        opened = content.lstrip()
+        if finish_reason == "length" and opened.startswith("<think>"):
+            return None, opened.removeprefix("<think>").strip() or None
         return content, None
     answer = _THINK_RE.sub("", content).lstrip() or None
     return answer, match.group(1).strip() or None

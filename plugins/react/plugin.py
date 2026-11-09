@@ -604,6 +604,7 @@ async def _complete(
     max_retry_wait: float | None = None,
     retry_wake: asyncio.Event | None = None,
     max_attempts: int | None = None,
+    kept_text: bool = False,
 ) -> AsyncGenerator[tuple[LLMResponse, Materials, str, ModelRequest]]:
     """缩减只更新已取得材料中的摘要；provider 容量拒绝最多重试一次。"""
     mark = partial(log_timing, session_id=snapshot[-1].session_id if snapshot else "",
@@ -680,12 +681,15 @@ async def _complete(
             return response
 
         message_id, request_key, callback = begin()
+        # 已有保留正文时零输出不算失败：缩减帮得上就接着写，帮不上就交给调用者收尾。
+        zero_output: LLMResponse | None = None
         try:
             response = await generate(
                 request, request_key, callback, max_attempts=max_attempts, reduce_on_empty=reduce is not None,
             )
             # 没有摘要 owner 时缩减不可用，保持长度拒绝的反馈恢复。
             if reduce is not None:
+                zero_output = response if kept_text else None
                 _check_output_room(response)
         except (RuntimeError, TimeoutError) as error:
             failure = ModelError.read(error, ContextLengthError, InputReductionRequired)
@@ -696,40 +700,49 @@ async def _complete(
             # The follow-up key spends the remaining budget and cannot request another empty-output reduction.
             if reduce is None or isinstance(failure, ContextLengthError) and failure.response_delta_seen:
                 raise
-            required = isinstance(failure, ContextLengthError)
+            required = isinstance(failure, ContextLengthError) and zero_output is None
             prepared, summary = await reduce_request(prepared, request, force=True, required=required)
-            if summary is not None and summary != prepared.get("summary"):
+            reduced = summary is not None and summary != prepared.get("summary")
+            if reduced:
                 prepared = {**prepared, "summary": summary}
                 request, rejection = await run_file_io(lambda: build(prepared))
                 if rejection is not None:
                     raise ContextLengthError(rejection).exception()
             elif required:
                 raise
-            else:
+            elif zero_output is None:
                 notices = cast(Sequence[str], prepared.get("notices", ()))
                 prepared = {**prepared, "notices": (*notices, "本次压缩优化未缩减输入，保留原请求并继续本步剩余尝试额度。")}
-            message_id, request_key, callback = begin()
-            # 第二次调用在 except 内；再次拒绝直接上抛，不产生第三次请求。
-            response = await generate(
-                request, request_key, callback,
-                max_attempts=failure.remaining_attempts if isinstance(failure, InputReductionRequired) else max_attempts,
-            )
-            _check_output_room(response)
+            if zero_output is not None and not reduced:
+                response = zero_output
+            else:
+                message_id, request_key, callback = begin()
+                # 第二次调用在 except 内；再次拒绝直接上抛，不产生第三次请求。
+                response = await generate(
+                    request, request_key, callback,
+                    max_attempts=failure.remaining_attempts if isinstance(failure, InputReductionRequired) else max_attempts,
+                )
+                if not kept_text:
+                    _check_output_room(response)
         # 3. 草稿持续到调用者完成解码与 CAS；异常和取消也会释放预览。
         yield response, prepared, message_id, request
 
 
 # 零输出 length 说明输入占满实际窗口，减少输出的反馈帮不上忙；按容量拒绝走单次强制缩减，有正文、推理或被丢弃片段的不算。
-def _check_output_room(response: LLMResponse) -> None:
+def _no_output_room(response: LLMResponse) -> bool:
     usage = response.usage
-    if (
+    return not (
         response.finish_reason != "length"
         or (response.content and response.content.strip())
         or response.thinking
         or response.tool_calls
         or response.output_discarded
         or (usage is not None and (usage.output_tokens or usage.reasoning_output_tokens))
-    ):
+    )
+
+
+def _check_output_room(response: LLMResponse) -> None:
+    if not _no_output_room(response):
         return
     raise ContextLengthError(
         "模型没有产生任何输出就达到了长度限制，输入可能已占满模型实际可用的上下文窗口。"
@@ -908,7 +921,7 @@ async def react(
             projection=projection, tools=tools, max_output_tokens=max_output_tokens, reduce=reduce, preview=preview,
             reminder_input_id=reminder_input_id,
             operation_id=operation_id, max_retry_wait=max_retry_wait,
-            retry_wake=retry_wake, max_attempts=attempts.remaining,
+            retry_wake=retry_wake, max_attempts=attempts.remaining, kept_text=history.has_kept_text(),
         ) as (response, prepared, message_id, request):
             # 3. Keep rejection feedback in history before another model request.
             rejection = _response_rejection(response.finish_reason, request.max_output_tokens)
@@ -917,16 +930,20 @@ async def react(
             kept_text = history.has_kept_text()
             text = (response.content or "") if kept_text else (response.content or "").lstrip()
             partial_text = response.finish_reason == "length" and not response.tool_calls and bool(text.strip())
-            # 到顶且已有正文：把已有正文收成 complete 结局，渠道和子任务才拿得到；没有正文仍走失败。
+            # 恢复次数或步数到顶、或续写时已零输出，且已有正文：收成 complete 结局，渠道和子任务才拿得到；没有正文仍走失败。
             length_cut = (
                 response.finish_reason == "length"
-                and len(history.generation_rejections) >= _MAX_GENERATION_RECOVERIES
                 and (partial_text or kept_text)
+                and (
+                    len(history.generation_rejections) >= _MAX_GENERATION_RECOVERIES
+                    or 0 < max_steps <= history.steps + 1
+                    or _no_output_room(response)
+                )
             )
             if rejection is not None:
                 response = replace(response, tool_calls=(), continuation=None, provider_metadata=None)
             if length_cut:
-                text = (text.rstrip() + "\n\n" if partial_text else "") + LENGTH_CUT_NOTICE
+                text = (text.rstrip() if partial_text else "") + "\n\n" + LENGTH_CUT_NOTICE
             elif rejection is not None and not partial_text:
                 text = rejection
             decoded, metadata = await content.decode(

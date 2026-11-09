@@ -768,8 +768,8 @@ class MessageProjection:
                 {"type": "text", "text": "宿主随上面这条 Agent 回复发出的附件（由回复里的内容标记生成，不是回复文字，不要在回复里写出）："},
                 *attached,
             ]})
-        # 提示只从本行派生，不进账本；历史重放逐字相同，所以缓存前缀稳定。
-        if has_partial_text(body):
+        # 提示只从本行派生，不进账本；历史重放逐字相同，所以缓存前缀稳定。放弃之后不再有断点可接。
+        if has_partial_text(body) and message.message_id not in fold.abandoned:
             msg_rows.append({"role": "user", "content": [{"type": "text", "text": _PARTIAL_TEXT_HINT}]})
 
         # 3. 行在此冻结；动态 kind、外部引用与实际转换命中均保留逐轮重算。
