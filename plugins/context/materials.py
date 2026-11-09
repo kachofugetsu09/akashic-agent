@@ -14,7 +14,7 @@ from plugins.models.contract import BoundChatModel
 from agent.plugin_composition.tasks import child_task_context
 from plugins.ledger.contract import HistoryWindow, Message
 from plugins.context.contract import (
-    HistoryStart, MaterialData, MaterialKind, Prepare, ReductionStatus, SummaryData, SummaryReducer,
+    HistoryStart, MaterialData, MaterialKind, Prepare, ReductionDue, ReductionStatus, SummaryData, SummaryReducer,
 )
 
 from .api import (
@@ -37,6 +37,7 @@ class _Source:
     context: Context
     reduce: SummaryReducer | None
     history_start: HistoryStart | None = None
+    reduce_due: ReductionDue | None = None
 
     @property
     def plugin_id(self) -> str:
@@ -178,6 +179,14 @@ class MaterialView:
                 }
         return None
 
+    # 摘要 owner 的可选到期判断；owner 不声明时没有软水位之外的到期条件。
+    def reduce_due(self, snapshot: tuple[Message, ...], estimated: int, model: BoundChatModel) -> bool:
+        self._check_active()
+        for _, owner in self._sources:
+            if owner.reduce is not None:
+                return owner.reduce_due is not None and owner.reduce_due(snapshot, estimated, model)
+        return False
+
 
 class _ReduceOptions(TypedDict, total=False):
     required: bool
@@ -204,6 +213,7 @@ class ContextMaterials:
         kind: MaterialKind, priority: int = 0, prompt: bool = False,
         reduce: SummaryReducer | None = None,
         history_start: HistoryStart | None = None,
+        reduce_due: ReductionDue | None = None,
     ) -> Effect:
         """Register an independent owner; priority orders output, not execution.
 
@@ -240,11 +250,13 @@ class ContextMaterials:
                 raise PermissionError("只有获授的摘要材料 owner 能声明历史起点")
             if not callable(history_start):
                 raise TypeError("历史起点必须可调用")
+        if reduce_due is not None and (reduce is None or not callable(reduce_due)):
+            raise ValueError("到期判断必须可调用，且属于注册了缩减的摘要 owner")
 
         def setup():
             if name in self._sources:
                 raise ValueError(f"材料 owner 重复: {name}")
-            self._sources[name] = _Source(prepare, priority, kind, prompt, summary, ctx, reduce, history_start)
+            self._sources[name] = _Source(prepare, priority, kind, prompt, summary, ctx, reduce, history_start, reduce_due)
             return lambda: self._sources.pop(name)
 
         return await ctx.effect(setup, label=f"materials:{name}")

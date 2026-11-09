@@ -46,6 +46,10 @@ class SummaryReducer(Protocol):
     ) -> SummaryData | None: ...
 
 
+# 摘要 owner 的可选到期判断：只看内存状态，在换完整读面之前调用。snapshot 必须是过滤后的请求视图。
+ReductionDue = Callable[[tuple[Message, ...], int, BoundChatModel], bool]
+
+
 class ContextBuilder(Protocol):
     def check_summary(self, part: ContentPart) -> ContentReferences: ...
     def check_notice(self, part: ContentPart) -> ContentReferences: ...
@@ -112,6 +116,7 @@ class MaterialView(Protocol):
         on_status: ReductionStatus | None = None,
         summary_limit: int | None = None,
     ) -> SummaryData | None: ...
+    def reduce_due(self, snapshot: tuple[Message, ...], estimated: int, model: BoundChatModel) -> bool: ...
 
 
 class ContextMaterialsV4(Protocol):
@@ -128,6 +133,7 @@ class ContextMaterialsV4(Protocol):
         prompt: bool = False,
         reduce: SummaryReducer | None = None,
         history_start: HistoryStart | None = None,
+        reduce_due: ReductionDue | None = None,
     ) -> Effect: ...
     def bind(
         self, *, exclude_kinds: frozenset[MaterialKind] = frozenset()
@@ -152,13 +158,10 @@ IDLE_COMPACT_MINUTES = 60
 IDLE_COMPACT_TOKENS = 200_000
 
 
-def idle_gap_minutes(snapshot: Sequence[Message]) -> float | None:
-    """计算当前末尾连续 Input 到达前，距上一条非 Input 消息的空闲分钟数。
-
-    只在末尾是新 Input（本轮尚未产生 Output 或 ToolResult）且前驱不是未完成
-    Output(continue) 时返回非负分钟数；进入工具循环后末尾为 ToolResult，
-    返回 None，保证不会在热缓存回合中途触发空闲压缩。
-    """
+# 空闲缺口的两端：上一条非 Input 消息与末尾连续 Input 的第一条。
+# 只在末尾是新 Input（本轮尚未产生 Output 或 ToolResult）且前驱不是未完成 Output(continue) 时存在；
+# 进入工具循环后末尾为 ToolResult，没有缺口，保证不会在热缓存回合中途触发空闲压缩。
+def _idle_gap(snapshot: Sequence[Message]) -> tuple[Message, Message] | None:
     if len(snapshot) < 2 or not isinstance(snapshot[-1].body, Input):
         return None
     index = len(snapshot) - 1
@@ -169,8 +172,21 @@ def idle_gap_minutes(snapshot: Sequence[Message]) -> float | None:
     previous = snapshot[index - 1]
     if isinstance(previous.body, Output) and previous.body.finish == "continue":
         return None
-    gap = (snapshot[index].recorded_at - previous.recorded_at).total_seconds() / 60.0
-    return gap if gap >= 0.0 else 0.0
+    return previous, snapshot[index]
+
+
+def idle_gap_minutes(snapshot: Sequence[Message]) -> float | None:
+    gap = _idle_gap(snapshot)
+    if gap is None:
+        return None
+    minutes = (gap[1].recorded_at - gap[0].recorded_at).total_seconds() / 60.0
+    return minutes if minutes >= 0.0 else 0.0
+
+
+# 缺口的稳定身份：缺口前最后一条消息。同一缺口上再来的 Input 身份不变。
+def idle_gap_anchor(snapshot: Sequence[Message]) -> str | None:
+    gap = _idle_gap(snapshot)
+    return None if gap is None else gap[0].message_id
 
 
 def idle_summary_due(

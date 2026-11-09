@@ -18,7 +18,7 @@ from plugins.models.contract import (
     ChatModels,
 )
 from agent.plugin_composition.tasks import Task
-from plugins.context.contract import MaterialView, ReductionStatus, idle_gap_minutes, summary_due
+from plugins.context.contract import MaterialView, ReductionStatus, summary_due
 from plugins.models.contract import ContentTransform, PrepareContent, ReadMessage
 from plugins.ledger.contract import ContentPart, Control, HistoryWindow, Input, Message, MessageSnapshot, Output
 
@@ -229,14 +229,15 @@ async def run_reply(
             on_status: ReductionStatus | None = None, summary_limit: int | None = None,
         ) -> SummaryData | None:
             # 压缩要在完整历史上选择覆盖范围；窗口只在确实会压缩时换成同一上界的完整读面。
-            if window is not None and (
-                summary_due(projection.estimate(request), projection.context_window, force=force)
-                or (idle_gap_minutes(snapshot) or 0.0) >= 1.0
-            ):
-                full = tuple(await reader.committed_snapshot_async(through_seq=snapshot[-1].seq))
-                if summary_limit is not None:
-                    summary_limit += len(full) - len(snapshot)
-                snapshot = full
+            # 空闲到期由摘要 owner 判断，看的是和压缩相同的过滤后视图；不到期不做全量读。
+            if window is not None and projection.context_window is not None:
+                estimated = projection.estimate(request)
+                if (summary_due(estimated, projection.context_window, force=force)
+                        or material_view.reduce_due(tuple(visible_messages(snapshot, source)), estimated, model)):
+                    full = tuple(await reader.committed_snapshot_async(through_seq=snapshot[-1].seq))
+                    if summary_limit is not None:
+                        summary_limit += len(full) - len(snapshot)
+                    snapshot = full
             # 未完成的其他来源仍不进入摘要；覆盖按真实消息身份记录，不再阻挡后续已结算批次。
             hidden = hidden_indexes(snapshot, source)
             if summary_limit is not None:
