@@ -350,3 +350,17 @@ def test_idle_gap_and_idle_summary_due_respect_turn_boundaries() -> None:
     assert idle_gap_minutes((u1, a1, u2, open_out, steer_in)) is None
     assert idle_gap_minutes((u1, a1, u2, open_out, tool_res)) is None
 
+    from plugins.compaction.plugin import Config, _idle_minutes_for
+    cfg_selected = Config.model_validate({
+        "idle_scope": "selected",
+        "idle_sessions": ["s", "s", " other "],
+        "idle_trigger_minutes": 45,
+    })
+    assert cfg_selected.idle_sessions == ("s", "other")
+    assert _idle_minutes_for(cfg_selected, (u1, a1, u2)) == 45
+    unmatched = Message("u0", "unbound", 0, t0, "user", "conversation", Input((ContentPart("text", "hi"),)))
+    assert _idle_minutes_for(cfg_selected, (unmatched,)) == 0
+    assert _idle_minutes_for(Config.model_validate({"idle_scope": "all", "idle_trigger_minutes": 30}), (unmatched,)) == 30
+    assert _idle_minutes_for(Config.model_validate({"idle_scope": "off", "idle_sessions": ["s"]}), (u1, a1, u2)) == 0
+
+
