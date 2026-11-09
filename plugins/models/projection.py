@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from itertools import chain
@@ -611,10 +612,13 @@ class MessageProjection:
                         raise ValueError("模型协议拒绝缺少 model.facts")
                     identity = model_facts["tool_ids"][str(index)]
                     rejected = cast(Mapping[str, Any], part.value)
-                    if isinstance(rejected["arguments"], str):
+                    arguments = rejected["arguments"]
+                    # 非法参数或工具名进 tool_calls 会让这条历史之后每次请求都被 provider 拒绝，只能写成正文。
+                    if isinstance(arguments, str) or _WIRE_TOOL_NAME.fullmatch(rejected["name"]) is None:
+                        shown = arguments if isinstance(arguments, str) else encode_arguments(arguments)
                         blocks.append({"type": "text", "text": (
                             f"调用未执行：{rejected['name']}；{rejected['error']}\n"
-                            f"原始参数：{rejected['arguments']}"
+                            f"原始参数：{shown}"
                         )})
                         continue
                     calls.append({
@@ -714,7 +718,10 @@ class MessageProjection:
             if (message.message_id in response_metadata and model_facts is not None
                     and len(calls) == len(model_facts["tool_ids"])):
                 row["provider_metadata"] = response_metadata[message.message_id]
-            if model_facts is not None and model_facts["thinking"] is not None:
+            # 思考内容属于产出它的模型：换 binding 后严格 provider 会拒收未知字段；需要该字段的 driver 自己回填空值。
+            if (model_facts is not None and model_facts["thinking"] is not None
+                    and self._fold_receipt(fold, model_facts["call_record_id"])["binding"]["binding_id"]
+                    == self._model.descriptor.binding_id):
                 row["reasoning_content"] = model_facts["thinking"]
             msg_rows.append(row)
             msg_rows.extend(observations)
@@ -913,6 +920,8 @@ class MessageProjection:
 
 
 _EXTERNAL_PART_KINDS = frozenset({"artifact_ref", "reply_ref"})
+# OpenAI 公开的工具名规则；不符合的名字进 tool_calls 时严格 provider 会拒绝整个请求。
+_WIRE_TOOL_NAME = re.compile(r"[a-zA-Z0-9_-]{1,64}")
 
 
 class _FoldStale(Exception):
