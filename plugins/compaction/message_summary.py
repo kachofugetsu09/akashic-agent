@@ -4,18 +4,19 @@ from __future__ import annotations
 from plugins.models.contract import ModelError
 import json
 import logging
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from bisect import bisect_right
 from collections.abc import Awaitable, Callable, Sequence
+from uuid import uuid4
 
-from plugins.models.contract import ModelRequest
+from plugins.models.contract import ModelRequest, StreamCallback
 from plugins.models.contract import (
     ContextLengthError,
     ModelTimeoutError,
     RateLimitError,
     TransportError,
 )
-from plugins.models.contract import BoundChatModel
+from plugins.models.contract import BoundChatModel, LLMResponse
 from plugins.ledger.contract import CallRef, ContentPart, Control, Message, Output, ToolCall, ToolResult, origin
 from plugins.ledger.contract import body_to_dict
 from plugins.turn_projection.contract import TurnProjection
@@ -47,9 +48,33 @@ class SummaryError(ValueError):
     """摘要不能满足完整前缀、容量或输出合同。"""
 
 
+class SummaryCapacityError(SummaryError):
+    """摘要模型调用正常，但压缩已结算历史救不了当前请求；文案自带用户出口。"""
+
+
 # 同 Pi 截断摘要资料中的工具结果，这里按整条消息限长，覆盖参数、多段结果与长回复；
 # 放不下时逐级缩短。原文仍留在日志可回读，任何一条已结算消息都不会让摘要请求放不下。
 EXCERPT_CHARS = (4000, 1000, 200)
+# 本地估算放得下而 provider 仍拒绝时的裁剪次数。
+MAX_SUMMARY_TRIMS = 4
+# 摘要挡在回合前，上游要求的单次等待超过它就结束本次摘要，不把回合挂在退避上。
+SUMMARY_MAX_RETRY_WAIT = 300.0
+# 阻断回合的摘要：每个模型的裁剪和重试共用这份物理尝试额度，一次压缩还共用下面的总期限。
+# 上界：主选 11 + 回退 11 + 缩写每模型 1 = 24 次物理尝试。
+SUMMARY_MAX_ATTEMPTS = 11
+SUMMARY_DEADLINE_SECONDS = 900.0
+
+
+@dataclass(frozen=True)
+class SummaryCall:
+    """一次摘要在每个模型上的额度；trim 决定 provider 判超窗时能否丢弃更早的资料。"""
+    max_attempts: int
+    trim: bool
+
+
+BLOCKING_SUMMARY = SummaryCall(SUMMARY_MAX_ATTEMPTS, True)
+# 可选压缩有退路：摘要超窗就软失败保留原文，不为省空间丢历史；上界每模型 1 次。
+OPTIONAL_SUMMARY = SummaryCall(1, False)
 
 
 def _excerpt(body: dict[str, object], chars: int) -> object:
@@ -235,11 +260,62 @@ def _fit_inputs(model: BoundChatModel, groups: tuple[tuple[Message, ...], ...], 
     raise SummaryError("摘要提示加一条最短消息摘录已超过摘要模型容量")
 
 
+# provider 拒绝说明本地估算偏低：已有摘要占比更大时先缩它，否则从最旧的组减半。
+# 组是已结算批次，整组丢弃不切开工具配对；只剩一组时缩短摘录，再缩已有摘要，都到头返回 None。
+def _trim_inputs(summary: str, groups: tuple[tuple[Message, ...], ...],
+                 excerpt: int) -> tuple[str, tuple[tuple[Message, ...], ...], int] | None:
+    clipped = clip_summary(summary, 0.5)
+    material = source_text(tuple(message for group in groups for message in group), excerpt=excerpt)
+    if len(summary) > len(material) and len(clipped) < len(summary):
+        return clipped, groups, excerpt
+    if len(groups) > 1:
+        return summary, groups[len(groups) // 2:], excerpt
+    shorter = next((chars for chars in EXCERPT_CHARS if chars < excerpt), None)
+    if groups and shorter is not None:
+        return summary, groups, shorter
+    return (clipped, groups, excerpt) if len(clipped) < len(summary) else None
+
+
+# 每个请求一个 key：同一请求的网络重试归 Models，裁剪后的新内容是新请求，不继承已终结的拒绝。
+# 新 key 不刷新额度：Models 每次物理尝试开始时发一个 call_record_id，这里按它递减。
+async def _complete_trimmed(model: BoundChatModel, inputs: tuple[str, tuple[tuple[Message, ...], ...], int],
+                            limit: int, *, call: SummaryCall, on_delta: StreamCallback | None,
+                            ) -> tuple[LLMResponse, tuple[tuple[Message, ...], ...]]:
+    summary, selected, excerpt = inputs
+    remaining, trims = call.max_attempts, 0
+    attempts: set[str] = set()
+
+    async def observe(value: dict[str, str]) -> None:
+        if value.get("call_record_id"):
+            attempts.add(value["call_record_id"])
+        if on_delta is not None:
+            await on_delta(value)
+
+    while True:
+        attempts.clear()
+        request = replace(_request(model, summary, selected, limit, excerpt), request_key=uuid4().hex,
+                          max_attempts=remaining, max_retry_wait=SUMMARY_MAX_RETRY_WAIT, on_delta=observe)
+        try:
+            return await model.complete(request), selected
+        except (RuntimeError, TimeoutError) as failure:
+            remaining -= max(1, len(attempts))
+            if (not call.trim or remaining < 1 or trims >= MAX_SUMMARY_TRIMS
+                    or not ModelError.matches(failure, ContextLengthError)):
+                raise
+            trimmed = _trim_inputs(summary, selected, excerpt)
+            if trimmed is None:
+                raise
+            trims += 1
+            logger.warning("摘要请求被 %s 判超窗，第 %d 次裁剪后重试", model.descriptor.model_id, trims)
+            summary, selected, excerpt = trimmed
+
+
 async def _summarize(model: BoundChatModel, groups: tuple[tuple[Message, ...], ...],
-                     previous: str, limit: int) -> tuple[str, tuple[str, ...], tuple[tuple[Message, ...], ...]]:
-    """输入先缩进摘要模型，再只发出一次摘要请求。"""
-    summary, selected, excerpt = _fit_inputs(model, groups, previous, limit)
-    response = await model.complete(_request(model, summary, selected, limit, excerpt))
+                     previous: str, limit: int, *, call: SummaryCall, on_delta: StreamCallback | None,
+                     ) -> tuple[str, tuple[str, ...], tuple[tuple[Message, ...], ...]]:
+    """输入先缩进摘要模型；阻断回合的摘要被 provider 判超窗时裁剪后重发，共用一份尝试额度。"""
+    response, selected = await _complete_trimmed(
+        model, _fit_inputs(model, groups, previous, limit), limit, call=call, on_delta=on_delta)
 
     # None is the shared response contract's unspecified normal completion.
     if response.finish_reason not in (None, "stop"):
@@ -256,10 +332,11 @@ async def _summarize(model: BoundChatModel, groups: tuple[tuple[Message, ...], .
 async def summarize(groups: tuple[tuple[Message, ...], ...], *, previous: str, limit: int,
                     model: BoundChatModel, fallback: BoundChatModel,
                     on_fallback: Callable[[str], Awaitable[None]] | None = None,
+                    call: SummaryCall = OPTIONAL_SUMMARY, on_delta: StreamCallback | None = None,
                     ) -> tuple[str, tuple[str, ...], tuple[tuple[Message, ...], ...]]:
     """主模型在本层可恢复的生成失败后，使用本次作用域已固定的 DEFAULT。"""
     try:
-        return await _summarize(model, groups, previous, limit)
+        return await _summarize(model, groups, previous, limit, call=call, on_delta=on_delta)
     except (RuntimeError, TimeoutError, SummaryError) as failure:
         if not recoverable(failure):
             raise
@@ -270,4 +347,4 @@ async def summarize(groups: tuple[tuple[Message, ...], ...], *, previous: str, l
         if on_fallback is not None:
             await on_fallback(f"摘要模型 {model.descriptor.model_id} 失败：{failure}；"
                               f"改用 {fallback.descriptor.model_id}")
-        return await _summarize(fallback, groups, previous, limit)
+        return await _summarize(fallback, groups, previous, limit, call=call, on_delta=on_delta)

@@ -294,7 +294,11 @@ class MessageProjection:
         value = self._model.estimate_context_tokens(request.messages, request.tools)
         if calibration is not None:
             estimated, actual = calibration
-            value = max(value, (value * actual + estimated - 1) // estimated)
+            calibrated = (value * actual + estimated - 1) // estimated
+            # usage 可能异常：校准只负责提前触发压缩，不单独造成本地拒发；窗口的 3/4 高于软水位、
+            # 加输出预留（至多 1/4）也不越窗。provider 是最终裁判，下一次成功会刷新校准。
+            window = self.context_window
+            value = max(value, calibrated if window is None else min(calibrated, window - window // 4))
         self._last_estimate = (request, value, calibration)
         return value
 
@@ -886,7 +890,9 @@ class MessageProjection:
             if message.source == self._source and estimated is not None and actual is not None:
                 if type(estimated) is not int or estimated <= 0 or type(actual) is not int or actual < 0:
                     raise ValueError("模型 token 校准记录损坏")
-                fold.token_calibration = (estimated, actual)
+                # 字符估算最多差约 3 倍（1 字符 1 token）。远超它的 usage 与请求大小无关：压缩后比例只会更离谱，
+                # 用它校准会让每条输入都付一次摘要费。这里不看窗口，静默超窗（200 + 超窗 usage）仍能触发压缩。
+                fold.token_calibration = None if actual > estimated * _MAX_USAGE_RATIO else (estimated, actual)
             metadata = receipt.get("provider_metadata")
             # Input transforms clear opaque continuation, not this new response's native parts.
             if metadata is not None:
@@ -940,6 +946,9 @@ def _same_model(binding: Mapping[str, Any], descriptor: BoundModelDescriptor) ->
 
 class _FoldStale(Exception):
     """追加尾部出现 abandon：编排折叠失效，回退全量重建。"""
+
+
+_MAX_USAGE_RATIO = 8
 
 
 class _Fold:

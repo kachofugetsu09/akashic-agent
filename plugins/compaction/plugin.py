@@ -20,8 +20,8 @@ from agent.plugin_composition import (
     Context,
 )
 from plugins.models.contract import (
-    CHAT_MODELS, MODEL_CATALOG, BoundChatModel, ContextModel, ModelChoice, ModelError, ModelExecution,
-    ModelRequest, ModelUnavailableError, ModelUse, model_options,
+    CHAT_MODELS, MODEL_CATALOG, BoundChatModel, ContextLengthError, ContextModel, ModelChoice, ModelError, ModelExecution,
+    ModelRequest, ModelTimeoutError, ModelUnavailableError, ModelUse, model_options,
 )
 from plugins.context.contract import (
     CONTEXT, IDLE_COMPACT_MINUTES, IDLE_COMPACT_TOKENS, MATERIALS_V4, OUTPUT_RESERVE_TOKENS,
@@ -32,7 +32,10 @@ from plugins.ledger.contract import MESSAGE_CATALOG, OWNER_STATE
 from plugins.ledger.contract import HistoryWindow, Input, Message
 
 from .records import StoredSummary, SummaryLookup, SummaryRecord, SummaryRecords
-from .message_summary import SummaryError, clip_summary, closed_groups, source_text, summarize, summary_groups, window_starts
+from .message_summary import (
+    BLOCKING_SUMMARY, OPTIONAL_SUMMARY, SUMMARY_DEADLINE_SECONDS, SummaryCall, SummaryCapacityError, SummaryError,
+    clip_summary, closed_groups, source_text, summarize, summary_groups, window_starts,
+)
 from plugins.compaction.contract import COMPACTION_READER, COMPACTION_SUMMARIES
 from plugins.turn_projection.contract import TURN_PROJECTION, TurnProjection
 from agent.plugin_composition.plugin_config import PLUGIN_CONFIG
@@ -68,6 +71,16 @@ class _SummaryFailures:
     boundary: tuple[str, str, str, str | None]
     count: int = 0
     detail: str = ""
+    recovery: str = ""
+
+
+# 失败出口跟随原因：摘要模型故障才指向认证和额度，容量问题的文案自带出口。
+def _recovery(error: BaseException) -> str:
+    if isinstance(error, SummaryCapacityError):
+        return ""
+    if ModelError.matches(error, ContextLengthError):
+        return "摘要请求裁剪后仍被判超窗，请切换窗口更大的摘要模型或开始新对话。"
+    return "请检查摘要模型的认证、额度或可用性，或切换摘要模型后重试。"
 
 
 class Config(BaseModel):
@@ -341,7 +354,7 @@ async def apply(ctx: Context) -> None:
 
     async def compact(snapshot: tuple[Message, ...], materials: MaterialData, request: ModelRequest,
                       model: BoundChatModel, projection: ContextModel, *, source: str, force: bool,
-                      on_status: ReductionStatus | None = None,
+                      hard_limit: bool, on_status: ReductionStatus | None = None,
                       summary_limit: int | None = None) -> MaterialData | None:
         """按已结算工具批次选未覆盖消息，再原子发布一份真实摘要。"""
         # 1. 容量与近期保留均按当前已固定的业务模型判断。
@@ -390,6 +403,8 @@ async def apply(ctx: Context) -> None:
         deepest: int | None = None
         retained_tokens = deepest_tokens = 0
         planned_tokens: dict[int, int] = {}
+        # 估算放得下却被 provider 拒绝时估算不可信：按它保留原文会把超窗内容一直留在尾部，只能选最深切点。
+        rejected = hard_limit and before + output_reserve(request.max_output_tokens, window) <= window
         # 原文保留量来自实际 Model 投影，包含尚未闭合的尾部与当前输入。
         for size in sizes:
             added = tuple(message for group in groups[:size] for message in group)
@@ -416,6 +431,9 @@ async def apply(ctx: Context) -> None:
             planned_tokens[size] = projection.estimate(candidate)
             if deepest is None:
                 deepest, deepest_tokens = size, projection.estimate(tail)
+                # 组边界已结算，工具配对完整；当前 Input 由 keep_input_ids 保留原文。
+                if rejected:
+                    break
             if planned_tokens[size] > int(window * SUMMARY_SOFT_LIMIT):
                 continue
             if fallback is None:
@@ -431,15 +449,15 @@ async def apply(ctx: Context) -> None:
             else:
                 # 没有切点能回到软水位时仍摘要全部已结算内容；是否放得下交给下面的硬容量核对。
                 selected, retained_tokens = (fallback, retained_tokens) if fallback is not None else (deepest, deepest_tokens)
-                if selected and on_status is not None:
+                if selected and on_status is not None and not (rejected and retained_tokens >= config.keep_recent_tokens):
                     await on_status(f"上下文空间不足，这一轮只保留了最近约 {retained_tokens:,} tokens 的原文"
                                     f"（目标 {config.keep_recent_tokens:,}），更早的内容改用摘要。"
                                     "当前输入和进行中的工具调用完整保留。", True)
         if selected is None:
             if before + output_reserve(request.max_output_tokens, window) <= window:
                 return None
-            raise SummaryError("当前输入与进行中的工具调用本身超出容量，没有可摘要的内容。"
-                               "请放弃本轮后发送较短内容；对话可用 /abandon，程序可用 programmatic/message/abandon")
+            raise SummaryCapacityError("当前输入与进行中的工具调用本身超出容量，没有可摘要的内容。"
+                                       "请放弃本轮后发送较短内容；对话可用 /abandon，程序可用 programmatic/message/abandon")
         inputs = summary_groups(groups[:selected], snapshot)
         if selected and not inputs:
             raise SummaryError("可选范围没有可用于摘要的资料")
@@ -449,10 +467,16 @@ async def apply(ctx: Context) -> None:
         added = tuple(message for group in groups[:selected] for message in group)
         covered = parent_ids | frozenset(message.message_id for message in added)
 
-        def measure(text: str, calls: tuple[str, ...],
-                    summarized: tuple[tuple[Message, ...], ...]) -> tuple[SummaryRecord, MaterialData, int]:
+        # 校准估算可能被封顶，收益只比未校准估算；放得下仍按校准估算判断。
+        raw_before = model.estimate_context_tokens(request.messages, request.tools)
+
+        def measure(text: str, calls: tuple[str, ...], summarized: tuple[tuple[Message, ...], ...],
+                    ) -> tuple[SummaryRecord, MaterialData, int, bool]:
             summary_ids = tuple(message.message_id for group in summarized for message in group)
             kept = set(summary_ids)
+            omitted = sum(message.message_id not in kept for message in added)
+            if omitted:
+                text = f"{text}\n\n## 未读取的更早消息：{omitted} 条（摘要请求放不下，这里没有它们的内容）"
             record = SummaryRecord(
                 reference=uuid4().hex, session_id=snapshot[0].session_id,
                 generation=1 if parent is None else parent.generation + 1,
@@ -471,53 +495,75 @@ async def apply(ctx: Context) -> None:
                 tools=request.tools, max_output_tokens=request.max_output_tokens,
                 current_reminder_input_id=reminder_input_id,
             )
-            return record, summary, projection.estimate(after_request)
+            smaller = model.estimate_context_tokens(after_request.messages, after_request.tools) < raw_before
+            return record, summary, projection.estimate(after_request), smaller
 
-        def fits(after: int) -> bool:
-            return after < before and after + reserve <= window
+        def fits(after: int, smaller: bool) -> bool:
+            return smaller and after + reserve <= window
 
-        async def generate(groups: tuple[tuple[Message, ...], ...], previous: str,
-                           limit: int) -> tuple[str, tuple[str, ...], tuple[tuple[Message, ...], ...]]:
+        async def report_retry(value: Mapping[str, str]) -> None:
+            text = value.get("retry_status")
+            if text and on_status is not None:
+                await on_status(text, False)
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + SUMMARY_DEADLINE_SECONDS if hard_limit else None
+
+        async def generate(groups: tuple[tuple[Message, ...], ...], previous: str, limit: int,
+                           call: SummaryCall) -> tuple[str, tuple[str, ...], tuple[tuple[Message, ...], ...]]:
             # 嵌套 execution 复用调用者已经固定的角色，不重读模型配置；
             # 只包住模型调用，摘要 binding 必须回到 compaction 自己的调用方。
-            async with ctx.require(CHAT_MODELS).execution() as execution:
-                async def report_fallback(text: str) -> None:
-                    if on_status is not None:
-                        await on_status(text, True)
+            try:
+                async with asyncio.timeout_at(deadline), ctx.require(CHAT_MODELS).execution() as execution:
+                    async def report_fallback(text: str) -> None:
+                        if on_status is not None:
+                            await on_status(text, True)
 
-                chosen, fallback = await summary_models(execution, model, config.model, report_fallback)
-                return await summarize(groups, previous=previous, limit=limit, model=chosen,
-                                       fallback=fallback, on_fallback=report_fallback)
+                    chosen, fallback = await summary_models(execution, model, config.model, report_fallback)
+                    return await summarize(groups, previous=previous, limit=limit, model=chosen,
+                                           fallback=fallback, on_fallback=report_fallback,
+                                           call=call, on_delta=report_retry)
+            except TimeoutError as failure:
+                if ModelError.matches(failure):
+                    raise
+                raise ModelTimeoutError(f"摘要超过 {SUMMARY_DEADLINE_SECONDS:g} 秒总期限").exception() from failure
 
         limit = max(1, min(room, OUTPUT_RESERVE_TOKENS))
-        text, calls, summarized = await generate(inputs, "" if parent is None else parent.content, limit)
-        record, summary, after = measure(text, calls, summarized)
-        if not fits(after):
+        # 只有阻断回合的摘要才值得等重试；可选压缩和下面的缩写失败都有退路，不挡在回合前退避。
+        text, calls, summarized = await generate(inputs, "" if parent is None else parent.content, limit,
+                                                 BLOCKING_SUMMARY if hard_limit else OPTIONAL_SUMMARY)
+        record, summary, after, smaller = measure(text, calls, summarized)
+        if not fits(after, smaller):
             try:
-                shorter, more, _ = await generate((), text, max(1, limit // 2))
+                shorter, more, _ = await generate((), text, max(1, limit // 2), OPTIONAL_SUMMARY)
             except (RuntimeError, TimeoutError, SummaryError) as failure:
                 if not (ModelError.matches(failure) or isinstance(failure, SummaryError)):
                     raise
                 logger.warning("摘要缩写失败，改为按比例截断已有摘要: %s", failure)
             else:
                 text, calls = shorter, calls + more
-                record, summary, after = measure(text, calls, summarized)
+                record, summary, after, smaller = measure(text, calls, summarized)
         # 已有真实摘要时本地按比例截断各节正文；最短版本仍放不下才是容量边界。
         for ratio in (0.5, 0.25, 0.0):
-            if fits(after):
+            if fits(after, smaller):
                 break
-            record, summary, after = measure(clip_summary(text, ratio), calls, summarized)
-        if after >= before:
-            raise SummaryError("摘要没有降低本次完整请求容量")
+            record, summary, after, smaller = measure(clip_summary(text, ratio), calls, summarized)
+        if not smaller:
+            raise SummaryCapacityError("摘要后请求没有变小：已结算的历史不是主要占用，当前输入或进行中的工具结果本身过大。"
+                                       "摘要模型工作正常。请发送较短内容继续，过大的内容结算后会进入摘要；"
+                                       "对话可用 /abandon，程序可用 programmatic/message/abandon")
         if after + reserve > window:
-            raise SummaryError(f"摘要缩至最短后输入仍约 {after:,} tokens，当前输入与进行中的工具调用本身超出容量。"
-                               "请放弃本轮后发送较短内容；对话可用 /abandon，程序可用 programmatic/message/abandon")
+            raise SummaryCapacityError(f"摘要缩至最短后输入仍约 {after:,} tokens，当前输入与进行中的工具调用本身超出容量。"
+                                       "请放弃本轮后发送较短内容；对话可用 /abandon，程序可用 programmatic/message/abandon")
         record = record.model_copy(update={"tokens_after": after})
         # 3. binding 可以先固定，但读者只有在摘要事务成功后才取得此引用。
         reader = ctx.require(MESSAGE_CATALOG).reader(record.session_id)
         _ = await state.publish(
             record, reader, parent=parent, summary_indexes=context.summary_indexes,
         )
+        if record.omitted_message_ids and on_status is not None:
+            await on_status(f"摘要请求放不下全部历史：{len(record.omitted_message_ids)} 条更早的消息没有进入摘要，"
+                            "模型之后看不到它们。", True)
         return summary
 
     async def reduce(snapshot: tuple[Message, ...], materials: MaterialData, request: ModelRequest,
@@ -540,11 +586,10 @@ async def apply(ctx: Context) -> None:
         state = failure_state(snapshot, source, model)
         budget = (f"模型 {model.descriptor.model_id}；窗口 {window:,}；输入估算 {before:,}；"
                   f"输出预留 {output_reserve(request.max_output_tokens, window):,}；原文目标 {config.keep_recent_tokens:,} tokens")
-        recovery = "请检查摘要模型的认证、额度或可用性，或切换摘要模型后重试。"
         paused = f"本轮上下文压缩连续失败 {MAX_SUMMARY_FAILURES} 次，已暂停自动压缩；新输入或更换模型后重新尝试。"
         if state.count >= MAX_SUMMARY_FAILURES:
             if hard_limit:
-                raise SummaryError(state.detail + budget + "。" + paused + "本次请求被阻断，未继续业务生成。" + recovery)
+                raise SummaryError(state.detail + budget + "。" + paused + "本次请求被阻断，未继续业务生成。" + state.recovery)
             return None
         if on_status is not None:
             await on_status("正在压缩上下文：" + budget, False)
@@ -557,17 +602,21 @@ async def apply(ctx: Context) -> None:
 
         try:
             summary = await compact(snapshot, materials, request, model, projection,
-                                    source=source, force=force, on_status=report, summary_limit=summary_limit)
+                                    source=source, force=force, hard_limit=hard_limit, on_status=report,
+                                    summary_limit=summary_limit)
         except (RuntimeError, TimeoutError, SummaryError) as error:
             if not (ModelError.matches(error) or isinstance(error, SummaryError)):
                 raise
             state.count += 1
             state.detail = f"上下文压缩失败：{type(error).__name__}: {error}。"
+            state.recovery = _recovery(error)
             detail = state.detail + budget + "。"
             if hard_limit:
-                raise SummaryError("\n".join((*notices, detail + "本次请求被阻断，未继续业务生成。" + recovery))) from error
+                raise SummaryError("\n".join((*notices, detail + "本次请求被阻断，未继续业务生成。" + state.recovery))) from error
             if on_status is not None:
-                await on_status(detail + "原请求仍满足硬容量，本次继续生成。"
+                outcome = ("本次压缩没有缩小请求，保留原文继续生成。" if isinstance(error, SummaryCapacityError)
+                           else detail + "原请求仍满足硬容量，本次继续生成。")
+                await on_status(outcome
                                 + (paused if state.count >= MAX_SUMMARY_FAILURES else ""), True)
             return None
         state.count, state.detail = 0, ""
