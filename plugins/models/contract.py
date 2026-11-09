@@ -1243,7 +1243,10 @@ def encode_image_bytes(raw: bytes) -> str:
                 if compressed_b64_len <= MAX_IMAGE_DATA_URI_BYTES:
                     candidate_b64 = base64.b64encode(candidate_bytes).decode()
                     return f"data:image/jpeg;base64,{candidate_b64}"
-    except (OSError, Image.DecompressionBombError) as exc:
+    except ValueError:
+        raise
+    except Exception as exc:
+        # 这里只解析内存里的不可信字节：Pillow 对损坏文件还会抛 SyntaxError 等，都是"解不开"。
         raise ValueError("图片文件无法解码或已损坏。请确认这是有效图片。") from exc
 
     raise ValueError(
