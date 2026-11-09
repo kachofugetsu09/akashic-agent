@@ -1006,8 +1006,9 @@ class ModelError:
     response_delta_seen: bool = False
     retry_safe: bool = False
     retry_after: float | None = None
-    # 上游明确拒绝时的 HTTP 状态；只用于判断拒绝是否与内容有关。
+    # 上游明确拒绝时的 HTTP 状态和未叠加宿主说明的文本；只用于判断拒绝是否与内容有关。
     http_status: int | None = None
+    upstream_text: str | None = None
 
     def __str__(self) -> str:
         return self.message
@@ -1870,8 +1871,13 @@ def raise_http_status(
     if error is None:
         return
     if response.status_code < 500:
-        error = ModelError.change(error, send_evidence="rejected", http_status=response.status_code)
+        error = rejected_by_upstream(error, response.status_code)
     raise error
+
+
+# Record the positive send evidence before any host text is added to the message.
+def rejected_by_upstream(error: BaseException, status: int) -> Exception:
+    return ModelError.change(error, send_evidence="rejected", http_status=status, upstream_text=str(error))
 
 
 def map_driver_error(error: Exception) -> Exception:
@@ -1922,14 +1928,18 @@ REJECTED_KEEP_KINDS = frozenset({"model.facts", "context.summary", "context.noti
 # 4xx that name a setup problem: dropping the user's input cannot help, so they are not content rejections.
 _CONFIG_REJECTION_MARKERS = (
     "model_not_found", "model not found", "model not exist", "model does not exist", "unknown model", "invalid model",
-    "does not exist or you do not have access", "no endpoints", "模型不存在",
+    "model is not available", "model not available", "deprecated", "decommissioned",
+    "does not exist or you do not have access", "no endpoints", "模型不存在", "已下线",
     "api key", "api_key", "apikey", "unauthorized", "authentication", "access denied", "密钥",
     "credit", "balance", "billing", "quota", "arrearage", "good standing", "insufficient", "余额", "欠费", "额度",
-    "max_tokens", "max_completion_tokens",
+    "max_tokens", "max_completion_tokens", "temperature", "top_p", "1210:", "参数有误",
+    # History the host replayed in the wrong shape: hiding the turn does not change how it builds requests.
+    "reasoning_content", "tool call arguments", "invalid json",
 )
-_UNSUPPORTED_MARKERS = (
+_PARAMETER_MARKERS = (
     "unsupported parameter", "unsupported value", "unknown parameter", "unknown field", "unknown name",
     "unrecognized request argument", "extra inputs are not permitted", "not supported", "does not support", "不支持",
+    "must be between", "tools[",
 )
 
 
@@ -1942,20 +1952,21 @@ def is_content_rejection(error: BaseException) -> bool:
         return True
     if value.http_status not in (400, 413, 422):
         return False
-    text = value.message.lower()
+    # Host notes such as attempt budgets must not decide this: read only what the upstream said.
+    text = (value.upstream_text or "").lower()
     if any(marker in text for marker in _CONFIG_REJECTION_MARKERS):
         return False
-    # An unsupported image is the user's content; an unsupported parameter or tool is setup.
-    return "image" in text or "图片" in text or not any(marker in text for marker in _UNSUPPORTED_MARKERS)
+    # An image the upstream cannot take is the user's content; a parameter or tool problem is setup.
+    return "image" in text or "图片" in text or not any(marker in text for marker in _PARAMETER_MARKERS)
 
 
 def content_rejection_reason(detail: str, *, may_be_config: bool = False) -> str:
     config = "如果是模型或参数配置问题，不要放弃，改好设置后直接发新消息。" if may_be_config else ""
     return (
         f"{CONTENT_REJECTED_FAILURE}：{detail}\n"
-        "同样的请求重试不会改变结果。放弃本轮可把本轮内容从模型视图移除后继续："
+        "同样的请求重试不会改变结果。放弃本轮可把本轮的输入、回复和工具结果从模型视图移除后继续："
         "对话可用 /abandon，程序可用 programmatic/message/abandon。"
-        f"如果问题来自更早的内容，需要新开会话。{config}"
+        f"如果被拒的内容已进入摘要或更早的轮次，放弃解不开，需要新开会话。{config}"
     )
 
 
@@ -1967,8 +1978,8 @@ def rejected_result_notice(outcome: str) -> str:
     return f"{effect}；所在的一轮被上游拒绝后已放弃，结果已从模型视图移除。"
 
 
-# Input and Output ids hidden by an abandon; only what a rejection failure's through_seq covers.
-# A late failure from an older turn must not hide input it never saw. Results follow their call.
+# Input and Output ids hidden by an abandon right after a rejection failure, with no newer Input between.
+# Only what the failure's through_seq covers: a late failure must not hide input it never saw. Results follow their call.
 def rejected_segments(messages: Iterable[Message]) -> frozenset[str]:
     opened: dict[str, list[Message]] = {}
     covered: dict[str, int] = {}
@@ -1980,6 +1991,9 @@ def rejected_segments(messages: Iterable[Message]) -> frozenset[str]:
             _ = covered.pop(source, None)
         elif isinstance(body, (Input, Output)):
             opened.setdefault(source, []).append(message)
+            if isinstance(body, Input):
+                # 新输入接着往下走：之后的放弃（比如步数上限）不是针对这次拒绝的。
+                _ = covered.pop(source, None)
         elif isinstance(body, Control) and body.action == "failure":
             if (body.reason or "").startswith(CONTENT_REJECTED_FAILURE):
                 covered[source] = max(covered.get(source, -1), body.through_seq)
