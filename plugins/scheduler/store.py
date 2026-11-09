@@ -52,6 +52,11 @@ class Fire:
         return fire_key(self.job)
 
     @property
+    def session_id(self) -> str:
+        """job.session_id 为 'scheduler' 时每次触发开独立会话 scheduler:<key>，否则在固定会话执行。"""
+        return "scheduler:" + self.key if self.job.session_id == "scheduler" else self.job.session_id
+
+    @property
     def source(self) -> str:
         """每次触发独占目标会话里的一个来源；过程、恢复与竞争都只认它。"""
         return "scheduler:" + self.key

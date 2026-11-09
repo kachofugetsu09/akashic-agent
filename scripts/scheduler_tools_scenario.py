@@ -309,6 +309,19 @@ async def run(directory: Path) -> dict[str, object]:
                         break
                     await asyncio.sleep(0.05)
             assert notice[0].status == "delivered" and notice[0].job.session_id == "test:followup", notice
+
+            # 独立会话模式（session_id="scheduler"）：每次触发新建 scheduler:<fire_key>（internal 不可见），不向目标会话追加消息或占用 test_sender。
+            isolated_job = ScheduledJob(id="isolated", action="run", trigger="at", channel="test", chat_id="isolated",
+                                        session_id="scheduler", text="case:isolated", context="none",
+                                        timezone="UTC", fire_at=datetime.now(UTC) - timedelta(seconds=1))
+            await store.add("schedule:isolated", isolated_job, "isolated")
+            async with asyncio.timeout(30):
+                while (iso_fire := (await asyncio.to_thread(store.read)).fires.get(fire_key(isolated_job))) is None or iso_fire.status == "pending":
+                    await asyncio.sleep(0.02)
+            assert iso_fire.status == "delivered" and iso_fire.session_id == "scheduler:" + iso_fire.key, iso_fire
+            assert log.reader(iso_fire.session_id).attributes.visibility == "internal"
+            assert not log.catalog().exists("test:isolated")
+            assert any(isinstance(m.body, Output) and m.body.finish == "complete" for m in log.reader(iso_fire.session_id).snapshot())
             assert "sample:late" in str(first), "晚注册工具未进入定时任务"
             results = [message.body for message in first if isinstance(message.body, ToolResult)]
             assert all(result.outcome == "success" for result in results)
@@ -346,7 +359,7 @@ async def run(directory: Path) -> dict[str, object]:
                 assert all(call["system"] == calls[0]["system"] and call["tools"] == calls[0]["tools"] for call in calls), case
             for messages in (first, history, fresh, held, removed):
                 assert "model.tool_rejection" in str(messages), "禁用工具必须明确拒绝"
-            for name, count in (("late", 5), ("extra", 1)):
+            for name, count in (("late", 6), ("extra", 1)):
                 calls = (workspace / "plugin-data" / (name + "-lab") / "calls.jsonl").read_text().splitlines()
                 assert len(calls) == count, (name, calls)
             sent = (workspace / "plugin-data/test_sender-builtin/sent.jsonl").read_text().splitlines()

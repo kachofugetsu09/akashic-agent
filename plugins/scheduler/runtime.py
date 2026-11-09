@@ -4,15 +4,16 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Iterable
 from datetime import UTC, datetime, timedelta
+from functools import partial
 
 from agent.plugin_composition import Context
-from plugins.ledger.contract import MESSAGE_CATALOG, MESSAGE_WRITERS
+from plugins.ledger.contract import MESSAGE_CATALOG, MESSAGE_WRITERS, SESSION_ADMISSION
 from agent.plugin_composition.tasks import TASKS, Task, TaskSlot
 from plugins.timer.contract import TIMERS
-from plugins.sources.contract import SourceGuard
+from plugins.sources.contract import SOURCE_CHECK_V2 as SOURCE_CHECK, SourceGuard
 from .inputs import CONTENT, CONVERSATION_COMPLETE, DELIVERY, DELIVERY_SENDERS
 from plugins.ledger.contract import BINDINGS
-from plugins.ledger.contract import MessageReader, MessageWriter
+from plugins.ledger.contract import MessageReader, MessageWriter, SessionAttributes
 from plugins.ledger.contract import ContentPart, Control, Input, Message, Output
 
 from .store import Fire, JobStore, aware, fire_key
@@ -118,7 +119,8 @@ class SchedulerRuntime:
         ctx = self._ctx
         fire = (await run_file_io(self.store.read)).fires[key]
         delivery = ctx.require(DELIVERY).open(ctx)
-        target = ctx.require(MESSAGE_CATALOG).reader(fire.job.session_id)
+        isolated = fire.session_id.startswith("scheduler:")
+        target = ctx.require(MESSAGE_CATALOG).reader(fire.session_id)
         if fire.status == "cancelled":
             final = await run_file_io(lambda: _final(target, fire))
             # The old fire has drained before this task starts. Close its round so
@@ -132,8 +134,8 @@ class SchedulerRuntime:
                             ctx, author="scheduler", source=fire.source, body_types=(Control,), content={},
                         )(target.session_id)
                         task.on_close(writer.expire)
-                        await writer.append_async(control_id, Control("abandon", head, fire.error),
-                                                  expected_source_head=head)
+                        _ = await writer.append_async(control_id, Control("abandon", head, fire.error),
+                                                      expected_source_head=head)
             selected = None if final is None else delivery.selection(final.message_id)
             if final is not None and selected is not None:
                 for sink in selected.sinks:
@@ -142,11 +144,16 @@ class SchedulerRuntime:
         if fire.status != "pending":
             return
 
-        # 1. 已有最终消息便直接恢复发送，不再次运行模型或工具；执行任务的目标会话已不存在时明确失败。
+        # 1. 已有最终消息便直接恢复发送，不再次运行模型或工具；固定会话不存在时明确失败，独立会话按需创建。
         catalog = ctx.require(MESSAGE_CATALOG)
-        if fire.job.action == "run" and not await run_file_io(lambda: catalog.exists(target.session_id)):
-            await self.store.settle(key, "failed", now=self._now(), error="目标会话不存在")
-            return
+        if fire.job.action == "run":
+            if isolated:
+                _ = await ctx.require(SESSION_ADMISSION).ensure_async(
+                    ctx, fire.session_id, SessionAttributes(visibility="internal", learning="excluded"),
+                )
+            elif not await run_file_io(lambda: catalog.exists(target.session_id)):
+                await self.store.settle(key, "failed", now=self._now(), error="目标会话不存在")
+                return
         final = await run_file_io(lambda: _final(target, fire))
         if final is None:
             # 写入授权属于 scheduler 自己的 Task；会话执行位里只使用已绑定的 writer。
@@ -156,14 +163,20 @@ class SchedulerRuntime:
                 content={"text": ctx.require(CONTENT).check_text},
             )(target.session_id)
             task.on_close(writer.expire)
-            final = await (writer.append_async(fire.notification_id, Output((ContentPart("text", fire.job.text),), "complete"))
-                           if fire.job.action == "notify"
-                           else ctx.require(CONVERSATION_COMPLETE)(target.session_id, self._run(fire, writer)))
+            if fire.job.action == "notify":
+                final = await writer.append_async(fire.notification_id, Output((ContentPart("text", fire.job.text),), "complete"))
+            elif isolated:
+                final = await self._run_isolated(task, target, fire, writer)
+            else:
+                final = await ctx.require(CONVERSATION_COMPLETE)(target.session_id, self._run(fire, writer))
         if not task.active:
             raise asyncio.CancelledError
         if not isinstance(final.body, Output) or final.body.finish != "complete":
             error = final.body.reason if isinstance(final.body, Control) else "调度任务没有可发送的最终内容"
             await self.store.settle(key, "failed", now=self._now(), error=error)
+            return
+        if isolated and fire.job.action == "run":
+            await self.store.settle(key, "delivered", now=self._now())
             return
 
         # 2. 投递原消息；恢复时沿用已固定的选路，空集合不能冒称已送达。
@@ -216,6 +229,17 @@ class SchedulerRuntime:
                 return await writer.append_async("scheduler-failure:" + fire.key,
                     Control("failure", reader.head(source=fire.source), f"{type(error).__name__}: {error}"))
         return run
+
+    async def _run_isolated(self, task: Task, reader: MessageReader, fire: Fire, writer: MessageWriter) -> Message:
+        """独立 scheduler:<key> 会话只有本次触发一个来源，直接执行，不占用用户聊天会话锁。"""
+        admitted = reader.get(fire.input_id)
+        if admitted is None:
+            label = f"「{fire.job.name}」" if fire.job.name else ""
+            text = f"⏰ 定时任务{label}自动触发（不是用户发言）：\n{fire.job.text}"
+            admitted = await writer.append_async(fire.input_id, Input((ContentPart("text", text),)))
+        task.boundary_hint = admitted.seq
+        check_admission = partial(self._ctx.require(SOURCE_CHECK), task, reader, fire.source, admitted.seq)
+        return await self._run(fire, writer)(task, reader, check_admission)
 
 
 def _final(reader: MessageReader, fire: Fire) -> Message | None:

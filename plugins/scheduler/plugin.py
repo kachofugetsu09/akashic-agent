@@ -19,12 +19,16 @@ from plugins.ledger.contract import (
     MESSAGE_CATALOG,
     MESSAGE_WRITERS,
     OWNER_STATE,
+    SESSION_ADMISSION,
     MessageReader,
 )
 from agent.plugin_composition.tasks import TASKS, Task
 from plugins.timer.contract import TIMERS
 from plugins.ledger.contract import Message
-from plugins.sources.contract import SourceGuard
+from plugins.sources.contract import (
+    SOURCE_CHECK_V2 as SOURCE_CHECK,
+    SourceGuard,
+)
 from plugins.reply_program.contract import (
     REPLY_EXECUTE_V4 as REPLY_EXECUTE,
 )
@@ -51,7 +55,7 @@ desc = "持久调度：到点在创建任务的会话里执行，最终回复按
 
 
 inject = (
-    PLUGIN_CONFIG, BINDINGS, TASKS, MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE,
+    PLUGIN_CONFIG, BINDINGS, TASKS, MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, SESSION_ADMISSION,
     CONTENT,
     CONVERSATION_COMPLETE,
     DELIVERY_SENDERS,
@@ -61,6 +65,7 @@ inject = (
     ALL_TOOLS,
     DELIVERY,
     REPLY_EXECUTE,
+    SOURCE_CHECK,
 )
 workspace_files = ("schedules.json",)
 # 工具与所在会话一致；只去掉写长期记忆的工具，用户不在场时不改记忆。
@@ -100,7 +105,10 @@ async def apply(ctx: Context) -> None:
         message = source.messages[-1]
         if message.source.startswith("scheduler:"):
             fire = (await run_file_io(store.read)).fires.get(message.source.removeprefix("scheduler:"))
-            return None if fire is None else (fire.job.session_id, fire.job.channel, fire.job.chat_id)
+            if fire is None:
+                return None
+            origin_session = f"{fire.job.channel}:{fire.job.chat_id}" if fire.job.session_id == "scheduler" else fire.job.session_id
+            return (origin_session, fire.job.channel, fire.job.chat_id)
         reader = ctx.require(MESSAGE_CATALOG).reader(message.session_id)
         route = ctx.require(INPUT_ORIGIN)(reader, message.source, through_seq=message.seq)
         return None if route is None else (message.session_id, *route)

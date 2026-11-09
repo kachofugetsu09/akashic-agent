@@ -17,7 +17,7 @@
 
 ## 决定
 
-1. 每个任务属于创建它的会话（`schedule` 工具从调用来源取得会话与投递渠道，模型不再填 `channel/chat_id`）。
+1. 每个任务属于创建它的会话（`schedule` 工具从调用来源取得会话与投递渠道，模型不再填 `channel/chat_id`）。`run` 任务可通过 `session="current" | "isolated"` 选择在当前固定会话执行，还是每次触发新建独立的 `scheduler:<fire_key>` 会话（`job.session_id = "scheduler"`，因前缀为 `scheduler:` 且 `visibility="internal"`，天然不在 Web 端渲染，任务内如需通知用户可自行调用 `message_push` 推送 HTML 附件或消息，完成后直接结算）。
 2. 到点后经 `CONVERSATION_COMPLETE` 在该会话里执行，与 subagent 回报父会话同一条路：主对话空闲才开始；用户插话时先让用户的回复运行，之后从同一 Input 与已结算工具继续。
 3. 每次触发独占来源 `scheduler:<fire_key>`。Input、工具调用、工具结果和最终回复都写在目标会话里，用户能看到过程，工具产出的卡片在原处渲染。
 4. 任务两种动作：`notify` 到点原文推送，不调用模型；`run` 跑一轮回复。删除 `instant/soft` 与提前触发。
