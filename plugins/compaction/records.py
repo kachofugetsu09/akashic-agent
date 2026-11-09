@@ -74,7 +74,7 @@ class SummaryRecord(_SummaryIdentity):
     omitted_message_ids: tuple[Text, ...] = ()
     # 一次生成，加上过长时的一次缩写。
     model_call_ids: tuple[Text, ...] = Field(min_length=1, max_length=2)
-    trigger: Literal["soft_limit", "context_overflow"]
+    trigger: Literal["soft_limit", "context_overflow", "idle"]
     context_window: Annotated[int, Field(gt=0)]
     max_output_tokens: Annotated[int, Field(gt=0)]
     keep_recent_tokens: Annotated[int, Field(gt=0)]

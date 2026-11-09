@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 import json
 from pathlib import Path
 import sqlite3
@@ -78,6 +78,12 @@ async def run(folder: Path, case: str, *, second_provider: bool = False) -> dict
         if second_provider:
             from scripts.compaction_second_provider_scenario import add_reader
             add_reader(sources)
+        if case == "idle_compaction":
+            from agent.plugin_composition.config_input import save_config
+            save_config(folder / "workspace/plugin-data/compaction-builtin", {
+                "idle_trigger_minutes": 60,
+                "idle_trigger_tokens": 2500,
+            })
         shutil.copytree(Path(__file__).resolve().parents[1] / "plugins/ui", sources / "ui",
                         ignore=shutil.ignore_patterns("__pycache__"))
         entry = sources / "test_provider/plugin.py"
@@ -121,19 +127,25 @@ async def run(folder: Path, case: str, *, second_provider: bool = False) -> dict
                 writer(Output).append("earlier-final", Output((ContentPart(
                     "text", "earlier finished" + "o" * 45_000 * (case == "huge_batch")),), "complete"))
             writer(Input).append("old-input", Input((ContentPart("text", "original task"),)))
-            padding = {"hard_failure": 6500, "provider_rejection": 500}.get(case, 5500)
+            padding = {"hard_failure": 6500, "provider_rejection": 500, "idle_compaction": 1800}.get(case, 5500)
             for index in range(1 if case == "huge_batch" else 6):
                 identity = f"old-call-{index}"
                 # huge_batch：巨大参数、多段结果与巨大历史回复各一，摘要资料都须有界。
-                arguments = {"text": "a" * 45_000} if case == "huge_batch" else {}
+                arguments = {"text": "a" * 45_000} if case == "huge_batch" else {"text": "a" * padding}
                 writer(Output).append(identity, Output((ToolCall(binding, arguments),), "continue"))
                 ref = CallRef(identity, 0)
                 parts = (tuple(ContentPart("text", "m" * 2000) for _ in range(23)) if case == "huge_batch"
-                         else (ContentPart("text", f"evidence {index}:" + "x" * padding),))
+                         else (ContentPart("text", f"evidence {index}"),))
                 writer(ToolResult, ref).append(f"old-result-{index}", ToolResult(
                     call_ref=ref, parts=parts, outcome="success"))
             if case not in {"open_turn", "huge_batch"}:
                 writer(Output).append("old-final", Output((ContentPart("text", "old task finished"),), "complete"))
+            if case == "idle_compaction":
+                earlier_ts = (datetime.now(UTC) - timedelta(minutes=65)).isoformat()
+                with log._lock:
+                    log._connection.execute("UPDATE messages SET ts=?", (earlier_ts,))
+                    log._connection.commit()
+                    log._message_views.clear()
             before = tuple(log.reader("test:room").snapshot())
             with sqlite3.connect(folder / "workspace/sessions.db") as connection:
                 original_rows = connection.execute("SELECT * FROM messages ORDER BY seq").fetchall()
@@ -223,6 +235,9 @@ async def run(folder: Path, case: str, *, second_provider: bool = False) -> dict
                         assert "original task" in str(business[0])
                     if case == "short_tail":
                         assert any("目标 20,000" in notice for notice in notices)
+                    if case == "idle_compaction":
+                        assert record["trigger"] == "idle"
+                        assert record["tokens_before"] < 7400 and record["tokens_after"] < record["tokens_before"]
                     pending: set[str] = set()
                     for message in business[0]["messages"]:
                         if message["role"] == "assistant":
@@ -259,10 +274,10 @@ async def run(folder: Path, case: str, *, second_provider: bool = False) -> dict
                     writer(Input).append("next-task", Input((ContentPart("text", "next task"),)))
                     for index in range(6):
                         identity = f"next-call-{index}"
-                        writer(Output).append(identity, Output((ToolCall(binding, {}),), "continue"))
+                        writer(Output).append(identity, Output((ToolCall(binding, {"text": "y" * padding}),), "continue"))
                         ref = CallRef(identity, 0)
                         writer(ToolResult, ref).append(f"next-result-{index}", ToolResult(
-                            call_ref=ref, parts=(ContentPart("text", "y" * padding),), outcome="success"))
+                            call_ref=ref, parts=(ContentPart("text", f"next {index}"),), outcome="success"))
                     accepted = await accept("test:room", "next-input", ChannelInboundMessage(
                         "test", "user", "room", "continue now", datetime.now(UTC), {}))
                     await asyncio.wait_for(finish(), 15)
@@ -270,6 +285,26 @@ async def run(folder: Path, case: str, *, second_provider: bool = False) -> dict
                     assert next_record.generation == record.generation + 1
                     assert "old-input" in learned and "old-final" in learned
                     assert not {"earlier-input", "earlier-final"}.intersection(learned)
+                if case == "idle_compaction":
+                    # 已有父摘要（window 开启）后再次经历长空闲，仍能拉取完整历史并生成下一代 idle 摘要。
+                    writer(Input).append("idle-next-task", Input((ContentPart("text", "second burst"),)))
+                    for index in range(6):
+                        identity = f"idle-next-call-{index}"
+                        writer(Output).append(identity, Output((ToolCall(binding, {"text": "y" * padding}),), "continue"))
+                        ref = CallRef(identity, 0)
+                        writer(ToolResult, ref).append(f"idle-next-result-{index}", ToolResult(
+                            call_ref=ref, parts=(ContentPart("text", f"idle {index}"),), outcome="success"))
+                    writer(Output).append("idle-next-final", Output((ContentPart("text", "second burst finished"),), "complete"))
+                    earlier_ts = (datetime.now(UTC) - timedelta(minutes=65)).isoformat()
+                    with log._lock:
+                        log._connection.execute("UPDATE messages SET ts=?", (earlier_ts,))
+                        log._connection.commit()
+                        log._message_views.clear()
+                    accepted = await accept("test:room", "idle-second-input", ChannelInboundMessage(
+                        "test", "user", "room", "wake again", datetime.now(UTC), {}))
+                    await asyncio.wait_for(finish(), 15)
+                    head = root.context.require(COMPACTION_SUMMARIES).head("test:room")
+                    assert head is not None and head.generation == 2 and getattr(head, "trigger", None) == "idle"
             with sqlite3.connect(folder / "workspace/sessions.db") as connection:
                 assert connection.execute("SELECT * FROM messages ORDER BY seq").fetchall()[:len(original_rows)] == original_rows
                 generations = connection.execute("SELECT count(*) FROM owner_records WHERE owner='plugin:compaction' AND key LIKE 'summary:%'").fetchone()[0]
@@ -288,7 +323,7 @@ async def main() -> None:
     with tempfile.TemporaryDirectory(prefix="compaction-workflow-") as path:
         for case in ("split_turn", "open_turn", "short_tail", "deep_cut", "long_summary", "stubborn_summary",
                      "rewrite_failure", "huge_batch", "parent_only", "small_window", "provider_rejection",
-                     "soft_failure", "hard_failure"):
+                     "soft_failure", "hard_failure", "idle_compaction"):
             folder = Path(path) / case
             folder.mkdir()
             print(json.dumps(await run(folder, case), ensure_ascii=False), flush=True)

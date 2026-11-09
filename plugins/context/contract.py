@@ -9,7 +9,7 @@ from typing import Any, Literal, Protocol
 from agent.plugin_composition import Context, Effect, ServiceKey
 from plugins.models.contract import ModelRequest
 from plugins.models.contract import BoundChatModel
-from plugins.ledger.contract import ContentPart, ContentReferences, HistoryWindow, Message
+from plugins.ledger.contract import ContentPart, ContentReferences, HistoryWindow, Input, Message, Output
 from plugins.models.contract import ContextModel
 
 MaterialKind = Literal["context", "recall", "profile"]
@@ -146,10 +146,62 @@ def output_reserve(max_output_tokens: int, context_window: int) -> int:
 
 # 请求估算达到窗口的这一比例（或 provider 已拒绝）时摘要 owner 才会压缩；低于它的缩减是空操作。
 SUMMARY_SOFT_LIMIT = 0.74
+# 参考 Claude Code timeBasedMCConfig (gapThresholdMinutes=60)：闲置达到 1 小时后服务端 KV 缓存已过期，
+# 在新请求发送前对已超过空闲容量阈值的上下文执行压缩，避免重复冷启动重读长前缀。
+IDLE_COMPACT_MINUTES = 60
+IDLE_COMPACT_TOKENS = 200_000
 
 
-def summary_due(estimated: int, context_window: int | None, *, force: bool) -> bool:
-    return context_window is not None and (force or estimated >= int(context_window * SUMMARY_SOFT_LIMIT))
+def idle_gap_minutes(snapshot: Sequence[Message]) -> float | None:
+    """计算当前末尾连续 Input 到达前，距上一条非 Input 消息的空闲分钟数。
+
+    只在末尾是新 Input（本轮尚未产生 Output 或 ToolResult）且前驱不是未完成
+    Output(continue) 时返回非负分钟数；进入工具循环后末尾为 ToolResult，
+    返回 None，保证不会在热缓存回合中途触发空闲压缩。
+    """
+    if len(snapshot) < 2 or not isinstance(snapshot[-1].body, Input):
+        return None
+    index = len(snapshot) - 1
+    while index > 0 and isinstance(snapshot[index - 1].body, Input):
+        index -= 1
+    if index == 0:
+        return None
+    previous = snapshot[index - 1]
+    if isinstance(previous.body, Output) and previous.body.finish == "continue":
+        return None
+    gap = (snapshot[index].recorded_at - previous.recorded_at).total_seconds() / 60.0
+    return gap if gap >= 0.0 else 0.0
+
+
+def idle_summary_due(
+    estimated: int,
+    snapshot: Sequence[Message] = (),
+    *,
+    idle_minutes: int = IDLE_COMPACT_MINUTES,
+    idle_tokens: int = IDLE_COMPACT_TOKENS,
+) -> bool:
+    if idle_minutes <= 0 or idle_tokens <= 0 or estimated < idle_tokens:
+        return False
+    gap = idle_gap_minutes(snapshot)
+    return gap is not None and gap >= idle_minutes
+
+
+def summary_due(
+    estimated: int,
+    context_window: int | None,
+    *,
+    force: bool,
+    snapshot: Sequence[Message] = (),
+    idle_minutes: int = 0,
+    idle_tokens: int = 0,
+) -> bool:
+    if context_window is None:
+        return False
+    if force or estimated >= int(context_window * SUMMARY_SOFT_LIMIT):
+        return True
+    return idle_summary_due(
+        estimated, snapshot, idle_minutes=idle_minutes, idle_tokens=idle_tokens,
+    )
 
 
 CONTEXT = ServiceKey[ContextBuilder]("context.v2")

@@ -311,3 +311,42 @@ async def test_legacy_reminder_facts_remain_verbatim_history(tmp_path: Path) -> 
         second_request = _request_text(requests[1])
         assert second_request.count("legacy-material") == 2
         assert second_request.count("current-material") == 1
+
+
+def test_idle_gap_and_idle_summary_due_respect_turn_boundaries() -> None:
+    """空闲压缩只在新回合首步 Input 且前驱已结算时触发，工具循环中途或 steering 不误触。"""
+    from datetime import UTC, datetime, timedelta
+    from plugins.context.contract import idle_gap_minutes, idle_summary_due, summary_due
+    from plugins.ledger.contract import CallRef, Message, ToolCall, ToolResult
+
+    t0 = datetime(2026, 11, 9, 0, 0, tzinfo=UTC)
+    u1 = Message("u1", "s", 0, t0, "user", "conversation", Input((ContentPart("text", "hi"),)))
+    assert idle_gap_minutes(()) is None
+    assert idle_gap_minutes((u1,)) is None
+
+    # 已结算 Output 后间隔 65 分钟到达新 Input（含连续两条尾部 Input）
+    a1 = Message("a1", "s", 1, t0 + timedelta(minutes=1), "assistant", "conversation",
+                 Output((ContentPart("text", "done"),), "complete"))
+    u2 = Message("u2", "s", 2, t0 + timedelta(minutes=66), "user", "conversation",
+                 Input((ContentPart("text", "wake"),)))
+    u3 = Message("u3", "s", 3, t0 + timedelta(minutes=67), "user", "conversation",
+                 Input((ContentPart("text", "follow-up"),)))
+    assert idle_gap_minutes((u1, a1, u2)) == pytest.approx(65.0)
+    assert idle_gap_minutes((u1, a1, u2, u3)) == pytest.approx(65.0)
+    assert idle_summary_due(200_000, (u1, a1, u2), idle_minutes=60, idle_tokens=200_000)
+    assert not idle_summary_due(199_999, (u1, a1, u2), idle_minutes=60, idle_tokens=200_000)
+    assert not idle_summary_due(250_000, (u1, a1, u2), idle_minutes=0, idle_tokens=200_000)
+    assert summary_due(200_000, 1_000_000, force=False, snapshot=(u1, a1, u2),
+                       idle_minutes=60, idle_tokens=200_000)
+
+    # 工具循环中途（末尾为 ToolResult）或未完成 Output(continue) 后的插话不触发空闲压缩
+    open_out = Message("a2", "s", 4, t0 + timedelta(minutes=68), "assistant", "conversation",
+                       Output((ToolCall("b1", {}),), "continue"))
+    steer_in = Message("u4", "s", 5, t0 + timedelta(minutes=150), "user", "conversation",
+                       Input((ContentPart("text", "steer"),)))
+    tool_res = Message("tr1", "s", 6, t0 + timedelta(minutes=151), "tool", "conversation",
+                       ToolResult(call_ref=CallRef("a2", 0), outcome="success",
+                                  parts=(ContentPart("text", "ok"),)))
+    assert idle_gap_minutes((u1, a1, u2, open_out, steer_in)) is None
+    assert idle_gap_minutes((u1, a1, u2, open_out, tool_res)) is None
+

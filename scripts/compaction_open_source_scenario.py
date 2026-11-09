@@ -151,9 +151,9 @@ async def recovery(directory: Path, *, pending_call: bool = False) -> dict[str, 
 
         def long_batch(identity):
             write("conversation", identity + "-input", Input((ContentPart("text", "next task"),)))
-            write("conversation", identity + "-call", Output((ToolCall(binding, {}),), "continue"))
+            write("conversation", identity + "-call", Output((ToolCall(binding, {"text": "x" * 33_000}),), "continue"))
             write("conversation", identity + "-result", ToolResult(
-                call_ref=CallRef(identity + "-call", 0), parts=(ContentPart("text", "x" * 46_000),), outcome="success"))
+                call_ref=CallRef(identity + "-call", 0), parts=(ContentPart("text", "x" * 2_000),), outcome="success"))
             write("conversation", identity + "-final", Output((ContentPart("text", "done"),), "complete"))
 
         # 1. 与事故相同：后台调用已有回执但没有来源终态，主对话仍不断追加长工具结果。
