@@ -1,7 +1,7 @@
 import { focusMessagePart } from "./message-actions";
 import { copyText } from "./copy-text";
 import { timelineVisibleMessages, timelineFailureRetries, timelineToolResults, timelineReplyGroups, timelineAnchorIndexes, timelineInputStarts, timelineSourceKey, timelineSourceRefreshTokens, needsBeforeReasoningFallback, type ReplyActivity } from "./message-timeline";
-import { userInput, timelineReply, timelineText, type TimelineMessage, type TimelineReply } from "./message-timeline";
+import { userInput, timelineReply, timelineReplyText, timelineText, type TimelineMessage, type TimelineReply } from "./message-timeline";
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useStickToBottomContext } from "use-stick-to-bottom";
 
@@ -433,7 +433,7 @@ export const DesktopTimelineMessages = React.memo(function DesktopTimelineMessag
         onReply={() => onReply(timelineReply(message))}
         onEdit={userInput(message) && timelineText(message)
           ? () => onEditInput(timelineText(message)) : undefined}
-        onCopy={() => { void copyText(timelineText(message)).then(() => onCopied(message.id)).catch(onError); }}
+        onCopy={() => { void copyText(timelineReplyText(messages, message)).then(() => onCopied(message.id)).catch(onError); }}
         extra={message.body.kind === "output" && message.body.finish === "complete" ? <PluginUiSlot
           name="message.actions" sessionId={message.session_id} messageId={message.id} quiet /> : null} />
     </div> : null}

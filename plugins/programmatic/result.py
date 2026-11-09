@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from plugins.ledger.contract import MessageReader
-from plugins.ledger.contract import Control, Input, Message
+from plugins.ledger.contract import ContentPart, Control, Input, Message, with_truncated_head
 from plugins.turn_projection.contract import (
     TURN_PROJECTION as TURN_PROJECTION,
     Turn as Turn,
@@ -31,8 +31,13 @@ def read_result_snapshot(
         "through_seq": messages[-1].seq,
     }
     if turn.status != "open":
-        result["ending_seq"] = next(message.seq for message in messages
-                                    if message.message_id == turn.ending_message_id)
+        ending = next(message for message in messages if message.message_id == turn.ending_message_id)
+        result["ending_seq"] = ending.seq
+        # 回答被长度截断后续写时，结局行只有后半段；只在这时多给一份完整正文。
+        full = with_truncated_head(reader, ending)
+        if full is not ending:
+            result["full_text"] = "\n".join(str(part.value) for part in full.body.parts
+                                            if isinstance(part, ContentPart) and part.kind == "text")
         return result
 
     # 2. pause/failure 不关闭 Turn，但明确结束本次等待；resume 恢复等待。

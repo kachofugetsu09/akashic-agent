@@ -769,7 +769,7 @@ export function TimelineMessageView({ message, lookupMessage, toolResults, onNav
             onNavigate={onNavigate} onError={onError} processStartContent={leadingContent} hideTranscriptProcess={inlineReply} />
         </div> : null)}</UserTextClamp>
       </>}
-      {timelineTruncated(message) ? <p className="timeline-control-note">回答达到长度上限，在此中断</p> : null}
+      {timelineTruncated(message) ? <p className="timeline-control-note">回答达到长度上限，已在此中断</p> : null}
       {afterBody}
       {input ? null : attachmentList}
     </div>}

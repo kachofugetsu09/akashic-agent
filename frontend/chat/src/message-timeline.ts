@@ -20,12 +20,12 @@ export type TimelinePart =
   | { kind: "history.provenance" | "history.transcript" | "history.record" | "history.turn_input"; archive: unknown }
   | { kind: string; display: "unavailable" | "hidden" }
   // owner 声明的思考过程：宿主只按通用思考行展示 text，不解读 owner 的 kind 与字段。
-  | { kind: string; display: "thinking"; text: string | null; truncated?: boolean }
+  | { kind: string; display: "thinking"; text: string | null }
   | { kind: string; display: "data"; value: unknown; rendered?: unknown };
 
 export type TimelineBody =
   | { kind: "input"; parts: TimelinePart[] }
-  | { kind: "output"; parts: TimelinePart[]; finish: "continue" | "complete" | "quiet" }
+  | { kind: "output"; parts: TimelinePart[]; finish: "continue" | "complete" | "quiet"; truncated?: boolean }
   | { kind: "tool_result"; parts: TimelinePart[]; call_ref: { message_id: string; part_index: number }; outcome: "success" | "denied" | "error" | "interrupted" }
   | { kind: "control"; action: "pause" | "resume" | "abandon" | "failure"; through_seq: number; reason: string | null };
 
@@ -233,6 +233,21 @@ export function timelineText(message: TimelineMessage): string {
       : !("display" in part) && part.kind === "context.notice" ? [part.value.text] : []).join("\n");
 }
 
+/** 复制整段回答：把同一轮被截断的段接回结局，规则与服务端 with_truncated_head 相同。 */
+export function timelineReplyText(messages: TimelineMessage[], message: TimelineMessage): string {
+  const tail = timelineText(message);
+  if (message.body.kind !== "output" || message.body.finish !== "complete") return tail;
+  const join = (text: string, segment: string) => segment.trimStart().startsWith(text.trim()) ? segment.trimStart() : text + segment;
+  let head = "", gap = false;
+  for (const row of messages) {
+    if (row.source !== message.source || row.seq >= message.seq) continue;
+    if (row.body.kind === "input" || (row.body.kind === "control" && row.body.action === "abandon")) { head = ""; gap = false; }
+    else if (timelineTruncated(row)) { head = join(head + (gap && head ? "\n\n" : ""), timelineText(row)); gap = false; }
+    else if (row.body.kind === "output") gap = true;
+  }
+  return head ? join(head + (gap ? "\n\n" : ""), tail) : tail;
+}
+
 /** 工具数据只交给通用结果视图，不把结构化内容伪装成聊天正文。 */
 export function timelineToolOutput(message: TimelineMessage): unknown {
   if (message.body.kind !== "tool_result") return undefined;
@@ -357,7 +372,7 @@ function hasReplyBody(message: TimelineMessage): boolean {
 }
 
 export function timelineTruncated(message: TimelineMessage): boolean {
-  return message.body.kind === "output" && message.body.parts.some((part) => "truncated" in part && part.truncated === true);
+  return message.body.kind === "output" && message.body.truncated === true;
 }
 
 // 工具结果里的图片是给模型看的观察（截图、读图），跟随所属调用；文件附件才是交给用户的回复产物。

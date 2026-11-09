@@ -19,6 +19,7 @@ from plugins.models.contract import (
     RequestSource,
 )
 from plugins.models.contract import BoundChatModel, BoundModelDescriptor
+from plugins.ledger.contract import has_partial_text
 from plugins.ledger.contract import (
     CallRef,
     ContentPart,
@@ -110,7 +111,6 @@ def response_facts(
     wire_tool_calls: Mapping[str, Mapping[str, object]] = {},
     content_refs: tuple[tuple[str, int], ...] = (),
     content_transformed: bool = False,
-    partial_text: bool = False,
 ) -> ContentPart:
     """只保存调用账指针与协议重放所需事实，计费数据仍由 Model store 拥有。"""
     if response.call_record_id is None:
@@ -146,8 +146,6 @@ def response_facts(
         facts["content_transformed"] = True
     if response.finish_reason in {"length", "malformed_function_call"}:
         facts["generation_rejection"] = response.finish_reason
-    if partial_text:
-        facts["partial_text"] = True
     if reminder_input_id is not None:
         if not reminder_input_id:
             raise ValueError("reminder Input 身份不能为空")
@@ -180,12 +178,10 @@ def check_facts(part: ContentPart) -> ContentReferences:
     old_fields = {"call_record_id", "tool_ids", "thinking", "continuation"}
     new_fields = old_fields | {"wire_tool_calls", "reminder"}
     reminder_identity_fields = {"reminder_input_id", "reminder_sha256"}
-    if set(value) - {"content_refs", "content_transformed", "generation_rejection", "partial_text"} not in (old_fields, new_fields, new_fields | reminder_identity_fields):
+    if set(value) - {"content_refs", "content_transformed", "generation_rejection"} not in (old_fields, new_fields, new_fields | reminder_identity_fields):
         raise ValueError("model.facts 字段无效")
     if "generation_rejection" in value and value["generation_rejection"] not in ("length", "malformed_function_call"):
         raise ValueError("模型生成拒绝类型无效")
-    if "partial_text" in value and (value["partial_text"] is not True or value.get("generation_rejection") != "length"):
-        raise ValueError("截断正文标记只属于长度拒绝")
     if not isinstance(value["call_record_id"], str) or not value["call_record_id"]:
         raise ValueError("model.facts 缺少调用记录")
     if "content_refs" in value:
@@ -259,8 +255,7 @@ def display_facts(part: ContentPart) -> ThinkingDisplay:
     value = cast(Mapping[str, object], part.value)
     thinking = value["thinking"]
     return ThinkingDisplay(thinking if isinstance(thinking, str) else None,
-                           {"call_record_id": value["call_record_id"], "thinking": thinking},
-                           truncated="partial_text" in value)
+                           {"call_record_id": value["call_record_id"], "thinking": thinking})
 
 
 class MessageProjection:
@@ -330,7 +325,6 @@ class MessageProjection:
         actual_calls: Sequence[ToolCall | ContentPart] | None = None,
         content_refs: tuple[tuple[str, int], ...] = (),
         content_transformed: bool = False,
-        partial_text: bool = False,
     ) -> ContentPart:
         """只为当前模型已成功结算的响应生成可持久 replay 内容。"""
         if actual_calls is not None and len(actual_calls) != len(response.tool_calls):
@@ -361,7 +355,6 @@ class MessageProjection:
             wire_tool_calls=wire,
             content_refs=content_refs,
             content_transformed=content_transformed,
-            partial_text=partial_text,
         )
         assert response.call_record_id is not None
         receipt = self._read_call(response.call_record_id)
@@ -775,8 +768,8 @@ class MessageProjection:
                 {"type": "text", "text": "宿主随上面这条 Agent 回复发出的附件（由回复里的内容标记生成，不是回复文字，不要在回复里写出）："},
                 *attached,
             ]})
-        # 提示只从本行事实派生，不进账本；历史重放逐字相同，所以缓存前缀稳定。
-        if model_facts is not None and "partial_text" in model_facts:
+        # 提示只从本行派生，不进账本；历史重放逐字相同，所以缓存前缀稳定。
+        if has_partial_text(body):
             msg_rows.append({"role": "user", "content": [{"type": "text", "text": _PARTIAL_TEXT_HINT}]})
 
         # 3. 行在此冻结；动态 kind、外部引用与实际转换命中均保留逐轮重算。

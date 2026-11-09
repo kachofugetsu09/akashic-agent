@@ -1107,44 +1107,72 @@ def origin(message: Message) -> Origin:
 
 
 # 用户输入：召回、用户事实证据与回合起点只认它，插件自动产生的输入不冒充用户发言。
-# 最终回复只含断点之后的部分；不读中间行的消费者（渠道发送、子任务回报）要拿到完整回答，
-# 把同一轮紧邻的截断正文接回开头。model.facts 的 partial_text 标记这些行。
+# 长度拒绝没有可保留正文时写入的提示（工具调用被截断、零正文）；历史行也是这段文字，改动要兼容旧行。
+def length_rejection_hint(budget: int) -> str:
+    return (
+        f"上次模型生成达到长度限制（输出预算 {budget} tokens，含推理）；"
+        "回复未完成，全部工具调用均未执行。请减少推理和单次输出，分段完成任务。"
+    )
+
+
+_LENGTH_REJECTION_HINT = re.compile(re.escape(length_rejection_hint(0)).replace("0", r"\d+", 1))
+# 回答到顶时写在结局里、并显示给用户的同一句话。
+LENGTH_CUT_NOTICE = "回答达到长度上限，已在此中断"
+
+
+# 被长度截断、等待续写的正文：从 generation_rejection 加正文派生，不落专门字段，回滚后旧版仍能读。
+def has_partial_text(body: Body) -> bool:
+    if not isinstance(body, Output) or body.finish != "continue":
+        return False
+    facts = next((part.value for part in body.parts
+                  if isinstance(part, ContentPart) and part.kind == "model.facts"), None)
+    if not isinstance(facts, Mapping) or facts.get("generation_rejection") != "length":
+        return False
+    text = _body_text(body)
+    return bool(text.strip()) and _LENGTH_REJECTION_HINT.fullmatch(text) is None
+
+
+def _body_text(body: Output) -> str:
+    return "".join(cast(str, part.value) for part in body.parts
+                   if isinstance(part, ContentPart) and part.kind == "text")
+
+
+# 续写段以已有正文开头说明模型重写了一遍，只取新段；否则从断点直接接上。
+def _join_segment(text: str, segment: str) -> str:
+    return segment.lstrip() if segment.lstrip().startswith(text.strip()) else text + segment
+
+
+# 最终回复只含断点之后的部分；所有要整段回答的读者（渠道、子任务、通知、程序调用、会话回读）都走这里，
+# 把同一轮的截断正文接回开头。中间隔着工具步时不是断点续写，用空行分开。
 def with_truncated_head(reader: MessageReader, message: Message) -> Message:
     body = message.body
     if not isinstance(body, Output) or body.finish != "complete":
         return message
 
-    def collect(rows: Iterable[Message]) -> list[str]:
-        head: list[str] = []
+    def collect(rows: Iterable[Message]) -> str:
+        head, gap = "", False
         for row in rows:
-            if isinstance(row.body, Output):
-                if not _has_partial_text(row.body):
-                    head.clear()
-                    continue
-                head.extend(cast(str, part.value) for part in row.body.parts
-                            if isinstance(part, ContentPart) and part.kind == "text")
+            if has_partial_text(row.body):
+                head = _join_segment(head + ("\n\n" if gap and head else ""), _body_text(cast(Output, row.body)))
+                gap = False
+            elif isinstance(row.body, Output):
+                gap = True
             elif isinstance(row.body, Control) and row.body.action == "abandon":
-                head.clear()
-        return head
+                head, gap = "", False
+        return head + ("\n\n" if gap and head else "")
 
     latest_input = reader.latest_input_seq(message.source, through_seq=message.seq)
     head = reader.scan(collect, source=message.source, through_seq=message.seq - 1,
                        after_seq=-1 if latest_input is None else latest_input)
     if not head:
         return message
-    prefix = "".join(head)
     index = next((i for i, part in enumerate(body.parts)
                   if isinstance(part, ContentPart) and part.kind == "text"), None)
-    parts = ((ContentPart("text", prefix), *body.parts) if index is None else (
-        *body.parts[:index], ContentPart("text", prefix + cast(str, cast(ContentPart, body.parts[index]).value)),
-        *body.parts[index + 1:]))
-    return replace(message, body=replace(body, parts=parts))
-
-
-def _has_partial_text(body: Output) -> bool:
-    return any(isinstance(part, ContentPart) and part.kind == "model.facts"
-               and isinstance(part.value, Mapping) and "partial_text" in part.value
-               for part in body.parts)
+    if index is None:
+        return replace(message, body=replace(body, parts=(ContentPart("text", head.rstrip()), *body.parts)))
+    tail = cast(str, cast(ContentPart, body.parts[index]).value)
+    joined = ContentPart("text", _join_segment(head, tail))
+    return replace(message, body=replace(body, parts=(*body.parts[:index], joined, *body.parts[index + 1:])))
 
 
 def is_user_input(message: Message) -> bool:

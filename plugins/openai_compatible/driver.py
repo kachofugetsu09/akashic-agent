@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from plugins.models.contract import stream_text
 from plugins.models.contract import describe_transport_error
 
 from core.common.diagnostic_log import log_timing
@@ -958,7 +959,7 @@ async def _consume_stream(
         error = TransportError("stream ended before its terminal marker").exception()
         raise _StreamReadError(error, response_delta_seen=response_delta_seen)
     parsed_content, parsed_thinking = _split_tagged_thinking(
-        "".join(content).strip() or None,
+        stream_text("".join(content), finish_reason),
         "".join(thinking).strip() or None,
     )
     if not native_reasoning_seen and not tool_seen:
@@ -1032,7 +1033,7 @@ def _split_tagged_thinking(
     match = _THINK_RE.search(content)
     if match is None:
         return content, None
-    answer = _THINK_RE.sub("", content).strip() or None
+    answer = _THINK_RE.sub("", content).lstrip() or None
     return answer, match.group(1).strip() or None
 
 

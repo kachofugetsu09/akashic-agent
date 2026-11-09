@@ -174,7 +174,7 @@ async def run_exec(args: list[str], workspace: Path) -> int:
             row = page["items"][0]
             if row["id"] != result["ending_message_id"]:
                 raise RuntimeError("程序结果引用与读取的 Message 不一致")
-            print("\n".join(part["value"] for part in row["body"]["parts"] if part["kind"] == "text"))
+            print(result.get("full_text") or "\n".join(part["value"] for part in row["body"]["parts"] if part["kind"] == "text"))
         else:
             print(json.dumps(result, ensure_ascii=False), file=sys.stderr)
         if stopped or result["status"] == "pause":

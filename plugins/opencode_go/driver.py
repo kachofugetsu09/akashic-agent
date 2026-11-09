@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from plugins.models.contract import stream_text
 from plugins.models.contract import describe_transport_error
 
 # External JSON is validated field by field below; pyright cannot preserve the
@@ -917,7 +918,7 @@ async def _consume_stream(
     try:
         return LLMResponse(
             # 半截工具调用的文本不算截断正文，交给 ReAct 按拒绝提示处理。
-            content=None if finish_reason == "length" and calls else "".join(content).strip() or None,
+            content=None if finish_reason == "length" and calls else stream_text("".join(content), finish_reason),
             thinking="".join(thinking).strip() or None,
             tool_calls=() if finish_reason == "length" else _tool_calls(calls),
             finish_reason=finish_reason,

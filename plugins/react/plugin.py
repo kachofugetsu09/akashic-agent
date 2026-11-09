@@ -15,6 +15,7 @@ from core.common.diagnostic_log import log_timing
 from core.common.file_io import run_file_io
 from agent.plugin_composition import Context, RuntimeScope
 from agent.plugin_composition.tasks import interrupt_requested
+from plugins.ledger.contract import LENGTH_CUT_NOTICE, has_partial_text, length_rejection_hint
 from plugins.ledger.contract import (
     HistoryWindow,
     MessageConflict,
@@ -329,6 +330,11 @@ class _History:
                 if body.outcome == "success":
                     self._succeeded.add(body.call_ref)
         self.messages = messages
+
+    # 这一段恢复里是否已有保留下来的截断正文。
+    def has_kept_text(self) -> bool:
+        seqs = {seq for seq, _kind in self.generation_rejections}
+        return any(message.seq in seqs and has_partial_text(message.body) for message in self.messages)
 
     @property
     def steps(self) -> int:
@@ -731,13 +737,13 @@ def _check_output_room(response: LLMResponse) -> None:
     ).exception()
 
 
+_MAX_GENERATION_RECOVERIES = 3
+
+
 # Rejected generations become durable feedback, never executable tool calls.
 def _response_rejection(reason: str | None, budget: int) -> str | None:
     if reason == "length":
-        return (
-            f"上次模型生成达到长度限制（输出预算 {budget} tokens，含推理）；"
-            "回复未完成，全部工具调用均未执行。请减少推理和单次输出，分段完成任务。"
-        )
+        return length_rejection_hint(budget)
     if reason == "malformed_function_call":
         return "上次模型生成了无法解析的工具调用，全部调用均未执行。请按工具 schema 重新生成完整的 JSON 参数。"
     return None
@@ -745,7 +751,7 @@ def _response_rejection(reason: str | None, budget: int) -> str | None:
 
 # Enforce the same limit after a commit and before resuming a crashed generation.
 def _check_generation_recovery(count: int, reason: str | None, budget: int) -> None:
-    if count <= 3:
+    if count <= _MAX_GENERATION_RECOVERIES:
         return
     rejection = _response_rejection(reason, budget)
     assert rejection is not None
@@ -907,12 +913,24 @@ async def react(
             # 3. Keep rejection feedback in history before another model request.
             rejection = _response_rejection(response.finish_reason, request.max_output_tokens)
             # 没有工具调用的截断保留正文供用户阅读和模型续写；其余拒绝仍以提示替换，半截调用绝不落账。
-            partial_text = (response.finish_reason == "length" and not response.tool_calls
-                            and bool((response.content or "").strip()))
+            # 续写段的行首空白属于断点，只有首段才去掉。
+            kept_text = history.has_kept_text()
+            text = (response.content or "") if kept_text else (response.content or "").lstrip()
+            partial_text = response.finish_reason == "length" and not response.tool_calls and bool(text.strip())
+            # 到顶且已有正文：把已有正文收成 complete 结局，渠道和子任务才拿得到；没有正文仍走失败。
+            length_cut = (
+                response.finish_reason == "length"
+                and len(history.generation_rejections) >= _MAX_GENERATION_RECOVERIES
+                and (partial_text or kept_text)
+            )
             if rejection is not None:
                 response = replace(response, tool_calls=(), continuation=None, provider_metadata=None)
+            if length_cut:
+                text = (text.rstrip() + "\n\n" if partial_text else "") + LENGTH_CUT_NOTICE
+            elif rejection is not None and not partial_text:
+                text = rejection
             decoded, metadata = await content.decode(
-                (response.content or "") if partial_text else rejection or response.content or "",
+                text,
                 cast(tuple[Mapping[str, object], ...], prepared.get("references", ())),
             )
             parts: list[Part] = list(decoded)
@@ -954,7 +972,6 @@ async def react(
                 reminder=reminder,
                 reminder_input_id=reminder_input_id if reminder is not None else None,
                 actual_calls=actual_calls,
-                **({"partial_text": True} if partial_text else {}),
                 **({"content_refs": request.content_refs,
                     "content_transformed": request.content_transformed}
                    if request.content_refs or request.content_transformed else {}),
@@ -969,13 +986,13 @@ async def react(
             try:
                 message = await commit(
                     message_id,
-                    Output(tuple(parts), "continue" if indices or rejection is not None else "complete"),
+                    Output(tuple(parts), "continue" if indices or rejection is not None and not length_cut else "complete"),
                     metadata,
                 )
             except _Superseded:
                 raise asyncio.CancelledError from None
             mark("output.committed", request_id=response.call_record_id or "", parent_operation_id=message.message_id, counts={"seq": message.seq, "tool_calls": len(indices)})
-            if rejection is not None:
+            if rejection is not None and not length_cut:
                 _check_generation_recovery(
                     len(history.generation_rejections) + 1, response.finish_reason, request.max_output_tokens,
                 )
