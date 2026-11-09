@@ -46,7 +46,7 @@ import type {
   ToolBlock,
 } from "./chat-message";
 import type { ModelAttempt, ReplyActivity, TimelineAttachment, TimelineMessage, TimelinePart } from "./message-timeline";
-import { userInput, timelineReply, timelineToolOutput, historyTranscript, isTimelinePartVisible, needsBeforeReasoningFallback } from "./message-timeline";
+import { userInput, timelineReply, timelineTruncated, timelineToolOutput, historyTranscript, isTimelinePartVisible, needsBeforeReasoningFallback } from "./message-timeline";
 import { MessageReplyReference } from "./message-actions";
 import { StaticMessageResponse, richRendererFallback } from "./static-message-response";
 import type { MessageResponseProps } from "@/components/ai-elements/message-response";
@@ -769,6 +769,7 @@ export function TimelineMessageView({ message, lookupMessage, toolResults, onNav
             onNavigate={onNavigate} onError={onError} processStartContent={leadingContent} hideTranscriptProcess={inlineReply} />
         </div> : null)}</UserTextClamp>
       </>}
+      {timelineTruncated(message) ? <p className="timeline-control-note">回答达到长度上限，在此中断</p> : null}
       {afterBody}
       {input ? null : attachmentList}
     </div>}

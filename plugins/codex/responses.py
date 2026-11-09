@@ -349,7 +349,8 @@ async def _consume_stream(
                 details = response_payload.get("incomplete_details")
                 if isinstance(details, Mapping) and details.get("reason") == "max_output_tokens":
                     return LLMResponse(
-                        content="".join(content).strip() or None,
+                        # 半截工具调用的文本不算截断正文，交给 ReAct 按拒绝提示处理。
+                        content=None if tool_args else "".join(content).strip() or None,
                         thinking="".join(thinking).strip() or None,
                         finish_reason="length", usage=_parse_usage(response_payload.get("usage")),
                         output_discarded=bool(tool_args),

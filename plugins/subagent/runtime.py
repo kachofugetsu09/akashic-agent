@@ -19,7 +19,7 @@ from .inputs import CONVERSATION_COMPLETE
 from .inputs import DELIVERY
 from .inputs import REPLY_PROGRAM
 from plugins.ledger.contract import MessageConflict, MessageReader, OwnerRecord, OwnerTransaction, SessionAttributes
-from plugins.ledger.contract import ContentPart, Control, Input, Message, Output
+from plugins.ledger.contract import ContentPart, Control, Input, Message, Output, with_truncated_head
 from plugins.ledger.contract import json_value
 from plugins.sources.contract import (
     SourceGuard,
@@ -230,7 +230,9 @@ class Subagents:
             if message.source != "subagent":
                 continue
             if isinstance(message.body, Output) and message.body.finish != "continue":
-                return "completed", "\n".join(cast(str, part.value) for part in message.body.parts
+                ending = await reader.read_async(lambda current: with_truncated_head(current, message))
+                assert isinstance(ending.body, Output)
+                return "completed", "\n".join(cast(str, part.value) for part in ending.body.parts
                     if isinstance(part, ContentPart) and part.kind == "text")
             if isinstance(message.body, Control) and message.body.action in {"pause", "failure", "abandon"}:
                 return ("cancelled", "子任务已按请求取消。") if message.body.action == "pause" else (

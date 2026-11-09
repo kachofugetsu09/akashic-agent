@@ -316,6 +316,8 @@ PLUGIN_UI = ServiceKey[PluginUiProvider]("ui.plugin.v1")
 class ThinkingDisplay:
     text: str | None
     value: Mapping[str, object]
+    # 这条回复在输出长度限制处被截断；宿主不解读 value，只按这个字段提示读者。
+    truncated: bool = False
 
 
 PartDisplayProvider = Callable[[ContentPart], Mapping[str, object] | ThinkingDisplay]
@@ -505,7 +507,8 @@ def _part(
     if provider is not None:
         shown = provider(part)
         if isinstance(shown, ThinkingDisplay):
-            return {"kind": part.kind, "display": "thinking", "text": shown.text, "value": json_value(shown.value)}
+            return {"kind": part.kind, "display": "thinking", "text": shown.text, "value": json_value(shown.value),
+                    **({"truncated": True} if shown.truncated else {})}
         value = json_value(shown)
         return {"kind": part.kind, "value": value, **({"display": "data"} if tool_result else {})}
     # 2. 展示端保留原 part 下标；不可展示的归档只传类型，权威正文不变。

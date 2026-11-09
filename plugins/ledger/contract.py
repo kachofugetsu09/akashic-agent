@@ -5,7 +5,7 @@ import json
 import re
 from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Iterable, Iterator, Mapping, Sequence, Set as AbstractSet
 from contextlib import AbstractAsyncContextManager, AbstractContextManager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import StrEnum
 from itertools import islice
@@ -1107,6 +1107,46 @@ def origin(message: Message) -> Origin:
 
 
 # 用户输入：召回、用户事实证据与回合起点只认它，插件自动产生的输入不冒充用户发言。
+# 最终回复只含断点之后的部分；不读中间行的消费者（渠道发送、子任务回报）要拿到完整回答，
+# 把同一轮紧邻的截断正文接回开头。model.facts 的 partial_text 标记这些行。
+def with_truncated_head(reader: MessageReader, message: Message) -> Message:
+    body = message.body
+    if not isinstance(body, Output) or body.finish != "complete":
+        return message
+
+    def collect(rows: Iterable[Message]) -> list[str]:
+        head: list[str] = []
+        for row in rows:
+            if isinstance(row.body, Output):
+                if not _has_partial_text(row.body):
+                    head.clear()
+                    continue
+                head.extend(cast(str, part.value) for part in row.body.parts
+                            if isinstance(part, ContentPart) and part.kind == "text")
+            elif isinstance(row.body, Control) and row.body.action == "abandon":
+                head.clear()
+        return head
+
+    latest_input = reader.latest_input_seq(message.source, through_seq=message.seq)
+    head = reader.scan(collect, source=message.source, through_seq=message.seq - 1,
+                       after_seq=-1 if latest_input is None else latest_input)
+    if not head:
+        return message
+    prefix = "".join(head)
+    index = next((i for i, part in enumerate(body.parts)
+                  if isinstance(part, ContentPart) and part.kind == "text"), None)
+    parts = ((ContentPart("text", prefix), *body.parts) if index is None else (
+        *body.parts[:index], ContentPart("text", prefix + cast(str, cast(ContentPart, body.parts[index]).value)),
+        *body.parts[index + 1:]))
+    return replace(message, body=replace(body, parts=parts))
+
+
+def _has_partial_text(body: Output) -> bool:
+    return any(isinstance(part, ContentPart) and part.kind == "model.facts"
+               and isinstance(part.value, Mapping) and "partial_text" in part.value
+               for part in body.parts)
+
+
 def is_user_input(message: Message) -> bool:
     return isinstance(message.body, Input) and origin(message).actor is Actor.USER
 

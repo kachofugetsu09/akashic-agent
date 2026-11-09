@@ -632,6 +632,7 @@ class MessageProjection(ContextModel, Protocol):
         actual_calls: Sequence[MessageToolCall | ContentPart] | None = None,
         content_refs: tuple[tuple[str, int], ...] = (),
         content_transformed: bool = False,
+        partial_text: bool = False,
     ) -> ContentPart: ...
 
 

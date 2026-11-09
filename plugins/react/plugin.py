@@ -906,10 +906,13 @@ async def react(
         ) as (response, prepared, message_id, request):
             # 3. Keep rejection feedback in history before another model request.
             rejection = _response_rejection(response.finish_reason, request.max_output_tokens)
+            # 没有工具调用的截断保留正文供用户阅读和模型续写；其余拒绝仍以提示替换，半截调用绝不落账。
+            partial_text = (response.finish_reason == "length" and not response.tool_calls
+                            and bool((response.content or "").strip()))
             if rejection is not None:
                 response = replace(response, tool_calls=(), continuation=None, provider_metadata=None)
             decoded, metadata = await content.decode(
-                rejection or response.content or "",
+                (response.content or "") if partial_text else rejection or response.content or "",
                 cast(tuple[Mapping[str, object], ...], prepared.get("references", ())),
             )
             parts: list[Part] = list(decoded)
@@ -951,6 +954,7 @@ async def react(
                 reminder=reminder,
                 reminder_input_id=reminder_input_id if reminder is not None else None,
                 actual_calls=actual_calls,
+                **({"partial_text": True} if partial_text else {}),
                 **({"content_refs": request.content_refs,
                     "content_transformed": request.content_transformed}
                    if request.content_refs or request.content_transformed else {}),

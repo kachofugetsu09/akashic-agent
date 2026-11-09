@@ -20,7 +20,7 @@ export type TimelinePart =
   | { kind: "history.provenance" | "history.transcript" | "history.record" | "history.turn_input"; archive: unknown }
   | { kind: string; display: "unavailable" | "hidden" }
   // owner 声明的思考过程：宿主只按通用思考行展示 text，不解读 owner 的 kind 与字段。
-  | { kind: string; display: "thinking"; text: string | null }
+  | { kind: string; display: "thinking"; text: string | null; truncated?: boolean }
   | { kind: string; display: "data"; value: unknown; rendered?: unknown };
 
 export type TimelineBody =
@@ -356,6 +356,10 @@ function hasReplyBody(message: TimelineMessage): boolean {
     !PROCESS_PARTS.has(part.kind) && !("display" in part && part.display === "thinking") && isTimelinePartVisible(part));
 }
 
+export function timelineTruncated(message: TimelineMessage): boolean {
+  return message.body.kind === "output" && message.body.parts.some((part) => "truncated" in part && part.truncated === true);
+}
+
 // 工具结果里的图片是给模型看的观察（截图、读图），跟随所属调用；文件附件才是交给用户的回复产物。
 export function timelineDeliversAttachment(message: TimelineMessage): boolean {
   return message.body.kind === "tool_result" && message.attachments.some((ref) => ref.kind === "file");
@@ -452,7 +456,12 @@ export function timelineReplyGroups(messages: TimelineMessage[], activities: Rep
       const prior = members.at(-1);
       if (prior) hiddenBodies.add(prior.id);
       members.push(message);
-      if (body.finish === "continue") pending.set(key, members);
+      // 被截断的正文是回答的一段，不是过程：留在原位，续写接在下面，末尾才挂时间与操作。
+      if (timelineTruncated(message)) {
+        if (members.length > 1) completed.set(message.id, members);
+        joined.add(message.id);
+        pending.delete(key);
+      } else if (body.finish === "continue") pending.set(key, members);
       else {
         if (members.length > 1) completed.set(message.id, members);
         pending.delete(key);

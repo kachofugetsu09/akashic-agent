@@ -13,7 +13,7 @@ from plugins.delivery.contract import (
     StartGuard,
 )
 from core.common.file_io import run_file_io
-from plugins.ledger.contract import Body, Message
+from plugins.ledger.contract import Body, Message, with_truncated_head
 
 from .api import OpenSender, Receipt, Sink
 from .records import Delivery, DeliveryRecords, Selection, delivery_key
@@ -256,7 +256,9 @@ class Deliveries:
                     return rejected
                 if not task.active:
                     raise asyncio.CancelledError
-                response = await sender.send(key, delivery.sink.address, message)
+                reader = self._catalog.reader(selection.session_id)
+                content = await reader.read_async(lambda current: with_truncated_head(current, message))
+                response = await sender.send(key, delivery.sink.address, content)
                 # 不同归档拥有独立 Python 类型；按本版本公开 schema 接纳跨插件回执。
                 result = Receipt.model_validate(response.model_dump())
             except BaseException:

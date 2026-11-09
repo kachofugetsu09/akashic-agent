@@ -974,7 +974,8 @@ async def _consume_stream(
         elif pending_content:
             await _emit_delta(on_delta, {"content_delta": pending_content})
     return LLMResponse(
-        content=parsed_content,
+        # 半截工具调用的文本不算截断正文，交给 ReAct 按拒绝提示处理。
+        content=None if finish_reason == "length" and calls else parsed_content,
         thinking=parsed_thinking,
         tool_calls=() if finish_reason == "length" else _tool_calls(calls),
         finish_reason=finish_reason,
