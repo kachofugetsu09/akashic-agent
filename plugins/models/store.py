@@ -197,6 +197,9 @@ class ModelCallReader:
             estimate_column = "estimated_input_tokens" if "estimated_input_tokens" in columns else "NULL"
             rows = connection.execute(
                 "SELECT id,state,json_extract(binding_json,'$.binding_id') AS binding_id, "
+                "json_extract(binding_json,'$.driver_id') AS driver_id, "
+                "json_extract(binding_json,'$.connection_id') AS connection_id, "
+                "json_extract(binding_json,'$.model') AS model, "
                 f"{response_metadata} AS provider_metadata, {estimate_column} AS estimated_input_tokens, "
                 "json_extract(usage_json,'$.input_tokens') AS input_tokens "
                 "FROM model_calls WHERE id IN (SELECT value FROM json_each(?))",
@@ -204,7 +207,11 @@ class ModelCallReader:
             ).fetchall() if missing else ()
         for row in rows:
             records[row["id"]] = _freeze_json({
-                "state": row["state"], "binding": {"binding_id": row["binding_id"]},
+                "state": row["state"],
+                "binding": {
+                    "binding_id": row["binding_id"], "driver_id": row["driver_id"],
+                    "connection_id": row["connection_id"], "model": row["model"],
+                },
                 "estimated_input_tokens": row["estimated_input_tokens"],
                 "usage": {"input_tokens": row["input_tokens"]},
                 "provider_metadata": (

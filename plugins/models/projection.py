@@ -18,7 +18,7 @@ from plugins.models.contract import (
     ModelRequest,
     RequestSource,
 )
-from plugins.models.contract import BoundChatModel
+from plugins.models.contract import BoundChatModel, BoundModelDescriptor
 from plugins.ledger.contract import (
     CallRef,
     ContentPart,
@@ -602,6 +602,7 @@ class MessageProjection:
         calls: list[dict[str, Any]] = []
         observations: list[Mapping[str, Any]] = []
         attached: list[Mapping[str, Any]] = []
+        unsent: list[Mapping[str, Any]] = []
         if reminder is not None:
             msg_rows.append({"role": "user", "content": reminder})
         for index, part in enumerate(body.parts):
@@ -613,10 +614,11 @@ class MessageProjection:
                     identity = model_facts["tool_ids"][str(index)]
                     rejected = cast(Mapping[str, Any], part.value)
                     arguments = rejected["arguments"]
-                    # 非法参数或工具名进 tool_calls 会让这条历史之后每次请求都被 provider 拒绝，只能写成正文。
+                    # 非法参数或工具名进 tool_calls 会让这条历史之后每次请求都被 provider 拒绝。
+                    # 说明放在随后的 user 行：写进 assistant 正文会让重试请求以 assistant 结尾，严格 provider 同样拒绝。
                     if isinstance(arguments, str) or _WIRE_TOOL_NAME.fullmatch(rejected["name"]) is None:
                         shown = arguments if isinstance(arguments, str) else encode_arguments(arguments)
-                        blocks.append({"type": "text", "text": (
+                        unsent.append({"type": "text", "text": (
                             f"调用未执行：{rejected['name']}；{rejected['error']}\n"
                             f"原始参数：{shown}"
                         )})
@@ -718,13 +720,18 @@ class MessageProjection:
             if (message.message_id in response_metadata and model_facts is not None
                     and len(calls) == len(model_facts["tool_ids"])):
                 row["provider_metadata"] = response_metadata[message.message_id]
-            # 思考内容属于产出它的模型：换 binding 后严格 provider 会拒收未知字段；需要该字段的 driver 自己回填空值。
+            # 思考内容属于产出它的模型：换模型后严格 provider 会拒收未知字段；需要该字段的 driver 自己回填空值。
             if (model_facts is not None and model_facts["thinking"] is not None
-                    and self._fold_receipt(fold, model_facts["call_record_id"])["binding"]["binding_id"]
-                    == self._model.descriptor.binding_id):
+                    and _same_model(self._fold_receipt(fold, model_facts["call_record_id"])["binding"],
+                                    self._model.descriptor)):
                 row["reasoning_content"] = model_facts["thinking"]
             msg_rows.append(row)
             msg_rows.extend(observations)
+        if unsent:
+            msg_rows.append({"role": "user", "content": [
+                {"type": "text", "text": "宿主说明：你上一步的工具调用没有执行，原因如下；请修正后继续。"},
+                *unsent,
+            ]})
         if attached:
             msg_rows.append({"role": "user", "content": [
                 {"type": "text", "text": "宿主随上面这条 Agent 回复发出的附件（由回复里的内容标记生成，不是回复文字，不要在回复里写出）："},
@@ -922,6 +929,13 @@ class MessageProjection:
 _EXTERNAL_PART_KINDS = frozenset({"artifact_ref", "reply_ref"})
 # OpenAI 公开的工具名规则；不符合的名字进 tool_calls 时严格 provider 会拒绝整个请求。
 _WIRE_TOOL_NAME = re.compile(r"[a-zA-Z0-9_-]{1,64}")
+
+
+# binding_id 含进程实例和注册表版本，重启或保存任一设置都会变；这里只看调用落到哪个模型。
+def _same_model(binding: Mapping[str, Any], descriptor: BoundModelDescriptor) -> bool:
+    return (binding.get("driver_id"), binding.get("connection_id"), binding.get("model")) == (
+        descriptor.driver_id, descriptor.connection_id, descriptor.model,
+    )
 
 
 class _FoldStale(Exception):
