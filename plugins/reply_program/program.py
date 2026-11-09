@@ -69,6 +69,7 @@ async def run_reply(
     presentation: ToolPresentation | None = None,
     history: Literal["session", "own"] = "session",
     before_step: Callable[[], Awaitable[None]] | None = None,
+    retry_wake: asyncio.Event | None = None,
 ) -> Message:
     """普通组合拥有本次程序资源，Source 不必同步签发模型或内容 writer。"""
     mark = partial(log_timing, session_id=reader.session_id, source=source)
@@ -259,6 +260,7 @@ async def run_reply(
                 state=owner_state.open_scoped(ctx, "generation"),
                 check_start=check,
                 before_step=before_step,
+                retry_wake=retry_wake,
                 aborted=aborted,
                 window=window,
             )

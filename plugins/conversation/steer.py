@@ -11,6 +11,7 @@ from dataclasses import dataclass
 
 from agent.plugin_composition.tasks import Task, independent_task_context
 from plugins.channels.contract import ChannelInboundMessage
+from plugins.conversation.contract import SteerBinding
 from plugins.ledger.contract import Input, Message
 from plugins.sources.contract import GuardedSourceSession as SourceSession
 
@@ -40,7 +41,7 @@ class Steers:
         self._staged: dict[str, list[_Staged]] = {}
         self._watched: dict[str, Task] = {}
         # 只有回复程序登记过的任务会在步间注入；后台回调等其他程序不接纳插话。
-        self._bound: weakref.WeakSet[Task] = weakref.WeakSet()
+        self._bound: weakref.WeakKeyDictionary[Task, asyncio.Event] = weakref.WeakKeyDictionary()
         self._queue: asyncio.Queue[tuple[str, Task]] = asyncio.Queue()
 
     # 插件任务持有全部等待者；卸载时一并取消。
@@ -60,9 +61,9 @@ class Steers:
         except Exception:
             logger.exception("插话收尾失败 session=%s", session_id)
 
-    def bind(self, task: Task, session_id: str) -> Callable[[], Awaitable[None]]:
-        self._bound.add(task)
-        return lambda: self.inject(task, session_id)
+    def bind(self, task: Task, session_id: str) -> SteerBinding:
+        arrived = self._bound[task] = asyncio.Event()
+        return SteerBinding(lambda: self.inject(task, session_id), arrived)
 
     async def stage(self, session_id: str, message_id: str, message: ChannelInboundMessage) -> bool:
         task = await self._open(session_id).active_task()
@@ -74,6 +75,8 @@ class Steers:
         if self._watched.get(session_id) is not task:
             self._watched[session_id] = task
             self._queue.put_nowait((session_id, task))
+        # 正在等模型退避的步骤被叫醒，进入下一步把插话写入。
+        self._bound[task].set()
         return True
 
     def withdraw(self, session_id: str, message_id: str) -> bool:
@@ -85,6 +88,8 @@ class Steers:
         return False
 
     async def inject(self, task: Task, session_id: str) -> None:
+        # 先清除：写入失败交还暂存时不再叫醒，避免退避被反复跳过；下一次新插话才重新置位。
+        self._bound[task].clear()
         items = self._staged.pop(session_id, [])
         session = self._open(session_id)
         for index, item in enumerate(items):

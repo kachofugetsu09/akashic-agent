@@ -7,6 +7,7 @@ from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequen
 from contextlib import AbstractContextManager, ExitStack, asynccontextmanager
 from dataclasses import dataclass, replace
 from functools import partial
+from types import TracebackType
 from typing import Any, cast
 from uuid import uuid4
 
@@ -34,6 +35,7 @@ from plugins.models.contract import (
     InputReductionRequired,
     OutputLengthError,
     ModelError,
+    RetryWaitInterrupted,
 )
 from plugins.models.contract import BoundChatModel
 from plugins.ledger.contract import (
@@ -283,6 +285,8 @@ class _History:
             if isinstance(body, Input):
                 self.reminder_input_id = message.message_id
                 self.generation_rejections.clear()
+                # 同一回合内只有用户插话会写 Input，后台来源的 Input 各有自己的回合预算。
+                self._outputs.clear()
             elif isinstance(body, Output):
                 if body.finish != "continue":
                     self._boundary = message.seq
@@ -550,6 +554,29 @@ async def _settle_pending(
         index = end
 
 
+class _StepAttempts:
+    """退避被叫醒时结束本步且不提交，未用的尝试额度带给下一步；生成成功后清空。"""
+
+    def __init__(self) -> None:
+        self.remaining: int | None = None
+
+    async def __aenter__(self) -> None:
+        return None
+
+    async def __aexit__(
+        self, exc_type: type[BaseException] | None, exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> bool:
+        if exc is None:
+            self.remaining = None
+            return False
+        failure = ModelError.read(exc, RetryWaitInterrupted)
+        if not isinstance(failure, RetryWaitInterrupted):
+            return False
+        self.remaining = failure.remaining_attempts
+        return True
+
+
 @asynccontextmanager
 async def _complete(
     snapshot: Sequence[Message], prepared: Materials, *, source: str,
@@ -559,6 +586,8 @@ async def _complete(
     reminder_input_id: str | None,
     operation_id: str = "",
     max_retry_wait: float | None = None,
+    retry_wake: asyncio.Event | None = None,
+    max_attempts: int | None = None,
 ) -> AsyncGenerator[tuple[LLMResponse, Materials, str, ModelRequest]]:
     """缩减只更新已取得材料中的摘要；provider 容量拒绝最多重试一次。"""
     mark = partial(log_timing, session_id=snapshot[-1].session_id if snapshot else "",
@@ -622,14 +651,16 @@ async def _complete(
             mark("model.begin", request_id=request_key)
             response = await model.complete(replace(
                 request, on_delta=callback, request_key=request_key, max_retry_wait=max_retry_wait,
-                max_attempts=max_attempts, reduce_on_empty=reduce_on_empty,
+                retry_wake=retry_wake, max_attempts=max_attempts, reduce_on_empty=reduce_on_empty,
             ))
             mark("model.end", request_id=request_key)
             return response
 
         message_id, request_key, callback = begin()
         try:
-            response = await generate(request, request_key, callback, reduce_on_empty=reduce is not None)
+            response = await generate(
+                request, request_key, callback, max_attempts=max_attempts, reduce_on_empty=reduce is not None,
+            )
             # 没有摘要 owner 时缩减不可用，保持长度拒绝的反馈恢复。
             if reduce is not None:
                 _check_output_room(response)
@@ -658,7 +689,7 @@ async def _complete(
             # 第二次调用在 except 内；再次拒绝直接上抛，不产生第三次请求。
             response = await generate(
                 request, request_key, callback,
-                max_attempts=failure.remaining_attempts if isinstance(failure, InputReductionRequired) else None,
+                max_attempts=failure.remaining_attempts if isinstance(failure, InputReductionRequired) else max_attempts,
             )
             _check_output_room(response)
         # 3. 草稿持续到调用者完成解码与 CAS；异常和取消也会释放预览。
@@ -726,6 +757,7 @@ async def react(
     max_parallel_calls: int = 1,
     check_start: StartCheck | None = None,
     before_step: Callable[[], Awaitable[None]] | None = None,
+    retry_wake: asyncio.Event | None = None,
     aborted: Callable[[str], Awaitable[Message]] | None = None,
     window: HistoryWindow | None = None,
 ) -> Message:
@@ -741,6 +773,7 @@ async def react(
     if reader.session_id != writer.session_id:
         raise ValueError("ReAct reader 与 writer 必须属于同一 Session")
     history = _History(writer.source, tools.name)
+    attempts = _StepAttempts()
     while True:
         operation_id = uuid4().hex
         mark = partial(log_timing, session_id=reader.session_id, source=writer.source, operation_id=operation_id)
@@ -846,11 +879,13 @@ async def react(
         mark("preparation.begin")
         prepared = await materials(tuple(snapshot))
         mark("preparation.end")
-        async with _complete(
+        # 退避被叫醒时跳过下面的提交，回到循环顶部写入插话再发新请求。
+        async with attempts, _complete(
             snapshot, prepared, source=writer.source, context=context, model=model,
             projection=projection, tools=tools, max_output_tokens=max_output_tokens, reduce=reduce, preview=preview,
             reminder_input_id=reminder_input_id,
             operation_id=operation_id, max_retry_wait=max_retry_wait,
+            retry_wake=retry_wake, max_attempts=attempts.remaining,
         ) as (response, prepared, message_id, request):
             # 3. Keep rejection feedback in history before another model request.
             rejection = _response_rejection(response.finish_reason, request.max_output_tokens)

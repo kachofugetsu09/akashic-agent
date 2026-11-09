@@ -89,6 +89,7 @@ from plugins.models.contract import (
     ModelUsage,
     ToolCall,
 )
+from plugins.models.contract import RetryWaitInterrupted
 from plugins.models.contract import EmptyResponseError, InputReductionRequired, ModelAttemptStatus
 from agent.plugin_composition.tasks import register_task_bound_context
 from core.common.file_io import run_file_io
@@ -442,7 +443,7 @@ class _BoundChat:
                         ), "attempt_status": replace(attempt_status, next_attempt_at=float(next_at)).encode()})
                     # 等待可取消；已结算的失败与允许时间保留，恢复按剩余额度继续。
                     log_timing("model.retry.wait", request_id=request_key, counts={"attempt": len(records) + 1})
-                    await asyncio.sleep(delay)
+                    await _wait_retry(delay, request.retry_wake, None if budget is None else budget - len(records))
             # 2. 先原子登记新的物理尝试，再调用单次 driver。
             owner_id = (
                 f"{self._store.host_epoch or 0}:{_PROCESS_INSTANCE}"
@@ -2471,6 +2472,19 @@ def _driver_connection_descriptor(
         auth_identity=connection.auth_identity,
         config=_driver_config(connection.driver_config),
     )
+
+
+# Backoff stays cancellable; a wake ends this key and hands back only its unused attempts.
+async def _wait_retry(delay: float, wake: asyncio.Event | None, remaining: int | None) -> None:
+    if wake is None:
+        await asyncio.sleep(delay)
+        return
+    try:
+        async with asyncio.timeout(delay):
+            _ = await wake.wait()
+    except TimeoutError:
+        return
+    raise RetryWaitInterrupted("调用方结束了本次退避等待", remaining_attempts=remaining).exception()
 
 
 # Models consumes its own deadline before passing provider config to a driver.
