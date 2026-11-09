@@ -8,6 +8,10 @@
 
 > 2026-10-25：连续前缀与只处理末尾增量的约束由 [0134](0134-compaction-covers-message-identities.md)
 > 替代。工具批次配对、容量、原消息保全和真实摘要输入分区规则保持有效。
+> 2026-11-09：新增参考 Claude Code `timeBasedMCConfig` 的请求前空闲压缩触发（`trigger="idle"`）：
+> 当新回合尾部 `Input` 距上一条已结算非 `Input` 消息达到 `idle_trigger_minutes`（默认 60 分钟，
+> 服务端 KV 缓存已过期）且完整请求估算达到 `idle_trigger_tokens`（默认 200,000 tokens）时，
+> 在发送首步请求前按同一已结算批次切点生成增量摘要并保留近期原文目标（默认 20,000 tokens）。
 
 ## 背景
 

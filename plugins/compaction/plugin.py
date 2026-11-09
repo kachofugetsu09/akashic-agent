@@ -22,7 +22,10 @@ from plugins.models.contract import (
     CHAT_MODELS, MODEL_CATALOG, BoundChatModel, ContextModel, ModelChoice, ModelError, ModelExecution,
     ModelRequest, ModelUnavailableError, ModelUse, model_options,
 )
-from plugins.context.contract import CONTEXT, MATERIALS_V4, OUTPUT_RESERVE_TOKENS, MaterialData, ReductionStatus, SUMMARY_SOFT_LIMIT, output_reserve, summary_due
+from plugins.context.contract import (
+    CONTEXT, IDLE_COMPACT_MINUTES, IDLE_COMPACT_TOKENS, MATERIALS_V4, OUTPUT_RESERVE_TOKENS,
+    MaterialData, ReductionStatus, SUMMARY_SOFT_LIMIT, output_reserve, summary_due,
+)
 from plugins.ledger.contract import BINDINGS
 from plugins.ledger.contract import MESSAGE_CATALOG, OWNER_STATE
 from plugins.ledger.contract import HistoryWindow, Input, Message
@@ -45,7 +48,7 @@ inject = (PLUGIN_CONFIG, MATERIALS_V4, CONTEXT, OWNER_STATE, BINDINGS, MESSAGE_C
 
 
 SETTINGS = ServiceKey[Configuration]("compaction.settings.v1")
-SETTING_FIELDS = ("model", "keep_recent_tokens")
+SETTING_FIELDS = ("model", "keep_recent_tokens", "idle_trigger_minutes", "idle_trigger_tokens")
 # 摘要默认跟随本轮对话的模型（窗口与业务一致）；也可跟随默认或指定一个更便宜的模型。
 # 摘要输入按摘要模型自己的窗口裁剪，所以必须是上下文窗口已确认的模型。
 SUMMARY_MODEL = ModelUse("compaction", "上下文压缩", follows=("session", "default"), needs=frozenset({"context_window"}))
@@ -62,6 +65,8 @@ class _SummaryFailures:
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
     keep_recent_tokens: int = Field(default=20_000, gt=0, strict=True)
+    idle_trigger_minutes: int = Field(default=IDLE_COMPACT_MINUTES, ge=0, strict=True)
+    idle_trigger_tokens: int = Field(default=IDLE_COMPACT_TOKENS, gt=0, strict=True)
     model: ModelChoice = ModelChoice(follow="session")
 
     @field_validator("model")
@@ -252,8 +257,12 @@ async def apply(ctx: Context) -> None:
         )
         window = projection.context_window
         before = projection.estimate(request)
-        if window is None or not snapshot or not summary_due(before, window, force=force):
+        if window is None or not snapshot or not summary_due(
+            before, window, force=force, snapshot=snapshot,
+            idle_minutes=config.idle_trigger_minutes, idle_tokens=config.idle_trigger_tokens,
+        ):
             return None
+        soft_due = force or before >= int(window * SUMMARY_SOFT_LIMIT)
         state = records()
         parent = await run_file_io(lambda: state.head(snapshot[0].session_id))
         current_summary = materials.get("summary")
@@ -269,6 +278,8 @@ async def apply(ctx: Context) -> None:
         pending = tuple(message for message in (snapshot if summary_limit is None else snapshot[:summary_limit])
                         if message.message_id not in parent_ids)
         groups = closed_groups(pending, turns, settled_prefixes=context.settled_prefixes)
+        if not soft_due and not groups:
+            return None
         # 没有新的已结算批次时，0 表示只重写父摘要本身。
         sizes = range(len(groups), 0, -1) if groups else range(0 if parent is not None else -1, -1, -1)
         selected: int | None = None
@@ -310,12 +321,17 @@ async def apply(ctx: Context) -> None:
                 selected = size
                 break
         if selected is None:
-            # 没有切点能回到软水位时仍摘要全部已结算内容；是否放得下交给下面的硬容量核对。
-            selected, retained_tokens = (fallback, retained_tokens) if fallback is not None else (deepest, deepest_tokens)
-            if selected and on_status is not None:
-                await on_status(f"上下文空间不足，这一轮只保留了最近约 {retained_tokens:,} tokens 的原文"
-                                f"（目标 {config.keep_recent_tokens:,}），更早的内容改用摘要。"
-                                "当前输入和进行中的工具调用完整保留。", True)
+            if not soft_due:
+                if fallback is None or fallback == 0:
+                    return None
+                selected, retained_tokens = fallback, retained_tokens
+            else:
+                # 没有切点能回到软水位时仍摘要全部已结算内容；是否放得下交给下面的硬容量核对。
+                selected, retained_tokens = (fallback, retained_tokens) if fallback is not None else (deepest, deepest_tokens)
+                if selected and on_status is not None:
+                    await on_status(f"上下文空间不足，这一轮只保留了最近约 {retained_tokens:,} tokens 的原文"
+                                    f"（目标 {config.keep_recent_tokens:,}），更早的内容改用摘要。"
+                                    "当前输入和进行中的工具调用完整保留。", True)
         if selected is None:
             if before + output_reserve(request.max_output_tokens, window) <= window:
                 return None
@@ -341,7 +357,8 @@ async def apply(ctx: Context) -> None:
                 source_message_ids=tuple(message.message_id for message in snapshot if message.message_id in covered),
                 summary_message_ids=summary_ids,
                 omitted_message_ids=tuple(message.message_id for message in added if message.message_id not in kept),
-                content=text, model_call_ids=calls, trigger="context_overflow" if force else "soft_limit",
+                content=text, model_call_ids=calls,
+                trigger="context_overflow" if force else ("soft_limit" if soft_due else "idle"),
                 context_window=window, max_output_tokens=request.max_output_tokens,
                 keep_recent_tokens=config.keep_recent_tokens, tokens_before=before, tokens_after=0,
             )
@@ -408,11 +425,14 @@ async def apply(ctx: Context) -> None:
         """软水位失败可继续；硬容量或 provider 明确拒绝必须保留失败原因。"""
         window = projection.context_window
         before = projection.estimate(request)
-        if window is None or not snapshot or not summary_due(before, window, force=force):
+        if window is None or not snapshot or not summary_due(
+            before, window, force=force, snapshot=snapshot,
+            idle_minutes=config.idle_trigger_minutes, idle_tokens=config.idle_trigger_tokens,
+        ):
             return None
         hard_limit = (force and required) or before + output_reserve(request.max_output_tokens, window) > window
         # An optional shrink must not rewrite a request already within the raw-history target.
-        if force and not hard_limit and before <= config.keep_recent_tokens:
+        if (force or before < int(window * SUMMARY_SOFT_LIMIT)) and not hard_limit and before <= config.keep_recent_tokens:
             return None
         state = failure_state(snapshot, source, model)
         budget = (f"模型 {model.descriptor.model_id}；窗口 {window:,}；输入估算 {before:,}；"
