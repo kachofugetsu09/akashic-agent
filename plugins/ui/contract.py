@@ -34,7 +34,7 @@ from agent.plugin_composition.plugin_config import PLUGIN_CONFIG
 
 from plugins.ledger.contract import MessagePage, MessageReader, SessionEntry
 from plugins.ledger.contract import ContentPart, Control, Input, Message, Output, ToolCall, ToolResult, json_value
-from plugins.ledger.contract import origin
+from plugins.ledger.contract import has_partial_text, origin
 from plugins.tools.contract import ToolDisplay
 
 DashboardRoute = APIRoute | WebSocketRoute
@@ -464,7 +464,8 @@ def _message_row(
     if isinstance(body, Input):
         row["body"] = {"kind": "input", "parts": parts}
     elif isinstance(body, Output):
-        row["body"] = {"kind": "output", "parts": parts, "finish": body.finish}
+        row["body"] = {"kind": "output", "parts": parts, "finish": body.finish,
+                       **({"truncated": True} if has_partial_text(body) else {})}
     else:
         row["body"] = {"kind": "tool_result", "parts": parts,
                        "call_ref": asdict(body.call_ref), "outcome": body.outcome}

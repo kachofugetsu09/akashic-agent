@@ -63,7 +63,7 @@ result = client.request("programmatic/message/result", {
 })
 ```
 
-程序 Session 默认内部展示、排除学习。首次 `admit` 可传 `persist_memory=True`；以后不能更改。同 ID 的相同准入和相同输入可幂等重试。`result.status` 为 `open` 时继续从 `through_seq` 订阅消息后查询；`complete`/`quiet` 返回确切 `ending_message_id` 和 `ending_seq`，`pause`/`failure` 是可恢复的非成功结果，`abandoned` 表示该输入已放弃。停止使用 `programmatic/message/pause`，参数为 Session ID 和新的 Message ID；恢复使用 `programmatic/message/resume`，另传原 `input_id`。
+程序 Session 默认内部展示、排除学习。首次 `admit` 可传 `persist_memory=True`；以后不能更改。同 ID 的相同准入和相同输入可幂等重试。`result.status` 为 `open` 时继续从 `through_seq` 订阅消息后查询；`complete`/`quiet` 返回确切 `ending_message_id` 和 `ending_seq`（回答被长度截断后续写时，另带接回后的 `full_text`），`pause`/`failure` 是可恢复的非成功结果，`abandoned` 表示该输入已放弃。停止使用 `programmatic/message/pause`，参数为 Session ID 和新的 Message ID；恢复使用 `programmatic/message/resume`，另传原 `input_id`。
 
 ```bash
 python main.py exec --new --final-only "检查当前项目"

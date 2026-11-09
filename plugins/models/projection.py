@@ -19,6 +19,7 @@ from plugins.models.contract import (
     RequestSource,
 )
 from plugins.models.contract import BoundChatModel, BoundModelDescriptor
+from plugins.ledger.contract import has_partial_text
 from plugins.ledger.contract import (
     CallRef,
     ContentPart,
@@ -93,6 +94,12 @@ def _limit_tool_text(
             result.append(preview)
             inserted = True
     return tuple(result), True
+
+
+_PARTIAL_TEXT_HINT = (
+    "上一条回复达到输出长度限制，在此处被截断。请从断点直接接着写，不要重复已写内容；"
+    "如果这之后有新的用户消息，以新消息为准。"
+)
 
 
 def response_facts(
@@ -761,6 +768,9 @@ class MessageProjection:
                 {"type": "text", "text": "宿主随上面这条 Agent 回复发出的附件（由回复里的内容标记生成，不是回复文字，不要在回复里写出）："},
                 *attached,
             ]})
+        # 提示只从本行派生，不进账本；历史重放逐字相同，所以缓存前缀稳定。放弃之后不再有断点可接。
+        if has_partial_text(body) and not hidden and message.message_id not in fold.abandoned:
+            msg_rows.append({"role": "user", "content": [{"type": "text", "text": _PARTIAL_TEXT_HINT}]})
 
         # 3. 行在此冻结；动态 kind、外部引用与实际转换命中均保留逐轮重算。
         dynamic_kinds = self._dynamic_content_kinds

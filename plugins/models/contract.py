@@ -127,6 +127,13 @@ class LLMResponse:
 StreamCallback: TypeAlias = Callable[[dict[str, str]], Awaitable[None]]
 
 
+# 流式正文落账前的统一整理：行首空白留给 ReAct 判断（续写段要保留）；
+# 被长度截断的段连行尾一起保留，断点可能正落在换行或空格上。
+def stream_text(raw: str, finish_reason: str | None) -> str | None:
+    text = raw if finish_reason == "length" else raw.rstrip()
+    return text if text.strip() else None
+
+
 @dataclass(frozen=True, slots=True)
 class ModelAttemptStatus:
     """重试期间对用户可见的尝试进度；经 on_delta 的 attempt_status 键以 JSON 传递，空串表示清除。"""

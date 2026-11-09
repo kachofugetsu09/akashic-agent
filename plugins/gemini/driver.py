@@ -387,9 +387,14 @@ def _chunk(data: Mapping[str, Any]) -> tuple[list[dict[str, Any]], str | None, M
 
 def _answer(parts: list[dict[str, Any]], finish: str | None, usage: ModelUsage | None) -> LLMResponse:
     """展示文本与工具请求各取所需；签名和原部件仍由账本完整保存。"""
-    if finish in {'MAX_TOKENS', 'MALFORMED_FUNCTION_CALL'}:
-        return LLMResponse(None, finish_reason='length' if finish == 'MAX_TOKENS' else 'malformed_function_call', usage=usage,
-                           output_discarded=bool(parts))
+    if finish == 'MALFORMED_FUNCTION_CALL':
+        return LLMResponse(None, finish_reason='malformed_function_call', usage=usage, output_discarded=bool(parts))
+    if finish == 'MAX_TOKENS':
+        # 只有纯文本截断保留正文；带工具调用部件时交给 ReAct 按拒绝提示处理。
+        truncated = None if any('functionCall' in part for part in parts) else ''.join(
+            part.get('text', '') for part in parts if not part.get('thought'))
+        return LLMResponse(truncated or None, finish_reason='length', usage=usage,
+                           output_discarded=not truncated and bool(parts))
     if finish is None or not parts:
         raise TransportError("Gemini 返回了未结束或空的响应").exception()
     if finish not in {'STOP', 'MAX_TOKENS'}:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from plugins.models.contract import describe_transport_error, estimate_tokens
+from plugins.models.contract import describe_transport_error, estimate_tokens, stream_text
 
 # Provider JSON is validated at this boundary. Pyright cannot retain all narrowing.
 # pyright: reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownArgumentType=false
@@ -349,7 +349,8 @@ async def _consume_stream(
                 details = response_payload.get("incomplete_details")
                 if isinstance(details, Mapping) and details.get("reason") == "max_output_tokens":
                     return LLMResponse(
-                        content="".join(content).strip() or None,
+                        # 半截工具调用的文本不算截断正文，交给 ReAct 按拒绝提示处理。
+                        content=None if tool_args else stream_text("".join(content), "length"),
                         thinking="".join(thinking).strip() or None,
                         finish_reason="length", usage=_parse_usage(response_payload.get("usage")),
                         output_discarded=bool(tool_args),
@@ -388,7 +389,7 @@ async def _consume_stream(
     calls = [_tool_call(item) for item in tool_args.values() if item.get("name")]
     continuation_items = (*previous_items, *new_items)
     return LLMResponse(
-        content="".join(content).strip() or None,
+        content=stream_text("".join(content), None),
         tool_calls=calls,
         thinking="".join(thinking).strip() or None,
         continuation=ModelContinuation(

@@ -25,7 +25,7 @@ export type TimelinePart =
 
 export type TimelineBody =
   | { kind: "input"; parts: TimelinePart[] }
-  | { kind: "output"; parts: TimelinePart[]; finish: "continue" | "complete" | "quiet" }
+  | { kind: "output"; parts: TimelinePart[]; finish: "continue" | "complete" | "quiet"; truncated?: boolean }
   | { kind: "tool_result"; parts: TimelinePart[]; call_ref: { message_id: string; part_index: number }; outcome: "success" | "denied" | "error" | "interrupted" }
   | { kind: "control"; action: "pause" | "resume" | "abandon" | "failure"; through_seq: number; reason: string | null };
 
@@ -233,6 +233,21 @@ export function timelineText(message: TimelineMessage): string {
       : !("display" in part) && part.kind === "context.notice" ? [part.value.text] : []).join("\n");
 }
 
+/** 复制整段回答：把同一轮被截断的段接回结局，规则与服务端 with_truncated_head 相同。 */
+export function timelineReplyText(messages: TimelineMessage[], message: TimelineMessage): string {
+  const tail = timelineText(message);
+  if (message.body.kind !== "output" || message.body.finish !== "complete") return tail;
+  const join = (text: string, segment: string) => segment.trimStart().startsWith(text.trim()) ? segment.trimStart() : text + segment;
+  let head = "", gap = false;
+  for (const row of messages) {
+    if (row.source !== message.source || row.seq >= message.seq) continue;
+    if (row.body.kind === "input" || (row.body.kind === "control" && row.body.action === "abandon")) { head = ""; gap = false; }
+    else if (timelineTruncated(row)) { head = join(head + (gap && head ? "\n\n" : ""), timelineText(row)); gap = false; }
+    else if (row.body.kind === "output") gap = true;
+  }
+  return head ? join(head + (gap ? "\n\n" : ""), tail) : tail;
+}
+
 /** 工具数据只交给通用结果视图，不把结构化内容伪装成聊天正文。 */
 export function timelineToolOutput(message: TimelineMessage): unknown {
   if (message.body.kind !== "tool_result") return undefined;
@@ -356,6 +371,10 @@ function hasReplyBody(message: TimelineMessage): boolean {
     !PROCESS_PARTS.has(part.kind) && !("display" in part && part.display === "thinking") && isTimelinePartVisible(part));
 }
 
+export function timelineTruncated(message: TimelineMessage): boolean {
+  return message.body.kind === "output" && message.body.truncated === true;
+}
+
 // 工具结果里的图片是给模型看的观察（截图、读图），跟随所属调用；文件附件才是交给用户的回复产物。
 export function timelineDeliversAttachment(message: TimelineMessage): boolean {
   return message.body.kind === "tool_result" && message.attachments.some((ref) => ref.kind === "file");
@@ -452,7 +471,12 @@ export function timelineReplyGroups(messages: TimelineMessage[], activities: Rep
       const prior = members.at(-1);
       if (prior) hiddenBodies.add(prior.id);
       members.push(message);
-      if (body.finish === "continue") pending.set(key, members);
+      // 被截断的正文是回答的一段，不是过程：留在原位，续写接在下面，末尾才挂时间与操作。
+      if (timelineTruncated(message)) {
+        if (members.length > 1) completed.set(message.id, members);
+        joined.add(message.id);
+        pending.delete(key);
+      } else if (body.finish === "continue") pending.set(key, members);
       else {
         if (members.length > 1) completed.set(message.id, members);
         pending.delete(key);

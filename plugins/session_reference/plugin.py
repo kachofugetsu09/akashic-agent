@@ -30,7 +30,9 @@ from plugins.ledger.contract import (
     Message,
     MessageReader,
     Output,
+    has_partial_text,
     json_value,
+    with_truncated_head,
 )
 from plugins.tools.contract import TOOLS, CallSource, ProviderBoundTool, Result
 from plugins.ui.contract import part_display_key
@@ -103,6 +105,20 @@ def _text_of(message: Message) -> str:
     return "\n".join(chunks).strip()
 
 
+# 结局接回同一轮的截断正文；第二个值是被接回部分的起点，调用方据此不再单列那些截断行。
+async def _whole_reply(reader: MessageReader, message: Message) -> tuple[Message, int | None]:
+    if not isinstance(message.body, Output) or message.body.finish != "complete":
+        return message, None
+
+    def read(current: MessageReader) -> tuple[Message, int | None]:
+        full = with_truncated_head(current, message)
+        if full is message:
+            return message, None
+        return full, current.latest_input_seq(message.source, through_seq=message.seq) or -1
+
+    return await reader.read_async(read)
+
+
 def _clip(text: str) -> str:
     return text if len(text) <= MAX_MESSAGE_CHARS else (
         text[:MAX_MESSAGE_CHARS] + f"\n…（已截断，原文 {len(text)} 字）"
@@ -157,6 +173,8 @@ class ReadSession:
         scanned = 0
         exhausted = False
         over_budget = False
+        # 倒序扫描：结局已带上接回的正文时，这一轮的截断行不再单列一遍。
+        covered_after: int | None = None
         while len(rows) < requested.limit and not exhausted:
             page = await reader.read_tail_async(before_seq=before_seq, limit=READ_PAGE)
             if not page.messages:
@@ -164,7 +182,11 @@ class ReadSession:
                 break
             scanned += len(page.messages)
             for message in reversed(page.messages):
-                text = _text_of(message)
+                if covered_after is not None and message.seq > covered_after and has_partial_text(message.body):
+                    continue
+                full, covered = await _whole_reply(reader, message)
+                covered_after = covered_after if covered is None else covered
+                text = _text_of(full)
                 if not text:
                     continue
                 clipped = _clip(text)

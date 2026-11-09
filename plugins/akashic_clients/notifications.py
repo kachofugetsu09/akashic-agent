@@ -4,11 +4,11 @@ import asyncio
 import json
 from collections.abc import AsyncGenerator, Callable, Mapping
 from contextlib import AbstractAsyncContextManager
-from typing import Annotated
+from typing import cast, Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
 
-from plugins.ledger.contract import ContentPart, Input, Message, Output
+from plugins.ledger.contract import ContentPart, Input, Message, MessageReader, Output, with_truncated_head
 
 from .services import MessageCatalogPort, MessagePagePort, SessionEntryPort
 
@@ -93,6 +93,12 @@ class NotificationFeed:
     async def baseline(self) -> Cursor:
         return dict(await self.heads())
 
+    # 提醒预览和其他读者一样看到接回后的整段回答。
+    async def reply(self, entry: SessionEntryPort, message: Message) -> Message:
+        async with self._open_catalog() as catalog:
+            return await catalog.reader(entry.session_id).read_async(
+                lambda reader: with_truncated_head(cast(MessageReader, reader), message))
+
     async def read(self, entry: SessionEntryPort, after: int) -> MessagePagePort | None:
         """页面使用当前 head；会话被用户删除时本轮跳过，绝不写回消息。"""
         async with self._open_catalog() as catalog:
@@ -153,7 +159,7 @@ async def _replay(feed: NotificationFeed, cursor: Cursor, marks: Mapping[str, in
                 break
             for message in page.messages:
                 if is_notifiable(message) and message.seq > marks.get(entry.session_id, -1):
-                    yield _event("message", _item(message, entry))
+                    yield _event("message", _item(await feed.reply(entry, message), entry))
             after = page.messages[-1].seq if page.has_more else page.through_seq
             cursor[entry.session_id] = after
             yield _event("cursor", {"session_id": entry.session_id, "seq": after})

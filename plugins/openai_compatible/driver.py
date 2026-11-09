@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from plugins.models.contract import stream_text
 from plugins.models.contract import describe_transport_error
 
 from core.common.diagnostic_log import log_timing
@@ -958,14 +959,16 @@ async def _consume_stream(
         error = TransportError("stream ended before its terminal marker").exception()
         raise _StreamReadError(error, response_delta_seen=response_delta_seen)
     parsed_content, parsed_thinking = _split_tagged_thinking(
-        "".join(content).strip() or None,
+        stream_text("".join(content), finish_reason),
         "".join(thinking).strip() or None,
+        finish_reason,
     )
     if not native_reasoning_seen and not tool_seen:
         if legacy_candidate is not None:
             candidate_content, candidate_thinking = _split_tagged_thinking(
                 legacy_candidate,
                 None,
+                finish_reason,
             )
             if candidate_thinking:
                 await _emit_delta(on_delta, {"thinking_delta": candidate_thinking})
@@ -974,7 +977,8 @@ async def _consume_stream(
         elif pending_content:
             await _emit_delta(on_delta, {"content_delta": pending_content})
     return LLMResponse(
-        content=parsed_content,
+        # 半截工具调用的文本不算截断正文，交给 ReAct 按拒绝提示处理。
+        content=None if finish_reason == "length" and calls else parsed_content,
         thinking=parsed_thinking,
         tool_calls=() if finish_reason == "length" else _tool_calls(calls),
         finish_reason=finish_reason,
@@ -986,7 +990,7 @@ async def _consume_stream(
 # 完整响应沿用流式路径的旧式 <think> 标签拆分。
 def _tagged_completion(payload: Mapping[str, Any]) -> LLMResponse:
     reply = chat_completion_response(payload)
-    content, thinking = _split_tagged_thinking(reply.content, reply.thinking)
+    content, thinking = _split_tagged_thinking(reply.content, reply.thinking, reply.finish_reason)
     return replace(reply, content=content, thinking=thinking)
 
 
@@ -1023,6 +1027,7 @@ def _client(connection: _ConnectionConfig, token: str | None = None) -> httpx.As
 def _split_tagged_thinking(
     content: str | None,
     thinking: str | None,
+    finish_reason: str | None,
 ) -> tuple[str | None, str | None]:
     """Read legacy think tags only when the provider has no reasoning field."""
 
@@ -1030,8 +1035,12 @@ def _split_tagged_thinking(
         return content, thinking
     match = _THINK_RE.search(content)
     if match is None:
+        # 思考中途被长度截断：还没有正文，其余内容都是推理，不能落进回答。
+        opened = content.lstrip()
+        if finish_reason == "length" and opened.startswith("<think>"):
+            return None, opened.removeprefix("<think>").strip() or None
         return content, None
-    answer = _THINK_RE.sub("", content).strip() or None
+    answer = _THINK_RE.sub("", content).lstrip() or None
     return answer, match.group(1).strip() or None
 
 
