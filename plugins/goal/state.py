@@ -282,6 +282,19 @@ def set_token_budget(
     return updated
 
 
+# 目标离开 active 时写进聊天的一行结局，告诉用户原因和能做什么。
+def stop_notice(goal: Goal) -> str:
+    if goal.status is GoalStatus.COMPLETE:
+        return "目标已完成。"
+    if goal.status is GoalStatus.BUDGET_LIMITED:
+        action = "用 /goal budget <n> 调整预算后可继续。"
+    elif goal.continuations >= DEFAULT_MAX_CONTINUATIONS:
+        action = "发送 /goal clear 后重新设置目标。"
+    else:
+        action = "发送 /goal resume 继续。"
+    return f"目标已停止（{goal.status.value}）：{goal.last_reason or '未记录原因'}。{action}"
+
+
 def status_text(goal: Goal) -> str:
     lines = [
         f"目标：{goal.objective}",

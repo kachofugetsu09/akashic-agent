@@ -74,6 +74,7 @@ def goal_harness(tmp_path: Path, owner: str = "goal") -> GoalHarness:
         catalog=_Catalog(log),
         writers=_Writers(log),
         content=_Content(),
+        check_notice=lambda part: ContentReferences(),
     )
     return GoalHarness(log, store)
 
