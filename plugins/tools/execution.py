@@ -48,9 +48,27 @@ async def _commit_before_cancel(
             break
         except asyncio.CancelledError as cancellation:
             cancelled = cancellation
+        except MessageConflict:
+            raise
+        except Exception as error:
+            # 已被取消时，门中止或提交失败不能顶替取消，否则关闭流程把它当成 Task 失败而中断清理。
+            if cancelled is None:
+                raise
+            raise cancelled from error
     if cancelled is not None:
         raise cancelled
     return finished
+
+
+# 取消路径上读日志：重复取消不能丢掉判定，读失败按未停止处理，不能顶替取消。
+async def _stopped_during_cancel(reply: MessageReply) -> bool:
+    while True:
+        try:
+            return await run_file_io(reply.stopped)
+        except asyncio.CancelledError:
+            continue
+        except (Exception, BaseExceptionGroup):
+            return False
 
 
 # Turn provider cleanup failures into receipts without hiding invoke cancellation.
@@ -296,10 +314,15 @@ class ToolExecution:
             return await commit(Result("error", (ContentPart("text", _UNKNOWN_OUTCOME),)))
         try:
             result = await self._invoke_message(task, key, binding_id, arguments, reply, source, mark)
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as cancelled:
             # 用户停止时还没进入 invoke：当场写「未执行」放行同批后继，它们已完成的结果才能按序提交。
-            if key not in invoked_unrecorded and reply.stopped():
-                _ = await commit(Result("denied", (ContentPart("text", STOPPED_NOT_STARTED),)))
+            if key not in invoked_unrecorded and await _stopped_during_cancel(reply):
+                try:
+                    _ = await commit(Result("denied", (ContentPart("text", STOPPED_NOT_STARTED),)))
+                except MessageConflict:
+                    raise
+                except Exception as error:
+                    raise cancelled from error
             raise
         except _Failed as failure:
             try:

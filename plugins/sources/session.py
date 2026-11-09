@@ -113,10 +113,15 @@ def _read_stop(reader: MessageReader, source: str, hint: object) -> Message | No
     # 之后可能紧接着又有新输入（停止后马上发送），只看任务边界之后最近的控制。
     # /abandon 先暂停再放弃；取消排空慢于放弃提交时读到的是放弃。
     latest = reader.latest_control(source, through_seq=head)
-    if (latest is not None and latest.seq > hint and isinstance(latest.body, Control)
-            and latest.body.action in {"pause", "abandon"}):
-        return latest
-    return None
+    if (latest is None or latest.seq <= hint or not isinstance(latest.body, Control)
+            or latest.body.action not in {"pause", "abandon"}):
+        return None
+    # 控制覆盖了撤权本程序的新输入：用户停的是回复轮，本程序之后照常重试。
+    # 只结束旧回合的暂停 through 停在新输入之前，停的仍是本程序。
+    newer_input = reader.latest_input_seq(source, through_seq=latest.seq)
+    if newer_input is not None and newer_input > hint and latest.body.through_seq >= newer_input:
+        return None
+    return latest
 
 
 class SourceSession:

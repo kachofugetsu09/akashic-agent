@@ -11,7 +11,6 @@ from agent.plugin_composition import Context, RuntimeScope
 from plugins.ledger.contract import MessageCatalog, MessageReader
 from agent.plugin_composition.model import CompositionError
 from agent.plugin_composition.tasks import RestartGate, Task, TaskServiceClosed
-from plugins.ledger.contract import Control, Input, Output
 from plugins.sources.contract import (
     AsyncSource as Source,
     SourcesV5 as Sources,
@@ -571,22 +570,14 @@ class _Follower:
         reader = self._catalog.reader(session_id)
 
         def read(reader: MessageReader) -> bool:
-            terminal = False
-            # 回合内每条提交都会来复查；边界后没有新输入时走索引，不解码这段日志。
+            # 「终态之后有输入」等价于「最新输入之前有终态」；回合内每条提交都会来复查，全走索引不解码日志。
             latest = reader.latest_input_seq(source_name, through_seq=reader.head())
             if latest is None or latest <= boundary:
                 return False
-
-            def consume(rows) -> bool:
-                nonlocal terminal
-                for message in rows:
-                    if isinstance(message.body, Output) and message.body.finish != "continue" or isinstance(message.body, Control):
-                        terminal = True
-                    if terminal and isinstance(message.body, Input):
-                        return True
-                return False
-
-            return reader.scan(consume, after_seq=boundary, source=source_name)
+            if reader.latest_finished_output_seq(source_name, after_seq=boundary, through_seq=latest) is not None:
+                return True
+            control = reader.latest_control(source_name, through_seq=latest)
+            return control is not None and control.seq > boundary
 
         return await reader.read_async(read)
 
