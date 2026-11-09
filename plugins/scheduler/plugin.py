@@ -19,19 +19,23 @@ from plugins.ledger.contract import (
     MESSAGE_CATALOG,
     MESSAGE_WRITERS,
     OWNER_STATE,
+    SESSION_ADMISSION,
     MessageReader,
 )
 from agent.plugin_composition.tasks import TASKS, Task
 from plugins.timer.contract import TIMERS
 from plugins.ledger.contract import Message
-from plugins.sources.contract import SourceGuard
+from plugins.sources.contract import (
+    SOURCE_CHECK_V2 as SOURCE_CHECK,
+    SourceGuard,
+)
 from plugins.reply_program.contract import (
     REPLY_EXECUTE_V4 as REPLY_EXECUTE,
 )
 
 from .inputs import (
-    ALL_TOOLS, CONTENT, CONVERSATION_COMPLETE, DELIVERY, DELIVERY_SENDERS, INPUT_ORIGIN,
-    TOOL_LOADING_PRESENTATION, TOOLS, CallSource,
+    ALL_TOOLS, CONTENT, DELIVERY, DELIVERY_SENDERS, INPUT_ORIGIN,
+    MODEL_SELECTION, TOOL_LOADING_PRESENTATION, TOOLS, CallSource,
 )
 from .contract import SCHEDULER_INSPECTION
 from .inspection import SchedulerInspectionProvider
@@ -51,16 +55,17 @@ desc = "持久调度：到点在创建任务的会话里执行，最终回复按
 
 
 inject = (
-    PLUGIN_CONFIG, BINDINGS, TASKS, MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE,
+    PLUGIN_CONFIG, BINDINGS, TASKS, MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, SESSION_ADMISSION,
     CONTENT,
-    CONVERSATION_COMPLETE,
     DELIVERY_SENDERS,
     INPUT_ORIGIN,
+    MODEL_SELECTION,
     TIMERS,
     TOOLS,
     ALL_TOOLS,
     DELIVERY,
     REPLY_EXECUTE,
+    SOURCE_CHECK,
 )
 workspace_files = ("schedules.json",)
 # 工具与所在会话一致；只去掉写长期记忆的工具，用户不在场时不改记忆。
@@ -169,7 +174,7 @@ async def apply(ctx: Context) -> None:
                 presentation=presentation,
                 exclude_material_kinds=frozenset({'recall', 'profile'}),
                 prompt_hints=(_MODE_PROMPT,),
-                history="session" if fire.job.context == "session" else "own",
+                history="own",
             )
 
     async def start(_event: object) -> None:

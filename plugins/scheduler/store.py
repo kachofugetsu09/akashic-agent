@@ -52,8 +52,12 @@ class Fire:
         return fire_key(self.job)
 
     @property
+    def session_id(self) -> str:
+        return "scheduler:" + self.key
+
+    @property
     def source(self) -> str:
-        """每次触发独占目标会话里的一个来源；过程、恢复与竞争都只认它。"""
+        """每次触发独占一个来源；过程、恢复与投递都只认它。"""
         return "scheduler:" + self.key
 
     @property

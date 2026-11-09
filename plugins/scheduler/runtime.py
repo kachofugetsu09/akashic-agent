@@ -4,16 +4,18 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Iterable
 from datetime import UTC, datetime, timedelta
+from functools import partial
 
 from agent.plugin_composition import Context
-from plugins.ledger.contract import MESSAGE_CATALOG, MESSAGE_WRITERS
+from plugins.ledger.contract import MESSAGE_CATALOG, MESSAGE_WRITERS, SESSION_ADMISSION
 from agent.plugin_composition.tasks import TASKS, Task, TaskSlot
 from plugins.timer.contract import TIMERS
-from plugins.sources.contract import SourceGuard
-from .inputs import CONTENT, CONVERSATION_COMPLETE, DELIVERY, DELIVERY_SENDERS
+from plugins.sources.contract import SOURCE_CHECK_V2 as SOURCE_CHECK, SourceGuard
+from .inputs import CONTENT, DELIVERY, DELIVERY_SENDERS, MODEL_SELECTION
 from plugins.ledger.contract import BINDINGS
-from plugins.ledger.contract import MessageReader, MessageWriter
-from plugins.ledger.contract import ContentPart, Control, Input, Message, Output
+from plugins.ledger.contract import MessageReader, SessionAttributes
+from plugins.ledger.contract import ContentPart, Control, Input, Message, Output, ToolResult
+from plugins.working_directory.contract import WORKING_DIRECTORY
 
 from .store import Fire, JobStore, aware, fire_key
 from .tools import drain
@@ -120,20 +122,22 @@ class SchedulerRuntime:
         delivery = ctx.require(DELIVERY).open(ctx)
         target = ctx.require(MESSAGE_CATALOG).reader(fire.job.session_id)
         if fire.status == "cancelled":
-            final = await run_file_io(lambda: _final(target, fire))
+            final = target.get(fire.notification_id)
+            run_reader = ctx.require(MESSAGE_CATALOG).reader(fire.session_id)
+            run_final = await run_file_io(lambda: _final(run_reader, fire))
             # The old fire has drained before this task starts. Close its round so
-            # unfinished tool calls cannot block later session compaction.
-            if final is None:
+            # unfinished tool calls cannot block later inspection.
+            if run_final is None:
                 control_id = "scheduler-cancelled:" + fire.key
-                if target.get(control_id) is None:
-                    head = target.head(source=fire.source)
+                if run_reader.get(control_id) is None:
+                    head = run_reader.head(source=fire.source)
                     if head >= 0:
                         writer = ctx.require(MESSAGE_WRITERS).bind(
                             ctx, author="scheduler", source=fire.source, body_types=(Control,), content={},
-                        )(target.session_id)
+                        )(run_reader.session_id)
                         task.on_close(writer.expire)
-                        await writer.append_async(control_id, Control("abandon", head, fire.error),
-                                                  expected_source_head=head)
+                        _ = await writer.append_async(control_id, Control("abandon", head, fire.error),
+                                                      expected_source_head=head)
             selected = None if final is None else delivery.selection(final.message_id)
             if final is not None and selected is not None:
                 for sink in selected.sinks:
@@ -142,23 +146,39 @@ class SchedulerRuntime:
         if fire.status != "pending":
             return
 
-        # 1. 已有最终消息便直接恢复发送，不再次运行模型或工具；执行任务的目标会话已不存在时明确失败。
+        # 1. 已有最终通知便直接恢复发送，不再次运行模型或工具；执行任务的目标会话已不存在时明确失败。
         catalog = ctx.require(MESSAGE_CATALOG)
         if fire.job.action == "run" and not await run_file_io(lambda: catalog.exists(target.session_id)):
             await self.store.settle(key, "failed", now=self._now(), error="目标会话不存在")
             return
-        final = await run_file_io(lambda: _final(target, fire))
+        final = target.get(fire.notification_id)
         if final is None:
-            # 写入授权属于 scheduler 自己的 Task；会话执行位里只使用已绑定的 writer。
+            if fire.job.action == "notify":
+                parts: tuple[ContentPart, ...] = (ContentPart("text", fire.job.text),)
+            else:
+                result = await self._run(task, fire, target)
+                if not task.active:
+                    raise asyncio.CancelledError
+                if not isinstance(result.body, Output) or result.body.finish != "complete":
+                    error = result.body.reason if isinstance(result.body, Control) else "调度任务没有可发送的最终内容"
+                    await self.store.settle(key, "failed", now=self._now(), error=error)
+                    return
+                run_reader = catalog.reader(fire.session_id)
+                parts = await run_file_io(lambda: _collect_parts(run_reader, fire, result))
+                if not parts:
+                    await self.store.settle(key, "failed", now=self._now(), error="调度任务没有可发送的最终内容")
+                    return
+            await delivery.wait_idle(fire.job.channel, fire.job.chat_id)
+            if not task.active:
+                raise asyncio.CancelledError
+            content = ctx.require(CONTENT)
             writer = ctx.require(MESSAGE_WRITERS).bind(
                 ctx, author="scheduler", source=fire.source,
-                body_types=(Output,) if fire.job.action == "notify" else (Input, Control),
-                content={"text": ctx.require(CONTENT).check_text},
+                body_types=(Output,),
+                content={"text": content.check_text, "artifact_ref": content.check_artifact},
             )(target.session_id)
             task.on_close(writer.expire)
-            final = await (writer.append_async(fire.notification_id, Output((ContentPart("text", fire.job.text),), "complete"))
-                           if fire.job.action == "notify"
-                           else ctx.require(CONVERSATION_COMPLETE)(target.session_id, self._run(fire, writer)))
+            final = await writer.append_async(fire.notification_id, Output(parts, "complete"))
         if not task.active:
             raise asyncio.CancelledError
         if not isinstance(final.body, Output) or final.body.finish != "complete":
@@ -197,25 +217,86 @@ class SchedulerRuntime:
             errors = "; ".join(receipt.error or receipt.status for receipt in receipts if receipt.status != "delivered")
             await self.store.settle(key, "failed", now=self._now(), error=errors)
 
-    def _run(self, fire: Fire, writer: MessageWriter) -> Callable[[Task, MessageReader, SourceGuard], Awaitable[Message]]:
-        """主对话空闲后才执行；用户插话会撤权，之后从同一 Input 与已结算工具继续。"""
-        async def run(task: Task, reader: MessageReader, check_admission: SourceGuard) -> Message:
-            final = await run_file_io(lambda: _final(reader, fire))
-            if final is not None:
-                return final
-            if reader.get(fire.input_id) is None:
-                label = f"「{fire.job.name}」" if fire.job.name else ""
-                text = f"⏰ 定时任务{label}自动触发（不是用户发言）：\n{fire.job.text}"
-                _ = await writer.append_async(fire.input_id, Input((ContentPart("text", text),)))
-            try:
-                return await self._program(task, reader, check_admission, fire)
-            except Exception as error:
-                # Save every program failure before settling, so restart cannot repeat it.
-                check_admission()
-                _ = self._ctx.report_incident("scheduler_program_failed", f"fire={fire.key} {type(error).__name__}: {error}")
-                return await writer.append_async("scheduler-failure:" + fire.key,
-                    Control("failure", reader.head(source=fire.source), f"{type(error).__name__}: {error}"))
-        return run
+    async def _run(self, task: Task, fire: Fire, target: MessageReader) -> Message:
+        """每次触发在独立的 internal Session 执行；继承目标会话的模型选择与工作目录。"""
+        ctx = self._ctx
+        _ = await ctx.require(SESSION_ADMISSION).ensure_async(
+            ctx, fire.session_id, SessionAttributes(visibility="internal", learning="excluded"),
+        )
+        reader = ctx.require(MESSAGE_CATALOG).reader(fire.session_id)
+        final = await run_file_io(lambda: _final(reader, fire))
+        if final is not None:
+            return final
+        with ctx.borrow(WORKING_DIRECTORY) as directories:
+            if directories is not None:
+                target_cwd = directories.snapshot(target.session_id).path
+                if target_cwd is not None and directories.snapshot(fire.session_id).path != target_cwd:
+                    try:
+                        prepared_switch = await directories.prepare_switch(fire.session_id, target_cwd)
+                        _ = await directories.switch("scheduler-init:" + fire.key, prepared_switch)
+                    except Exception:
+                        logger.warning("调度任务初始工作目录写入失败 fire=%s cwd=%s", fire.key, target_cwd, exc_info=True)
+        writer = ctx.require(MESSAGE_WRITERS).bind(
+            ctx, author="scheduler", source=fire.source,
+            body_types=(Input, Control),
+            content={
+                "text": ctx.require(CONTENT).check_text,
+                "model.selection": ctx.require(MODEL_SELECTION).check,
+            },
+        )(fire.session_id)
+        task.on_close(writer.expire)
+        admitted = reader.get(fire.input_id)
+        if admitted is None:
+            label = f"「{fire.job.name}」" if fire.job.name else ""
+            text = f"⏰ 定时任务{label}自动触发（不是用户发言）：\n{fire.job.text}"
+            metadata = target.metadata()
+            saved = ctx.require(MODEL_SELECTION).read_saved(metadata if metadata is not None else {})
+            selection = () if saved.model_id is None and saved.reasoning_effort is None else (
+                ContentPart("model.selection", {
+                    "model_id": saved.model_id,
+                    "reasoning_effort": saved.reasoning_effort,
+                }),
+            )
+            admitted = await writer.append_async(fire.input_id, Input((ContentPart("text", text), *selection)))
+        task.boundary_hint = admitted.seq
+        check_admission = partial(ctx.require(SOURCE_CHECK), task, reader, fire.source, admitted.seq)
+        try:
+            return await self._program(task, reader, check_admission, fire)
+        except Exception as error:
+            # Save every program failure before settling, so restart cannot repeat it.
+            check_admission()
+            _ = self._ctx.report_incident("scheduler_program_failed", f"fire={fire.key} {type(error).__name__}: {error}")
+            return await writer.append_async("scheduler-failure:" + fire.key,
+                Control("failure", reader.head(source=fire.source), f"{type(error).__name__}: {error}"))
+
+
+def _collect_parts(reader: MessageReader, fire: Fire, final: Message) -> tuple[ContentPart, ...]:
+    """提取本次触发产出的文件附件（如 render_visual 的 HTML）与最终回复正文，不复制预检截图。"""
+    assert isinstance(final.body, Output)
+    seen: set[str] = set()
+    file_parts: list[ContentPart] = []
+
+    def collect(messages: Iterable[Message]) -> None:
+        for message in messages:
+            if isinstance(message.body, ToolResult) and message.body.outcome == "success":
+                file_ids = {ref.artifact_id for ref in reader.attachments(message.message_id) if ref.kind == "file"}
+                for part in message.body.parts:
+                    if isinstance(part, ContentPart) and part.kind == "artifact_ref" and isinstance(part.value, str):
+                        if part.value in file_ids and part.value not in seen:
+                            seen.add(part.value)
+                            file_parts.append(part)
+
+    reader.scan(collect, source=fire.source)
+    out_parts: list[ContentPart] = list(file_parts)
+    for part in final.body.parts:
+        if isinstance(part, ContentPart):
+            if part.kind == "artifact_ref" and isinstance(part.value, str):
+                if part.value not in seen:
+                    seen.add(part.value)
+                    out_parts.append(part)
+            elif part.kind == "text" and isinstance(part.value, str) and part.value.strip():
+                out_parts.append(part)
+    return tuple(out_parts)
 
 
 def _final(reader: MessageReader, fire: Fire) -> Message | None:
