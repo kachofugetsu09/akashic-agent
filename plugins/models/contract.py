@@ -6,6 +6,7 @@ import base64
 import io
 import json
 import math
+import re
 import socket
 import ssl
 from urllib.parse import urlsplit, urlunsplit
@@ -38,6 +39,7 @@ from typing import (
     cast,
     AsyncContextManager,
     Literal,
+    NamedTuple,
     TypeAlias,
     Any,
     Protocol,
@@ -106,6 +108,8 @@ class LLMResponse:
     call_record_id: str | None = None
     # 原生响应部件由调用账本保存，随同一 binding 的消息重放。
     provider_metadata: Mapping[str, Any] | None = None
+    # 长度截断时驱动丢弃了不完整的输出（工具片段等）；没有 usage 时它是区分真 0 输出的唯一证据。
+    output_discarded: bool = False
 
     def __post_init__(self) -> None:
         """冻结一次响应，多个请求等待者不能相互改变已结算事实。"""
@@ -1325,22 +1329,70 @@ CONNECTION_TYPES_SLOT = {
     "models.connection-types.v1": "8c304d85090a65a4a66cd777a5c2a88e6908de147964dc91e7f84336979ea561",
 }
 
-_CONTEXT_ERROR_CODES = (
-    "context_length_exceeded",
-    "context_window_exceeded",
-    "maximum context length",
-    "context window exceeds limit",
-    "range of input length",
-    "reduce the length",
-    "string too long",
-    "too many tokens",
-    "prompt is too long",
-    "input is too long",
+# 文案对照 pi-mono packages/ai/src/utils/overflow.ts；Copilot 一条收窄到 token count，避免命中无关的 "exceeds the limit"。
+_CONTEXT_ERROR = re.compile("|".join((
+    r"context[_ ]length[_ ]exceeded",
+    r"context_window_exceeded",
+    r"maximum context length",
+    r"context window exceeds limit",
+    r"exceeds the context window",
+    r"exceeds the available context size",
+    r"greater than the context length",
+    r"longer than the model'?s context length",
+    r"but the configured context size is",
+    r"input length and .*exceed context limit",
+    r"range of input length",
+    r"exceeds (?:the )?maximum allowed input length",
+    r"reduce the length",
+    r"too many tokens",
+    r"token limit exceeded",
+    r"exceeded model token limit",
+    r"token count of [\d,]+ exceeds the limit of",
+    r"input token count.*exceeds the maximum",
+    r"prompt (?:is )?too long",
+    r"prompt\s*超长",
+    r"prompt exceeds max length",
+    r"maximum prompt length is \d",
+    r"input is too long",
+    r"request_too_large",
+)), re.IGNORECASE)
+# 这些标记本身带引号或嵌在 JSON 文本里，对原文匹配。
+# OpenAI 的 string too long 带字段名：只有 messages/input 才是输入过长，tools[...] 的描述过长压缩帮不上忙。
+_OVERFLOW_MARKER = re.compile(
+    r"context_length_exceeded|context_window_exceeded|request_too_large"
+    r"|(?<![\w.\]])(?:messages|input)\b(?:(?!tools\[)[^:])*: string too long",
+    re.IGNORECASE,
 )
+# 对照 overflow.ts NON_OVERFLOW_PATTERNS；"too many tokens"、"token limit exceeded" 也可能是限流。
+_RATE_LIMIT_ERROR = re.compile(
+    r"rate[ _-]?limit|too many requests|throttl|tokens? per (?:minute|hour|day)|\btpm\b",
+    re.IGNORECASE,
+)
+# 弱 code 之下仍可信的额度文案；"billing" 这类泛词要有非弱 code 或 402/429 才算。
+_BALANCE_ERROR = re.compile(
+    r"credit balance|insufficient[ _](?:balance|credit|funds|quota)|exceeded your current quota|余额不足|账户已欠费|套餐已到期|套餐已失效",
+    re.IGNORECASE,
+)
+# 代理常把上游错误包成字符串，先取出里面的 message，否则下面的去引号会把正文一起去掉。
+_EMBEDDED_MESSAGE = re.compile(r"""["']message["']\s*:\s*(["'])((?:\\.|(?!\1).)*)""", re.DOTALL)
+# 引号内是回显的用户内容或字段值，不是上游的判断；"model's" 这样的撇号不算开引号。
+_QUOTED_ECHO = re.compile(r"""(?<!\w)'.*?(?:'(?!\w)|$)|(?<!\w)".*?(?:"(?!\w)|$)|`.*?(?:`|$)""", re.DOTALL)
+# GLM 码见 https://docs.bigmodel.cn/cn/api/api-code；MiniMax 1008 见 platform.minimax.io/docs/api-reference/errorcode。
+_QUOTA_CODES = frozenset({
+    "402", "1008", "1113", "1308", "1309", "1310", "1314", "1316", "1317", "1318", "1319", "1320", "1321",
+    "insufficient_quota", "insufficient_balance", "arrearage",
+})
+# MiniMax 1002、1039 的官方处置都是稍后重试。
+_RATE_LIMIT_CODES = frozenset({"429", "rate_limit_exceeded", "rate_limit_error", "slow_down", "1002", "1039"})
+# 只说明请求有问题的 code，具体原因仍看 message。
+_WEAK_CODES = frozenset({"400", "404", "422", "invalid_request_error", "invalid_request", "invalid_argument", "string_above_max_length"})
 _SAFETY_ERROR_CODES = (
     "content_filter",
     "content_policy_violation",
     "data_inspection_failed",
+    "bio_policy",
+    "cyber_policy",
+    "policy_violation",
     "safety",
     "moderation",
 )
@@ -1465,34 +1517,47 @@ def redact_secret_text(message: str, secret: str) -> str:
     return message
 
 
+class _ProviderError(NamedTuple):
+    code: str
+    # 展示用，含 code 前缀且已脱敏。
+    detail: str
+    kind: type[ModelError] | None
+    # 分类用，只有上游自己写的 message。
+    text: str
+
+
 # Keep provider diagnostics bounded while retaining the machine-readable code.
-def _provider_error_details(error: object, secret: str = "") -> tuple[str, str, type[ModelError] | None]:
+def _provider_error_details(error: object, secret: str = "") -> _ProviderError:
+    if not isinstance(error, Mapping):
+        detail = redact_secret_text(error if isinstance(error, str) else "", secret)[:500]
+        return _ProviderError("", detail or "unknown provider error", None, detail)
+    raw = cast(Mapping[str, object], error)
     kind = None
-    if isinstance(error, Mapping):
-        raw = cast(Mapping[str, object], error)
-        code = str(raw.get("code") or raw.get("reason") or raw.get("type") or "")
-        metadata = raw.get("metadata")
-        error_type = metadata.get("error_type") if isinstance(metadata, Mapping) else None
-        message = raw.get("message")
-        detail = ": ".join(value for value in (code, error_type, message) if isinstance(value, str) and value)
-        if isinstance(error_type, str) and error_type:
-            kind = _PROVIDER_ERROR_TYPES.get(error_type.lower(), ModelError)
-    else:
-        code, detail = "", error if isinstance(error, str) else ""
-    return code.lower(), redact_secret_text(detail or "unknown provider error", secret)[:500], kind
+    metadata = raw.get("metadata")
+    error_type = cast(Mapping[str, object], metadata).get("error_type") if isinstance(metadata, Mapping) else None
+    if isinstance(error_type, str) and error_type:
+        kind = _PROVIDER_ERROR_TYPES.get(error_type.lower(), ModelError)
+    # 上游可能同时给 code 和 type，取能定性的那个。
+    codes = [str(value) for value in (raw.get("code"), raw.get("reason"), raw.get("type")) if value]
+    code = next((value for value in codes if _strong_code(value.lower())), codes[0] if codes else "")
+    message = raw.get("message")
+    detail = ": ".join(value for value in (code, error_type, message) if isinstance(value, str) and value)
+    text = redact_secret_text(message, secret)[:500] if isinstance(message, str) else ""
+    return _ProviderError(code.lower(), redact_secret_text(detail or "unknown provider error", secret)[:500], kind, text)
 
 
 def response_error_details(response: httpx.Response, secret: str) -> tuple[str, str]:
-    code, message, _ = _response_error_details(response, secret)
-    return code, message
+    details = _response_error_details(response, secret)
+    return details.code, details.detail
 
 
 # Parse the HTTP error once and retain its structured classification.
-def _response_error_details(response: httpx.Response, secret: str) -> tuple[str, str, type[ModelError] | None]:
+def _response_error_details(response: httpx.Response, secret: str) -> _ProviderError:
     try:
         payload = response.json()
     except (json.JSONDecodeError, UnicodeDecodeError):
-        return "", redact_secret_text(response.text, secret)[:500] or f"HTTP {response.status_code}", None
+        text = redact_secret_text(response.text, secret)[:500]
+        return _ProviderError("", text or f"HTTP {response.status_code}", None, text)
     raw = payload.get("error", payload.get("detail", payload)) if isinstance(payload, Mapping) else payload
     return _provider_error_details(raw, secret)
 
@@ -1501,14 +1566,56 @@ def response_error_message(response: httpx.Response, *, secret: str = "") -> str
     return response_error_details(response, secret)[1]
 
 
-# GLM codes are documented at https://docs.bigmodel.cn/cn/api/api-code.
 def is_quota_error(code: str, message: str) -> bool:
-    return code in {"1113", "1308", "1309", "1310", "1314", "1316", "1317", "1318", "1319", "1320", "1321"} or any(
+    return code in _QUOTA_CODES or any(
         marker in message.lower() for marker in (
             "quota", "billing", "usage limit", "credit", "usage_not_included",
             "使用上限", "余额不足", "账户已欠费", "套餐已到期", "套餐已失效",
         )
     )
+
+
+# 去掉回显后的上游原话；词表只看这部分，回显里的 rate limit、credit 不是判断依据。
+def _own_words(text: str) -> str:
+    embedded = _EMBEDDED_MESSAGE.search(text)
+    return _QUOTED_ECHO.sub(" ", embedded.group(2) if embedded else text)
+
+
+def _is_context_overflow(code: str, text: str, own: str) -> bool:
+    return (
+        (_CONTEXT_ERROR.search(own) is not None or _OVERFLOW_MARKER.search(text) is not None)
+        and _RATE_LIMIT_ERROR.search(own) is None
+        and not is_quota_error(code, own)
+    )
+
+
+def _strong_code(code: str) -> bool:
+    return code in _ERROR_CODE_KINDS or code in _RATE_LIMIT_CODES or code in _QUOTA_CODES
+
+
+# HTTP 与流内错误共用的分类顺序：显式 code，额度，限流，超窗，安全策略；都不命中返回 None。
+def _classify_error(code: str, text: str, *, weak: bool) -> type[ModelError] | None:
+    own = _own_words(text)
+    # 1. 显式 code 优先；限流码下仍要区分真实额度（#1914 不重试）。
+    if code in _RATE_LIMIT_CODES:
+        return QuotaError if is_quota_error(code, own) else RateLimitError
+    if code in _QUOTA_CODES:
+        return QuotaError
+    if code in _ERROR_CODE_KINDS:
+        return _ERROR_CODE_KINDS[code]
+    # 2. 弱 code 或 4xx 之下，泛词 billing、credit 可能只是回显，只认明确的余额文案。
+    if _BALANCE_ERROR.search(own) is not None:
+        return QuotaError
+    if not (weak or code in _WEAK_CODES) and is_quota_error(code, own):
+        return QuotaError
+    # 3. 限流文案先于超窗词表："too many tokens" 也可能是限流。
+    if _RATE_LIMIT_ERROR.search(own) is not None:
+        return RateLimitError
+    if _is_context_overflow(code, text, own):
+        return ContextLengthError
+    if any(marker in own.lower() for marker in _SAFETY_ERROR_CODES):
+        return ContentSafetyError
+    return None
 
 
 # OpenRouter's typed code owns classification; unknown types fail without guessing.
@@ -1527,7 +1634,7 @@ _PROVIDER_ERROR_TYPES: Mapping[str, type[ModelError]] = {
     "invalid_prompt": InvalidRequestError,
     "not_found": InvalidRequestError,
     "precondition_failed": InvalidRequestError,
-    "payload_too_large": InvalidRequestError,
+    "payload_too_large": ContextLengthError,
     "unprocessable": InvalidRequestError,
     "content_policy_violation": ContentSafetyError,
     "refusal": ContentSafetyError,
@@ -1542,36 +1649,36 @@ _PROVIDER_ERROR_TYPES: Mapping[str, type[ModelError]] = {
     "unmapped": ModelError,
 }
 
+# 结构化 code 自身就能定性，先于任何词表。
+_ERROR_CODE_KINDS: Mapping[str, type[ModelError]] = {
+    **{code: TransportError for code in ("500", "502", "503", "504", "server_error", "internal_error", "overloaded_error", "server_is_overloaded", "interrupted")},
+    **{code: AuthenticationError for code in ("401", "403", "invalid_api_key", "authentication_error")},
+    **{code: ModelTimeoutError for code in ("408", "timeout", "request_timeout")},
+    **{code: ContextLengthError for code in ("context_length_exceeded", "context_window_exceeded", "model_context_window_exceeded", "request_too_large", "1261")},
+    **{code: ContentSafetyError for code in ("content_filter", "content_policy_violation", "data_inspection_failed", "bio_policy", "cyber_policy", "policy_violation", "invalid_prompt")},
+}
+
 
 # Stream errors are generation failures; they do not prove an HTTP rejection.
 def provider_stream_error(error: object, *, secret: str = "") -> Exception:
-    code, message, kind = _provider_error_details(error, secret)
-    if kind is not None:
-        return kind(message).exception()
-    lowered = message.lower()
-    if code in {"500", "502", "503", "504", "server_error", "internal_error", "overloaded_error", "server_is_overloaded", "interrupted"}:
-        return TransportError(message).exception()
-    if any(marker in lowered for marker in _CONTEXT_ERROR_CODES):
-        return ContextLengthError(message).exception()
-    if any(marker in lowered for marker in (*_SAFETY_ERROR_CODES, "bio_policy", "cyber_policy", "policy_violation", "invalid_prompt")):
-        return ContentSafetyError(message).exception()
-    if code == "402" or is_quota_error(code, message):
-        return QuotaError(message).exception()
-    if code in {"429", "rate_limit_exceeded", "rate_limit_error", "slow_down"}:
-        return RateLimitError(message).exception()
-    if code in {"401", "403", "invalid_api_key", "authentication_error"}:
-        return AuthenticationError(message).exception()
-    if code in {"408", "timeout", "request_timeout"}:
-        return ModelTimeoutError(message).exception()
-    if code in {"400", "404", "422", "invalid_request_error", "invalid_request"}:
-        return InvalidRequestError(message).exception()
-    return ModelError(message).exception()
+    code, message, kind, text = _provider_error_details(error, secret)
+    if kind is None:
+        kind = _classify_error(code, text, weak=False)
+    if kind is None:
+        kind = InvalidRequestError if code in _WEAK_CODES else ModelError
+    return kind(message).exception()
 
 
 # Check both HTTP-200 JSON bodies and SSE chunks before consuming partial output.
 def check_chat_response_error(payload: Mapping[str, Any], *, secret: str = "") -> None:
     if payload.get("error") is not None:
         raise provider_stream_error(payload["error"], secret=secret)
+    # MiniMax 把失败放在 base_resp，成功时 status_code 为 0。
+    base = payload.get("base_resp")
+    if isinstance(base, Mapping):
+        base = cast(Mapping[str, object], base)
+        if base.get("status_code") not in (None, 0, "0", ""):
+            raise provider_stream_error({"code": str(base.get("status_code")), "message": base.get("status_msg")}, secret=secret)
     choices = payload.get("choices")
     if not isinstance(choices, list) or not choices or not isinstance(choices[0], Mapping):
         return
@@ -1581,6 +1688,100 @@ def check_chat_response_error(payload: Mapping[str, Any], *, secret: str = "") -
     reason = choice.get("finish_reason")
     if reason is not None and reason not in {"stop", "length", "tool_calls", "function_call"}:
         raise provider_stream_error({"code": reason, "message": f"Provider finish_reason: {reason}"}, secret=secret)
+
+
+# 非流式正文缓存上限：足够容纳正常的完整响应，超过即停止读取并按无法解析处理。
+_NON_STREAM_BODY_LIMIT = 1 << 20
+# SSE 注释与控制字段不是正文；只收到它们后断开仍是真断流。
+_SSE_CONTROL_PREFIXES = (":", "event:", "id:", "retry:")
+# 部分网关用裸行保活；只收到它们后断开同样是真断流。
+_KEEPALIVE_LINES = frozenset({"ping", "keep-alive", "keepalive"})
+
+
+class NonStreamBody:
+    """HTTP 200 却不是 SSE 时的有界正文缓存；见过任何 data 帧后不再生效。"""
+
+    def __init__(self) -> None:
+        self._lines: list[str] = []
+        self._size = 0
+        self._frame_seen = False
+
+    # 记下一帧 data；此后的断流保持可重试的传输错误。
+    def frame(self) -> None:
+        self._frame_seen = True
+        self._lines.clear()
+
+    # 缓存一条非 data 行；返回 True 时调用方应停止读取。
+    def feed(self, line: str) -> bool:
+        stripped = line.strip()
+        if self._frame_seen or not stripped or line.startswith(_SSE_CONTROL_PREFIXES) or stripped.lower() in _KEEPALIVE_LINES:
+            return False
+        self._lines.append(line)
+        self._size += len(line)
+        return self._size > _NON_STREAM_BODY_LIMIT
+
+    # 返回携带 success 字段的响应对象；错误正文抛分类后的失败；没有正文（真断流）返回 None。
+    def payload(self, *, secret: str = "", success: str | None = None) -> dict[str, Any] | None:
+        if self._frame_seen or not self._lines:
+            return None
+        text = "\n".join(self._lines).strip()
+        # 1. httpx 按 splitlines 分行，字符串里的 U+2028 等会被拆开，strict=False 才能解析整体。
+        try:
+            decoded: object = json.loads(text, strict=False)
+        except (ValueError, RecursionError):
+            decoded = None
+        if isinstance(decoded, list) and len(cast(list[object], decoded)) == 1:
+            decoded = cast(list[object], decoded)[0]
+        # 2. 只有结构化错误才分类，正常回答里提到 rate limit、credit 不是错误证据。
+        if isinstance(decoded, dict):
+            raw = cast(dict[str, Any], decoded)
+            try:
+                check_chat_response_error(raw, secret=secret)
+            except RuntimeError as error:
+                raise _non_stream_error(error) from None
+            if success is not None and raw.get(success):
+                return raw
+            if isinstance(raw.get("message"), str) and (raw.get("code") or raw.get("type")):
+                raise _non_stream_error(provider_stream_error(raw, secret=secret))
+        # 3. 其余都是未知响应：不可重试，带摘录。
+        raise _non_stream_error(ModelError(redact_secret_text(text, secret)[:500]).exception())
+
+
+# 保留分类，只补上来源说明；未知正文因此不可重试且带摘录。
+def _non_stream_error(error: Exception) -> Exception:
+    value = ModelError.read(error)
+    assert value is not None
+    return ModelError.change(error, message=f"模型服务在 HTTP 200 中返回了非流式正文：{value.message}")
+
+
+# 把一次完整的 Chat Completions 响应转成统一结果；网关忽略 stream 参数时走这里。
+def chat_completion_response(payload: Mapping[str, Any]) -> LLMResponse:
+    raw_choice: object = payload["choices"][0]
+    raw_message = cast(Mapping[str, object], raw_choice).get("message") if isinstance(raw_choice, Mapping) else None
+    if not isinstance(raw_message, Mapping):
+        excerpt = json.dumps(payload, ensure_ascii=False)[:500]
+        raise ModelError(f"模型服务在 HTTP 200 中返回了无法识别的响应：{excerpt}").exception()
+    choice = cast(Mapping[str, object], raw_choice)
+    message = cast(Mapping[str, object], raw_message)
+    calls: dict[int, dict[str, str]] = {}
+    raw_calls = message.get("tool_calls")
+    if isinstance(raw_calls, list):
+        _ = merge_stream_tool_deltas(calls, [
+            {**cast(Mapping[str, object], raw), "index": index} if isinstance(raw, Mapping) else raw
+            for index, raw in enumerate(cast(list[object], raw_calls))
+        ])
+    reasoning = message.get("reasoning_content") or message.get("reasoning")
+    content = message.get("content")
+    finish = str(choice.get("finish_reason") or "stop")
+    raw_usage = payload.get("usage")
+    return LLMResponse(
+        content=(content.strip() or None) if isinstance(content, str) else None,
+        thinking=(reasoning.strip() or None) if isinstance(reasoning, str) else None,
+        tool_calls=() if finish == "length" else build_stream_tool_calls(calls),
+        finish_reason=finish,
+        usage=parse_openai_usage(cast(Mapping[str, Any], raw_usage)) if isinstance(raw_usage, Mapping) else None,
+        output_discarded=finish == "length" and bool(calls),
+    )
 
 
 def http_status_error(
@@ -1593,39 +1794,47 @@ def http_status_error(
 ) -> Exception | None:
     if response.status_code < 400:
         return None
-    code, message, kind = _response_error_details(response, secret)
+    code, message, kind, text = _response_error_details(response, secret)
     if kind is not None:
         return kind(message).exception()
-    lowered = message.lower()
-    if response.status_code in {401, 403}:
-        text = auth_message or (
-            f"模型连接授权未通过（HTTP {response.status_code}）。"
-            f"请在模型设置中核对 API Key 或账号权限后重试。服务返回：{message}"
-        )
-        return AuthenticationError(text).exception()
-    if response.status_code >= 500:
-        text = server_message or f"模型服务暂不可用（HTTP {response.status_code}），请稍后重试。服务返回：{message}"
-        error = TransportError(text).exception()
-        if response.status_code == 503 and honor_503_retry_after:
+    status = response.status_code
+    if status in {401, 403}:
+        return AuthenticationError(auth_message or _http_error_text(AuthenticationError, status, message)).exception()
+    if status >= 500:
+        error = TransportError(server_message or _http_error_text(TransportError, status, message)).exception()
+        if status == 503 and honor_503_retry_after:
             error = ModelError.change(error, retry_at=retry_after_time(response.headers.get("retry-after")))
         return error
-    if any(code in lowered for code in _CONTEXT_ERROR_CODES):
-        return ContextLengthError(f"模型上下文超过限制（HTTP {response.status_code}）。服务返回：{message}").exception()
-    if any(code in lowered for code in _SAFETY_ERROR_CODES):
-        return ContentSafetyError(f"模型安全策略拒绝请求（HTTP {response.status_code}）。服务返回：{message}").exception()
-    if response.status_code == 402 or (
-        response.status_code == 429
-        and is_quota_error(code, message)
-    ):
-        return QuotaError(f"模型账号额度不足（HTTP {response.status_code}）。服务返回：{message}").exception()
-    if response.status_code == 429:
-        error = RateLimitError(f"模型服务限流（HTTP 429）。服务返回：{message}").exception()
-        return ModelError.change(error, retry_at=retry_after_time(response.headers.get("retry-after")))
-    if 400 <= response.status_code < 500:
-        return InvalidRequestError(
-            f"模型服务拒绝请求（HTTP {response.status_code}）。服务返回：{message}"
-        ).exception()
-    return TransportError(f"provider returned HTTP {response.status_code}: {message}").exception()
+    # 状态码先于词表：402/429 的正文即使提到 tokens 也不是超窗，413 无正文也是超窗。
+    if status == 402:
+        found: type[ModelError] | None = QuotaError
+    elif status == 429:
+        found = QuotaError if is_quota_error(code, _own_words(text)) else RateLimitError
+    elif status == 413:
+        found = ContextLengthError
+    else:
+        found = _classify_error(code, text, weak=True) or InvalidRequestError
+    error = found(_http_error_text(found, status, message)).exception()
+    if found is RateLimitError:
+        error = ModelError.change(error, retry_at=retry_after_time(response.headers.get("retry-after")))
+    return error
+
+
+# HTTP 失败的用户文案；未列出的类型按拒绝请求说明。
+def _http_error_text(kind: type[ModelError], status: int, message: str) -> str:
+    if kind is AuthenticationError:
+        return f"模型连接授权未通过（HTTP {status}）。请在模型设置中核对 API Key 或账号权限后重试。服务返回：{message}"
+    if kind is TransportError:
+        return f"模型服务暂不可用（HTTP {status}），请稍后重试。服务返回：{message}"
+    if kind is QuotaError:
+        return f"模型账号额度不足（HTTP {status}）。服务返回：{message}"
+    if kind is RateLimitError:
+        return f"模型服务限流（HTTP {status}）。服务返回：{message}"
+    if kind is ContextLengthError:
+        return f"模型上下文超过限制（HTTP {status}）。服务返回：{message}"
+    if kind is ContentSafetyError:
+        return f"模型安全策略拒绝请求（HTTP {status}）。服务返回：{message}"
+    return f"模型服务拒绝请求（HTTP {status}）。服务返回：{message}"
 
 
 def raise_http_status(
