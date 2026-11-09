@@ -31,11 +31,7 @@ from .api import (
     Authorize, Denied, MessageReply, OpenTool, Outcome, Result,
     coerce_result, durable_call_key, result_message_id,
 )
-from plugins.tools.contract import PROCESS_STARTED_AT
-
-
-# 本进程已进入 invoke、回执尚未落盘的默认消息调用；停止结算据此不把它们写成「未执行」。
-invoked_unrecorded: set[str] = set()
+from plugins.tools.contract import PROCESS_STARTED_AT, invoked_unrecorded
 
 
 # 工具结果已产生：等提交门并落盘后才响应取消，回执不丢、下一步不重跑。
@@ -274,6 +270,7 @@ class ToolExecution:
             existing = await run_file_io(lambda: existing_result(reply))
             if existing is None:
                 raise
+            invoked_unrecorded.discard(key)
             return existing
 
     async def _settle_message(
@@ -282,6 +279,7 @@ class ToolExecution:
     ) -> Result:
         existing = existing_result(reply)
         if existing is not None:
+            invoked_unrecorded.discard(key)
             return existing
         call = reply.reader.get(reply.call_ref.message_id)
         if call is None:
@@ -293,10 +291,16 @@ class ToolExecution:
             refusal = self._check_batch(source)
             if refusal is not None:
                 return await commit(Result("denied", (ContentPart("text", refusal),)))
-        if call.recorded_at < PROCESS_STARTED_AT:
+        # 上个进程发出的，或本进程已发出但回执没落盘（提交失败、清理被取消、前驱中止）：都不重跑。
+        if call.recorded_at < PROCESS_STARTED_AT or key in invoked_unrecorded:
             return await commit(Result("error", (ContentPart("text", _UNKNOWN_OUTCOME),)))
         try:
             result = await self._invoke_message(task, key, binding_id, arguments, reply, source, mark)
+        except asyncio.CancelledError:
+            # 用户停止时还没进入 invoke：当场写「未执行」放行同批后继，它们已完成的结果才能按序提交。
+            if key not in invoked_unrecorded and reply.stopped():
+                _ = await commit(Result("denied", (ContentPart("text", STOPPED_NOT_STARTED),)))
+            raise
         except _Failed as failure:
             try:
                 finished = await commit(failure.result)
@@ -681,9 +685,10 @@ async def finish(
 
 
 _UNKNOWN_OUTCOME = (
-    "工具调用在进程重启前已发出，结果未知。只读操作可以重新执行；"
+    "工具调用已发出，但结果在保存前丢失（进程重启或提交中断），结果未知。只读操作可以重新执行；"
     "可能有副作用的操作先检查当前状态，不要直接重复。"
 )
+STOPPED_NOT_STARTED = "用户已停止，未执行"
 
 
 class _Failed(Exception):

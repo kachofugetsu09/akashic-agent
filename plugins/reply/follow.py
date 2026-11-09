@@ -530,7 +530,7 @@ class _Follower:
         finally:
             await source_scope_cm.__aexit__(None, None, None)
 
-    # 2. 等 Task 完成；期间若日志已有终态且出现后续输入，则分离旧 Task。
+    # 2. 等 Task 完成；每次日志变化都复查，已有终态且出现后续输入时分离旧 Task。
     async def _await_task(
         self, state: _Iteration, session_id: str, source: Source,
         wake: _Wake, admission_boundary: int,
@@ -539,18 +539,22 @@ class _Follower:
         joined = asyncio.create_task(state.wait_task())
         notified = asyncio.create_task(wake.event.wait())
         try:
-            done, _ = await asyncio.wait((joined, notified), return_when=asyncio.FIRST_COMPLETED)
-            if joined in done:
-                await joined
-            elif (
-                self._still_current(wake, source)
-                and await self._terminal_committed(session_id, source.name, admission_boundary)
-                and self._still_current(wake, source)
-            ):
-                state.detached = True
-                state.task.cancel()
-            else:
-                await joined
+            while True:
+                done, _ = await asyncio.wait((joined, notified), return_when=asyncio.FIRST_COMPLETED)
+                if joined in done:
+                    await joined
+                    break
+                # 先清事件再读日志：读之后才提交的消息会再次唤醒，不会漏掉。
+                wake.event.clear()
+                notified = asyncio.create_task(wake.event.wait())
+                if (
+                    self._still_current(wake, source)
+                    and await self._terminal_committed(session_id, source.name, admission_boundary)
+                    and self._still_current(wake, source)
+                ):
+                    state.detached = True
+                    state.task.cancel()
+                    break
         finally:
             wake.event.clear()
             for waiter in (joined, notified):
@@ -568,6 +572,10 @@ class _Follower:
 
         def read(reader: MessageReader) -> bool:
             terminal = False
+            # 回合内每条提交都会来复查；边界后没有新输入时走索引，不解码这段日志。
+            latest = reader.latest_input_seq(source_name, through_seq=reader.head())
+            if latest is None or latest <= boundary:
+                return False
 
             def consume(rows) -> bool:
                 nonlocal terminal

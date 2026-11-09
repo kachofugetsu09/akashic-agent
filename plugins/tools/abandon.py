@@ -10,10 +10,10 @@ from typing import cast
 from agent.plugin_composition.tasks import Task, TaskAdmission, TaskSlot
 from core.common.file_io import run_file_io
 from .api import Denied, MessageReply, Result, durable_call_key
-from .execution import _fingerprint, commit_message, finish, invoked_unrecorded
+from .execution import STOPPED_NOT_STARTED, _fingerprint, commit_message, finish
 from plugins.ledger.contract import MessageCatalog, MessageReader, OwnerRecord, OwnerStore, OwnerTransaction
 from plugins.ledger.contract import CallRef, ContentPart, Control, Message, Output, ToolCall, ToolResult
-from plugins.tools.contract import PROCESS_STARTED_AT
+from plugins.tools.contract import PROCESS_STARTED_AT, invoked_unrecorded
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +124,7 @@ async def abandon_call(
 
 
 def _not_started(stopped: bool) -> str:
-    return "用户已停止，未执行" if stopped else "用户已放弃此工作，工具未启动。"
+    return STOPPED_NOT_STARTED if stopped else "用户已放弃此工作，工具未启动。"
 
 
 # 调用消息早于本进程：内存里没有它的执行记录，不能证明未开始。

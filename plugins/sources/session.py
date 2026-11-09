@@ -105,14 +105,16 @@ def _read_boundary(reader: MessageReader, source: str, hint: object) -> bool:
     ), after_seq=hint, source=source)
 
 
-# 撤权后来源最后一条若是暂停，说明是用户停止而非新输入抢占。
-def _read_pause(reader: MessageReader, source: str, hint: object) -> Message | None:
+# 撤权后来源最后一条控制若是暂停或放弃，说明是用户停止而非新输入抢占。
+def _read_stop(reader: MessageReader, source: str, hint: object) -> Message | None:
     head = reader.head(source=source)
     if not isinstance(hint, int) or hint < 0 or head <= hint:
         return None
-    # 暂停之后可能紧接着又有新输入（停止后马上发送），只看任务边界之后最近的控制是不是暂停。
+    # 之后可能紧接着又有新输入（停止后马上发送），只看任务边界之后最近的控制。
+    # /abandon 先暂停再放弃；取消排空慢于放弃提交时读到的是放弃。
     latest = reader.latest_control(source, through_seq=head)
-    if latest is not None and latest.seq > hint and isinstance(latest.body, Control) and latest.body.action == "pause":
+    if (latest is not None and latest.seq > hint and isinstance(latest.body, Control)
+            and latest.body.action in {"pause", "abandon"}):
         return latest
     return None
 
@@ -411,10 +413,10 @@ class SourceSession:
                         # 用户停止的就是这次程序：不替用户重开，返回停止记录。
                         if owned:
                             hint = task.boundary_hint
-                            paused = await self._reader.read_async(
-                                lambda reader: _read_pause(reader, self._source, hint))
-                            if paused is not None:
-                                return paused
+                            stopped = await self._reader.read_async(
+                                lambda reader: _read_stop(reader, self._source, hint))
+                            if stopped is not None:
+                                return stopped
                         # 新输入已同步撤权；先让用户回复运行，再从原消息继续。
                     except Exception:
                         if owned:
