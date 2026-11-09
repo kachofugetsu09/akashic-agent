@@ -16,8 +16,8 @@ from plugins.delivery.contract import (
 from plugins.delivery_policy.contract import (
     INPUT_ORIGIN as INPUT_ORIGIN,
 )
-from plugins.conversation.contract import (
-    CONVERSATION_COMPLETE_V2 as CONVERSATION_COMPLETE,
+from plugins.models.contract import (
+    MODEL_SELECTION as MODEL_SELECTION,
 )
 from plugins.tools.contract import (
     ALL_TOOLS as ALL_TOOLS,

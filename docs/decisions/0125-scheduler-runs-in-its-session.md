@@ -1,43 +1,28 @@
-# 0125 · 定时任务在创建它的会话里执行
+# 0125 · 定时任务在独立内部会话执行并向目标会话投递结果
 
-- 状态：proposed / implemented for review
-- 日期：2026-10-18
+- 状态：accepted（2026-11-09 修订：恢复独立 internal Session 执行并自动搬运文件附件）
+- 日期：2026-10-18（2026-11-09 修订）
 - 关联条款：SCH-003、MEM-001～MEM-002
-- supersedes：0058 的“每次触发一个独立内部 Session”
+- 关联决策：0058、0117
 
 ## 背景
 
-0058 让每次触发在独立内部 Session 里跑 ReAct，再把最终回复的文字和附件引用抄一份发到目标会话。线上暴露三个问题：
+2026-10-18 初版尝试让定时任务直接在目标会话原位执行，以便显示 `render_visual` 卡片和工具过程。但线上长期运行暴露出严重副作用：
 
-- 工具结果（例如 `render_visual` 的天气卡）留在内部 Session，从来没有送到用户面前；只有模型最终回复里的附件会被抄过去。
-- 过程对用户不可见，用户也不能在原会话里追问“刚才那条是怎么查的”。
-- 为了把内部 Session 和通知分开，Scheduler 自己维护了一套搬运、提前触发（P90 延迟估算）和选模型逻辑。
-
-参照 Memoh：它的定时任务就是一轮普通对话，跑在新建或固定的会话里；会话忙时直接丢弃，定时轮次会进入记忆抽取，模型不跟随会话。我们取它“在哪里跑就在哪里显示”，不取丢弃和记忆部分。
+- 每次定时任务触发都会向主会话追加几百字的任务规则 `Input` 以及 20～40 条工具调用与重试 `ToolResult`，严重污染主会话时间线与账本；
+- 在主会话原位执行需要争抢 `CONVERSATION_COMPLETE` 锁，与用户正常聊天互相阻塞。
+- 与此同时，0117 已将 `render_visual` 产物改为普通自包含 `.html` 文件附件，聊天宿主在任意 `Output` 消息上都能直接渲染 `.html` 附件。
 
 ## 决定
 
-1. 每个任务属于创建它的会话（`schedule` 工具从调用来源取得会话与投递渠道，模型不再填 `channel/chat_id`）。
-2. 到点后经 `CONVERSATION_COMPLETE` 在该会话里执行，与 subagent 回报父会话同一条路：主对话空闲才开始；用户插话时先让用户的回复运行，之后从同一 Input 与已结算工具继续。
-3. 每次触发独占来源 `scheduler:<fire_key>`。Input、工具调用、工具结果和最终回复都写在目标会话里，用户能看到过程，工具产出的卡片在原处渲染。
-4. 任务两种动作：`notify` 到点原文推送，不调用模型；`run` 跑一轮回复。删除 `instant/soft` 与提前触发。
-5. `run` 的历史范围由任务决定，默认 `none`：
-   - `none`：模型请求只由本次触发来源的消息组成，不带会话摘要，也不触发整会话压缩；天气、新闻这类独立任务用它。
-   - `session`：带上会话历史，与普通对话相同。
-   范围只作用于请求组装（`REPLY_EXECUTE` 的 `history="own"`）；读面、提交、竞争检查和恢复仍使用整个会话的真实日志。
-6. 任何回复的请求都不带其他来源仍在进行的轮次（该来源最后一次结束之后的消息；`failure`/`abandon` 也算结束）。用户在任务一批工具中途插话时，对话请求里不会出现未配对的调用；任务结束后，对话就能看到完整过程。此时压缩只覆盖第一条被隐藏消息之前的部分，保证摘要范围在真实日志和请求里都连续；容量估算和原文尾部仍按完整请求视图计算，当前输入和本来源进行中的消息照常保留（#1544：曾把整个快照截到该位置，当前输入随之丢失，回复报“保留输入必须是当前来源的真实 Input”）。摘要边界经摘要协议的可选参数 `summary_limit` 交给摘要 owner；compaction 与 context、reply_program 同属发行包、一起升级，单独停留在旧版本的摘要 owner 在其他来源开放时会因不认识该参数而失败。
-7. 模型跟随会话当前选择；工具与会话一致，只去掉 `memorize`、`remember_memory`、`forget_memory`。任务里调用 `schedule` 创建后续任务时，目标沿用本次触发的会话与渠道。
-8. 最终回复是本次来源最后一条结束的 Output，Delivery 直接投递这条原消息，不再复制通知。
-9. 模型失败耗尽既有恢复后，在同一来源追加 `failure` 控制记录，并将本次触发结算为失败。记录已保存、触发尚未结算时重启，只补结算，不重新调用模型；磁盘或程序错误仍暴露原异常。
-
-```text
-到点 ─▶ CONVERSATION_COMPLETE(目标会话)        用户插话：先回用户，再接着跑
-          │
-          ├─ Input  scheduler-input:<key>     source = scheduler:<key>
-          ├─ 回复程序（history = none | session）
-          │    工具调用 / 结果 / 卡片都在目标会话里
-          └─ 最终 Output ─▶ Delivery 原消息投递 ─▶ 结算 fire
-```
+1. 每个任务仍记录创建它的目标会话与投递渠道（`job.session_id` / `channel` / `chat_id`）。
+2. `run` 每次触发在全新的独立内部会话 `scheduler:<fire_key>` 中执行，通过 `SESSION_ADMISSION` 设为 `SessionAttributes(visibility="internal", learning="excluded")`：
+   - Web 会话列表只展示 `visibility="listed"`，因此 `scheduler:<fire_key>` 在 Web 界面上完全不可见；
+   - 每次触发都是干净会话，固定使用 `history="own"`，绝不复用旧对话或主会话历史；
+   - 内部会话在启动时继承目标会话保存的 `model.selection` 与 `WORKING_DIRECTORY` 快照。
+3. 内部会话跑完后，Scheduler 扫描本次触发中成功 `ToolResult` 产出的 `kind == "file"` 附件（如 `render_visual` 正式发布的 `.html` 交互卡片，自动排除 `draft=True` 预检截图 `kind == "image"`），与最终 `Output` 的文本合并。
+4. 在 `delivery.wait_idle` 后，向目标会话只追加一条 `scheduler-notification:<fire_key>` 的完整 `Output` 消息并经 `Delivery` 投递。用户的主会话只看到最终卡片与结论，没有任何过程噪音。
+5. 模型失败或取消记录保存在内部会话 `scheduler:<fire_key>` 中，并将本次触发结算为 `failed` 或 `cancelled`。
 
 ## 记忆
 
