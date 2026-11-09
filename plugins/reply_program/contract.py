@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import AbstractContextManager
 from typing import Literal, Protocol
@@ -55,6 +56,8 @@ class ReplyExecuteV4(Protocol):
         history: Literal["session", "own"] = "session",
         # 每一步模型请求之前调用；对话来源用它写入用户的插话。
         before_step: Callable[[], Awaitable[None]] | None = None,
+        # 置位时结束模型退避等待，进入下一步；重试额度不刷新。
+        retry_wake: asyncio.Event | None = None,
     ) -> Message: ...
 
 

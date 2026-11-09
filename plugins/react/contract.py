@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import AbstractContextManager
 from typing import Protocol
@@ -44,6 +45,7 @@ class OrderedReact(Protocol):
         check_start: StartCheck,
         max_parallel_calls: int = 1,
         before_step: Callable[[], Awaitable[None]] | None = None,
+        retry_wake: asyncio.Event | None = None,
         aborted: Callable[[str], Awaitable[Message]] | None = None,
         window: HistoryWindow | None = None,
     ) -> Message: ...
