@@ -15,6 +15,7 @@
 > `idle_trigger_tokens`（默认 200,000 tokens）时，在发送首步请求前按同一已结算批次切点生成
 > 增量摘要并保留近期原文目标（默认 20,000 tokens）。设置状态同时返回候选对话的消息规模、
 > 历史压缩次数与最近压缩前后 token 等信息供界面选择。
+> 2026-11-09 补充：空闲路径是可选优化，边界见下方“空闲预压缩”；启用后的数据是前向变更，回滚步骤在同一节。
 
 ## 背景
 
@@ -88,6 +89,35 @@
 Message 正常只追加；本次无既有消息原位更新、逻辑失效或物理减少。摘要 owner 只新增
 不可变 v2 记录，以现有事务和 parent CAS 推进 head；旧摘要与调用账保留。没有 schema
 迁移或自动删除。诊断随原生成准备恢复，不要求重跑摘要。源码基线由 Git 保留。
+
+## 空闲预压缩
+
+空闲压缩挡在回合前，而请求原样也能发，所以它的失败不能影响这一轮：
+
+- 到期判断由摘要 owner 通过材料注册的可选 `reduce_due` 给出。门控和压缩都用过滤其他来源
+  未结束行之后的视图；范围关闭、未绑定或未到期时不换全量读。
+- 除取消外的任何异常都转成 `context.notice`，本轮继续生成。模型调用期限 120 秒，到期软失败。
+- 同一空闲缺口（缺口前最后一条消息）只试一次，新 Input 不重开。
+- `(session_id, binding_id)` 连续失败 3 次后跳过；成功（含软水位和强制压缩）、换模型或保存模型设置后清零。
+  这些记录只在进程内，重启后重新尝试；force 与硬水位路径不读它们。
+- 计划节省不足请求估算的 20% 时（新摘要按父摘要原长算）不调用模型。
+
+### 回滚
+
+启用后写出的数据是前向变更：`trigger="idle"` 的摘要记录和 `idle_*` 配置都不能被 #1945
+之前的版本读取。前者让该会话每轮失败，后者因 `extra="forbid"` 校验失败让所有会话每轮失败。
+写入时不把 `trigger` 改存成 `soft_limit`，保留真实来源。回滚到 #1945 之前的版本前：
+
+1. 停服务，备份 `workspace/sessions.db` 和 `workspace/plugin-data/compaction-builtin/config.input.json`。
+2. 从 `config.input.json` 删除 `idle_scope`、`idle_sessions`、`idle_trigger_minutes`、`idle_trigger_tokens`。
+3. 改写记录，再部署旧版本：
+
+   ```sql
+   UPDATE owner_records SET value = json_set(value, '$.trigger', 'soft_limit')
+   WHERE key LIKE 'summary:%' AND json_extract(value, '$.trigger') = 'idle';
+   ```
+
+只回滚 #1956 而保留 #1945/#1946 时不需要这些步骤。
 
 ## 验收
 

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from functools import partial
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 import logging
-from typing import Literal
+from typing import Literal, cast
 from uuid import uuid4
 from weakref import WeakKeyDictionary
 
@@ -25,7 +25,7 @@ from plugins.models.contract import (
 )
 from plugins.context.contract import (
     CONTEXT, IDLE_COMPACT_MINUTES, IDLE_COMPACT_TOKENS, MATERIALS_V4, OUTPUT_RESERVE_TOKENS,
-    MaterialData, ReductionStatus, SUMMARY_SOFT_LIMIT, output_reserve, summary_due,
+    MaterialData, ReductionStatus, SUMMARY_SOFT_LIMIT, idle_gap_anchor, idle_summary_due, output_reserve, summary_due,
 )
 from plugins.ledger.contract import BINDINGS
 from plugins.ledger.contract import MESSAGE_CATALOG, OWNER_STATE
@@ -64,6 +64,10 @@ SETTING_FIELDS = (
 # 摘要输入按摘要模型自己的窗口裁剪，所以必须是上下文窗口已确认的模型。
 SUMMARY_MODEL = ModelUse("compaction", "上下文压缩", follows=("session", "default"), needs=frozenset({"context_window"}))
 MAX_SUMMARY_FAILURES = 3
+# 空闲压缩挡在回合前且本不必要：期限短，到期软失败。
+IDLE_DEADLINE_SECONDS = 120.0
+# 按计划节省不到请求估算的这一比例时不值得花钱（新摘要按父摘要原长估算）。
+IDLE_MIN_SAVING = 0.2
 
 
 @dataclass
@@ -81,6 +85,14 @@ def _recovery(error: BaseException) -> str:
     if ModelError.matches(error, ContextLengthError):
         return "摘要请求裁剪后仍被判超窗，请切换窗口更大的摘要模型或开始新对话。"
     return "请检查摘要模型的认证、额度或可用性，或切换摘要模型后重试。"
+
+
+# 进程内空闲压缩记录：已试过的缺口属于会话，连续失败只对当前业务模型计数。
+@dataclass
+class _IdleAttempts:
+    binding_id: str
+    gap: str | None = None
+    failures: int = 0
 
 
 class Config(BaseModel):
@@ -185,6 +197,30 @@ async def apply(ctx: Context) -> None:
             state = failures[task] = _SummaryFailures(boundary)
         return state
 
+    # 只服务空闲路径，force 与硬水位不读它；有界，满了整体丢弃，代价只是多试一次。
+    idle_attempts: dict[str, _IdleAttempts] = {}
+
+    # 换模型清零连续失败；已试过的缺口不随模型改变。binding 含注册表版本，保存模型设置也清零：
+    # 用户刚改过密钥或额度配置时应当再试，代价有上限（每次保存至多再付 3 次）。
+    def idle_attempts_for(session_id: str, binding_id: str) -> _IdleAttempts:
+        attempts = idle_attempts.get(session_id)
+        if attempts is None:
+            if len(idle_attempts) >= 256:
+                idle_attempts.clear()
+            attempts = idle_attempts[session_id] = _IdleAttempts(binding_id)
+        elif attempts.binding_id != binding_id:
+            attempts.binding_id, attempts.failures = binding_id, 0
+        return attempts
+
+    # 门控和缩减共用：范围、缺口与阈值都达标，这个缺口没试过，连续失败也未到上限。
+    def idle_due(snapshot: tuple[Message, ...], estimated: int, model: BoundChatModel) -> bool:
+        if estimated <= config.keep_recent_tokens or not idle_summary_due(
+            estimated, snapshot, idle_minutes=_idle_minutes_for(config, snapshot), idle_tokens=config.idle_trigger_tokens,
+        ):
+            return False
+        attempts = idle_attempts_for(snapshot[0].session_id, model.descriptor.binding_id)
+        return attempts.failures < MAX_SUMMARY_FAILURES and attempts.gap != idle_gap_anchor(snapshot)
+
     def records() -> SummaryRecords:
         return SummaryRecords(ctx.require(OWNER_STATE).open(ctx))
 
@@ -276,8 +312,8 @@ async def apply(ctx: Context) -> None:
             })
         items.sort(
             key=lambda item: (
-                int(item["compaction_count"]) > 0 or int(item["message_count"]) >= 100,
-                int(item["message_count"]),
+                cast(int, item["compaction_count"]) > 0 or cast(int, item["message_count"]) >= 100,
+                cast(int, item["message_count"]),
                 str(item["updated_at"]),
             ),
             reverse=True,
@@ -458,6 +494,11 @@ async def apply(ctx: Context) -> None:
                 return None
             raise SummaryCapacityError("当前输入与进行中的工具调用本身超出容量，没有可摘要的内容。"
                                        "请放弃本轮后发送较短内容；对话可用 /abandon，程序可用 programmatic/message/abandon")
+        if not soft_due:
+            # 花钱前核对收益：planned 用占位摘要，新摘要至少按父摘要原长算。
+            kept = 0 if parent is None else model.estimate_context_tokens(({"role": "user", "content": parent.content},))
+            if before - planned_tokens[selected] - kept < before * IDLE_MIN_SAVING:
+                return None
         inputs = summary_groups(groups[:selected], snapshot)
         if selected and not inputs:
             raise SummaryError("可选范围没有可用于摘要的资料")
@@ -506,13 +547,14 @@ async def apply(ctx: Context) -> None:
             if text and on_status is not None:
                 await on_status(text, False)
 
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + SUMMARY_DEADLINE_SECONDS if hard_limit else None
+        # 阻断回合和空闲路径各有总期限；软水位摘要迟早要做，只受模型自身的生成期限约束。
+        seconds = SUMMARY_DEADLINE_SECONDS if hard_limit else None if soft_due else IDLE_DEADLINE_SECONDS
+        deadline = None if seconds is None else asyncio.get_running_loop().time() + seconds
 
         async def generate(groups: tuple[tuple[Message, ...], ...], previous: str, limit: int,
                            call: SummaryCall) -> tuple[str, tuple[str, ...], tuple[tuple[Message, ...], ...]]:
             # 嵌套 execution 复用调用者已经固定的角色，不重读模型配置；
-            # 只包住模型调用，摘要 binding 必须回到 compaction 自己的调用方。
+            # 只包住模型调用，摘要 binding 必须回到 compaction 自己的调用方；期限也不覆盖发布事务。
             try:
                 async with asyncio.timeout_at(deadline), ctx.require(CHAT_MODELS).execution() as execution:
                     async def report_fallback(text: str) -> None:
@@ -526,7 +568,7 @@ async def apply(ctx: Context) -> None:
             except TimeoutError as failure:
                 if ModelError.matches(failure):
                     raise
-                raise ModelTimeoutError(f"摘要超过 {SUMMARY_DEADLINE_SECONDS:g} 秒总期限").exception() from failure
+                raise ModelTimeoutError("摘要调用超时" if seconds is None else f"摘要超过 {seconds:g} 秒总期限").exception() from failure
 
         limit = max(1, min(room, OUTPUT_RESERVE_TOKENS))
         # 只有阻断回合的摘要才值得等重试；可选压缩和下面的缩写失败都有退路，不挡在回合前退避。
@@ -566,6 +608,32 @@ async def apply(ctx: Context) -> None:
                             "模型之后看不到它们。", True)
         return summary
 
+    # 空闲压缩是可选优化：任何异常都转成 notice 后继续回合，只有取消继续向外传。
+    async def reduce_idle(snapshot: tuple[Message, ...], materials: MaterialData, request: ModelRequest,
+                          model: BoundChatModel, projection: ContextModel, *, source: str,
+                          on_status: ReductionStatus | None,
+                          summary_limit: int | None) -> MaterialData | None:
+        attempts = idle_attempts_for(snapshot[0].session_id, model.descriptor.binding_id)
+        attempts.gap = idle_gap_anchor(snapshot)
+        try:
+            if on_status is not None:
+                await on_status(f"正在进行空闲预压缩：模型 {model.descriptor.model_id}；"
+                                f"输入估算 {projection.estimate(request):,} tokens", False)
+            summary = await compact(snapshot, materials, request, model, projection, source=source, force=False,
+                                    hard_limit=False, on_status=on_status, summary_limit=summary_limit)
+        except Exception as error:
+            attempts.failures += 1
+            logger.warning("空闲预压缩失败 session=%s failures=%d: %r", snapshot[0].session_id, attempts.failures, error,
+                           exc_info=not isinstance(error, (RuntimeError, TimeoutError, SummaryError)))
+            paused = (f"已连续失败 {MAX_SUMMARY_FAILURES} 次，这个对话暂停空闲预压缩；压缩成功、更换模型或保存模型设置后恢复。"
+                      if attempts.failures >= MAX_SUMMARY_FAILURES else "")
+            if on_status is not None:
+                await on_status(f"空闲预压缩未完成：{type(error).__name__}: {error}。这是可选优化，本轮继续生成。" + paused, True)
+            return None
+        if summary is not None:
+            attempts.failures = 0
+        return summary
+
     async def reduce(snapshot: tuple[Message, ...], materials: MaterialData, request: ModelRequest,
                      model: BoundChatModel, projection: ContextModel, *, source: str, force: bool,
                      required: bool = True,
@@ -574,11 +642,14 @@ async def apply(ctx: Context) -> None:
         """软水位失败可继续；硬容量或 provider 明确拒绝必须保留失败原因。"""
         window = projection.context_window
         before = projection.estimate(request)
-        if window is None or not snapshot or not summary_due(
-            before, window, force=force, snapshot=snapshot,
-            idle_minutes=_idle_minutes_for(config, snapshot), idle_tokens=config.idle_trigger_tokens,
-        ):
+        if window is None or not snapshot:
             return None
+        # 软水位以下只剩空闲路径：硬水位一定高于软水位，走到这里的请求原样也能发。
+        if not summary_due(before, window, force=force):
+            if not idle_due(snapshot, before, model):
+                return None
+            return await reduce_idle(snapshot, materials, request, model, projection, source=source,
+                                     on_status=on_status, summary_limit=summary_limit)
         hard_limit = (force and required) or before + output_reserve(request.max_output_tokens, window) > window
         # An optional shrink must not rewrite a request already within the raw-history target.
         if (force or before < int(window * SUMMARY_SOFT_LIMIT)) and not hard_limit and before <= config.keep_recent_tokens:
@@ -620,7 +691,10 @@ async def apply(ctx: Context) -> None:
                                 + (paused if state.count >= MAX_SUMMARY_FAILURES else ""), True)
             return None
         state.count, state.detail = 0, ""
+        # 软水位或强制压缩成功同样证明摘要模型可用。
+        if summary is not None and snapshot[0].session_id in idle_attempts:
+            idle_attempts[snapshot[0].session_id].failures = 0
         return summary
 
     _ = await ctx.require(MATERIALS_V4).register(ctx, kind="context", name="compaction", prepare=prepare, reduce=reduce,
-                                                 history_start=history_start, priority=500)
+                                                 history_start=history_start, reduce_due=idle_due, priority=500)
