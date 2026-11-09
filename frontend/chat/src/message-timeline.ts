@@ -537,12 +537,17 @@ export function isStepLimitFailure(message: TimelineMessage): boolean {
     && (body.reason ?? "").startsWith(STEP_LIMIT_FAILURE_REASON);
 }
 
+// 与 plugins/models/contract.py 的 CONTENT_REJECTED_FAILURE 一致：上游已确认拒绝这段内容，
+// 同样的请求重试必然再被拒绝；放弃后本轮输入和工具结果才会离开模型视图。
+export const CONTENT_REJECTED_FAILURE_REASON = "内容被上游拒绝";
+
 // These failures need a new, smaller input or explicit abandonment, not the same retry.
 function needsAbandon(message: TimelineMessage): boolean {
   const body = message.body;
   return isStepLimitFailure(message) || body.kind === "control" && body.action === "failure"
-    && ["当前输入与进行中的工具调用本身超出容量", "模型请求包含未结算的工具调用"]
-      .some(reason => (body.reason ?? "").includes(reason));
+    && ((body.reason ?? "").startsWith(CONTENT_REJECTED_FAILURE_REASON)
+      || ["当前输入与进行中的工具调用本身超出容量", "模型请求包含未结算的工具调用"]
+        .some(reason => (body.reason ?? "").includes(reason)));
 }
 
 // 放弃入口只作用于 conversation 来源：/abandon 走的是 conversation 的控制接纳，

@@ -38,6 +38,12 @@ from plugins.models.contract import (
     MODEL_CALLS as MODEL_CALLS,
     MODEL_CHECKS as MODEL_MESSAGE_CHECKS,  # noqa: F401 - 显式再导出给本插件消费者。
     MODEL_PROJECTION as MODEL_PROJECTION,
+    REJECTED_CALL_NOTICE,
+    REJECTED_INPUT_NOTICE,
+    REJECTED_KEEP_KINDS,
+    REJECTED_OUTPUT_NOTICE,
+    rejected_result_notice,
+    rejected_segments,
 )
 from plugins.ui.contract import ThinkingDisplay
 
@@ -609,12 +615,20 @@ class MessageProjection:
         unsent: list[Mapping[str, Any]] = []
         if reminder is not None:
             msg_rows.append({"role": "user", "content": reminder})
-        for index, part in enumerate(body.parts):
+        # An abandon after a confirmed rejection hides this content; the ledger keeps it.
+        hidden = message.message_id in fold.rejected
+        hidden_input = hidden and isinstance(body, Input)
+        if hidden_input:
+            blocks.append({"type": "text", "text": REJECTED_INPUT_NOTICE})
+        for index, part in enumerate(() if hidden_input else body.parts):
             if isinstance(part, ContentPart):
                 if part.kind == "model.tool_rejection":
                     _ = check_tool_rejection(part)
                     if model_facts is None:
                         raise ValueError("模型协议拒绝缺少 model.facts")
+                    if hidden:
+                        blocks.append({"type": "text", "text": REJECTED_CALL_NOTICE})
+                        continue
                     identity = model_facts["tool_ids"][str(index)]
                     rejected = cast(Mapping[str, Any], part.value)
                     arguments = rejected["arguments"]
@@ -634,6 +648,9 @@ class MessageProjection:
                     observations.append({"role": "tool", "tool_call_id": identity, "content": [
                         {"type": "text", "text": "调用未执行：" + rejected["error"]},
                     ]})
+                elif hidden and part.kind not in REJECTED_KEEP_KINDS:
+                    if not any(block.get("text") == REJECTED_OUTPUT_NOTICE for block in blocks):
+                        blocks.append({"type": "text", "text": REJECTED_OUTPUT_NOTICE})
                 elif part.kind == "artifact_ref" and isinstance(body, Output):
                     # 回复里的附件由内容协议解出，不是模型写的字；标签留在 assistant 正文里，
                     # 模型下一轮会照抄成一段假附件 JSON，所以移到随后的 user 行。
@@ -645,6 +662,7 @@ class MessageProjection:
             if ref in abandoned_calls:
                 # 放弃前缀的调用不进入 wire 协议；已有耐久回执时如实保留
                 # 真实状态与内容，只有无回执时才说明效果未知。
+                # 确定性拒绝后的放弃只隐藏内容，状态与效果说明照旧保留。
                 observation = results.get(ref)
                 if observation is not None:
                     msg_used.append(observation.message_id)
@@ -654,6 +672,8 @@ class MessageProjection:
                             "一次工具调用随来源前缀放弃，结算为 denied："
                             "工具未启动，未产生外部效果。"
                         )})
+                    elif hidden:
+                        blocks.append({"type": "text", "text": rejected_result_notice(settled.outcome)})
                     elif settled.outcome == "success":
                         blocks.append({"type": "text", "text": (
                             "一次工具调用在放弃前已完成，真实结果如下；"
@@ -721,11 +741,11 @@ class MessageProjection:
             }
             if calls:
                 row["tool_calls"] = calls
-            if (message.message_id in response_metadata and model_facts is not None
+            if (message.message_id in response_metadata and model_facts is not None and not hidden
                     and len(calls) == len(model_facts["tool_ids"])):
                 row["provider_metadata"] = response_metadata[message.message_id]
             # 思考内容属于产出它的模型：换模型后严格 provider 会拒收未知字段；需要该字段的 driver 自己回填空值。
-            if (model_facts is not None and model_facts["thinking"] is not None
+            if (model_facts is not None and model_facts["thinking"] is not None and not hidden
                     and _same_model(self._fold_receipt(fold, model_facts["call_record_id"])["binding"],
                                     self._model.descriptor)):
                 row["reasoning_content"] = model_facts["thinking"]
@@ -769,6 +789,7 @@ class MessageProjection:
     ) -> None:
         """预扫描的全量形式；与原逐轮三趟扫描逐行等价。"""
         # 放弃结算与 meta/facts 互不依赖，同一趟完成；调用账仍需在 main 之前取齐。
+        fold.rejected = rejected_segments(messages)
         pending: dict[str, list[Message]] = {}
         for message in messages:
             body = message.body
@@ -956,7 +977,7 @@ class _Fold:
 
     __slots__ = (
         "count", "prefix", "inputs", "latest_input",
-        "abandoned", "abandoned_calls", "facts", "recorded", "results",
+        "abandoned", "abandoned_calls", "rejected", "facts", "recorded", "results",
         "receipts", "response_metadata", "content_refs", "token_calibration",
         "continuation", "cont_summary", "cont_seq", "cont_transformed",
     )
@@ -968,6 +989,7 @@ class _Fold:
         self.latest_input: str | None = None
         self.abandoned: set[str] = set()
         self.abandoned_calls: set[CallRef] = set()
+        self.rejected: frozenset[str] = frozenset()
         self.facts: dict[str, tuple[Message, Mapping[str, Any] | None]] = {}
         self.recorded: dict[str, Mapping[str, Any]] = {}
         self.results: dict[CallRef, Message] = {}

@@ -20,8 +20,8 @@ from agent.plugin_composition import (
     Context,
 )
 from plugins.models.contract import (
-    CHAT_MODELS, MODEL_CATALOG, BoundChatModel, ContextLengthError, ContextModel, ModelChoice, ModelError, ModelExecution,
-    ModelRequest, ModelTimeoutError, ModelUnavailableError, ModelUse, model_options,
+    CHAT_MODELS, MODEL_CATALOG, BoundChatModel, ContentSafetyError, ContextLengthError, ContextModel, ModelChoice, ModelError, ModelExecution,
+    ModelRequest, ModelTimeoutError, ModelUnavailableError, ModelUse, content_rejection_reason, is_content_rejection, model_options,
 )
 from plugins.context.contract import (
     CONTEXT, IDLE_COMPACT_MINUTES, IDLE_COMPACT_TOKENS, MATERIALS_V4, OUTPUT_RESERVE_TOKENS,
@@ -683,7 +683,10 @@ async def apply(ctx: Context) -> None:
             state.recovery = _recovery(error)
             detail = state.detail + budget + "。"
             if hard_limit:
-                raise SummaryError("\n".join((*notices, detail + "本次请求被阻断，未继续业务生成。" + state.recovery))) from error
+                blocked = "\n".join((*notices, detail + "本次请求被阻断，未继续业务生成。"))
+                # 摘要模型自身的配置问题（如 404）要留「切换摘要模型」的出口，不引导放弃当前输入。
+                unsafe = is_content_rejection(error) and ModelError.matches(error, ContentSafetyError)
+                raise SummaryError(content_rejection_reason(blocked) if unsafe else blocked + state.recovery) from error
             if on_status is not None:
                 outcome = ("本次压缩没有缩小请求，保留原文继续生成。" if isinstance(error, SummaryCapacityError)
                            else detail + "原请求仍满足硬容量，本次继续生成。")

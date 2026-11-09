@@ -27,6 +27,7 @@ from collections.abc import (
     AsyncGenerator,
     Awaitable,
     Callable,
+    Iterable,
     Mapping,
     MutableMapping,
     Sequence,
@@ -56,7 +57,10 @@ from agent.plugin_composition.model import ServiceKey
 from plugins.ledger.contract import (
     ContentPart,
     ContentReferences,
+    Control,
+    Input,
     Message,
+    Output,
     ToolCall as MessageToolCall,
 )
 
@@ -1002,6 +1006,9 @@ class ModelError:
     response_delta_seen: bool = False
     retry_safe: bool = False
     retry_after: float | None = None
+    # 上游明确拒绝时的 HTTP 状态和未叠加宿主说明的文本；只用于判断拒绝是否与内容有关。
+    http_status: int | None = None
+    upstream_text: str | None = None
 
     def __str__(self) -> str:
         return self.message
@@ -1864,8 +1871,13 @@ def raise_http_status(
     if error is None:
         return
     if response.status_code < 500:
-        error = ModelError.change(error, send_evidence="rejected")
+        error = rejected_by_upstream(error, response.status_code)
     raise error
+
+
+# Record the positive send evidence before any host text is added to the message.
+def rejected_by_upstream(error: BaseException, status: int) -> Exception:
+    return ModelError.change(error, send_evidence="rejected", http_status=status, upstream_text=str(error))
 
 
 def map_driver_error(error: Exception) -> Exception:
@@ -1904,6 +1916,92 @@ def is_driver_retryable(error: Exception) -> bool:
     return value is not None and value.send_evidence in ("rejected", "unsent") and (
         isinstance(value, (ModelTimeoutError, RateLimitError)) or value.retry_safe
     )
+
+
+# Failure prefix for a request the upstream confirmed rejecting; frontend needsAbandon matches it.
+CONTENT_REJECTED_FAILURE = "内容被上游拒绝"
+REJECTED_INPUT_NOTICE = "这条输入所在的一轮被上游拒绝后已放弃，内容已从模型视图移除，原文仍在会话记录里。"
+REJECTED_OUTPUT_NOTICE = "这段模型回复所在的一轮被上游拒绝后已放弃，内容已从模型视图移除。"
+REJECTED_CALL_NOTICE = "一次未通过校验的工具调用未执行；所在的一轮被上游拒绝后已放弃，内容已从模型视图移除。"
+# Host records in a hidden Output: not model-authored text, so they keep their normal treatment.
+REJECTED_KEEP_KINDS = frozenset({"model.facts", "context.summary", "context.notice", "model.selection", "tool.selection"})
+# 4xx that name a setup problem: dropping the user's input cannot help, so they are not content rejections.
+_CONFIG_REJECTION_MARKERS = (
+    "model_not_found", "model not found", "model not exist", "model does not exist", "unknown model", "invalid model",
+    "model is not available", "model not available", "deprecated", "decommissioned",
+    "does not exist or you do not have access", "no endpoints", "模型不存在", "已下线",
+    "api key", "api_key", "apikey", "unauthorized", "authentication", "access denied", "密钥",
+    "credit", "balance", "billing", "quota", "arrearage", "good standing", "insufficient", "余额", "欠费", "额度",
+    "max_tokens", "max_completion_tokens", "temperature", "top_p", "1210:", "参数有误",
+    # History the host replayed in the wrong shape: hiding the turn does not change how it builds requests.
+    "reasoning_content", "tool call arguments", "invalid json",
+)
+_PARAMETER_MARKERS = (
+    "unsupported parameter", "unsupported value", "unknown parameter", "unknown field", "unknown name",
+    "unrecognized request argument", "extra inputs are not permitted", "not supported", "does not support", "不支持",
+    "must be between", "tools[",
+)
+
+
+# Only a confirmed rejection that may concern the content counts; anything else keeps its normal exit.
+def is_content_rejection(error: BaseException) -> bool:
+    value = ModelError.read(error, InvalidRequestError, ContentSafetyError)
+    if value is None or value.send_evidence != "rejected":
+        return False
+    if isinstance(value, ContentSafetyError):
+        return True
+    if value.http_status not in (400, 413, 422):
+        return False
+    # Host notes such as attempt budgets must not decide this: read only what the upstream said.
+    text = (value.upstream_text or "").lower()
+    if any(marker in text for marker in _CONFIG_REJECTION_MARKERS):
+        return False
+    # An image the upstream cannot take is the user's content; a parameter or tool problem is setup.
+    return "image" in text or "图片" in text or not any(marker in text for marker in _PARAMETER_MARKERS)
+
+
+def content_rejection_reason(detail: str, *, may_be_config: bool = False) -> str:
+    config = "如果是模型或参数配置问题，不要放弃，改好设置后直接发新消息。" if may_be_config else ""
+    return (
+        f"{CONTENT_REJECTED_FAILURE}：{detail}\n"
+        "同样的请求重试不会改变结果。放弃本轮可把本轮的输入、回复和工具结果从模型视图移除后继续："
+        "对话可用 /abandon，程序可用 programmatic/message/abandon。"
+        f"如果被拒的内容已进入摘要或更早的轮次，放弃解不开，需要新开会话。{config}"
+    )
+
+
+# Replacement for a hidden result: the effect stays stated even though the content is gone.
+def rejected_result_notice(outcome: str) -> str:
+    effect = "工具已执行，外部效果已经发生" if outcome == "success" else (
+        f"工具结算为 {outcome}，外部效果可能已经发生，不能据此重跑"
+    )
+    return f"{effect}；所在的一轮被上游拒绝后已放弃，结果已从模型视图移除。"
+
+
+# Input and Output ids hidden by an abandon right after a rejection failure, with no newer Input between.
+# Only what the failure's through_seq covers: a late failure must not hide input it never saw. Results follow their call.
+def rejected_segments(messages: Iterable[Message]) -> frozenset[str]:
+    opened: dict[str, list[Message]] = {}
+    covered: dict[str, int] = {}
+    hidden: set[str] = set()
+    for message in messages:
+        body, source = message.body, message.source
+        if isinstance(body, Output) and body.finish != "continue":
+            _ = opened.pop(source, None)
+            _ = covered.pop(source, None)
+        elif isinstance(body, (Input, Output)):
+            opened.setdefault(source, []).append(message)
+            if isinstance(body, Input):
+                # 新输入接着往下走：之后的放弃（比如步数上限）不是针对这次拒绝的。
+                _ = covered.pop(source, None)
+        elif isinstance(body, Control) and body.action == "failure":
+            if (body.reason or "").startswith(CONTENT_REJECTED_FAILURE):
+                covered[source] = max(covered.get(source, -1), body.through_seq)
+        elif isinstance(body, Control) and body.action == "abandon":
+            limit = min(covered.pop(source, -1), body.through_seq)
+            hidden.update(item.message_id for item in opened.get(source, ()) if item.seq <= limit)
+            opened[source] = [item for item in opened.get(source, ()) if item.seq > body.through_seq]
+    return frozenset(hidden)
 
 
 # Preserve invalid model output for the tool owner to reject with feedback.
