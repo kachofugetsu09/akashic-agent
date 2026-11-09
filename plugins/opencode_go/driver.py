@@ -57,6 +57,8 @@ from plugins.models.contract import (
     StreamReadError as _StreamReadError,
     build_stream_tool_calls as _tool_calls,
     check_bound_model as _check_bound_model,
+    NonStreamBody,
+    chat_completion_response,
     check_chat_response_error,
     check_credential_scope as _check_credential_scope,
     credential_bearer_token as _credential_token,
@@ -833,11 +835,15 @@ async def _consume_stream(
     response_delta_seen = False
     completed = False
     progress = StreamProgress(progress_timeout)
+    body = NonStreamBody()
     try:
         lines = response.aiter_lines()
         async for line in progress.read(lines):
             if not line.startswith("data:"):
+                if body.feed(line):
+                    break
                 continue
+            body.frame()
             data = line[5:].strip()
             if not data:
                 continue
@@ -901,6 +907,11 @@ async def _consume_stream(
     except Exception as error:
         raise _StreamReadError(error, response_delta_seen=response_delta_seen) from error
     if not completed and finish_reason is None:
+        # 1. 未见任何 data 帧：对端其实回了非流正文，按完整响应解析或分类。
+        payload = body.payload(secret=secret, success="choices")
+        if payload is not None:
+            return chat_completion_response(payload)
+        # 2. 其余都是真断流，保持可重试的传输错误。
         error = TransportError("stream ended before its terminal marker").exception()
         raise _StreamReadError(error, response_delta_seen=response_delta_seen)
     try:
@@ -910,6 +921,7 @@ async def _consume_stream(
             tool_calls=() if finish_reason == "length" else _tool_calls(calls),
             finish_reason=finish_reason,
             usage=usage,
+            output_discarded=finish_reason == "length" and bool(calls),
         )
     except Exception as error:
         raise _StreamReadError(error, response_delta_seen=response_delta_seen) from error

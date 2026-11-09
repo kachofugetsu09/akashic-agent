@@ -6,6 +6,7 @@ import base64
 import io
 import json
 import math
+import re
 import socket
 import ssl
 from urllib.parse import urlsplit, urlunsplit
@@ -106,6 +107,8 @@ class LLMResponse:
     call_record_id: str | None = None
     # 原生响应部件由调用账本保存，随同一 binding 的消息重放。
     provider_metadata: Mapping[str, Any] | None = None
+    # 长度截断时驱动丢弃了不完整的输出（工具片段等）；没有 usage 时它是区分真 0 输出的唯一证据。
+    output_discarded: bool = False
 
     def __post_init__(self) -> None:
         """冻结一次响应，多个请求等待者不能相互改变已结算事实。"""
@@ -1325,18 +1328,39 @@ CONNECTION_TYPES_SLOT = {
     "models.connection-types.v1": "8c304d85090a65a4a66cd777a5c2a88e6908de147964dc91e7f84336979ea561",
 }
 
-_CONTEXT_ERROR_CODES = (
-    "context_length_exceeded",
-    "context_window_exceeded",
-    "maximum context length",
-    "context window exceeds limit",
-    "range of input length",
-    "reduce the length",
-    "string too long",
-    "too many tokens",
-    "prompt is too long",
-    "input is too long",
+# 文案对照 pi-mono packages/ai/src/utils/overflow.ts；Copilot 一条收窄到 token count，避免命中无关的 "exceeds the limit"。
+_CONTEXT_ERROR = re.compile("|".join((
+    r"context[_ ]length[_ ]exceeded",
+    r"context_window_exceeded",
+    r"maximum context length",
+    r"context window exceeds limit",
+    r"exceeds the context window",
+    r"exceeds the available context size",
+    r"greater than the context length",
+    r"longer than the model'?s context length",
+    r"but the configured context size is",
+    r"range of input length",
+    r"exceeds (?:the )?maximum allowed input length",
+    r"reduce the length",
+    r"string too long",
+    r"too many tokens",
+    r"token limit exceeded",
+    r"exceeded model token limit",
+    r"token count of [\d,]+ exceeds the limit of",
+    r"input token count.*exceeds the maximum",
+    r"prompt (?:is )?too long",
+    r"prompt exceeds max length",
+    r"maximum prompt length is \d",
+    r"input is too long",
+    r"request_too_large",
+)), re.IGNORECASE)
+# 对照 overflow.ts NON_OVERFLOW_PATTERNS；"too many tokens"、"token limit exceeded" 也可能是限流。
+_RATE_LIMIT_ERROR = re.compile(
+    r"rate[ _-]?limit|too many requests|throttl|tokens? per (?:minute|hour|day)|\btpm\b",
+    re.IGNORECASE,
 )
+# MiniMax 1002、1039 的官方处置都是稍后重试（platform.minimax.io/docs/api-reference/errorcode）。
+_RATE_LIMIT_CODES = frozenset({"429", "rate_limit_exceeded", "rate_limit_error", "slow_down", "1002", "1039"})
 _SAFETY_ERROR_CODES = (
     "content_filter",
     "content_policy_violation",
@@ -1511,6 +1535,15 @@ def is_quota_error(code: str, message: str) -> bool:
     )
 
 
+# 超窗词表只在排除限流与额度后生效：压缩解决不了这两类拒绝。
+def _is_context_overflow(code: str, message: str) -> bool:
+    return (
+        _CONTEXT_ERROR.search(message) is not None
+        and _RATE_LIMIT_ERROR.search(message) is None
+        and not is_quota_error(code, message)
+    )
+
+
 # OpenRouter's typed code owns classification; unknown types fail without guessing.
 _PROVIDER_ERROR_TYPES: Mapping[str, type[ModelError]] = {
     "context_length_exceeded": ContextLengthError,
@@ -1527,7 +1560,7 @@ _PROVIDER_ERROR_TYPES: Mapping[str, type[ModelError]] = {
     "invalid_prompt": InvalidRequestError,
     "not_found": InvalidRequestError,
     "precondition_failed": InvalidRequestError,
-    "payload_too_large": InvalidRequestError,
+    "payload_too_large": ContextLengthError,
     "unprocessable": InvalidRequestError,
     "content_policy_violation": ContentSafetyError,
     "refusal": ContentSafetyError,
@@ -1551,14 +1584,15 @@ def provider_stream_error(error: object, *, secret: str = "") -> Exception:
     lowered = message.lower()
     if code in {"500", "502", "503", "504", "server_error", "internal_error", "overloaded_error", "server_is_overloaded", "interrupted"}:
         return TransportError(message).exception()
-    if any(marker in lowered for marker in _CONTEXT_ERROR_CODES):
+    # 额度与限流先于词表：与 HTTP 分类同序，流内没有状态码时限流只能看文案。
+    if code == "402" or is_quota_error(code, message):
+        return QuotaError(message).exception()
+    if code in _RATE_LIMIT_CODES or _RATE_LIMIT_ERROR.search(message) is not None:
+        return RateLimitError(message).exception()
+    if _is_context_overflow(code, message):
         return ContextLengthError(message).exception()
     if any(marker in lowered for marker in (*_SAFETY_ERROR_CODES, "bio_policy", "cyber_policy", "policy_violation", "invalid_prompt")):
         return ContentSafetyError(message).exception()
-    if code == "402" or is_quota_error(code, message):
-        return QuotaError(message).exception()
-    if code in {"429", "rate_limit_exceeded", "rate_limit_error", "slow_down"}:
-        return RateLimitError(message).exception()
     if code in {"401", "403", "invalid_api_key", "authentication_error"}:
         return AuthenticationError(message).exception()
     if code in {"408", "timeout", "request_timeout"}:
@@ -1572,6 +1606,11 @@ def provider_stream_error(error: object, *, secret: str = "") -> Exception:
 def check_chat_response_error(payload: Mapping[str, Any], *, secret: str = "") -> None:
     if payload.get("error") is not None:
         raise provider_stream_error(payload["error"], secret=secret)
+    # MiniMax 把失败放在 base_resp，成功时 status_code 为 0。
+    status = payload.get("base_resp")
+    if isinstance(status, Mapping) and status.get("status_code") not in (None, 0):
+        status = cast(Mapping[str, object], status)
+        raise provider_stream_error({"code": str(status.get("status_code")), "message": status.get("status_msg")}, secret=secret)
     choices = payload.get("choices")
     if not isinstance(choices, list) or not choices or not isinstance(choices[0], Mapping):
         return
@@ -1581,6 +1620,99 @@ def check_chat_response_error(payload: Mapping[str, Any], *, secret: str = "") -
     reason = choice.get("finish_reason")
     if reason is not None and reason not in {"stop", "length", "tool_calls", "function_call"}:
         raise provider_stream_error({"code": reason, "message": f"Provider finish_reason: {reason}"}, secret=secret)
+
+
+# 非流式正文缓存上限：足够容纳正常的完整响应，超过即停止读取并按无法解析处理。
+_NON_STREAM_BODY_LIMIT = 1 << 20
+# SSE 注释与控制字段不是正文；只收到它们后断开仍是真断流。
+_SSE_CONTROL_PREFIXES = (":", "event:", "id:", "retry:")
+
+
+class NonStreamBody:
+    """HTTP 200 却不是 SSE 时的有界正文缓存；见过任何 data 帧后不再生效。"""
+
+    def __init__(self) -> None:
+        self._lines: list[str] = []
+        self._size = 0
+        self._frame_seen = False
+
+    # 记下一帧 data；此后的断流保持可重试的传输错误。
+    def frame(self) -> None:
+        self._frame_seen = True
+        self._lines.clear()
+
+    # 缓存一条非 data 行；返回 True 时调用方应停止读取。
+    def feed(self, line: str) -> bool:
+        if self._frame_seen or not line.strip() or line.startswith(_SSE_CONTROL_PREFIXES):
+            return False
+        self._lines.append(line)
+        self._size += len(line)
+        return self._size > _NON_STREAM_BODY_LIMIT
+
+    # 返回携带 success 字段的响应对象；错误正文抛分类后的失败；没有正文（真断流）返回 None。
+    def payload(self, *, secret: str = "", success: str | None = None) -> dict[str, Any] | None:
+        if self._frame_seen or not self._lines:
+            return None
+        text = "\n".join(self._lines).strip()
+        # 1. HTML 页面的版权、导航文案不能当错误词表的证据。
+        if text.startswith("<"):
+            raise _non_stream_error(ModelError(redact_secret_text(text, secret)[:500]).exception())
+        try:
+            decoded: object = json.loads(text)
+        except (ValueError, RecursionError):
+            raise _non_stream_error(provider_stream_error(text, secret=secret)) from None
+        # 2. JSON 对象先看结构化错误，再看调用方认可的成功字段。
+        if isinstance(decoded, list) and len(cast(list[object], decoded)) == 1:
+            decoded = cast(list[object], decoded)[0]
+        if isinstance(decoded, dict):
+            raw = cast(dict[str, Any], decoded)
+            try:
+                check_chat_response_error(raw, secret=secret)
+            except RuntimeError as error:
+                raise _non_stream_error(error) from None
+            if success is not None and raw.get(success):
+                return raw
+            if isinstance(raw.get("message"), str):
+                raise _non_stream_error(provider_stream_error(raw, secret=secret))
+        # 3. 其他形状只能按原文分类，未命中时不可重试并带摘录。
+        raise _non_stream_error(provider_stream_error(text, secret=secret))
+
+
+# 保留分类，只补上来源说明；未知正文因此不可重试且带摘录。
+def _non_stream_error(error: Exception) -> Exception:
+    value = ModelError.read(error)
+    assert value is not None
+    return ModelError.change(error, message=f"模型服务在 HTTP 200 中返回了非流式正文：{value.message}")
+
+
+# 把一次完整的 Chat Completions 响应转成统一结果；网关忽略 stream 参数时走这里。
+def chat_completion_response(payload: Mapping[str, Any]) -> LLMResponse:
+    raw_choice: object = payload["choices"][0]
+    raw_message = cast(Mapping[str, object], raw_choice).get("message") if isinstance(raw_choice, Mapping) else None
+    if not isinstance(raw_message, Mapping):
+        excerpt = json.dumps(payload, ensure_ascii=False)[:500]
+        raise ModelError(f"模型服务在 HTTP 200 中返回了无法识别的响应：{excerpt}").exception()
+    choice = cast(Mapping[str, object], raw_choice)
+    message = cast(Mapping[str, object], raw_message)
+    calls: dict[int, dict[str, str]] = {}
+    raw_calls = message.get("tool_calls")
+    if isinstance(raw_calls, list):
+        _ = merge_stream_tool_deltas(calls, [
+            {**cast(Mapping[str, object], raw), "index": index} if isinstance(raw, Mapping) else raw
+            for index, raw in enumerate(cast(list[object], raw_calls))
+        ])
+    reasoning = message.get("reasoning_content") or message.get("reasoning")
+    content = message.get("content")
+    finish = str(choice.get("finish_reason") or "stop")
+    raw_usage = payload.get("usage")
+    return LLMResponse(
+        content=(content.strip() or None) if isinstance(content, str) else None,
+        thinking=(reasoning.strip() or None) if isinstance(reasoning, str) else None,
+        tool_calls=() if finish == "length" else build_stream_tool_calls(calls),
+        finish_reason=finish,
+        usage=parse_openai_usage(cast(Mapping[str, Any], raw_usage)) if isinstance(raw_usage, Mapping) else None,
+        output_discarded=finish == "length" and bool(calls),
+    )
 
 
 def http_status_error(
@@ -1609,10 +1741,7 @@ def http_status_error(
         if response.status_code == 503 and honor_503_retry_after:
             error = ModelError.change(error, retry_at=retry_after_time(response.headers.get("retry-after")))
         return error
-    if any(code in lowered for code in _CONTEXT_ERROR_CODES):
-        return ContextLengthError(f"模型上下文超过限制（HTTP {response.status_code}）。服务返回：{message}").exception()
-    if any(code in lowered for code in _SAFETY_ERROR_CODES):
-        return ContentSafetyError(f"模型安全策略拒绝请求（HTTP {response.status_code}）。服务返回：{message}").exception()
+    # 状态码先于词表：402/429 的正文即使提到 tokens 也不是超窗，413 无正文也是超窗。
     if response.status_code == 402 or (
         response.status_code == 429
         and is_quota_error(code, message)
@@ -1621,6 +1750,10 @@ def http_status_error(
     if response.status_code == 429:
         error = RateLimitError(f"模型服务限流（HTTP 429）。服务返回：{message}").exception()
         return ModelError.change(error, retry_at=retry_after_time(response.headers.get("retry-after")))
+    if response.status_code == 413 or _is_context_overflow(code, message):
+        return ContextLengthError(f"模型上下文超过限制（HTTP {response.status_code}）。服务返回：{message}").exception()
+    if any(code in lowered for code in _SAFETY_ERROR_CODES):
+        return ContentSafetyError(f"模型安全策略拒绝请求（HTTP {response.status_code}）。服务返回：{message}").exception()
     if 400 <= response.status_code < 500:
         return InvalidRequestError(
             f"模型服务拒绝请求（HTTP {response.status_code}）。服务返回：{message}"

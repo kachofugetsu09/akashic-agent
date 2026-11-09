@@ -58,6 +58,8 @@ from plugins.models.contract import (
     StreamReadError as _StreamReadError,
     build_stream_tool_calls as _tool_calls,
     check_bound_model as _check_bound_model,
+    NonStreamBody,
+    chat_completion_response,
     check_chat_response_error,
     check_credential_scope as _check_credential_scope,
     credential_bearer_token as _credential_token,
@@ -855,11 +857,15 @@ async def _consume_stream(
     pending_content = ""
     legacy_candidate: str | None = None
     progress = StreamProgress(progress_timeout)
+    body = NonStreamBody()
     try:
         lines = response.aiter_lines()
         async for line in progress.read(lines):
             if not line.startswith("data:"):
+                if body.feed(line):
+                    break
                 continue
+            body.frame()
             data = line[5:].strip()
             if not data:
                 continue
@@ -944,6 +950,11 @@ async def _consume_stream(
             error, response_delta_seen=response_delta_seen
         ) from error
     if not completed and finish_reason is None:
+        # 1. 未见任何 data 帧：对端其实回了非流正文，按完整响应解析或分类。
+        payload = body.payload(secret=secret, success="choices")
+        if payload is not None:
+            return _tagged_completion(payload)
+        # 2. 其余都是真断流，保持可重试的传输错误。
         error = TransportError("stream ended before its terminal marker").exception()
         raise _StreamReadError(error, response_delta_seen=response_delta_seen)
     parsed_content, parsed_thinking = _split_tagged_thinking(
@@ -968,7 +979,15 @@ async def _consume_stream(
         tool_calls=() if finish_reason == "length" else _tool_calls(calls),
         finish_reason=finish_reason,
         usage=usage,
+        output_discarded=finish_reason == "length" and bool(calls),
     )
+
+
+# 完整响应沿用流式路径的旧式 <think> 标签拆分。
+def _tagged_completion(payload: Mapping[str, Any]) -> LLMResponse:
+    reply = chat_completion_response(payload)
+    content, thinking = _split_tagged_thinking(reply.content, reply.thinking)
+    return replace(reply, content=content, thinking=thinking)
 
 
 async def _emit_delta(

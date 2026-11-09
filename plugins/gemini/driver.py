@@ -36,6 +36,7 @@ from plugins.models.contract import (
     InvalidRequestError,
     ModelError,
     ModelTimeoutError,
+    NonStreamBody,
     RateLimitError,
     TransportError,
     response_error_message,
@@ -183,9 +184,11 @@ class _Chat:
                     await response.aread()
                 _status(response, secret=headers["x-goog-api-key"])
                 event: list[str] = []
+                body = NonStreamBody()
                 progress = StreamProgress(self._progress_timeout)
                 async for line in progress.read(response.aiter_lines()):
                     if line.startswith('data:'):
+                        body.frame()
                         event.append(line[5:].lstrip())
                     elif not line and event:
                         raw = '\n'.join(event)
@@ -202,6 +205,12 @@ class _Chat:
                             tool_seen = tool_seen or 'functionCall' in part
                             if request.on_delta is not None and part.get('text') and not tool_seen:
                                 await request.on_delta({"thinking_delta" if part.get('thought') else "content_delta": part['text']})
+                    elif body.feed(line):
+                        break
+                # 未见 data 帧：对端回了非流正文，完整响应与 SSE 分块同形。
+                payload = body.payload(secret=headers["x-goog-api-key"], success="candidates")
+                if payload is not None:
+                    parts, finish, usage = _chunk(payload)
                 if event or finish is None:
                     raise TransportError("Gemini SSE 未完整结束").exception()
             return _answer(parts, finish, usage)
@@ -378,7 +387,8 @@ def _chunk(data: Mapping[str, Any]) -> tuple[list[dict[str, Any]], str | None, M
 def _answer(parts: list[dict[str, Any]], finish: str | None, usage: ModelUsage | None) -> LLMResponse:
     """展示文本与工具请求各取所需；签名和原部件仍由账本完整保存。"""
     if finish in {'MAX_TOKENS', 'MALFORMED_FUNCTION_CALL'}:
-        return LLMResponse(None, finish_reason='length' if finish == 'MAX_TOKENS' else 'malformed_function_call', usage=usage)
+        return LLMResponse(None, finish_reason='length' if finish == 'MAX_TOKENS' else 'malformed_function_call', usage=usage,
+                           output_discarded=bool(parts))
     if finish is None or not parts:
         raise TransportError("Gemini 返回了未结束或空的响应").exception()
     if finish not in {'STOP', 'MAX_TOKENS'}:
@@ -404,7 +414,7 @@ def _status(response: httpx.Response, *, secret: str = "") -> None:
         error = RateLimitError("Gemini 请求限流：HTTP 429").exception()
     elif status >= 500:
         error = TransportError(f"Gemini 服务失败：HTTP {status}，远端效果未知").exception()
-    elif status == 400 and any(term in response.text.lower() for term in ('input token count', 'context length', 'context_length_exceeded')):
+    elif status == 413 or status == 400 and any(term in response.text.lower() for term in ('input token count', 'context length', 'context_length_exceeded')):
         error = ContextLengthError("Gemini 拒绝请求：输入超过上下文限制").exception()
     else:
         detail = response_error_message(response, secret=secret)

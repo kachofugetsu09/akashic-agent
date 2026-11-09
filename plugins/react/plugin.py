@@ -630,6 +630,9 @@ async def _complete(
         message_id, request_key, callback = begin()
         try:
             response = await generate(request, request_key, callback, reduce_on_empty=reduce is not None)
+            # 没有摘要 owner 时缩减不可用，保持长度拒绝的反馈恢复。
+            if reduce is not None:
+                _check_output_room(response)
         except (RuntimeError, TimeoutError) as error:
             failure = ModelError.read(error, ContextLengthError, InputReductionRequired)
             if failure is None:
@@ -657,8 +660,27 @@ async def _complete(
                 request, request_key, callback,
                 max_attempts=failure.remaining_attempts if isinstance(failure, InputReductionRequired) else None,
             )
+            _check_output_room(response)
         # 3. 草稿持续到调用者完成解码与 CAS；异常和取消也会释放预览。
         yield response, prepared, message_id, request
+
+
+# 零输出 length 说明输入占满实际窗口，减少输出的反馈帮不上忙；按容量拒绝走单次强制缩减，有正文、推理或被丢弃片段的不算。
+def _check_output_room(response: LLMResponse) -> None:
+    usage = response.usage
+    if (
+        response.finish_reason != "length"
+        or (response.content and response.content.strip())
+        or response.thinking
+        or response.tool_calls
+        or response.output_discarded
+        or (usage is not None and (usage.output_tokens or usage.reasoning_output_tokens))
+    ):
+        return
+    raise ContextLengthError(
+        "模型没有产生任何输出就达到了长度限制，输入可能已占满模型实际可用的上下文窗口。"
+        "压缩后仍无法生成；请减少上下文或换用窗口更大的模型后继续。"
+    ).exception()
 
 
 # Rejected generations become durable feedback, never executable tool calls.

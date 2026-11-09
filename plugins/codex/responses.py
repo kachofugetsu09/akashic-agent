@@ -38,6 +38,7 @@ from plugins.models.contract import (
     StreamCallbackError as _CallbackError,
     TransportError,
     is_quota_error,
+    NonStreamBody,
     provider_stream_error,
     response_error_details,
     mark_unsent_error as _unsent,
@@ -247,11 +248,15 @@ async def _consume_stream(
     completed = False
     delta_seen = False
     progress = StreamProgress(progress_timeout)
+    body = NonStreamBody()
     try:
         lines = response.aiter_lines()
         async for line in progress.read(lines):
             if not line.startswith("data:"):
+                if body.feed(line):
+                    break
                 continue
+            body.frame()
             raw = line[5:].strip()
             if not raw or raw == "[DONE]":
                 continue
@@ -346,6 +351,7 @@ async def _consume_stream(
                         content="".join(content).strip() or None,
                         thinking="".join(thinking).strip() or None,
                         finish_reason="length", usage=_parse_usage(response_payload.get("usage")),
+                        output_discarded=bool(tool_args),
                     )
                 _raise_stream_error(details, secret=secret)
             elif event_type == "response.failed":
@@ -372,6 +378,8 @@ async def _consume_stream(
             setattr(exc, "response_delta_seen", True)
         raise
     if not completed:
+        # 未见 data 帧的正文没有可用的 Responses 结果，payload 只会抛分类后的失败或确认真断流。
+        _ = body.payload(secret=secret)
         error = TransportError("Codex Responses 在 completed 事件前断流").exception()
         if delta_seen:
             error = ModelError.change(error, response_delta_seen=True)
@@ -710,10 +718,7 @@ def _status_error(response: httpx.Response, secret: str) -> Exception | None:
         # status-first：5xx 只说明服务端/网关未给出结论，正文诊断文案
         # （context_length 等）不得把错误提升为可证明的容量拒绝。
         return TransportError(f"Codex 服务失败 (HTTP {response.status_code}){detail}").exception()
-    if "context_length" in lowered or "context window" in lowered:
-        return ContextLengthError("Codex 请求超过上下文窗口" + detail).exception()
-    if any(marker in lowered for marker in ("bio_policy", "cyber_policy", "policy_violation")):
-        return ContentSafetyError("Codex 请求被安全策略拒绝" + detail).exception()
+    # 状态码先于词表，与共享分类器同序。
     if response.status_code == 402 or (
         response.status_code == 429
         and is_quota_error(code, text)
@@ -723,6 +728,10 @@ def _status_error(response: httpx.Response, secret: str) -> Exception | None:
         error = RateLimitError("Codex 请求被限流（HTTP 429）" + detail).exception()
         error = ModelError.change(error, retry_at=retry_after_time(response.headers.get("retry-after")))
         return error
+    if response.status_code == 413 or "context_length" in lowered or "context window" in lowered:
+        return ContextLengthError("Codex 请求超过上下文窗口" + detail).exception()
+    if any(marker in lowered for marker in ("bio_policy", "cyber_policy", "policy_violation")):
+        return ContentSafetyError("Codex 请求被安全策略拒绝" + detail).exception()
     if 400 <= response.status_code < 500:
         return InvalidRequestError(f"Codex 请求失败 (HTTP {response.status_code}){detail}").exception()
     return TransportError(f"Codex 服务失败 (HTTP {response.status_code}){detail}").exception()
