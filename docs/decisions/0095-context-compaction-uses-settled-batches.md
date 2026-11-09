@@ -9,9 +9,12 @@
 > 2026-10-25：连续前缀与只处理末尾增量的约束由 [0134](0134-compaction-covers-message-identities.md)
 > 替代。工具批次配对、容量、原消息保全和真实摘要输入分区规则保持有效。
 > 2026-11-09：新增参考 Claude Code `timeBasedMCConfig` 的请求前空闲压缩触发（`trigger="idle"`）：
-> 当新回合尾部 `Input` 距上一条已结算非 `Input` 消息达到 `idle_trigger_minutes`（默认 60 分钟，
-> 服务端 KV 缓存已过期）且完整请求估算达到 `idle_trigger_tokens`（默认 200,000 tokens）时，
-> 在发送首步请求前按同一已结算批次切点生成增量摘要并保留近期原文目标（默认 20,000 tokens）。
+> 支持按 `idle_scope`（`selected` 绑定指定对话、`all` 全部对话、`off` 关闭）与 `idle_sessions`
+> 选择启用空闲预压缩的会话；当命中范围内的会话新回合尾部 `Input` 距上一条已结算非 `Input` 消息
+> 达到 `idle_trigger_minutes`（默认 60 分钟，服务端 KV 缓存已过期）且完整请求估算达到
+> `idle_trigger_tokens`（默认 200,000 tokens）时，在发送首步请求前按同一已结算批次切点生成
+> 增量摘要并保留近期原文目标（默认 20,000 tokens）。设置状态同时返回候选对话的消息规模、
+> 历史压缩次数与最近压缩前后 token 等信息供界面选择。
 
 ## 背景
 

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from functools import partial
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 import logging
+from typing import Literal
 from uuid import uuid4
 from weakref import WeakKeyDictionary
 
@@ -48,7 +49,14 @@ inject = (PLUGIN_CONFIG, MATERIALS_V4, CONTEXT, OWNER_STATE, BINDINGS, MESSAGE_C
 
 
 SETTINGS = ServiceKey[Configuration]("compaction.settings.v1")
-SETTING_FIELDS = ("model", "keep_recent_tokens", "idle_trigger_minutes", "idle_trigger_tokens")
+SETTING_FIELDS = (
+    "model",
+    "keep_recent_tokens",
+    "idle_scope",
+    "idle_sessions",
+    "idle_trigger_minutes",
+    "idle_trigger_tokens",
+)
 # 摘要默认跟随本轮对话的模型（窗口与业务一致）；也可跟随默认或指定一个更便宜的模型。
 # 摘要输入按摘要模型自己的窗口裁剪，所以必须是上下文窗口已确认的模型。
 SUMMARY_MODEL = ModelUse("compaction", "上下文压缩", follows=("session", "default"), needs=frozenset({"context_window"}))
@@ -65,14 +73,42 @@ class _SummaryFailures:
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
     keep_recent_tokens: int = Field(default=20_000, gt=0, strict=True)
+    idle_scope: Literal["selected", "all", "off"] = Field(default="selected")
+    idle_sessions: tuple[str, ...] = Field(default=())
     idle_trigger_minutes: int = Field(default=IDLE_COMPACT_MINUTES, ge=0, strict=True)
     idle_trigger_tokens: int = Field(default=IDLE_COMPACT_TOKENS, gt=0, strict=True)
     model: ModelChoice = ModelChoice(follow="session")
+
+    @field_validator("idle_sessions", mode="before")
+    @classmethod
+    def _check_idle_sessions(cls, value: object) -> tuple[str, ...]:
+        if value is None:
+            return ()
+        if isinstance(value, str) or not isinstance(value, Sequence):
+            raise ValueError("绑定对话必须是会话 ID 列表")
+        cleaned: list[str] = []
+        seen: set[str] = set()
+        for item in value:
+            if not isinstance(item, str):
+                raise ValueError("会话 ID 必须是字符串")
+            sid = item.strip()
+            if sid and sid not in seen:
+                seen.add(sid)
+                cleaned.append(sid)
+        return tuple(cleaned)
 
     @field_validator("model")
     @classmethod
     def _check_model(cls, value: ModelChoice) -> ModelChoice:
         return SUMMARY_MODEL.check(value)
+
+
+def _idle_minutes_for(config: Config, snapshot: tuple[Message, ...]) -> int:
+    if not snapshot or config.idle_trigger_minutes <= 0 or config.idle_scope == "off":
+        return 0
+    if config.idle_scope == "all":
+        return config.idle_trigger_minutes
+    return config.idle_trigger_minutes if snapshot[0].session_id in config.idle_sessions else 0
 
 
 class _CompactionReader:
@@ -120,8 +156,6 @@ async def summary_models(execution: ModelExecution, business: BoundChatModel, ch
 async def apply(ctx: Context) -> None:
     """注册只读材料和归档解析；apply 不打开 writer 或调用模型。"""
     config = Config.model_validate(ctx.config)
-    await mount_settings(ctx, SETTINGS, ModelSettings(ctx, Config, SETTING_FIELDS,
-                                                       status=model_options(ctx, {"model": SUMMARY_MODEL})))
     context = ctx.require(CONTEXT)
     # 失败预算只属于当前执行 Task；新输入或换模型重新尝试，结束后不保留会话引用。
     failures: WeakKeyDictionary[asyncio.Task[object], _SummaryFailures] = WeakKeyDictionary()
@@ -175,6 +209,75 @@ async def apply(ctx: Context) -> None:
             return None
         head_cache[session_id] = head
         return head[1]
+
+    models_status = model_options(ctx, {"model": SUMMARY_MODEL})
+
+    def session_candidates() -> list[dict[str, object]]:
+        catalog = ctx.require(MESSAGE_CATALOG)
+        state = read_state or records()
+        items: list[dict[str, object]] = []
+        seen: set[str] = set()
+        for entry in catalog.sessions(visibility="listed", limit=200).items:
+            seen.add(entry.session_id)
+            channel = entry.session_id.split(":", 1)[0] if ":" in entry.session_id else "akashic"
+            title = (entry.title or "").strip()
+            if not title and entry.first_message is not None and isinstance(entry.first_message.body, Input):
+                title = next(
+                    (
+                        part.value.strip().splitlines()[0].strip()
+                        for part in entry.first_message.body.parts
+                        if part.kind == "text" and isinstance(part.value, str) and part.value.strip()
+                    ),
+                    "",
+                )
+            title = title[:64] if title else entry.session_id
+            project = entry.attributes.dimension("project")
+            latest = current_head(state, entry.session_id)
+            items.append({
+                "session_id": entry.session_id,
+                "title": title,
+                "channel": channel,
+                "project": "" if project == "default" else project,
+                "message_count": entry.message_count,
+                "updated_at": entry.updated_at.isoformat(),
+                "compaction_count": 0 if latest is None else latest.generation,
+                "last_trigger": None if latest is None else getattr(latest, "trigger", None),
+                "last_tokens_before": None if latest is None else getattr(latest, "tokens_before", None),
+                "last_tokens_after": None if latest is None else getattr(latest, "tokens_after", None),
+            })
+        for sid in config.idle_sessions:
+            if sid in seen:
+                continue
+            latest = current_head(state, sid)
+            items.append({
+                "session_id": sid,
+                "title": sid,
+                "channel": sid.split(":", 1)[0] if ":" in sid else "akashic",
+                "project": "",
+                "message_count": 0,
+                "updated_at": "",
+                "compaction_count": 0 if latest is None else latest.generation,
+                "last_trigger": None if latest is None else getattr(latest, "trigger", None),
+                "last_tokens_before": None if latest is None else getattr(latest, "tokens_before", None),
+                "last_tokens_after": None if latest is None else getattr(latest, "tokens_after", None),
+            })
+        items.sort(
+            key=lambda item: (
+                int(item["compaction_count"]) > 0 or int(item["message_count"]) >= 100,
+                int(item["message_count"]),
+                str(item["updated_at"]),
+            ),
+            reverse=True,
+        )
+        return items
+
+    async def status() -> Mapping[str, object]:
+        return {
+            **(await models_status()),
+            "sessions": await run_file_io(session_candidates),
+        }
+
+    await mount_settings(ctx, SETTINGS, ModelSettings(ctx, Config, SETTING_FIELDS, status=status))
 
     async def start(_event: object) -> None:
         nonlocal read_current, read_state
@@ -259,7 +362,7 @@ async def apply(ctx: Context) -> None:
         before = projection.estimate(request)
         if window is None or not snapshot or not summary_due(
             before, window, force=force, snapshot=snapshot,
-            idle_minutes=config.idle_trigger_minutes, idle_tokens=config.idle_trigger_tokens,
+            idle_minutes=_idle_minutes_for(config, snapshot), idle_tokens=config.idle_trigger_tokens,
         ):
             return None
         soft_due = force or before >= int(window * SUMMARY_SOFT_LIMIT)
@@ -427,7 +530,7 @@ async def apply(ctx: Context) -> None:
         before = projection.estimate(request)
         if window is None or not snapshot or not summary_due(
             before, window, force=force, snapshot=snapshot,
-            idle_minutes=config.idle_trigger_minutes, idle_tokens=config.idle_trigger_tokens,
+            idle_minutes=_idle_minutes_for(config, snapshot), idle_tokens=config.idle_trigger_tokens,
         ):
             return None
         hard_limit = (force and required) or before + output_reserve(request.max_output_tokens, window) > window

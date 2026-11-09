@@ -55,14 +55,14 @@ async def run(folder: Path, case: str, *, second_provider: bool = False) -> dict
             filler = " p" * ({"long_summary": 4000 * (not rewrite), "rewrite_failure": 4000,
                               "parent_only": 4000 * (earlier == 0)}.get(case, 0))
             preamble = "p" * 36_000 + "\n" if case == "stubborn_summary" else ""
-            text = ("invalid summary" if case in {"soft_failure", "hard_failure"} else preamble
+            text = ("" if case in {"soft_failure", "hard_failure"} else preamble
                     + "\n".join(heading + "\nRecorded progress." + filler for heading in HEADINGS[:1]) + "\n"
                     + "\n".join(heading + "\nRecorded progress." for heading in HEADINGS[1:])) if summary else "work completed"
             body = json.dumps({"text": text}).encode()
             # parent_only 的首个业务请求失败，留下一个没有新已结算批次的会话尾部；
             # provider_rejection 的首个业务请求被 provider 以容量明确拒绝。
             first = not summary and len(requests) - earlier == 1
-            status = (500 if case == "parent_only" and first else 400 if case == "provider_rejection" and first
+            status = (400 if case in {"parent_only", "provider_rejection"} and first
                       else 503 if case == "rewrite_failure" and rewrite else 200)
             writer.write(f"HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nContent-Length: {len(body)}\r\nConnection: close\r\n\r\n".encode() + body)
             await writer.drain()
@@ -81,6 +81,8 @@ async def run(folder: Path, case: str, *, second_provider: bool = False) -> dict
         if case == "idle_compaction":
             from agent.plugin_composition.config_input import save_config
             save_config(folder / "workspace/plugin-data/compaction-builtin", {
+                "idle_scope": "selected",
+                "idle_sessions": ["test:room"],
                 "idle_trigger_minutes": 60,
                 "idle_trigger_tokens": 2500,
             })
@@ -164,10 +166,7 @@ async def run(folder: Path, case: str, *, second_provider: bool = False) -> dict
             rows = await asyncio.wait_for(finish(), 15)
             assert rows is not None
             if case == "parent_only":
-                # 摘要已覆盖全部已结算内容，新输入后只能重写父摘要本身。
-                accepted = await accept("test:room", "next-input", ChannelInboundMessage(
-                    "test", "user", "room", "retry now" + " y" * 8000, datetime.now(UTC), {}))
-                rows = await asyncio.wait_for(finish(), 15)
+                # 摘要已覆盖全部已结算内容，provider 拒绝后只能重写父摘要本身。
                 with sqlite3.connect(folder / "workspace/sessions.db") as connection:
                     records = sorted((json.loads(row[0]) for row in connection.execute(
                         "SELECT value FROM owner_records WHERE owner='plugin:compaction' AND key LIKE 'summary:%'")),
@@ -295,9 +294,25 @@ async def run(folder: Path, case: str, *, second_provider: bool = False) -> dict
                         writer(ToolResult, ref).append(f"idle-next-result-{index}", ToolResult(
                             call_ref=ref, parts=(ContentPart("text", f"idle {index}"),), outcome="success"))
                     writer(Output).append("idle-next-final", Output((ContentPart("text", "second burst finished"),), "complete"))
+                    # 同时构造未绑定会话 test:unbound，具有相同长空闲与高 token 历史，验证 selected 模式下不会误触发空闲压缩。
+                    def unbound_writer(body, ref=None):
+                        return log.writer("test:unbound", author="user" if body is Input else "assistant",
+                                          source="conversation", body_types=(body,), call_ref=ref,
+                                          content={"text": check_text, "context.notice": check_notice}, check_call=lambda call: None)
+                    unbound_writer(Input).append("ub-input", Input((ContentPart("text", "unbound task"),)))
+                    for index in range(6):
+                        identity = f"ub-call-{index}"
+                        unbound_writer(Output).append(identity, Output((ToolCall(binding, {"text": "u" * padding}),), "continue"))
+                        ref = CallRef(identity, 0)
+                        unbound_writer(ToolResult, ref).append(f"ub-result-{index}", ToolResult(
+                            call_ref=ref, parts=(ContentPart("text", f"ub {index}"),), outcome="success"))
+                    unbound_writer(Output).append("ub-final", Output((ContentPart("text", "unbound finished"),), "complete"))
                     earlier_ts = (datetime.now(UTC) - timedelta(minutes=65)).isoformat()
                     with log._lock:
-                        log._connection.execute("UPDATE messages SET ts=?", (earlier_ts,))
+                        log._connection.execute(
+                            "UPDATE messages SET ts=? WHERE session_key='test:unbound' OR seq>?",
+                            (earlier_ts, len(original_rows)),
+                        )
                         log._connection.commit()
                         log._message_views.clear()
                     accepted = await accept("test:room", "idle-second-input", ChannelInboundMessage(
@@ -305,8 +320,25 @@ async def run(folder: Path, case: str, *, second_provider: bool = False) -> dict
                     await asyncio.wait_for(finish(), 15)
                     head = root.context.require(COMPACTION_SUMMARIES).head("test:room")
                     assert head is not None and head.generation == 2 and getattr(head, "trigger", None) == "idle"
+                    ub_accepted = await accept("test:unbound", "ub-wake-input", ChannelInboundMessage(
+                        "test", "user", "unbound", "wake unbound", datetime.now(UTC), {}))
+                    async def finish_unbound():
+                        async for _ in log.catalog().follow():
+                            ub_rows = log.reader("test:unbound").snapshot()
+                            if any(row.seq > ub_accepted.seq and isinstance(row.body, Output) and row.body.finish == "complete"
+                                   for row in ub_rows):
+                                return ub_rows
+                    await asyncio.wait_for(finish_unbound(), 15)
+                    assert root.context.require(COMPACTION_SUMMARIES).head("test:unbound") is None
+                    from plugins.compaction.plugin import SETTINGS as COMPACTION_SETTINGS
+                    settings_state = await root.context.require(COMPACTION_SETTINGS).read()
+                    session_items = {item["session_id"]: item for item in cast(list[dict[str, Any]], settings_state["sessions"])}
+                    assert session_items["test:room"]["compaction_count"] == 2
+                    assert session_items["test:room"]["last_trigger"] == "idle"
+                    assert session_items["test:room"]["title"] == "original task"
+                    assert session_items["test:unbound"]["compaction_count"] == 0
             with sqlite3.connect(folder / "workspace/sessions.db") as connection:
-                assert connection.execute("SELECT * FROM messages ORDER BY seq").fetchall()[:len(original_rows)] == original_rows
+                assert connection.execute("SELECT * FROM messages WHERE session_key='test:room' ORDER BY seq").fetchall()[:len(original_rows)] == original_rows
                 generations = connection.execute("SELECT count(*) FROM owner_records WHERE owner='plugin:compaction' AND key LIKE 'summary:%'").fetchone()[0]
             if second_provider:
                 from scripts.compaction_second_provider_scenario import replace
