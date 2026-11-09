@@ -299,7 +299,8 @@ class GoalRuntime:
                 settlement = RoundSettlement(
                     activity=False,
                     tokens=tokens,
-                    coverage=coverage,
+                    # 抢占时这一轮还没有模型调用记录：没花费，不是用量未知。
+                    coverage=coverage if folded.call_ids else "exact",
                     settled_through_seq=folded.preempted.seq,
                     last_settled_message_id=folded.preempted.message_id,
                     reason="用户输入抢占，等待用户轮次结束",

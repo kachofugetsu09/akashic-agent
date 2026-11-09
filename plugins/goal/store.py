@@ -11,6 +11,7 @@ from typing import Any, cast
 from agent.plugin_composition import Context
 from core.common.file_io import run_file_io
 from plugins.content.contract import CONTENT
+from plugins.context.contract import CONTEXT
 from plugins.ledger.contract import (
     MESSAGE_CATALOG,
     MESSAGE_WRITERS,
@@ -19,6 +20,7 @@ from plugins.ledger.contract import (
     Input,
     MessageReader,
     MessageWriter,
+    Output,
     OwnerState,
     OwnerStore,
     OwnerTransaction,
@@ -34,12 +36,14 @@ from .state import (
     normalize_token_budget,
     now_utc,
     settle_round,
+    stop_notice,
 )
 
 import hashlib
 
 GOAL_PREFIX = "goal:"
 OPERATION_PREFIX = "goalop:"
+NOTICE_SOURCE = "goal"
 MAX_OPERATIONS = 1024
 _OPERATION_KINDS = frozenset({"create", "update", "pause", "resume", "clear", "budget", "command"})
 _GOAL_FIELDS = frozenset({
@@ -258,13 +262,14 @@ class GoalStore:
     def __init__(
         self, ctx: Context, *, state: OwnerState | None = None,
         catalog: Any | None = None, writers: Any | None = None,
-        content: Any | None = None,
+        content: Any | None = None, check_notice: Any | None = None,
     ) -> None:
         self._ctx = ctx
         self._state = state if state is not None else ctx.require(OWNER_STATE)
         self._catalog = catalog if catalog is not None else ctx.require(MESSAGE_CATALOG)
         self._writers = writers if writers is not None else ctx.require(MESSAGE_WRITERS)
         self._content = content if content is not None else ctx.require(CONTENT)
+        self._check_notice = check_notice if check_notice is not None else ctx.require(CONTEXT).check_notice
 
     def _open(self) -> OwnerStore:
         return self._state.open(self._ctx)
@@ -278,6 +283,13 @@ class GoalStore:
         store = self._open()
         store.check_access(reader, writer)
         return store, reader, writer
+
+    # 结局走独立来源的 context.notice：对话来源的边界和失败重试不变，模型看不到，也不会被唤醒。
+    def _notice_writer(self, session_id: str) -> MessageWriter:
+        return self._writers.bind(
+            self._ctx, author="goal", source=NOTICE_SOURCE,
+            body_types=(Output,), content={"context.notice": self._check_notice},
+        )(session_id)
 
     async def get(self, session_id: str) -> Goal | None:
         store = self._open()
@@ -427,6 +439,8 @@ class GoalStore:
         allow_inactive: bool = False,
     ) -> Goal:
         store, reader, writer = self._access(session_id)
+        notice_writer = self._notice_writer(session_id)
+        store.check_access(notice_writer)
 
         def transact(transaction: OwnerTransaction) -> Goal:
             current = transaction.read(goal_key(session_id))
@@ -466,6 +480,14 @@ class GoalStore:
                     writer, message_id,
                     Input((ContentPart("text", text),)),
                     expected_source_head=expected_head,
+                )
+            # 非 active 只有两种来源：本次结算刚停下，或轮次中途被改停、到这里才收尾。
+            # 这一轮只结算一次（continuation_id 随之清空），所以结局只写一条。
+            if not updated.active:
+                _ = transaction.append(
+                    notice_writer,
+                    f"goal-notice:{updated.goal_id}:{updated.settled_through_seq}",
+                    Output((ContentPart("context.notice", stop_notice(updated)),), "complete"),
                 )
             _ = transaction.save(
                 goal_key(session_id), encode_goal(updated),

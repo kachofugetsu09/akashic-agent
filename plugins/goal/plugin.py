@@ -13,6 +13,7 @@ from agent.plugin_composition import (
 )
 from plugins.commands.contract import COMMANDS, CommandDefinition
 from plugins.content.contract import CONTENT
+from plugins.context.contract import CONTEXT
 from plugins.ledger.contract import (
     MESSAGE_CATALOG,
     MESSAGE_WRITERS,
@@ -42,6 +43,7 @@ desc = "持久目标：/goal 设置后自动续跑，直到完成、阻塞或暂
 inject = (
     COMMANDS,
     CONTENT,
+    CONTEXT,
     MESSAGE_CATALOG,
     MESSAGE_WRITERS,
     MODEL_CALL_STATS,
