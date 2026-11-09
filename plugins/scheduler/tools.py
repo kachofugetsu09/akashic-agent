@@ -28,6 +28,8 @@ class ScheduleInput(BaseModel):
     text: str = Field(min_length=1, description="notify 的推送原文，或 run 的任务指令")
     context: Literal["none", "session"] = Field(default="none", description=(
         "run 是否带上本会话的聊天历史；天气、新闻这类独立任务用 none，需要参考之前对话时用 session"))
+    session: Literal["current", "isolated"] = Field(default="current", description=(
+        "current：在当前固定会话里执行并投递；isolated：每次触发新建独立的 scheduler:<key> 会话执行（Web 端不可见，任务内如需通知用户请调用 message_push）"))
     timezone: str = Field(default_factory=lambda: os.environ.get("TZ", ""))
     name: str | None = None
     request_time: str | None = Field(default=None, description="原消息接收的 ISO 时间；after 从此刻计算延迟")
@@ -114,9 +116,13 @@ class ScheduleTool:
                 else:
                     interval = int(parse_duration(request.when).total_seconds())
             session_id, channel, address = target
+            if request.session == "isolated":
+                if request.action != "run":
+                    raise ValueError("isolated 会话只用于 run 任务")
+                session_id = "scheduler"
             job = ScheduledJob(trigger=request.trigger, action=request.action, fire_at=fire_at,
                 channel=channel, chat_id=address, session_id=session_id, text=request.text,
-                interval_seconds=interval, cron_expr=cron, context=request.context, name=request.name,
+                interval_seconds=interval, cron_expr=cron, context="none" if session_id == "scheduler" else request.context, name=request.name,
                 timezone=request.timezone, created_at=self._now())
             payload = self._store.encode_job(job)
             _ = self._store.decode_job(payload)
