@@ -634,10 +634,16 @@ class _BoundChat:
                             send_evidence=evidence,
                             first_token_ms=first_token_ms,
                         ), failure if isinstance(failure, asyncio.CancelledError) else None)
-                    except (asyncio.CancelledError, BaseExceptionGroup) as record_failure:
+                    except asyncio.CancelledError:
+                        # 回执已落盘，原错误在调用账本里；调用方已被取消，只传播取消。
+                        # 包成异常组会绕过各 owner 的 except Exception 和取消结算。
+                        if not isinstance(failure, asyncio.CancelledError):
+                            logger.info("模型请求失败后调用方被取消: %s", failure)
+                        raise
+                    except BaseExceptionGroup as record_failure:
                         if isinstance(failure, asyncio.CancelledError):
                             raise
-                        # 真实 provider 错误不能被后来的取消或回执拒写覆盖。
+                        # 回执没写成：真实 provider 错误不能被取消或回执拒写覆盖。
                         raise BaseExceptionGroup(
                             f"模型请求失败且回执结算被取消。原请求错误：{failure}", [failure, record_failure]
                         ) from None

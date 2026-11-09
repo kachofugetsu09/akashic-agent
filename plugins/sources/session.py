@@ -288,6 +288,9 @@ class SourceSession:
                 caller = asyncio.current_task()
                 if caller is not None and caller.cancelling():
                     raise
+            except (Exception, BaseExceptionGroup):
+                # 停止已持久；回合自身的失败归回复 owner 结算，不交给发停止的调用方。
+                logger.warning("停止等待的回复任务以失败结束", exc_info=True)
         return message
 
     # 仍持有本来源提交权的回复任务；没有或已撤权时为 None。
@@ -523,6 +526,11 @@ class SourceSession:
                 if not state.pending:
                     return
                 through = state.head if boundary is None else min(boundary, state.head)
+                # 结算期间已有新输入：旧回合不再是终态，下一轮连同新输入重新请求，追加只会是一条过期错误。
+                # 原因留在日志，模型失败还在调用账本；下一轮仍失败时由它写覆盖新输入的 failure。
+                if through < state.latest_input:
+                    logger.warning("上一轮失败结算期间收到新输入，不再追加 failure: %s", error)
+                    return
                 def committed(message: Message, created: bool) -> None:
                     if created:
                         state.add(message)
