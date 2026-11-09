@@ -34,6 +34,29 @@ from .api import (
 from plugins.tools.contract import PROCESS_STARTED_AT
 
 
+# 本进程已进入 invoke、回执尚未落盘的默认消息调用；停止结算据此不把它们写成「未执行」。
+invoked_unrecorded: set[str] = set()
+
+
+# 工具结果已产生：等提交门并落盘后才响应取消，回执不丢、下一步不重跑。
+# 重复取消只重入同一次提交，已落盘的结果由冲突路径读回；前驱中止仍照常上抛。
+async def _commit_before_cancel(
+    commit_after: CommitAfter | None, commit: Callable[[], Awaitable[Result]],
+) -> Result:
+    cancelled: asyncio.CancelledError | None = None
+    while True:
+        try:
+            if commit_after is not None:
+                await commit_after.wait()
+            finished = await commit()
+            break
+        except asyncio.CancelledError as cancellation:
+            cancelled = cancellation
+    if cancelled is not None:
+        raise cancelled
+    return finished
+
+
 # Turn provider cleanup failures into receipts without hiding invoke cancellation.
 class _MessageToolScope(AsyncExitStack):
     async def __aexit__(
@@ -237,12 +260,10 @@ class ToolExecution:
 
         async def commit(result: Result) -> Result:
             mark("tool.commit.wait")
-            if commit_after is not None:
-                await commit_after.wait()
-            mark("tool.commit.begin")
-            finished = await _commit_result(
+            finished = await _commit_before_cancel(commit_after, lambda: _commit_result(
                 lambda value: commit_message(self._state, reply, value, on_commit=publish), result,
-            )
+            ))
+            invoked_unrecorded.discard(key)
             mark("tool.committed")
             return finished
 
@@ -329,6 +350,7 @@ class ToolExecution:
                     return Result("denied", (ContentPart("text", str(error)),))
             try:
                 mark("tool.invoke.begin")
+                invoked_unrecorded.add(key)
                 result = coerce_result(await tool.invoke(key, final_arguments))
                 mark("tool.invoke.end")
                 return result
@@ -337,7 +359,7 @@ class ToolExecution:
                 raise _Failed(_invocation_failure(failure), failure) from failure
 
     async def settle_abandoned(self, reply: MessageReply) -> Result:
-        """放弃调用的窄幂等结算入口；ReAct 与后台 watcher 共用同一回执。"""
+        """放弃或停止调用的窄幂等结算入口；ReAct 与后台 watcher 共用同一回执。"""
         from .abandon import abandon_call
 
         return await abandon_call(self._state, self._tasks, reply, task_key=self._task_key)
@@ -409,16 +431,13 @@ class ToolExecution:
         # 同批重叠调用只并发执行；结果提交仍等前驱完成。
         async def commit(record: OwnerRecord | None, result: Result) -> Result:
             mark("tool.commit.wait")
-            if commit_after is not None:
-                await commit_after.wait()
-            mark("tool.commit.begin")
-            finished = await _commit_result(
+            finished = await _commit_before_cancel(commit_after, lambda: _commit_result(
                 lambda value: finish(self._state, key, record, value, reply, initial={
                     "version": 1, "request": fingerprint, "binding": binding_id,
                     "reply_id": None if reply is None else reply.message_id,
                     "arguments": arguments,
                 }, on_commit=on_commit), result,
-            )
+            ))
             mark("tool.committed")
             return finished
 

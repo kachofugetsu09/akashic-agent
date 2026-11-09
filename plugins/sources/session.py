@@ -244,8 +244,8 @@ class SourceSession:
                     raise
         return message
 
-    async def pause(self, message_id: str) -> Message:
-        """停止当前来源；只读判定与条件提交沿同一准入排序。"""
+    async def pause(self, message_id: str, *, wait: bool = True) -> Message:
+        """停止当前来源；只读判定与条件提交沿同一准入排序。wait=False 只提交不等旧任务排空。"""
         def read(reader: MessageReader) -> tuple[Control | None, int, int]:
             existing = reader.get(message_id)
             body = None if existing is None else existing.body
@@ -281,7 +281,7 @@ class SourceSession:
                     continue
                 return message, current
         message, pending = await self._tasks.admit_async(self._key, admit)
-        if pending is not None:
+        if pending is not None and wait:
             try:
                 _ = await pending.join()
             except asyncio.CancelledError:

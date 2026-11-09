@@ -17,6 +17,7 @@ from plugins.ledger.contract import (
     OWNER_STATE,
     SESSION_ADMISSION,
     MessageConflict,
+    SourceHeadConflict,
     MessageReader,
     SessionAttributes,
 )
@@ -107,14 +108,23 @@ async def apply(ctx: Context) -> None:
     async def abandon(session_id: str, message_id: str) -> Message:
         session = open(session_id)
         reader = ctx.require(MESSAGE_CATALOG).reader(session_id)
-        with reader.read_snapshot():
-            head = reader.head(source="conversation")
-        if head < 0:
-            raise MessageConflict("当前来源没有可放弃的消息")
-        return await session.control(
-            message_id, Control("abandon", head, USER_ABANDON_REASON),
-            expected_head=head, handle=None,
-        )
+        # 1. 运行中先停止再放弃：不等工具退出，放弃自己就是不等清理的出口。重放已提交的放弃不再停止新回合。
+        replay = await reader.read_async(lambda current: current.get(message_id) is not None)
+        if not replay and await session.active_task() is not None:
+            _ = await session.pause(message_id + ":pause", wait=False)
+        # 2. 被中断的工具随后写回执会推进来源 head，只重试这一次条件提交。
+        while True:
+            with reader.read_snapshot():
+                head = reader.head(source="conversation")
+            if head < 0:
+                raise MessageConflict("当前来源没有可放弃的消息")
+            try:
+                return await session.control(
+                    message_id, Control("abandon", head, USER_ABANDON_REASON),
+                    expected_head=head, handle=None,
+                )
+            except SourceHeadConflict:
+                continue
 
     async def accept(session_id: str, message_id: str, message: ChannelInboundMessage) -> Message:
         log_timing("input.received", session_id=session_id, request_id=message_id)
