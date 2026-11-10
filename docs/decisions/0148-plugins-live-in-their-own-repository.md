@@ -31,6 +31,12 @@
    覆盖只记录在运行中的发行版里：之后的部署、重启、`revert-hot` 都跟着发行版走，没有第二份状态。
    覆盖只接受插件仓库 `main` 上的提交，和锁定提交总在同一条历史上；部署时锁定提交已包含覆盖提交就自动退役，
    结果里的 `retiredOverrides` 列出退役项。远端全部合进去以后，实例就回到纯 lock 状态，和新装实例逐字节一致。
+8. **插件仓库按 DSH 的方式划分归属。** 会进入发行版的前端源码都属于一个插件：聊天应用在
+   `frontend/plugins/akashic_clients/chat`，外壳在 `frontend/plugins/ui/dashboard`。插件仓库的 `npm run build`
+   自己把产物放进所属插件，Core 只运行它，不点名插件。共享的只能是 `packages/` 下声明过的包：
+   `akashic.kind = "library"`（`@akashic/theme`、`@akashic/plugin-kit`，构建时打包进使用方），或
+   `akashic.kind = "contract"` 并写明 `provider` 插件（`@akashic/*-ui-v1` 等类型合同，同 DSH 的协议包）。
+   R13 检查这条规则。覆盖一个插件会带上它的全部前端；库包和合同包的变化属于 preset，走升 lock。
 
 ## 理由
 
@@ -44,8 +50,9 @@
 - 新装实例用的插件版本仍需要 Core 提交一次 `plugins.lock`；插件仓库不会自动开 Core PR（避免给仓库加跨仓写权限的 secret）。
   单个实例可以先用覆盖上线，lock 之后再跟上。
 - 覆盖不接受分支或 PR 提交：分支提交被 squash 或删除后旧版本无法重建，也无法判断远端是否已经包含它。
-- 覆盖的插件仍和锁定提交里的共享代码（`packages/`、`frontend/chat` 等）一起构建；覆盖版本依赖新的共享代码或新的 Core 合同时，
-  构建或兼容门会拒绝，此时要先升 lock 或 Core。
+- 覆盖的插件仍和锁定提交里的 `packages/` 库包、合同包及构建工具链（单一 npm 锁文件）一起构建；覆盖版本依赖新的包或新的
+  Core 合同时，构建或兼容门会拒绝，此时要先升 lock 或 Core。
+- 聊天构建会改写外壳的 `index.html`（写入聊天版本），两者构建期仍有耦合，所以产物在 `npm run build` 全部结束后统一放置。
 - 宿主上的 `akashic-release` 从完整发布的 runtime 检出运行，所以发布工具（`scripts/akashic_release/`、`compose_source.py`、
   `plugin_store.py`）变化一律走完整发布；其余条件都满足、又没有插件变化时（例如锁定提交刚好追上覆盖）零换代，不重启。
 - `docker/computer` 与它的镜像发布工作流留在 Core：镜像按 digest 引用，搬走需要在 GHCR 包设置里给新仓库授权。
