@@ -79,6 +79,11 @@ def distribution_bundle(directory: Path) -> tuple[BundleRow, ...]:
     return load_bundles(directory, mode=os.environ.get("AKASHIC_PLUGIN_BUNDLE", "base"))
 
 
+# 发行版 preset 自己声明的插件；用户 patch 新增的行不属于 preset。
+def preset_plugin_ids(distribution: Path) -> frozenset[str]:
+    return frozenset(row.plugin for row in distribution_bundle(distribution / "bundles"))
+
+
 def patch_rows(workspace: Path) -> tuple[BundleRow, ...]:
     path = workspace / "bundle.patch.toml"
     return load_bundle(path) if path.exists() else ()
