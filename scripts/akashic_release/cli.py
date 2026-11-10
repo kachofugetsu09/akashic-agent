@@ -49,6 +49,14 @@ def _confirm(commit: str, subject: str, current: str | None, *, yes: bool) -> No
         raise RuntimeError("operator 取消安装")
 
 
+# 拆仓前的自部署 worker 用 --no-activate 准备后，按它请求的 Core 提交找 Bridge 解释器再以 --prepared 进入
+# 目标版本 worker；产物按合成提交命名，给它一个指向合成产物的入口，老实例才能自部署到拆仓后的版本。
+def _link_core_bridge(paths: ReleasePaths, core_commit: str, commit: str) -> None:
+    link = paths.bridge_venv(core_commit)
+    if core_commit != commit and not link.exists() and not link.is_symlink():
+        link.symlink_to(commit)
+
+
 def install(args: argparse.Namespace, *, self_deploy: dict[str, object] | None = None) -> dict[str, object]:
     paths = ReleasePaths(args.root.resolve())
     checkout = args.source_checkout.resolve(strict=True)
@@ -109,6 +117,7 @@ def install(args: argparse.Namespace, *, self_deploy: dict[str, object] | None =
         status = "prepared"
         if args.no_activate:
             warmer.wait()
+            _link_core_bridge(paths, core_commit, commit)
         else:
             status = activate_release(
                 paths=paths,
