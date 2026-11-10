@@ -1,0 +1,1342 @@
+from __future__ import annotations
+
+import asyncio
+from core.common.diagnostic_log import log_timing
+import logging
+import mimetypes
+import os
+from datetime import datetime, timezone
+from pathlib import Path
+from collections.abc import AsyncGenerator, AsyncIterable, AsyncIterator, Callable, Coroutine, Mapping
+from contextlib import aclosing, asynccontextmanager, suppress
+from typing import Any, cast
+from uuid import uuid4
+
+from plugins.channels.contract import (
+    AttachmentKind as V3AttachmentKind,
+    AttachmentReadLease,
+    AttachmentRef,
+    ChannelInboundMessage,
+    InputPartRejected,
+    read_input_parts,
+    ChannelAttachmentReadPort,
+    ChannelCommitRole,
+    ChannelFactoryContext,
+    ChannelPresentationPorts,
+    ChannelRuntimePorts,
+    ChannelReady,
+    DeliveryStatus as V3DeliveryStatus,
+    InboundIdentity,
+    ProviderDeliveryReceipt,
+    ProviderDeliveryRequest,
+    PresentationReceipt,
+    StreamSubscription,
+    RawInbound,
+    StreamDeltaPresentation,
+    StopReceipt,
+    ToolPresentation,
+    TurnOutputCompletedPresentation,
+    TurnStartedPresentation,
+    TurnStreamEvent,
+    TurnStreamEventKind,
+    DeliveryStatus as PresentationDeliveryStatus,
+)
+from core.common.file_io import drain_uninterruptible
+from fastapi import WebSocket
+from starlette.websockets import WebSocketDisconnect, WebSocketState
+
+from .services import ArtifactStorePort as ChannelAttachmentArtifactStore
+from plugins.ui.contract import MessageDisplayReader, PluginUiEmit, follow_messages
+from .services import (
+    MessageCatalogPort as MessageCatalog,
+    MessageConflict,
+    SteerPort,
+)
+
+logger = logging.getLogger(__name__)
+
+MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+MAX_WEB_INBOUND_ID_LENGTH = 256
+
+
+class UploadTooLargeError(ValueError):
+    """上传内容超过单文件上限。"""
+
+
+class WebNativeChannelAdapter:
+    """把一个已启动的 Web provider owner 暴露为 v3 native adapter。"""
+
+    def __init__(
+        self,
+        channel: WebChatChannel,
+        context: ChannelFactoryContext,
+    ) -> None:
+        self._channel = channel
+        self._binding_token = context.binding_token
+        self._attachment_read = context.attachment_read
+        self._started = False
+        self._stopped = False
+        self._runtime: ChannelRuntimePorts | None = None
+        self._admission_open = False
+        self._in_flight = 0
+        self._drain_event = asyncio.Event()
+        self._drain_event.set()
+        self._stop_receipt: StopReceipt | None = None
+        channel._register_v3_adapter(self)
+
+    @property
+    def binding_token(self) -> str:
+        return self._binding_token
+
+    @property
+    def admission_open(self) -> bool:
+        return self._admission_open
+
+    async def start(self) -> ChannelReady:
+        """返回 binding readiness，不重复启动 Web provider owner。"""
+
+        if self._stopped:
+            raise RuntimeError("Web native channel binding 已停止")
+        if self._started:
+            raise RuntimeError("Web native channel binding 重复 start")
+        self._started = True
+        return ChannelReady(self._binding_token)
+
+    def attach_runtime(self, ports: ChannelRuntimePorts) -> None:
+        """把 provider callback 固定到一个不可替换的 exact Core binding。"""
+
+        if not isinstance(ports, ChannelRuntimePorts):
+            raise TypeError("Web runtime ports 类型无效")
+        if ports.binding_token != self._binding_token:
+            raise RuntimeError("Web runtime ports binding token 不匹配")
+        if ports.ingress is None:
+            raise RuntimeError("Web v3 ingress 缺少 Core ingress")
+        if self._stopped:
+            raise RuntimeError("Web native channel binding 已停止")
+        if self._runtime is not None:
+            raise RuntimeError("Web v3 ingress runtime 不允许替换")
+        self._runtime = ports
+
+    def open_admission(self) -> None:
+        """在 stable publication 完成后打开当前 exact Web ingress。"""
+
+        if not self._started:
+            raise RuntimeError("Web native channel 尚未 start")
+        if self._runtime is None:
+            raise RuntimeError("Web v3 ingress 尚未 attach")
+        if self._admission_open:
+            raise RuntimeError("Web v3 ingress 已打开")
+        self._channel._open_v3_binding(self)
+        self._admission_open = True
+
+    def close_admission(self) -> None:
+        """同步拒绝新 Web callback，已开始的 callback 继续使用旧 binding。"""
+
+        if not self._admission_open:
+            return
+        self._admission_open = False
+        self._channel._close_v3_binding(self)
+
+    def begin_inbound(self) -> ChannelRuntimePorts:
+        """在 provider callback 的第一个 await 前锁定当前 exact binding。"""
+
+        runtime = self._runtime
+        if (
+            self._stopped
+            or not self._started
+            or not self._admission_open
+            or runtime is None
+            or runtime.ingress is None
+        ):
+            raise RuntimeError("Web v3 ingress admission 已关闭")
+        self._in_flight += 1
+        self._drain_event.clear()
+        return runtime
+
+    def _finish_inbound(self) -> None:
+        if self._in_flight <= 0:
+            raise RuntimeError("Web v3 ingress in-flight 计数下溢")
+        self._in_flight -= 1
+        if self._in_flight == 0:
+            self._drain_event.set()
+
+    async def admit_captured(
+        self,
+        runtime: ChannelRuntimePorts,
+        raw: RawInbound,
+    ) -> bool:
+        """把已获准的 Web callback 投递到其开始时捕获的 Core ingress。"""
+
+        if not isinstance(raw, RawInbound):
+            raise TypeError("Web v3 ingress 只接受 RawInbound")
+        if runtime is not self._runtime or runtime.ingress is None:
+            raise RuntimeError("Web v3 ingress runtime 已失效")
+        return await runtime.ingress.admit(raw)
+
+    async def deliver(self, request: ProviderDeliveryRequest) -> ProviderDeliveryReceipt:
+        """把 exact v3 request 投影为 Web final frame。"""
+
+        if not self._started:
+            raise RuntimeError("Web native channel 尚未 start")
+        if request.binding_token != self._binding_token:
+            raise RuntimeError("Web native channel binding token 不匹配")
+        return await self._channel.deliver_v3(
+            request,
+            attachment_read=self._attachment_read,
+        )
+
+    async def stop(self) -> StopReceipt:
+        """停止 adapter binding，但不关闭由 ChannelHost 持有的 Web provider。"""
+
+        if self._stop_receipt is not None:
+            return self._stop_receipt
+        self.close_admission()
+        await self._drain_event.wait()
+        self._started = False
+        self._stopped = True
+        self._runtime = None
+        self._channel._unregister_v3_adapter(self)
+        self._stop_receipt = StopReceipt(self._binding_token, resources_closed=True)
+        return self._stop_receipt
+
+
+class WebChatChannel:
+    v3_inbound_identity = InboundIdentity.PROVIDER_MESSAGE_ID
+
+    def __init__(self, channel_name: str = "akashic") -> None:
+        self.name = channel_name
+        self._artifact_store: ChannelAttachmentArtifactStore | None = None
+        self._connections: dict[str, set[WebSocket]] = {}
+        self._pending_terminal: dict[str, dict[str, Any]] = {}
+        self._connection_lock = asyncio.Lock()
+        self._events_bound = False
+        self._v3_adapters: dict[str, WebNativeChannelAdapter] = {}
+        self._messages: MessageCatalog | None = None
+        self._message_scope: Callable[[], Any] | None = None
+        self._reply_status: Callable[[str], AsyncGenerator[dict[str, object], None]] | None = None
+        self._session_activity: Callable[[], AsyncGenerator[dict[str, object], None]] | None = None
+        self._message_display: MessageDisplayReader | None = None
+        self._plugin_events: Callable[[str, PluginUiEmit], Coroutine[Any, Any, None]] | None = None
+        self._followers: dict[WebSocket, tuple[str, asyncio.Task[None]]] = {}
+        self._stopping = False
+        self._presentation_subscription: StreamSubscription | None = None
+        self._client_sessions: dict[str, str] = {}
+        self._turn_sessions: dict[str, str] = {}
+        self._turn_contents: dict[str, str] = {}
+        self._steer: SteerPort | None = None
+
+    def bind_steer(self, steer: SteerPort) -> None:
+        self._steer = steer
+
+    def bind_session_activity(self, follow: Callable[[], AsyncGenerator[dict[str, object], None]]) -> None:
+        """每条连接只拥有一个通道级摘要订阅，与当前会话的正文跟随独立。"""
+        self._session_activity = follow
+
+    def bind_message_readers(
+        self, messages: MessageCatalog,
+        reply_status: Callable[[str], AsyncGenerator[dict[str, object], None]] | None = None,
+    ) -> None:
+        """绑定只读日志与当前回复订阅；接口不含消息写入或取消权限。"""
+        if self._messages is not None and self._messages is not messages:
+            raise RuntimeError("Web 消息读取已绑定")
+        self._messages = messages
+        self._reply_status = reply_status
+
+    def bind_message_scope(
+        self,
+        scope: Callable[[], Any],
+        *,
+        reply_status: Callable[[str], AsyncGenerator[dict[str, object], None]] | None = None,
+        plugin_events: Callable[[str, PluginUiEmit], Coroutine[Any, Any, None]] | None = None,
+    ) -> None:
+        """Bind a request scope factory instead of retaining a host provider."""
+
+        if not callable(scope):
+            raise TypeError("Web message scope 必须可调用")
+        if self._messages is not None:
+            raise RuntimeError("Web 消息读取已绑定直接 provider")
+        if self._message_scope is not None and self._message_scope is not scope:
+            raise RuntimeError("Web message scope 不允许替换")
+        self._message_scope = scope
+        if reply_status is not None:
+            if self._reply_status is not None and self._reply_status is not reply_status:
+                raise RuntimeError("Web reply status reader 不允许替换")
+            self._reply_status = reply_status
+        if plugin_events is not None:
+            if self._plugin_events is not None and self._plugin_events != plugin_events:
+                raise RuntimeError("Web plugin events reader 不允许替换")
+            self._plugin_events = plugin_events
+
+    @asynccontextmanager
+    async def _open_message_catalog(self) -> AsyncIterator[MessageCatalog]:
+        """Resolve one message capability for a short request or reader acquisition."""
+
+        if self._message_scope is not None:
+            async with self._message_scope() as messages:
+                yield messages
+            return
+        if self._messages is None:
+            raise RuntimeError("Web 消息日志不可用")
+        yield self._messages
+
+    def bind_message_display(self, providers: MessageDisplayReader) -> None:
+        """绑定逐页取得插件 lease 的只读投影入口。"""
+        if self._message_display is not None and self._message_display != providers:
+            raise RuntimeError("Web 消息展示 provider 已绑定")
+        self._message_display = providers
+
+    @property
+    def message_display(self) -> MessageDisplayReader | None:
+        """返回当前展示请求使用的 provider；未绑定时显式显示 unavailable。"""
+        return self._message_display
+
+    @staticmethod
+    def _socket_id(websocket: WebSocket) -> str:
+        return f"ws-{id(websocket):x}"
+
+    async def start(self) -> None:
+        """Start Web transport state without subscribing to a global event bus.
+
+        Live turn presentation will be attached through the formal channel
+        presentation port once its routing payload includes the session
+        identity.  Keeping this owner free of the legacy event bus prevents a
+        Core event type from becoming a hidden client dependency.
+        """
+        return None
+
+    def bind_artifact_store(self, store: ChannelAttachmentArtifactStore) -> None:
+        """绑定 Core-owned artifact store，供 Web upload/read API 使用。"""
+
+        if not isinstance(store, ChannelAttachmentArtifactStore):
+            raise TypeError("Web artifact store 类型无效")
+        if self._artifact_store is not None and self._artifact_store is not store:
+            raise RuntimeError("Web artifact store 不允许在运行中替换")
+        self._artifact_store = store
+
+    @property
+    def artifact_store(self) -> ChannelAttachmentArtifactStore | None:
+        """Return the currently bound Core artifact owner, if the API is ready."""
+
+        return self._artifact_store
+
+    def build_v3_adapter(self, context: ChannelFactoryContext) -> WebNativeChannelAdapter:
+        """为一个 exact Core binding 创建不接管 provider 生命周期的 native adapter。"""
+
+        if not isinstance(context, ChannelFactoryContext):
+            raise TypeError("Web native adapter context 类型无效")
+        return WebNativeChannelAdapter(self, context)
+
+    def attach_presentation(self, ports: ChannelPresentationPorts) -> None:
+        """Subscribe to the formal turn stream and route by captured inbound IDs."""
+
+        if ports.turn_stream is None:
+            raise RuntimeError("Web presentation 缺少 turn stream")
+        if self._presentation_subscription is not None:
+            raise RuntimeError("Web presentation 已绑定")
+        self._presentation_subscription = ports.turn_stream.subscribe(
+            self._on_presentation
+        )
+
+    async def _on_presentation(self, event: TurnStreamEvent) -> PresentationReceipt:
+        """Project typed presentation events without Core lifecycle identities."""
+
+        payload = event.payload
+        if event.kind is TurnStreamEventKind.TURN_STARTED:
+            assert isinstance(payload, TurnStartedPresentation)
+            session_key = self._client_sessions.get(payload.client_message_id)
+            if session_key is None:
+                return PresentationReceipt(
+                    event.presentation_id,
+                    PresentationDeliveryStatus.FAILED,
+                    error="Web presentation 缺少 inbound session 映射",
+                )
+            self._turn_sessions[payload.turn_id] = session_key
+            delivered = await self._broadcast(
+                session_key,
+                {
+                    "type": "turn.started",
+                    "session_id": session_key,
+                    "turn_id": payload.turn_id,
+                    "client_message_id": payload.client_message_id,
+                    "content": self._turn_contents.get(payload.turn_id, ""),
+                },
+            )
+        else:
+            session_key = self._turn_sessions.get(payload.turn_id)
+            if session_key is None:
+                return PresentationReceipt(
+                    event.presentation_id,
+                    PresentationDeliveryStatus.FAILED,
+                    error="Web presentation 缺少 turn session 映射",
+                )
+            if event.kind is TurnStreamEventKind.STREAM_DELTA:
+                assert isinstance(payload, StreamDeltaPresentation)
+                delivered = 0
+                if payload.reasoning_delta:
+                    delivered += await self._broadcast(
+                        session_key,
+                        {
+                            "type": "react.thinking.delta",
+                            "session_id": session_key,
+                            "turn_id": payload.turn_id,
+                            "delta": payload.reasoning_delta,
+                        },
+                    )
+                if payload.text_delta:
+                    delivered += await self._broadcast(
+                        session_key,
+                        {
+                            "type": "answer.delta",
+                            "session_id": session_key,
+                            "turn_id": payload.turn_id,
+                            "delta": payload.text_delta,
+                        },
+                    )
+            elif event.kind is TurnStreamEventKind.TOOL_STARTED:
+                assert isinstance(payload, ToolPresentation)
+                delivered = await self._broadcast(
+                    session_key,
+                    {
+                        "type": "react.tool.started",
+                        "session_id": session_key,
+                        "turn_id": payload.turn_id,
+                        "call_id": payload.tool_call_id,
+                        "tool_name": payload.tool_name,
+                        "arguments": {},
+                    },
+                )
+            elif event.kind is TurnStreamEventKind.TOOL_COMPLETED:
+                assert isinstance(payload, ToolPresentation)
+                delivered = await self._broadcast(
+                    session_key,
+                    {
+                        "type": "react.tool.completed",
+                        "session_id": session_key,
+                        "turn_id": payload.turn_id,
+                        "call_id": payload.tool_call_id,
+                        "tool_name": payload.tool_name,
+                        "status": "completed",
+                        "result_preview": "",
+                    },
+                )
+            else:
+                assert isinstance(payload, TurnOutputCompletedPresentation)
+                delivered = await self._broadcast(
+                    session_key,
+                    {
+                        "type": "turn.output.completed",
+                        "session_id": session_key,
+                        "turn_id": payload.turn_id,
+                    },
+                )
+                _ = self._turn_sessions.pop(payload.turn_id, None)
+        return PresentationReceipt(
+            event.presentation_id,
+            PresentationDeliveryStatus.DELIVERED,
+            provider_ids=("web",) if delivered else (),
+        )
+
+    def _register_v3_adapter(self, adapter: WebNativeChannelAdapter) -> None:
+        current = self._v3_adapters.get(adapter.binding_token)
+        if current is not None and current is not adapter:
+            raise RuntimeError("Web v3 binding token 已注册")
+        self._v3_adapters[adapter.binding_token] = adapter
+
+    def _unregister_v3_adapter(self, adapter: WebNativeChannelAdapter) -> None:
+        if self._v3_adapters.get(adapter.binding_token) is adapter:
+            self._v3_adapters.pop(adapter.binding_token, None)
+
+    def _open_v3_binding(self, adapter: WebNativeChannelAdapter) -> None:
+        if self._v3_adapters.get(adapter.binding_token) is not adapter:
+            raise RuntimeError("Web v3 binding 未注册")
+        if any(
+            current is not adapter and current.admission_open
+            for current in self._v3_adapters.values()
+        ):
+            raise RuntimeError("Web v3 不允许同时打开多个 binding")
+
+    def _close_v3_binding(self, adapter: WebNativeChannelAdapter) -> None:
+        if self._v3_adapters.get(adapter.binding_token) is not adapter:
+            raise RuntimeError("Web v3 binding 未注册")
+        # Adapter admission is closed before draining captured calls. Followers
+        # own their reader after short acquisition, so cancel those long reads.
+        # The Web transport stays open for a replacement binding.
+        self._cancel_followers_for_admission()
+
+    def _cancel_followers_for_admission(self) -> None:
+        """Cancel every live follow task before the host starts draining."""
+
+        for _session_id, task in tuple(self._followers.values()):
+            if not task.done() and not task.cancelling():
+                task.cancel()
+
+    def _begin_v3_inbound(self) -> tuple[WebNativeChannelAdapter, ChannelRuntimePorts]:
+        """在处理 Web frame 前捕获唯一打开的 exact Core binding。"""
+
+        adapters = tuple(self._v3_adapters.values())
+        for adapter in adapters:
+            if adapter.admission_open:
+                return adapter, adapter.begin_inbound()
+        raise RuntimeError("Web v3 ingress admission 已关闭")
+
+    async def stop(self) -> None:
+        self._stopping = True
+        subscription = self._presentation_subscription
+        if subscription is not None:
+            subscription.close_admission()
+            await subscription.await_quiescence()
+            await subscription.close()
+            self._presentation_subscription = None
+        async with self._connection_lock:
+            sockets = [
+                socket
+                for sockets in self._connections.values()
+                for socket in sockets
+            ]
+            self._connections.clear()
+        for socket in tuple(self._followers):
+            await self._cancel_follow(socket)
+        for socket in sockets:
+            if socket.application_state == WebSocketState.CONNECTED:
+                await socket.close()
+
+    async def handle_websocket(self, websocket: WebSocket, *, watch_sessions: bool = False) -> None:
+        socket_id = self._socket_id(websocket)
+        logger.info("[web_chat] websocket opened id=%s", socket_id)
+        await websocket.accept()
+        try:
+            async with asyncio.TaskGroup() as tasks:
+                metadata_task = tasks.create_task(self._follow_metadata(websocket)) if watch_sessions else None
+                activity = None if self._session_activity is None else tasks.create_task(
+                    self._send_session_activity(websocket))
+                try:
+                    while True:
+                        payload = await websocket.receive_json()
+                        if not isinstance(payload, dict):
+                            await self._send_error(websocket, "", "消息格式必须是 JSON object")
+                            continue
+                        if payload.get("type") == "message.send":
+                            log_timing("web.input.received")
+                        _ = await self._handle_client_frame(websocket, cast(dict[str, Any], payload), tasks)
+                except WebSocketDisconnect as error:
+                    logger.info("[web_chat] websocket disconnect id=%s code=%s reason=%s",
+                                socket_id, error.code, error.reason)
+                finally:
+                    if metadata_task is not None:
+                        metadata_task.cancel()
+                    await self._cancel_follow(websocket)
+                    if activity is not None:
+                        activity.cancel()
+        finally:
+            await self._remove_connection(websocket)
+            logger.info("[web_chat] websocket closed id=%s", socket_id)
+
+    async def _follow_metadata(self, websocket: WebSocket) -> None:
+        """连接拥有目录订阅；通知只要求重读，不复制标题或绑定当前会话。"""
+        async with self._open_message_catalog() as messages:
+            changes = messages.follow_metadata()
+        async with aclosing(changes):
+            async for epoch in changes:
+                await websocket.send_json({"type": "sessions.changed", "version": 2, "catalog_epoch": epoch})
+    async def _send_session_activity(self, websocket: WebSocket) -> None:
+        """只发送变化的摘要；连接断开后由连接 scope 取消并排空。"""
+        assert self._session_activity is not None
+        # 1. 侧栏状态只是辅助信息：订阅失败只让它停止更新，不能拖垮收发消息的连接。
+        try:
+            async with aclosing(self._session_activity()) as frames:
+                async for frame in frames:
+                    await websocket.send_json({"type": "sessions.activity", **frame})
+        except Exception:
+            logger.exception("[web_chat] 会话活动订阅失败，侧栏状态停止更新")
+            # 2. 尽力通知客户端清掉可能残留的运行中标记；连接已断开时发送失败可忽略。
+            with suppress(Exception):
+                await websocket.send_json({
+                    "type": "sessions.activity", "version": 1, "snapshot": False,
+                    "available": False, "active": [], "heads": {}, "removed": [],
+                })
+
+    async def save_upload_stream(
+        self,
+        chunks: AsyncIterable[bytes],
+        filename: str,
+        *,
+        max_bytes: int = MAX_UPLOAD_BYTES,
+    ) -> dict[str, object]:
+        """在分配正式附件前有界读取，并以 fsync + replace 原子发布。"""
+
+        return await self._save_upload_stream(chunks, filename, max_bytes=max_bytes)
+
+    async def _save_upload_stream(
+        self,
+        chunks: AsyncIterable[bytes],
+        filename: str,
+        *,
+        max_bytes: int,
+    ) -> dict[str, object]:
+        if max_bytes <= 0:
+            raise ValueError("max_bytes must be positive")
+        if self._artifact_store is None:
+            raise RuntimeError("Web artifact store 尚未绑定")
+        data = bytearray()
+        total = 0
+        async for chunk in chunks:
+            if not isinstance(chunk, bytes):
+                raise TypeError("上传 chunk 必须是 bytes")
+            total += len(chunk)
+            if total > max_bytes:
+                raise UploadTooLargeError(
+                    f"上传内容超过 {max_bytes // (1024 * 1024)}MB 限制"
+                )
+            data.extend(chunk)
+        if total == 0:
+            raise ValueError("上传内容不能为空")
+        media_type = mimetypes.guess_type(filename)[0]
+        kind = (
+            V3AttachmentKind.IMAGE
+            if media_type is not None and media_type.startswith("image/")
+            else V3AttachmentKind.FILE
+        )
+        ref = await self._artifact_store.import_bytes(
+            bytes(data),
+            kind=kind,
+            filename=filename,
+            media_type=media_type,
+        )
+        return self._artifact_result(ref)
+
+    @staticmethod
+    def _artifact_result(ref: AttachmentRef) -> dict[str, Any]:
+        """返回只含 opaque artifact identity 的 Web upload projection。"""
+
+        return {
+            "filename": ref.filename,
+            "artifact_id": ref.artifact_id,
+            "kind": ref.kind.value,
+            "media_type": ref.media_type,
+            "size_bytes": ref.size_bytes,
+            "sha256": ref.sha256,
+            "upload_url": f"/api/chat/artifacts/{ref.artifact_id}",
+        }
+
+    @staticmethod
+    def artifact_descriptor(ref: AttachmentRef) -> dict[str, Any]:
+        """把 Core-owned ref 投影为不含本地路径的 Web descriptor。"""
+
+        return {
+            "artifact_id": ref.artifact_id,
+            "kind": ref.kind.value,
+            "filename": ref.filename,
+            "media_type": ref.media_type,
+            "size_bytes": ref.size_bytes,
+            "sha256": ref.sha256,
+            "url": f"/api/chat/artifacts/{ref.artifact_id}",
+        }
+
+    async def read_artifact(self, artifact_id: str) -> tuple[bytes, str | None, str | None]:
+        """通过 Core read lease 读取一个有界、不可变 artifact。"""
+
+        store = self._artifact_store
+        if store is None:
+            raise RuntimeError("Web artifact store 尚未绑定")
+        refs = store.resolve_refs((artifact_id,))
+        if len(refs) != 1:
+            raise RuntimeError("Web artifact resolve 返回数量无效")
+        ref = refs[0]
+        lease = await store.acquire(ref)
+        try:
+            data = await lease.read_bytes(max_bytes=MAX_UPLOAD_BYTES)
+        finally:
+            await lease.aclose()
+        return data, ref.media_type, ref.filename
+
+    async def deliver_v3(
+        self,
+        request: ProviderDeliveryRequest,
+        *,
+        attachment_read: ChannelAttachmentReadPort | None,
+    ) -> ProviderDeliveryReceipt:
+        """Deliver one exact v3 request without exposing source paths to Web clients."""
+
+        if not isinstance(request, ProviderDeliveryRequest):
+            raise TypeError("Web native deliver 只接受 ProviderDeliveryRequest")
+        session_key = self._session_key(request.recipient)
+
+        leases: list[AttachmentReadLease] = []
+        result: ProviderDeliveryReceipt | None = None
+        delivered = 0
+        try:
+            if request.attachments:
+                if attachment_read is None:
+                    result = ProviderDeliveryReceipt(
+                        request.delivery_id,
+                        V3DeliveryStatus.REJECTED,
+                        error="Web channel 缺少 attachment read port",
+                    )
+                else:
+                    for ref in request.attachments:
+                        lease = await attachment_read.acquire(ref)
+                        leases.append(lease)
+
+            if result is None:
+                metadata = cast(dict[str, Any], _thaw_json(request.metadata))
+                metadata.pop("_channel_commit_role", None)
+                # 被动最终帧属于某次回复执行；其余投递（主动推送等）各自独立成帧。
+                independent_delivery = request.commit_role is not ChannelCommitRole.PASSIVE
+                if not independent_delivery and (
+                    request.execution_attempt_id is None
+                    or request.control_turn_id is None
+                ):
+                    raise RuntimeError("Web passive final 缺少 Turn/Attempt 身份")
+                frame: dict[str, Any] = {
+                    "type": "message.final",
+                    "session_id": session_key,
+                    "turn_id": (
+                        f"delivery:{request.delivery_id}"
+                        if independent_delivery
+                        else request.execution_attempt_id
+                    ),
+                    "content": request.body,
+                    "thinking": request.thinking or "",
+                    "media": [self.artifact_descriptor(ref) for ref in request.attachments],
+                    "metadata": metadata,
+                }
+                if request.reply_to is not None:
+                    frame["reply_to"] = request.reply_to
+                if request.session_message_id is not None:
+                    frame["session_message_id"] = request.session_message_id
+                if not independent_delivery and request.control_turn_id is not None:
+                    frame["control_turn_id"] = request.control_turn_id
+                if not independent_delivery and request.execution_attempt_id is not None:
+                    frame["execution_attempt_id"] = request.execution_attempt_id
+                if request.terminal_status is not None:
+                    frame["terminal_status"] = request.terminal_status.value
+                duration = metadata.get("turn_duration_ms")
+                if isinstance(duration, (int, float)) and not isinstance(duration, bool):
+                    frame["duration_ms"] = duration
+                delivered, failed = await self._broadcast_native(session_key, frame)
+                if failed:
+                    result = ProviderDeliveryReceipt(
+                        request.delivery_id,
+                        V3DeliveryStatus.FAILED,
+                        error="Web WebSocket frame 发送状态未知",
+                    )
+                elif delivered == 0:
+                    if request.control_turn_id is not None:
+                        self._pending_terminal[session_key] = frame
+                        result = ProviderDeliveryReceipt(
+                            request.delivery_id,
+                            V3DeliveryStatus.DELIVERED,
+                        )
+                    else:
+                        result = ProviderDeliveryReceipt(
+                            request.delivery_id,
+                            V3DeliveryStatus.REJECTED,
+                            error="Web 会话没有可用连接",
+                        )
+                else:
+                    self._pending_terminal.pop(session_key, None)
+                    result = ProviderDeliveryReceipt(
+                        request.delivery_id,
+                        V3DeliveryStatus.DELIVERED,
+                    )
+        except (OSError, ValueError, TypeError, RuntimeError) as error:
+            result = ProviderDeliveryReceipt(
+                request.delivery_id,
+                V3DeliveryStatus.REJECTED,
+                error=str(error),
+            )
+        finally:
+            close_error: Exception | None = None
+            cancellation: asyncio.CancelledError | None = None
+            for lease in reversed(leases):
+                try:
+                    await lease.aclose()
+                except asyncio.CancelledError as error:
+                    cancellation = cancellation or error
+                except Exception as error:
+                    close_error = close_error or error
+            if close_error is not None:
+                logger.error("[web_chat] attachment read lease 关闭失败: %s", close_error)
+                if delivered > 0:
+                    result = ProviderDeliveryReceipt(
+                        request.delivery_id,
+                        V3DeliveryStatus.FAILED,
+                        error="Web attachment read lease 关闭状态未知",
+                    )
+            if cancellation is not None:
+                raise cancellation
+        if result is None:
+            raise RuntimeError("Web native delivery 未产生 receipt")
+        return result
+
+    async def _broadcast_native(
+        self,
+        session_key: str,
+        frame: dict[str, Any],
+    ) -> tuple[int, int]:
+        """Broadcast a native frame and preserve provider uncertainty after send errors."""
+
+        async with self._connection_lock:
+            sockets = list(self._connections.get(session_key, set()))
+        if not sockets:
+            return 0, 0
+        stale: list[WebSocket] = []
+        delivered = 0
+        failed = 0
+        for socket in sockets:
+            if socket.application_state != WebSocketState.CONNECTED:
+                stale.append(socket)
+                continue
+            try:
+                await socket.send_json(frame)
+                delivered += 1
+            except Exception as error:
+                logger.warning("[web_chat] native WebSocket frame 发送失败: %s", error)
+                failed += 1
+                stale.append(socket)
+        if stale:
+            async with self._connection_lock:
+                current = self._connections.get(session_key)
+                if current is not None:
+                    for socket in stale:
+                        current.discard(socket)
+        return delivered, failed
+
+    async def _handle_client_frame(
+        self,
+        websocket: WebSocket,
+        payload: dict[str, Any],
+        tasks: asyncio.TaskGroup | None = None,
+    ) -> str:
+        frame_type = str(payload.get("type") or "")
+        try:
+            request_id = _normalize_web_request_id(payload.get("request_id"))
+        except ValueError as error:
+            await self._send_error(websocket, "", str(error))
+            return ""
+        if frame_type == "session.create":
+            return await self._create_session(websocket, request_id)
+        if frame_type == "session.attach":
+            return await self._attach_session(websocket, request_id, payload)
+        if frame_type == "session.follow":
+            if tasks is None:
+                raise RuntimeError("消息订阅需要 WebSocket 任务 scope")
+            return await self._follow_session(websocket, request_id, payload, tasks)
+        if frame_type == "session.unfollow":
+            # 回到空白页时只放下正文跟随，连接与侧栏订阅照旧；之后的 session.follow 会重新绑定。
+            await self._cancel_follow(websocket)
+            await self._remove_connection(websocket)
+            return ""
+        if frame_type == "message.send":
+            return await self._send_user_message(websocket, request_id, payload)
+        if frame_type == "message.steer":
+            return await self._steer_message(websocket, request_id, payload)
+        if frame_type == "message.steer.withdraw":
+            return await self._withdraw_steer(websocket, request_id, payload)
+        if frame_type == "ping":
+            await websocket.send_json({"type": "pong", "request_id": request_id})
+            return ""
+        await self._send_error(websocket, request_id, f"未知消息类型: {frame_type}")
+        return ""
+
+    async def _follow_session(
+        self, websocket: WebSocket, request_id: str, payload: dict[str, Any], tasks: asyncio.TaskGroup,
+    ) -> str:
+        """按客户端最后提交的 seq 续读；切页先排空上一会话的订阅。"""
+        try:
+            if type(payload.get("version")) is not int or payload["version"] != 2:
+                raise ValueError("消息订阅需要 version=2，请升级客户端")
+            session_id = self._normalize_session_id(payload.get("session_id"))
+            if not session_id:
+                raise ValueError("session_id 缺失或无效")
+            after_seq = payload.get("after_seq")
+            if type(after_seq) is not int or after_seq < -1:
+                raise ValueError("after_seq 必须是大于等于 -1 的整数")
+            async with self._open_message_catalog() as messages:
+                head = await messages.reader(session_id).head_async()
+            if after_seq > head:
+                raise ValueError("after_seq 超过当前消息 head")
+        except ValueError as error:
+            await self._send_error(websocket, request_id, str(error))
+            return ""
+        await self._cancel_follow(websocket)
+        if self._stopping:
+            return ""
+        try:
+            _ = await self._add_connection(session_id, websocket)
+        except RuntimeError:
+            if self._stopping:
+                return ""
+            raise
+        if self._stopping:
+            await self._remove_connection_attempt(session_id, websocket)
+            return ""
+        await websocket.send_json({"type": "session.following", "version": 2,
+                                   "request_id": request_id, "session_id": session_id, "through_seq": head})
+        if self._stopping:
+            await self._remove_connection_attempt(session_id, websocket)
+            return ""
+        task = tasks.create_task(self._follow(websocket, session_id, after_seq))
+        self._followers[websocket] = (session_id, task)
+        return session_id
+
+    async def _follow(self, websocket: WebSocket, session_id: str, after_seq: int) -> None:
+        """日志与回复状态独立订阅，失败交回连接 owner，断线共同排空。"""
+        async def send(kind: str, frames: AsyncGenerator[dict[str, object], None]) -> None:
+            async with aclosing(frames):
+                async for frame in frames:
+                    await websocket.send_json({"type": kind, **frame})
+
+        async def send_messages() -> None:
+            # Resolve the reader before the long follow.  The display
+            # projection opens its own short scope for each page in the
+            # follower task; no entered request scope crosses TaskGroup work.
+            async with self._open_message_catalog() as messages:
+                reader = cast(Any, messages.reader(session_id))
+            await send("messages.appended", follow_messages(
+                reader, after_seq=after_seq,
+                display_only=True, reader_display=self.message_display))
+
+        async with asyncio.TaskGroup() as tasks:
+            _ = tasks.create_task(send_messages())
+            # 插件推给自己界面的会话状态；宿主只转发，value 为 null 表示该插件的状态已失效。
+            if self._plugin_events is not None:
+                async def send_plugin_event(frame: dict[str, object]) -> None:
+                    await websocket.send_json({"type": "plugin_ui.event", "session_id": session_id, **frame})
+                _ = tasks.create_task(self._plugin_events(session_id, send_plugin_event))
+            if self._reply_status is None:
+                await websocket.send_json({"type": "reply.status", "version": 2,
+                    "session_id": session_id, "snapshot_id": None, "available": False, "items": []})
+            else:
+                _ = tasks.create_task(send("reply.status", self._reply_status(session_id)))
+
+    async def _cancel_follow(self, websocket: WebSocket) -> None:
+        current = self._followers.get(websocket)
+        if current is not None:
+            if not current[1].cancelling():
+                _ = current[1].cancel()
+            try:
+                with suppress(asyncio.CancelledError):
+                    await current[1]
+            finally:
+                if self._followers.get(websocket) is current:
+                    del self._followers[websocket]
+
+    async def _create_session(self, websocket: WebSocket, request_id: str) -> str:
+        chat_id = uuid4().hex
+        session_key = self._session_key(chat_id)
+        await self._add_connection(session_key, websocket)
+        await websocket.send_json({
+            "type": "session.created",
+            "request_id": request_id,
+            "session_id": session_key,
+        })
+        return session_key
+
+    async def _attach_session(
+        self,
+        websocket: WebSocket,
+        request_id: str,
+        payload: dict[str, Any],
+    ) -> str:
+        """把当前 socket 绑定到已知 Web Session，并补投积压终态。"""
+
+        try:
+            session_key = self._normalize_session_id(payload.get("session_id"))
+        except ValueError as error:
+            await self._send_error(websocket, request_id, str(error))
+            return ""
+        if not session_key:
+            await self._send_error(websocket, request_id, "session_id 缺失或无效")
+            return ""
+        await self._add_connection(session_key, websocket)
+        return session_key
+
+    # 生成中的插话：有回复在进行就暂存到下一步；否则按普通消息发送，客户端照常等 message.accepted。
+    async def _steer_message(self, websocket: WebSocket, request_id: str, payload: dict[str, Any]) -> str:
+        # 1. 插话只带正文；附件、引用和输入片段仍走普通发送。
+        try:
+            session_key = self._normalize_session_id(payload.get("session_id"))
+        except ValueError as error:
+            await self._send_error(websocket, request_id, str(error))
+            return ""
+        text = payload.get("text")
+        if not session_key or not isinstance(text, str) or not text.strip():
+            await self._send_error(websocket, request_id, "插话需要会话和非空正文")
+            return session_key
+        chat_id = self._chat_id(session_key)
+        message = ChannelInboundMessage(
+            channel=self.name, sender="web", chat_id=chat_id, content=_normalize_v3_content(text),
+            timestamp=datetime.now(timezone.utc), metadata=cast(Any, {"client_request_id": request_id}),
+        )
+        # 2. 暂存成功即确认；没有可接纳插话的回复时只回 staged=false，由客户端走普通发送并等它的确认。
+        staged = self._steer is not None and await self._steer.stage(session_key, request_id, message)
+        await websocket.send_json({"type": "message.steer.result", "request_id": request_id, "staged": staged})
+        return session_key
+
+    async def _withdraw_steer(self, websocket: WebSocket, request_id: str, payload: dict[str, Any]) -> str:
+        session_id = payload.get("session_id")
+        message_id = payload.get("message_id")
+        withdrawn = (
+            self._steer is not None and isinstance(session_id, str) and isinstance(message_id, str)
+            and await self._steer.withdraw(session_id, message_id)
+        )
+        await websocket.send_json({"type": "message.steer.result", "request_id": request_id, "withdrawn": withdrawn})
+        return ""
+
+    async def _send_user_message(
+        self,
+        websocket: WebSocket,
+        request_id: str,
+        payload: dict[str, Any],
+    ) -> str:
+        try:
+            return await self._send_user_message_in_binding(websocket, request_id, payload)
+        except (MessageConflict, InputPartRejected) as error:
+            await self._send_error(websocket, request_id, str(error))
+            return ""
+
+    async def _send_user_message_in_binding(
+        self,
+        websocket: WebSocket,
+        request_id: str,
+        payload: dict[str, Any],
+    ) -> str:
+        """验证并构造 Web exact inbound，再在首个 await 前捕获 binding。"""
+
+        try:
+            session_key = self._normalize_session_id(payload.get("session_id"))
+        except ValueError as error:
+            await self._send_error(websocket, request_id, str(error))
+            return ""
+        if not session_key:
+            session_key = self._session_key(uuid4().hex)
+        if "text" not in payload:
+            text = ""
+        else:
+            raw_text = payload["text"]
+            if not isinstance(raw_text, str):
+                await self._send_error(websocket, request_id, "text 必须是字符串")
+                return session_key
+            text = raw_text
+        raw_media = payload.get("media", [])
+        if not isinstance(raw_media, list):
+            await self._send_error(websocket, request_id, "media 必须是数组")
+            return session_key
+        media: list[str] = []
+        for item in raw_media:
+            if not isinstance(item, str):
+                await self._send_error(websocket, request_id, "media 必须是字符串数组")
+                return session_key
+            if item.strip():
+                media.append(item)
+        try:
+            retry_of = _read_retry_of(payload)
+        except ValueError as error:
+            await self._send_error(websocket, request_id, str(error))
+            return session_key
+        parts: tuple[tuple[str, object], ...] = ()
+        if "parts" in payload:
+            try:
+                parts = read_input_parts(payload["parts"])
+            except InputPartRejected as error:
+                await self._send_error(websocket, request_id, str(error))
+                return session_key
+        if not text.strip() and not media and not parts and retry_of is None:
+            await self._send_error(websocket, request_id, "text、media 和 parts 不能同时为空")
+            return session_key
+        reply_to_message_id = payload.get("reply_to_message_id")
+        metadata: dict[str, object] = {"client_request_id": request_id}
+        if retry_of is not None:
+            metadata["retry_of_client_message_id"] = retry_of
+        attachments: tuple[AttachmentRef, ...] = ()
+        if media and self._artifact_store is not None:
+            try:
+                refs = self._artifact_store.resolve_refs(tuple(media))
+            except ValueError as error:
+                await self._send_error(websocket, request_id, "media 附件不存在")
+                logger.info("[web_chat] rejected unknown inbound artifact: %s", error)
+                return session_key
+            if len(refs) != len(media):
+                raise RuntimeError("Web artifact resolve 返回数量无效")
+            attachments = tuple(refs)
+            media = []
+        elif media:
+            await self._send_error(websocket, request_id, "Web artifact store 尚未绑定")
+            return session_key
+        if parts:
+            metadata["input_parts"] = [{"kind": kind, "value": value} for kind, value in parts]
+        if reply_to_message_id is not None:
+            if not isinstance(reply_to_message_id, str) or not reply_to_message_id.strip():
+                await self._send_error(
+                    websocket,
+                    request_id,
+                    "reply_to_message_id 必须是非空字符串",
+                )
+                return session_key
+            metadata["reply_to_message_id"] = reply_to_message_id.strip()
+        if "session_dimensions" in payload:
+            dimensions = payload["session_dimensions"]
+            if not isinstance(dimensions, dict) or not all(
+                isinstance(key, str) and isinstance(value, str)
+                for key, value in cast(dict[object, object], dimensions).items()
+            ):
+                await self._send_error(websocket, request_id, "session_dimensions 必须是字符串对象")
+                return session_key
+            metadata["session_dimensions"] = dict(cast(dict[str, str], dimensions))
+        chat_id = self._chat_id(session_key)
+        raw = RawInbound(
+            message_id=request_id or uuid4().hex,
+            provider_identity=chat_id,
+            recipient=chat_id,
+            message=ChannelInboundMessage(
+                channel=self.name,
+                sender="web",
+                chat_id=chat_id,
+                content=_normalize_v3_content(text),
+                timestamp=datetime.now(timezone.utc),
+                metadata=cast(Any, metadata),
+                attachments=attachments,
+            ),
+        )
+        client_message_id = request_id or raw.message_id
+        previous_session = self._client_sessions.get(client_message_id)
+        if previous_session is not None and previous_session != session_key:
+            await self._send_error(
+                websocket,
+                request_id,
+                f"Web client message id 已绑定到另一个 session: {client_message_id}",
+            )
+            return session_key
+        self._client_sessions[client_message_id] = session_key
+        try:
+            adapter, runtime = self._begin_v3_inbound()
+        except RuntimeError as error:
+            if previous_session is None:
+                self._client_sessions.pop(client_message_id, None)
+            else:
+                self._client_sessions[client_message_id] = previous_session
+            logger.info("[web_chat] rejected inbound message: %s", error)
+            await self._send_error(websocket, request_id, str(error))
+            return session_key
+        connection_added = False
+        try:
+            connection_added = await self._add_connection(session_key, websocket)
+            await adapter.admit_captured(runtime, raw)
+            log_timing("web.input.admitted", session_id=session_key, request_id=client_message_id)
+        except BaseException as error:
+            if previous_session is None:
+                self._client_sessions.pop(client_message_id, None)
+            else:
+                self._client_sessions[client_message_id] = previous_session
+            if connection_added:
+                cleanup_task = asyncio.create_task(
+                    self._remove_connection_attempt(session_key, websocket),
+                    name=f"web-ingress-connection-rollback:{session_key}",
+                )
+                try:
+                    await _settle_cleanup_task(cleanup_task)
+                except BaseException as cleanup_error:
+                    raise BaseExceptionGroup(
+                        "Web ingress connection 回滚失败",
+                        [error, cleanup_error],
+                    ) from error
+            raise
+        finally:
+            adapter._finish_inbound()
+        # 显式确认已入账：客户端以此区分"已送达"和"只进了本地发送缓冲"，重复 id 的重发也会得到确认。
+        await websocket.send_json({"type": "message.accepted", "request_id": client_message_id, "session_id": session_key})
+        return session_key
+
+    async def _add_connection(self, session_key: str, websocket: WebSocket) -> bool:
+        """把一个 Web socket 投影到唯一的当前 Session。"""
+
+        follower = self._followers.get(websocket)
+        if follower is not None and follower[0] != session_key:
+            await self._cancel_follow(websocket)
+        async with self._connection_lock:
+            if self._stopping:
+                raise RuntimeError("Web channel 正在停止")
+            added = websocket not in self._connections.get(session_key, set())
+            for bound_session_key, bound_sockets in tuple(self._connections.items()):
+                if bound_session_key == session_key:
+                    continue
+                bound_sockets.discard(websocket)
+                if not bound_sockets:
+                    _ = self._connections.pop(bound_session_key, None)
+            sockets = self._connections.setdefault(session_key, set())
+            sockets.add(websocket)
+        await self._refill_terminal(session_key, websocket)
+        return added
+
+    async def _refill_terminal(self, session_key: str, websocket: WebSocket) -> None:
+        """新连接绑定后补投一个已完成但尚未送达的终态帧。"""
+
+        frame = self._pending_terminal.get(session_key)
+        if frame is None:
+            return
+        try:
+            await websocket.send_json(frame)
+        except Exception as error:
+            logger.warning(
+                "[web_chat] 终态帧补投失败，保留待下次连接 session=%s err=%r",
+                session_key,
+                error,
+            )
+            return
+        self._pending_terminal.pop(session_key, None)
+
+    async def _remove_connection_attempt(
+        self,
+        session_key: str,
+        websocket: WebSocket,
+    ) -> None:
+        """只撤销本次失败 message.send 新增的 socket/session 关系。"""
+
+        async with self._connection_lock:
+            sockets = self._connections.get(session_key)
+            if sockets is None:
+                return
+            sockets.discard(websocket)
+            if not sockets:
+                _ = self._connections.pop(session_key, None)
+
+    async def _remove_connection(
+        self,
+        websocket: WebSocket,
+    ) -> None:
+        async with self._connection_lock:
+            for session_key in tuple(self._connections):
+                sockets = self._connections.get(session_key)
+                if sockets is None:
+                    continue
+                sockets.discard(websocket)
+                if not sockets:
+                    _ = self._connections.pop(session_key, None)
+
+    async def _broadcast(self, session_key: str, frame: dict[str, Any]) -> int:
+        async with self._connection_lock:
+            sockets = list(self._connections.get(session_key, set()))
+        if not sockets:
+            return 0
+        stale: list[WebSocket] = []
+        delivered = 0
+        for socket in sockets:
+            if socket.application_state != WebSocketState.CONNECTED:
+                stale.append(socket)
+                continue
+            try:
+                await socket.send_json(frame)
+                delivered += 1
+            except Exception as e:
+                logger.warning("[web_chat] 发送 WebSocket frame 失败: %s", e)
+                stale.append(socket)
+        if stale:
+            async with self._connection_lock:
+                current = self._connections.get(session_key)
+                if current is not None:
+                    for socket in stale:
+                        current.discard(socket)
+        return delivered
+
+    async def _send_error(
+        self,
+        websocket: WebSocket,
+        request_id: str,
+        message: str,
+    ) -> None:
+        await websocket.send_json({
+            "type": "error",
+            "request_id": request_id,
+            "message": message,
+        })
+
+    def _normalize_session_id(self, value: object) -> str:
+        if value is None or value == "":
+            return ""
+        if not isinstance(value, str):
+            raise ValueError("session_id 必须是字符串")
+        text = value
+        if (
+            len(text) > MAX_WEB_INBOUND_ID_LENGTH
+            or text != text.strip()
+            or any(ord(char) < 32 for char in text)
+        ):
+            raise ValueError("session_id 格式无效")
+        if not text.startswith(f"{self.name}:"):
+            raise ValueError("session_id 必须属于当前 Web channel")
+        chat_id = text[len(self.name) + 1:]
+        if not chat_id:
+            raise ValueError("session_id 缺少 chat id")
+        return text
+
+    def _session_key(self, chat_id: str) -> str:
+        text = str(chat_id).strip()
+        if text.startswith(f"{self.name}:"):
+            return text
+        return f"{self.name}:{text}"
+
+    def _chat_id(self, session_key: str) -> str:
+        return session_key[len(self.name) + 1:]
+
+def _normalize_v3_content(value: str) -> str:
+    """把 Web 文本归一化为 Core inbound 允许的无控制字符正文。"""
+
+    return "".join(
+        "\u2028" if ord(char) in {10, 13} else " " if ord(char) < 32 else char
+        for char in value
+    )
+
+
+def _thaw_json(value: object) -> object:
+    """把 Core 冻结的 JSON 投影为 WebSocket 可序列化对象。"""
+
+    if isinstance(value, Mapping):
+        return {str(key): _thaw_json(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_thaw_json(item) for item in value]
+    return value
+
+
+# 重试只引用原 Input 的消息 ID；正文、附件、引用和输入片段都沿用原输入，不能顺带修改。
+def _read_retry_of(payload: Mapping[str, object]) -> str | None:
+    value = payload.get("retry_of")
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("retry_of 必须是非空字符串")
+    text = payload.get("text")
+    if (isinstance(text, str) and text.strip()) or payload.get("media") or payload.get("parts") \
+            or payload.get("reply_to_message_id") is not None:
+        raise ValueError("重试只引用原 Input，不能同时修改正文、附件或引用")
+    return value.strip()
+
+
+def _normalize_web_request_id(value: object) -> str:
+    """验证客户端 request_id，空值由 exact ingress 分配不可伪造的 id。"""
+
+    if value is None or value == "":
+        return ""
+    if not isinstance(value, str):
+        raise ValueError("request_id 必须是字符串")
+    if (
+        len(value) > MAX_WEB_INBOUND_ID_LENGTH
+        or value != value.strip()
+        or any(ord(char) < 32 for char in value)
+    ):
+        raise ValueError("request_id 格式无效")
+    return value
+
+
+async def _settle_cleanup_task(task: asyncio.Task[Any]) -> Any:
+    """完成 message.send 精确清理后再恢复原始失败。"""
+
+    return await drain_uninterruptible(task)
+
+
+__all__ = [
+    "MAX_UPLOAD_BYTES",
+    "UploadTooLargeError",
+    "WebChatChannel",
+    "WebNativeChannelAdapter",
+]

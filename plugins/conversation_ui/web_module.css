@@ -1,0 +1,503 @@
+.conversation-page {
+  --conversation-tools-width: 42vw;
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--ak-paper-canvas);
+}
+
+.conversation-page.tools-open {
+  grid-template-columns: minmax(26rem, 1fr) 1px minmax(22.5rem, var(--conversation-tools-width));
+}
+
+.conversation-page-chat {
+  grid-column: 1;
+  grid-row: 1;
+  position: relative;
+  min-width: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--ak-paper-canvas);
+}
+
+.conversation-tools {
+  grid-column: 3;
+  grid-row: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--ak-paper-sheet);
+}
+
+/* 铺满：对话列收起但保留挂载，不丢草稿与滚动位置 */
+.conversation-page.tools-maximized {
+  grid-template-columns: 0 0 minmax(0, 1fr);
+}
+
+.conversation-page.tools-maximized .conversation-page-chat,
+.conversation-page.tools-maximized .conversation-tools-splitter {
+  visibility: hidden;
+}
+
+.conversation-tools-splitter {
+  position: relative;
+  z-index: 4;
+  grid-column: 2;
+  grid-row: 1;
+  width: 1px;
+  height: 100%;
+  background: var(--ak-rule-subtle);
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.conversation-tools-splitter::before {
+  position: absolute;
+  inset-block: 0;
+  inset-inline: -7px;
+  content: "";
+}
+
+.conversation-tools-splitter:hover,
+.conversation-tools-splitter:focus-visible,
+.conversation-page.is-resizing .conversation-tools-splitter {
+  width: 2px;
+  margin-inline-start: -1px;
+  background: var(--ak-color-action-primary);
+  outline: 0;
+}
+
+.conversation-page.is-resizing,
+.conversation-page.is-resizing * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+
+.conversation-page.is-resizing iframe {
+  pointer-events: none;
+}
+
+/* 分组：一组时铺满；上下分屏时上方一组按比例，分隔条可拖。没聚焦的那组，当前标签不再加阴影。 */
+.conversation-tools-group {
+  display: grid;
+  flex: 1 1 0;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
+}
+
+.conversation-tools.is-split > .conversation-tools-group:first-child {
+  flex: 0 0 var(--conversation-tools-upper, 50%);
+}
+
+.conversation-tools.is-split .conversation-tools-group:not(.is-focused) .conversation-tools-tab-item.is-active {
+  box-shadow: none;
+}
+
+.conversation-tools-divider {
+  position: relative;
+  z-index: 2;
+  flex: none;
+  height: 1px;
+  background: var(--ak-rule-subtle);
+  cursor: row-resize;
+  touch-action: none;
+}
+
+.conversation-tools-divider::before {
+  position: absolute;
+  inset-inline: 0;
+  inset-block: -5px;
+  content: "";
+}
+
+.conversation-tools-divider:hover,
+.conversation-tools-divider:focus-visible,
+.conversation-tools.is-dividing .conversation-tools-divider {
+  height: 2px;
+  margin-block: -1px 0;
+  background: var(--ak-color-action-primary);
+  outline: 0;
+}
+
+.conversation-tools.is-dividing,
+.conversation-tools.is-dividing * {
+  cursor: row-resize !important;
+  user-select: none !important;
+}
+
+.conversation-tools-tab-item.is-drop-target {
+  box-shadow: inset 2px 0 0 var(--ak-color-action-primary);
+}
+
+.conversation-tools-tab-item.is-drop-target.is-drop-after {
+  box-shadow: inset -2px 0 0 var(--ak-color-action-primary);
+}
+
+.conversation-tools-button[aria-pressed="true"] {
+  color: var(--ak-ink-primary);
+  background: color-mix(in oklch, var(--ak-ink-primary) 8%, transparent);
+}
+
+/* 标签条：浏览器式圆角标签，均分宽度，最窄 90px，再多就横向滚动；“+”紧跟最后一个标签，铺满与收起在最右。 */
+.conversation-tools-bar {
+  position: relative;
+  display: flex;
+  height: 42px;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+  padding-inline: 6px;
+  border-block-end: 1px solid var(--ak-rule-subtle);
+  background: var(--ak-paper-canvas);
+}
+
+.conversation-tools-tabs {
+  display: flex;
+  flex: 0 1 auto;
+  min-width: 0;
+  align-items: center;
+  gap: 1px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.conversation-tools-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.conversation-tools-tab-item {
+  position: relative;
+  display: flex;
+  flex: 0 1 auto;
+  width: 172px;
+  min-width: 90px;
+  height: 30px;
+  align-items: center;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  container-type: inline-size;
+}
+
+/* 相邻两个非当前标签之间一条短竖线；挨着当前标签的隐去 */
+.conversation-tools-tab-item + .conversation-tools-tab-item::before {
+  position: absolute;
+  inset-inline-start: -1px;
+  width: 1px;
+  height: 12px;
+  background: var(--ak-rule-default);
+  content: "";
+}
+
+.conversation-tools-tab-item.is-active::before,
+.conversation-tools-tab-item.is-active + .conversation-tools-tab-item::before {
+  opacity: 0;
+}
+
+.conversation-tools-tab-item.is-active {
+  border-color: var(--ak-rule-subtle);
+  background: var(--ak-paper-sheet);
+  box-shadow: 0 0 8px rgb(0 0 0 / 5%);
+}
+
+.conversation-tools-tab,
+.conversation-tools-button,
+.conversation-tools-launch-tool {
+  border: 0;
+  color: var(--ak-ink-secondary);
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+
+.conversation-tools-tab {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
+  align-items: center;
+  gap: 7px;
+  padding-inline: 9px 8px;
+  border-radius: 7px;
+  font-size: 0.8125rem;
+  text-align: start;
+}
+
+.conversation-tools-tab-item.is-active .conversation-tools-tab {
+  color: var(--ak-ink-primary);
+}
+
+.conversation-tools-tab > svg {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* 长标题尾部渐隐，不用省略号 */
+.conversation-tools-tab-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  mask-image: linear-gradient(to right, #000 calc(100% - 14px), transparent);
+}
+
+.conversation-tools-tab-dot {
+  display: none;
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ak-ink-primary);
+}
+
+.conversation-tools-tab-item.has-attention .conversation-tools-tab-dot,
+.conversation-tools-tab-item.is-busy .conversation-tools-tab-dot {
+  display: block;
+}
+
+.conversation-tools-tab-item.is-busy .conversation-tools-tab-dot {
+  background: var(--ak-color-status-warning);
+}
+
+/* 关闭：当前标签常显并让出位置；其余悬停或聚焦时露出，标签窄于 100px 时不出现 */
+.conversation-tools-tab-close {
+  display: none;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  margin-inline-end: 3px;
+  border-radius: 5px;
+}
+
+.conversation-tools-tab-item.is-active .conversation-tools-tab-close,
+.conversation-tools-tab-item:hover .conversation-tools-tab-close,
+.conversation-tools-tab-item:focus-within .conversation-tools-tab-close {
+  display: inline-grid;
+}
+
+@container (max-width: 99px) {
+  .conversation-tools-tab-item:not(.is-active) .conversation-tools-tab-close {
+    display: none;
+  }
+}
+
+.conversation-tools-tab-close svg {
+  width: 13px;
+  height: 13px;
+}
+
+.conversation-tools-end {
+  display: flex;
+  flex: none;
+  gap: 2px;
+  margin-inline-start: auto;
+}
+
+.conversation-tools-button {
+  display: inline-grid;
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  padding: 0;
+  border-radius: 6px;
+}
+
+.conversation-tools-button svg,
+.conversation-tools-launch-tool > svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* 新标签页：工具列表，单列，可滚动 */
+.conversation-tool-panel:has(> .conversation-tools-launch) {
+  overflow-y: auto;
+}
+
+.conversation-tools-launch {
+  display: grid;
+  gap: 6px;
+  max-width: 34rem;
+  margin-inline: auto;
+  padding: 28px 20px;
+}
+
+.conversation-tools-launch-heading {
+  margin: 14px 10px 4px;
+  color: var(--ak-ink-muted);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.conversation-tools-launch-tools {
+  display: grid;
+  gap: 2px;
+}
+
+.conversation-tools-launch-tool {
+  display: grid;
+  grid-template-columns: 16px minmax(0, auto) minmax(0, 1fr);
+  min-height: 40px;
+  align-items: center;
+  gap: 10px;
+  padding-inline: 10px;
+  border-radius: 8px;
+  color: var(--ak-ink-primary);
+  font-size: 0.875rem;
+  text-align: start;
+}
+
+.conversation-tools-launch-state {
+  overflow: hidden;
+  color: var(--ak-ink-muted);
+  font-size: 0.8125rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+
+/* 暂不可用的工具：仍可聚焦读到原因，点了不响应 */
+.conversation-tools-launch-tool[aria-disabled="true"] {
+  color: var(--ak-ink-muted);
+  cursor: default;
+}
+
+.conversation-tools-content {
+  min-height: 0;
+}
+
+.conversation-tool-panel {
+  height: 100%;
+  overflow: hidden;
+}
+
+.conversation-tools[hidden],
+.conversation-tools-group[hidden],
+.conversation-tools-divider[hidden],
+.conversation-tools-splitter[hidden],
+.conversation-tool-panel[hidden] {
+  display: none;
+}
+
+@media (hover: hover) {
+  .conversation-tools-tab-item:not(.is-active):hover,
+  .conversation-tools-button:hover,
+  .conversation-tools-launch-tool:not([aria-disabled="true"]):hover {
+    color: var(--ak-ink-primary);
+    background: color-mix(in oklch, var(--ak-ink-primary) 6%, transparent);
+  }
+}
+
+.conversation-tools-tab:focus-visible,
+.conversation-tools-button:focus-visible,
+.conversation-tools-launch-tool:focus-visible {
+  outline: 2px solid var(--ak-rule-focus);
+  outline-offset: -2px;
+}
+
+/* 聊天的模态对话框打开时（宽屏打开后再缩窄或铺满），聊天先不隐藏，对话框才看得见、关得掉。
+   只认聊天自己声明的 data-chat-modal（ADR 0126）；模型面板等非模态弹层不豁免。 */
+.conversation-page.tools-open > .conversation-page-chat:has([data-chat-modal]) {
+  visibility: visible;
+}
+
+@media (max-width: 68rem) {
+  .conversation-page.tools-open {
+    display: block;
+  }
+
+  /* 工作台整块盖住聊天：与铺满一样隐藏聊天，保留挂载与草稿，聊天也不再接 body 上的快捷键。 */
+  .conversation-page.tools-open .conversation-page-chat {
+    visibility: hidden;
+  }
+
+  .conversation-tools {
+    position: absolute;
+    z-index: 6;
+    inset: 0;
+    border: 0;
+  }
+
+  .conversation-tools-splitter,
+  .conversation-tools-maximize {
+    display: none;
+  }
+}
+
+/* 触控输入下开关、关闭与标签的可点区域不小于 44px；指针输入保持紧凑尺寸。 */
+@media (pointer: coarse) {
+  .conversation-tools-bar {
+    height: 52px;
+  }
+
+  .conversation-tools-tab-item {
+    height: 44px;
+    min-width: 112px;
+  }
+
+  .conversation-tools-button {
+    width: 44px;
+    height: 44px;
+  }
+
+  .conversation-tools-tab-item:not(.is-active) .conversation-tools-tab-close {
+    display: none;
+  }
+
+  .conversation-tools-tab-close {
+    width: 44px;
+    height: 44px;
+    margin-inline-end: 0;
+  }
+
+  /* 上下分隔条：本身加高到 24px（中间一条线与一个握把），可点区域再向上下延伸到 44px，少压住下方标签条。 */
+  .conversation-tools-divider,
+  .conversation-tools-divider:hover,
+  .conversation-tools-divider:focus-visible,
+  .conversation-tools.is-dividing .conversation-tools-divider {
+    height: 24px;
+    margin-block: 0;
+    background: linear-gradient(var(--ak-rule-subtle), var(--ak-rule-subtle)) center / 100% 1px no-repeat;
+  }
+
+  .conversation-tools-divider::before {
+    inset-block: -14px -6px;
+  }
+
+  .conversation-tools-divider::after {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 36px;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--ak-rule-default);
+    content: "";
+    translate: -50% -50%;
+  }
+
+  .conversation-tools-divider:focus-visible::after,
+  .conversation-tools.is-dividing .conversation-tools-divider::after {
+    background: var(--ak-color-action-primary);
+  }
+
+  .conversation-tools-launch-tool {
+    min-height: 48px;
+  }
+}

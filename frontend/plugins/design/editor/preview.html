@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>网站</title></head>
+<body>
+<script>
+  // 此响应自带 CSP sandbox（opaque origin）；只接收打开它的父页面或 opener 的一次文档交付。
+  var host = parent !== window ? parent : opener;
+  addEventListener('message', function openSite(event) {
+    if (!host || event.source !== host || !event.data || event.data.channel !== 'akashic.site.v1'
+        || event.data.type !== 'init' || typeof event.data.document !== 'string') return;
+    removeEventListener('message', openSite);
+    // 新标签页里先断开 opener，网页拿不到 akashic 窗口的引用，也不能把它导航走。
+    if (host === opener) window.opener = null;
+    document.open();
+    document.write(event.data.document);
+    document.close();
+  });
+  if (host) host.postMessage({ channel: 'akashic.site.v1', type: 'ready' }, location.origin);
+</script>
+</body>
+</html>

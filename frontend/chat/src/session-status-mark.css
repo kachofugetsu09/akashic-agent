@@ -1,0 +1,56 @@
+/* 行首 16px 状态槽位：空闲留白，运行中是缓慢起伏的 Swirl，未读是一枚淡墨圆点。 */
+.session-status-slot {
+  display: grid;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  place-items: center;
+  color: var(--chat-muted);
+}
+
+.session-status-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.session-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.6;
+}
+
+.session-swirl {
+  display: grid;
+  width: 14px;
+  height: 14px;
+  box-sizing: border-box;
+  grid-template: repeat(3, 1fr) / repeat(3, 1fr);
+  gap: 2px;
+  padding: 1px;
+}
+
+.session-swirl i {
+  border-radius: 1px;
+  background: currentColor;
+  opacity: 0.6;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .session-status-slot > * { animation: session-status-in 300ms ease-out; }
+  .session-swirl i {
+    animation: session-swirl-fade 3.2s ease-in-out infinite;
+    animation-delay: calc(var(--swirl-step) * -0.4s);
+  }
+}
+
+@keyframes session-status-in { from { opacity: 0; } }
+@keyframes session-swirl-fade {
+  0%, 100% { opacity: 0.9; }
+  50% { opacity: 0.25; }
+}

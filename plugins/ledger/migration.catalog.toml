@@ -1,0 +1,47 @@
+schema_version = 2
+bundle_id = "ledger"
+version = "1.0.0"
+migration_root = "migrations/ledger_migrations"
+package_name = "ledger_migrations"
+
+[[migrations]]
+id = "20261004_01_message_source_index"
+path = "20261004_01_message_source_index.py"
+depends = ["20260928_01_plugin_config_updates"]
+transactional = true
+
+[[migrations]]
+id = "20261004_02_message_body_kind_index"
+path = "20261004_02_message_body_kind_index.py"
+depends = ["20261004_01_message_source_index"]
+transactional = true
+
+[[migrations]]
+id = "20261004_03_session_soft_delete"
+path = "20261004_03_session_soft_delete.py"
+depends = ["20261004_02_message_body_kind_index"]
+transactional = true
+
+[[migrations]]
+id = "20261004_04_session_title"
+path = "20261004_04_session_title.py"
+depends = ["20261004_03_session_soft_delete"]
+transactional = true
+
+[[migrations]]
+id = "20261007_01_message_prefix_revision"
+path = "20261007_01_message_prefix_revision.py"
+depends = ["20261004_02_message_body_kind_index"]
+transactional = true
+
+[[migrations]]
+id = "20261011_01_derived_storage"
+path = "20261011_01_derived_storage.py"
+depends = ["20261007_01_message_prefix_revision"]
+transactional = true
+
+[[migrations]]
+id = "20261019_01_working_directory_owner"
+path = "20261019_01_working_directory_owner.py"
+depends = ["20261011_01_derived_storage"]
+transactional = true

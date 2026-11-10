@@ -1,0 +1,18 @@
+{
+  "name": "@akashic/web-ui-v1",
+  "version": "1.0.0",
+  "private": false,
+  "description": "Public contract and runtime atoms for Akashic Web UI plugins",
+  "types": "index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts"
+    },
+    "./tailwind-preset": {
+      "types": "./tailwind-preset.d.mts",
+      "default": "./tailwind-preset.mjs"
+    }
+  },
+  "files": ["index.d.ts", "tailwind-preset.d.mts", "tailwind-preset.mjs"],
+  "license": "MIT"
+}

@@ -1,0 +1,567 @@
+/* 新手引导：整屏单列纸面。顶栏（标识 / 进度 / 稍后再说）、可滚动正文、底部动作栏三段。
+   嵌入的设置表单沿用共享 configuration.css；这里只拥有引导自己的骨架与能力卡。 */
+
+/* 设置里的“新手引导”分节：一句说明、重走按钮、各能力状态行；行可点，跳到对应设置。 */
+.onboarding-overview {
+  display: grid;
+  gap: 16px;
+  justify-items: start;
+}
+
+.onboarding-overview-intro {
+  margin: 0;
+  color: var(--ak-ink-secondary);
+  font-size: 0.875rem;
+}
+
+/* 能力状态同设置其他页一样收进分组卡，行间发丝线。 */
+.onboarding-overview-list {
+  display: grid;
+  width: 100%;
+  margin: 8px 0 0;
+  padding: 0;
+  overflow: hidden;
+  list-style: none;
+  border: 1px solid var(--ak-rule-subtle);
+  border-radius: var(--ak-radius-md);
+  background: var(--ak-paper-sheet);
+}
+
+.onboarding-overview-list li + li { border-block-start: 1px solid var(--ak-rule-subtle); }
+
+.onboarding-overview-list a {
+  display: flex;
+  min-height: 56px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 16px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.onboarding-overview-list a:hover { background: color-mix(in oklab, var(--ak-ink-primary) 4%, transparent); }
+.onboarding-overview-list a:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: -2px; }
+
+.onboarding-overview .onboarding-primary { min-width: 0; min-height: 36px; padding-inline: 16px; font-size: 14px; }
+@media (pointer: coarse) { .onboarding-overview .onboarding-primary { min-height: 44px; } }
+
+.onboarding-overview-list span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.onboarding-overview-list strong {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.onboarding-overview-list small {
+  color: var(--ak-ink-muted);
+  font-size: 0.75rem;
+}
+
+.onboarding-overview-list em {
+  flex: 0 0 auto;
+  color: var(--ak-ink-muted);
+  font-size: 0.75rem;
+  font-style: normal;
+}
+
+.onboarding-overview-list em.is-on {
+  color: var(--ak-color-status-success);
+}
+
+.onboarding-overview-list em.is-missing {
+  color: rgb(var(--ak-color-status-warning-rgb));
+}
+
+.onboarding-surface {
+  display: none;
+  width: 100vw;
+  max-width: none;
+  height: 100dvh;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: var(--ak-paper-canvas);
+  color: var(--ak-ink-primary);
+  font-family: var(--md-ref-typeface-plain, inherit);
+}
+
+.onboarding-surface[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+.onboarding-surface::backdrop {
+  background: var(--ak-paper-canvas);
+}
+
+.onboarding-surface :focus-visible {
+  outline: 2px solid var(--ak-rule-focus);
+  outline-offset: 2px;
+}
+
+/* —— 顶栏 —— */
+.onboarding-top {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 260px) minmax(0, 1fr);
+  align-items: center;
+  gap: 16px;
+  min-height: 56px;
+  padding-block: env(safe-area-inset-top, 0px) 0;
+  padding-inline: max(20px, env(safe-area-inset-left, 0px)) max(20px, env(safe-area-inset-right, 0px));
+}
+
+.onboarding-top > :last-child {
+  justify-self: end;
+}
+
+.onboarding-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.9375rem;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+}
+
+.onboarding-mark {
+  display: block;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  background: currentColor;
+  mask-size: contain;
+  mask-repeat: no-repeat;
+  mask-position: center;
+  -webkit-mask-size: contain;
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+}
+
+.onboarding-mark.is-large {
+  width: 64px;
+  height: 64px;
+}
+
+.onboarding-progress {
+  display: flex;
+  gap: 4px;
+}
+
+.onboarding-progress i {
+  height: 3px;
+  flex: 1 1 0;
+  border-radius: 2px;
+  background: var(--ak-rule-strong);
+  transition: flex-grow var(--ak-sys-duration-short, 200ms) ease, background-color var(--ak-sys-duration-short, 200ms) ease;
+}
+
+.onboarding-progress i.is-done {
+  background: var(--ak-ink-secondary);
+}
+
+.onboarding-progress i.is-now {
+  flex-grow: 2.2;
+  background: var(--ak-color-action-primary);
+}
+
+.onboarding-text-button {
+  min-height: 44px;
+  padding-inline: 10px;
+  border: 0;
+  border-radius: var(--ak-radius-sm);
+  background: transparent;
+  color: var(--ak-ink-muted);
+  font: inherit;
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+
+.onboarding-text-button:hover {
+  background: color-mix(in oklab, var(--ak-ink-primary) 6%, transparent);
+  color: var(--ak-ink-primary);
+}
+
+/* —— 正文 —— */
+.onboarding-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.onboarding-column {
+  box-sizing: border-box;
+  width: min(100%, 38rem);
+  margin-inline: auto;
+  padding-block: 28px 40px;
+  padding-inline: 24px;
+}
+
+.onboarding-heading h2 {
+  margin: 10px 0 8px;
+  font-size: clamp(1.625rem, 3.2vw, 2.125rem);
+  font-weight: 650;
+  line-height: 1.2;
+  text-wrap: balance;
+}
+
+.onboarding-heading h2:focus {
+  outline: none;
+}
+
+.onboarding-eyebrow {
+  font-family: var(--ak-type-reading);
+  font-size: 0.78125rem;
+  color: var(--ak-ink-muted);
+}
+
+.onboarding-lead {
+  max-width: 32em;
+  margin: 0 0 24px;
+  color: var(--ak-ink-secondary);
+  font-size: 1rem;
+  line-height: 1.6;
+  text-wrap: pretty;
+}
+
+.onboarding-primary {
+  min-height: 46px;
+  min-width: 132px;
+  padding-inline: 22px;
+  border: 0;
+  border-radius: var(--ak-radius-sm);
+  background: var(--ak-color-action-primary);
+  color: var(--ak-paper-editing);
+  font: inherit;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.onboarding-primary:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* —— 欢迎 —— */
+.onboarding-welcome {
+  display: grid;
+  justify-items: center;
+  padding-block: 7vh 16px;
+  text-align: center;
+}
+
+.onboarding-welcome h2 {
+  margin: 22px 0 10px;
+  font-size: clamp(1.875rem, 4.6vw, 2.75rem);
+  font-weight: 650;
+  line-height: 1.15;
+}
+
+.onboarding-welcome h2:focus {
+  outline: none;
+}
+
+.onboarding-welcome .onboarding-lead {
+  margin-inline: auto;
+}
+
+.onboarding-welcome .onboarding-primary {
+  min-width: 220px;
+}
+
+.onboarding-promise {
+  display: grid;
+  width: 100%;
+  max-width: 26rem;
+  margin: 8px 0 28px;
+  padding: 0;
+  list-style: none;
+  text-align: start;
+}
+
+.onboarding-promise li,
+.onboarding-summary li {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding-block: 12px;
+  border-block-end: 1px solid var(--ak-rule-subtle);
+}
+
+.onboarding-promise li:first-child,
+.onboarding-summary li:first-child {
+  border-block-start: 1px solid var(--ak-rule-subtle);
+}
+
+.onboarding-promise em,
+.onboarding-summary em {
+  flex: 0 0 auto;
+  font-size: 0.75rem;
+  font-style: normal;
+  color: var(--ak-ink-muted);
+}
+
+.onboarding-quiet {
+  min-height: 44px;
+  margin-top: 12px;
+  border: 0;
+  background: none;
+  color: var(--ak-ink-muted);
+  font: inherit;
+  font-size: 0.875rem;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+/* —— 能力卡 —— */
+.onboarding-abilities {
+  display: grid;
+  gap: 12px;
+}
+
+.onboarding-ability {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 16px;
+  padding: 16px 18px;
+  border: 1px solid var(--ak-rule-default);
+  border-radius: var(--ak-radius-md);
+  background: var(--ak-paper-editing);
+  transition: border-color 160ms ease, background-color 160ms ease;
+}
+
+.onboarding-ability.is-on {
+  border-color: var(--ak-color-action-primary);
+  background: color-mix(in oklab, var(--ak-color-action-primary) 5%, var(--ak-paper-editing));
+}
+
+.onboarding-ability h3 {
+  margin: 0;
+  font-size: 1.0625rem;
+  font-weight: 600;
+}
+
+.onboarding-ability > p {
+  grid-column: 1;
+  margin: 0;
+  color: var(--ak-ink-secondary);
+  font-size: 0.875rem;
+}
+
+.onboarding-ability > .onboarding-blocked {
+  grid-column: 1 / -1;
+  color: var(--ak-color-status-warning);
+}
+
+.onboarding-switch {
+  position: relative;
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-self: start;
+  width: 44px;
+  height: 26px;
+  margin-top: 2px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--ak-radius-full);
+  background: var(--ak-rule-strong);
+  cursor: pointer;
+  transition: background-color 180ms ease;
+}
+
+/* 26px 高的开关上下各扩 9px，保留 44px 触控热区。 */
+.onboarding-switch::before {
+  content: "";
+  position: absolute;
+  inset: -9px -8px;
+}
+
+.onboarding-switch::after {
+  content: "";
+  position: absolute;
+  inset-block-start: 3px;
+  inset-inline-start: 3px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--ak-paper-editing);
+  box-shadow: var(--ak-elevation-raised);
+  transition: transform 200ms var(--ak-sys-motion-standard, cubic-bezier(0.2, 0, 0, 1));
+}
+
+.onboarding-switch[aria-checked="true"] {
+  background: var(--ak-color-action-primary);
+}
+
+.onboarding-switch[aria-checked="true"]::after {
+  transform: translateX(18px);
+}
+
+.onboarding-chip {
+  grid-column: 2;
+  grid-row: 1;
+  align-self: start;
+  padding: 2px 10px;
+  border-radius: var(--ak-radius-full);
+  background: color-mix(in oklab, var(--ak-color-status-success) 12%, transparent);
+  color: var(--ak-color-status-success);
+  font-size: 0.75rem;
+}
+
+.onboarding-preview {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 12px 14px;
+  border-radius: var(--ak-radius-sm);
+  background: var(--ak-paper-quiet);
+  font-size: 0.875rem;
+}
+
+.onboarding-preview span {
+  font-size: 0.75rem;
+  color: var(--ak-ink-muted);
+}
+
+.onboarding-preview p {
+  margin: 2px 0 0;
+}
+
+.onboarding-note {
+  margin: 18px 0 0;
+  color: var(--ak-ink-muted);
+  font-size: 0.8125rem;
+}
+
+/* —— 分组设置 —— */
+.onboarding-form + .onboarding-form {
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid var(--ak-rule-subtle);
+}
+
+.onboarding-form h3 {
+  margin: 0 0 12px;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--ak-ink-secondary);
+}
+
+.onboarding-blocked {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 14px 16px;
+  border-radius: var(--ak-radius-sm);
+  background: rgb(var(--ak-color-status-warning-rgb) / 0.08);
+  color: var(--ak-ink-secondary);
+  font-size: 0.9375rem;
+}
+
+.onboarding-blocked strong {
+  color: var(--ak-ink-primary);
+}
+
+/* —— 完成 —— */
+.onboarding-summary {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.onboarding-summary li {
+  justify-content: flex-start;
+}
+
+.onboarding-summary li > span:first-child {
+  width: 18px;
+  flex: 0 0 auto;
+  font-family: var(--ak-type-technical, monospace);
+  color: var(--ak-ink-muted);
+}
+
+.onboarding-summary li > span:nth-child(2) {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.onboarding-summary li.is-on > span:first-child {
+  color: var(--ak-color-status-success);
+}
+
+.onboarding-summary li.is-missing > span:first-child,
+.onboarding-summary li.is-missing em {
+  color: rgb(var(--ak-color-status-warning-rgb));
+}
+
+/* —— 底部动作栏 —— */
+.onboarding-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-block: 12px max(12px, env(safe-area-inset-bottom, 0px));
+  padding-inline: max(20px, env(safe-area-inset-left, 0px)) max(20px, env(safe-area-inset-right, 0px));
+  border-top: 1px solid var(--ak-rule-subtle);
+  background: var(--ak-paper-canvas);
+}
+
+.onboarding-footer > button[hidden] {
+  display: inline-block;
+  visibility: hidden;
+}
+
+.onboarding-hint {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--ak-ink-muted);
+  font-size: 0.8125rem;
+  text-align: center;
+}
+
+@media (max-width: 640px) {
+  .onboarding-top {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 10px;
+    padding-inline: max(12px, env(safe-area-inset-left, 0px)) max(8px, env(safe-area-inset-right, 0px));
+  }
+
+  .onboarding-brand > span {
+    display: none;
+  }
+
+  .onboarding-column {
+    padding-block: 12px 28px;
+    padding-inline: 20px;
+  }
+
+  .onboarding-footer {
+    padding-inline: max(12px, env(safe-area-inset-left, 0px)) max(12px, env(safe-area-inset-right, 0px));
+  }
+
+  .onboarding-footer .onboarding-primary {
+    min-width: 0;
+    flex: 0 1 50%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .onboarding-progress i,
+  .onboarding-switch,
+  .onboarding-switch::after,
+  .onboarding-ability {
+    animation: none;
+    transition: none;
+  }
+}

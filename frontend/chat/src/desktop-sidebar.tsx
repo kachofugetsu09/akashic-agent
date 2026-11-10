@@ -1,0 +1,946 @@
+import {
+  MessageSquarePlus,
+  Search,
+  Pin,
+  PinOff,
+  ArrowUpDown,
+  ArrowUpToLine,
+  Keyboard,
+  X,
+} from "lucide-react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuRadioGroup,
+  DropdownMenuRadioItem, DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { ConversationNavigation, ConversationSessionRow, type ConversationRowDragHandlers, type ConversationRowDragState, type ConversationSession } from "./conversation-navigation";
+import akashicBrandIcon from "../../theme/src/akashic-brand.svg";
+import { activateShellRailAction, useShellRailActions } from "./shell-rail-actions";
+import {
+  GroupFormDialog, GroupNavigation, GroupNavigationRow, groupFormActions, groupKey,
+  type GroupFormRequest, type GroupSessionRenderer, type GroupSessionItem, type NavigationGroupsState,
+} from "./navigation-groups";
+import { sessionLabel } from "./web-chat-message-data";
+import type { NavigationPin, NavigationPinsState } from "./use-navigation-pins";
+import {
+  SIDEBAR_RAIL_MAX_REM, SIDEBAR_RAIL_MIN_REM, SIDEBAR_RAIL_STEP_REM,
+  type SidebarRailControl,
+} from "./use-sidebar-rail";
+import type { NavigationRowAction } from "./navigation-row-menu";
+import { getHostShortcuts } from "./shell-workbench";
+import { PluginUiSlot } from "./plugin-ui-runtime";
+import { SidebarPanelLauncher } from "./sidebar-panels";
+import { ThemeMenu } from "./theme-menu";
+import { cycleTheme } from "../../theme/src/theme-runtime";
+import { chatLayerOpen, keyForChat } from "./chat-host";
+import { DestinationFormDialog, DestinationNotice, IdentityDestinationRow, type IdentityDestinationState } from "./navigation-destinations";
+import type { DestinationControls, DestinationForm } from "@akashic/chat-ui-v1";
+
+export interface DesktopSidebarSession extends Omit<ConversationSession, "active" | "state"> {
+  active: boolean;
+  /** 会话的维度取值；属于已知分组的会话列在该分组下。 */
+  scope?: Readonly<Record<string, string>>;
+  /** 属于某个会话维度（如项目）的会话归在该分组下，不单独置顶。 */
+  scoped?: boolean;
+  updatedAt?: string;
+  createdAt?: string;
+}
+
+/** 会话排序是客户端展示投影：只作用于最近会话区与项目内子列表，置顶区保持服务端顺序。 */
+type SessionSortId = "activity" | "created" | "title" | "manual";
+
+const SESSION_SORT_CHOICES: readonly { id: SessionSortId; label: string }[] = [
+  { id: "activity", label: "最近活动" },
+  { id: "created", label: "最近创建" },
+  { id: "title", label: "标题" },
+  { id: "manual", label: "手动排序" },
+];
+const SESSION_SORT_KEY = "akashic.chat.session-sort";
+const SESSION_ORDER_KEY = "akashic.chat.session-order";
+
+function readSessionSort(): SessionSortId {
+  try {
+    const value = localStorage.getItem(SESSION_SORT_KEY);
+    return SESSION_SORT_CHOICES.some((choice) => choice.id === value) ? value as SessionSortId : "activity";
+  } catch {
+    return "activity";
+  }
+}
+
+function readSessionOrder(): string[] {
+  try {
+    const value: unknown = JSON.parse(localStorage.getItem(SESSION_ORDER_KEY) ?? "[]");
+    return Array.isArray(value) ? value.filter((id): id is string => typeof id === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+/** 把持久化顺序与当前全集合并：新出现（未排序过）的会话按现有展示序排到最前。 */
+function mergeSessionOrder(stored: readonly string[], ids: readonly string[]): string[] {
+  const display = new Set(ids);
+  const kept = stored.filter((id) => display.has(id));
+  const ordered = new Set(kept);
+  const fresh = ids.filter((id) => !ordered.has(id));
+  return [...fresh, ...kept];
+}
+
+// 按时间排序时的分组：自然日边界按本地时区计算，跨过 7 天统一收进"更早"。
+function sessionDayGroup(iso: string | undefined, now: Date): string | undefined {
+  const time = iso ? Date.parse(iso) : Number.NaN;
+  if (Number.isNaN(time)) return undefined;
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const days = Math.floor((startOfToday - time) / 86_400_000) + 1;
+  if (time >= startOfToday) return "今天";
+  if (days <= 1) return "昨天";
+  if (days <= 7) return "7 天内";
+  return "更早";
+}
+
+const SHORTCUT_MOD = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl";
+
+// 常驻侧栏的两个全局快捷键：Mod+K 聚焦会话搜索，Mod+Shift+O 新会话。
+// 抽屉里的侧栏副本与被隐藏的常驻侧栏不挂监听，避免同一按键触发两次。
+const SEARCH_HIGHLIGHT = "sidebar-search";
+
+const NAVIGATION_ROW = "button.conversation-session, button.group-session, button.navigation-group__open";
+
+function isUsableNavigationRow(row: HTMLButtonElement): boolean {
+  return !row.disabled && row.offsetParent !== null && !row.closest("[inert], [aria-hidden='true']");
+}
+
+// 侧栏里可见、可用的导航行主按钮，按文档顺序：置顶、插件分组（含组内会话）、最近会话。
+function sessionRows(root: HTMLElement | null): HTMLButtonElement[] {
+  return Array.from(root?.querySelector(".chat-sidebar__navigation")?.querySelectorAll<HTMLButtonElement>(NAVIGATION_ROW) ?? [])
+    .filter(isUsableNavigationRow);
+}
+
+// 会话列表只占一个 Tab 停靠点：键盘上次停过的行；它被搜索过滤或项目折叠卸掉后回退到当前会话，再回退到首个可用行。
+// 停靠点按 DOM 统一维护（行组件不写 tabIndex，免得和重渲染互相覆盖）；切换当前会话后停靠点跟到新会话。
+function useRovingTabStop(sidebarRef: RefObject<HTMLElement | null>) {
+  // 必要 effect：列表增删、当前会话变化与焦点移动都在 DOM 上发生，只能在这里观测。
+  useEffect(() => {
+    const navigation = sidebarRef.current?.querySelector<HTMLElement>(".chat-sidebar__navigation");
+    if (!navigation) return;
+    let last: HTMLButtonElement | null = null;
+    const sync = () => {
+      const rows = [...navigation.querySelectorAll<HTMLButtonElement>(NAVIGATION_ROW)];
+      // 搜索隐藏（hidden 属性）或正在收起（inert/aria-hidden）的行不可聚焦，不能继续持 tabindex="0"，否则列表掉出 Tab 序列。
+      const usable = rows.filter(isUsableNavigationRow);
+      const stop = (last && usable.includes(last) ? last : null)
+        ?? usable.find((row) => row.getAttribute("aria-current") === "true") ?? usable[0];
+      // 显式写属性：没写 tabindex 的按钮本身就是 0，按属性比较才不会漏掉。
+      for (const row of rows) {
+        const value = row === stop ? "0" : "-1";
+        if (row.getAttribute("tabindex") !== value) row.setAttribute("tabindex", value);
+      }
+    };
+    const observer = new MutationObserver((records) => {
+      if (records.some((record) => record.attributeName === "aria-current")) last = null;
+      sync();
+    });
+    const onFocus = (event: FocusEvent) => {
+      if (!(event.target instanceof HTMLButtonElement) || !event.target.matches(NAVIGATION_ROW)) return;
+      last = event.target;
+      sync();
+    };
+    observer.observe(navigation, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["aria-current", "disabled", "hidden", "inert", "aria-hidden"],
+    });
+    navigation.addEventListener("focusin", onFocus);
+    sync();
+    return () => {
+      observer.disconnect();
+      navigation.removeEventListener("focusin", onFocus);
+    };
+  }, [sidebarRef]);
+}
+
+// 大目录分批挂载最近会话：首批立即渲染，其余逐个宏任务补齐，启动不再一次同步挂载上千行（#1563）。
+// 补齐一次就不再回退：搜索（靠 hidden 收窄，要求全部行已挂载）与 End 键都会立即补齐。
+const FIRST_SESSION_ROWS = 120;
+const SESSION_ROW_BATCH = 200;
+function useProgressiveRows(total: number, searching: boolean): { count: number; completeNow: () => void } {
+  const [mounted, setMounted] = useState(FIRST_SESSION_ROWS);
+  if (searching && Number.isFinite(mounted)) setMounted(Number.POSITIVE_INFINITY);
+  useEffect(() => {
+    if (mounted >= total) return;
+    const timer = window.setTimeout(() => setMounted((count) => count + SESSION_ROW_BATCH), 30);
+    return () => window.clearTimeout(timer);
+  }, [mounted, total]);
+  const completeNow = useCallback(() => setMounted(Number.POSITIVE_INFINITY), []);
+  return { count: searching ? total : Math.min(mounted, total), completeNow };
+}
+
+// 焦点在行上时 ↑↓ 逐行、Home/End 到首末行，从第一行再按 ↑ 回到搜索框。
+// End 要到真正的末行：分批挂载未完成时交给 completeRows 补齐并在提交后聚焦（返回 true）。
+function moveSessionFocus(event: React.KeyboardEvent<HTMLElement>, completeRows: () => boolean) {
+  if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+  const target = event.target;
+  if (!(target instanceof HTMLButtonElement) || !target.matches(NAVIGATION_ROW)) return;
+  const sidebar = target.closest<HTMLElement>(".chat-sidebar");
+  const rows = sessionRows(sidebar);
+  const index = rows.indexOf(target);
+  event.preventDefault();
+  if (event.key === "Home") rows[0]?.focus();
+  else if (event.key === "End") {
+    if (!completeRows()) rows.at(-1)?.focus();
+  }
+  else if (event.key === "ArrowDown") rows[Math.min(index + 1, rows.length - 1)]?.focus();
+  else if (index > 0) rows[index - 1].focus();
+  else sidebar?.querySelector<HTMLInputElement>(".chat-sidebar__search input")?.focus();
+}
+
+// 搜索时用 CSS Custom Highlight 标出标题里的命中片段：不改行组件的 DOM，不支持的浏览器只是不标。
+// 抽屉与常驻侧栏各有一份实例，只清理自己登记的那一份。
+function useSearchHighlight(rootRef: RefObject<HTMLElement | null>, needle: string) {
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!needle || !root || typeof CSS === "undefined" || !("highlights" in CSS)) return;
+    const registry = CSS.highlights;
+    const mine = new Highlight();
+    // 1. 列表随会话推送重渲染，标题文本节点会被替换；观察子树变化后重新取范围。
+    const collect = () => {
+      mine.clear();
+      for (const title of root.querySelectorAll(".conversation-session__title, .group-session__title, .navigation-group__name")) {
+        const walker = document.createTreeWalker(title, NodeFilter.SHOW_TEXT);
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+          const text = (node.textContent ?? "").toLowerCase();
+          for (let at = text.indexOf(needle); at >= 0; at = text.indexOf(needle, at + needle.length)) {
+            const range = new Range();
+            range.setStart(node, at);
+            range.setEnd(node, at + needle.length);
+            mine.add(range);
+          }
+        }
+      }
+    };
+    collect();
+    registry.set(SEARCH_HIGHLIGHT, mine);
+    const observer = new MutationObserver(collect);
+    observer.observe(root, { subtree: true, childList: true, characterData: true });
+    return () => {
+      observer.disconnect();
+      if (registry.get(SEARCH_HIGHLIGHT) === mine) registry.delete(SEARCH_HIGHLIGHT);
+    };
+  }, [needle, rootRef]);
+}
+
+function useSidebarShortcuts(sidebarRef: RefObject<HTMLElement | null>, searchRef: RefObject<HTMLInputElement | null>,
+  onNewChat: () => void, onShortcuts: () => void) {
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      // 抽屉里那份侧栏不接（抽屉本身是对话框）；常驻侧栏在紧凑断点被隐藏时仍接新会话与快捷键面板，
+      // 搜索要先有可见的搜索框，交给抽屉（compact-navigation.tsx）打开后聚焦。
+      const sidebar = sidebarRef.current;
+      if (!sidebar || sidebar.closest("[role='dialog']")) return;
+      if (!(event.metaKey || event.ctrlKey) || event.altKey || event.isComposing || !keyForChat(event)) return;
+      // 对话框、菜单、选择器打开时按键属于它们，不把焦点抢到背后或在背后开新会话。
+      if (chatLayerOpen()) return;
+      const key = event.key.toLowerCase();
+      if (key === "k" && !event.shiftKey) {
+        if (sidebar.offsetParent === null) return;
+        event.preventDefault();
+        searchRef.current?.focus();
+        searchRef.current?.select();
+      } else if (key === "o" && event.shiftKey) {
+        event.preventDefault();
+        onNewChat();
+      } else if (key === "/" && !event.shiftKey) {
+        event.preventDefault();
+        onShortcuts();
+      } else if (key === "l" && event.shiftKey) {
+        event.preventDefault();
+        cycleTheme();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [onNewChat, onShortcuts, searchRef, sidebarRef]);
+}
+
+// 快捷键散在各处（输入框、侧栏、阅读区），只有 title 提示时几乎没人发现；这里集中列一份。
+// "?" 会被阅读时直接打字进入输入框接走，所以入口是 Ctrl+/（Slack、Linear 的习惯）和侧栏底部的键盘图标。
+function ShortcutsDialog({ open, onOpenChange, returnFocus }: { open: boolean; onOpenChange: (open: boolean) => void; returnFocus: () => void }) {
+  const mod = SHORTCUT_MOD === "⌘" ? "⌘" : "Ctrl";
+  const groups: { title: string; items: [string, string[]][] }[] = [
+    { title: "输入", items: [
+      ["发送；生成中排到本轮之后", ["Enter"]],
+      ["换行", ["Shift", "Enter"]],
+      ["停止生成", ["Esc"]],
+      ["取回上一条提问（输入框为空时）", ["↑"]],
+      ["在输入框里翻看对话", ["PageUp", "PageDown"]],
+      ["复制对话里最后一个代码块", [mod, "Shift", ";"]],
+      ["阅读时直接打字，进入输入框", ["任意字符"]],
+    ] },
+    { title: "导航", items: [
+      ["搜索会话", [mod, "K"]],
+      ["新会话", [mod, "Shift", "O"]],
+      ["在会话列表里上下移动", ["↑", "↓"]],
+      ["会话的操作菜单", ["Shift", "F10"]],
+      ["看图时切到同一条消息里的上一个、下一个", ["←", "→"]],
+      ["切换亮色与暗色（保持当前配色）", [mod, "Shift", "L"]],
+      ["快捷键", [mod, "/"]],
+    ] },
+  ];
+  const host = getHostShortcuts();
+  if (host.length) groups.push({ title: "工作台", items: host.map((item) => [item.label, [...item.keys]]) });
+  return <Dialog open={open} onOpenChange={onOpenChange}>
+    <DialogContent className="shortcuts-dialog" onCloseAutoFocus={(event) => { event.preventDefault(); returnFocus(); }}>
+      <DialogHeader>
+        <DialogTitle>键盘快捷键</DialogTitle>
+        <DialogDescription className="sr-only">聊天界面可用的键盘快捷键</DialogDescription>
+      </DialogHeader>
+      {groups.map((group) => <section key={group.title} aria-label={group.title}>
+        <h3>{group.title}</h3>
+        <dl>{group.items.map(([label, keys]) => <div key={label}>
+          <dt>{label}</dt>
+          <dd>{keys.map((key) => <kbd key={key}>{key}</kbd>)}</dd>
+        </div>)}</dl>
+      </section>)}
+    </DialogContent>
+  </Dialog>;
+}
+
+function sortSessions(rows: DesktopSidebarSession[], sort: SessionSortId, order: readonly string[]): DesktopSidebarSession[] {
+  if (sort === "title") return [...rows].sort((a, b) => a.title.localeCompare(b.title, "zh-Hans-CN"));
+  if (sort === "manual") {
+    const rank = new Map(order.map((id, index) => [id, index]));
+    return [...rows].sort((a, b) => (rank.get(a.id) ?? -1) - (rank.get(b.id) ?? -1));
+  }
+  // Date.parse 在比较器里会被调 O(n log n) 次；先一次性提取时间戳再排序（大目录实测约省 20ms）。
+  const key = sort === "created" ? (row: DesktopSidebarSession) => row.createdAt : (row: DesktopSidebarSession) => row.updatedAt;
+  const stamps = new Map(rows.map((row) => {
+    const iso = key(row);
+    return [row, iso ? Date.parse(iso) : Number.NaN];
+  }));
+  return [...rows].sort((a, b) => {
+    const ta = stamps.get(a) ?? Number.NaN;
+    const tb = stamps.get(b) ?? Number.NaN;
+    if (Number.isNaN(ta) && Number.isNaN(tb)) return 0;
+    if (Number.isNaN(ta)) return 1;
+    if (Number.isNaN(tb)) return -1;
+    return tb - ta;
+  });
+}
+
+/** 插件分组；抽屉里先关抽屉再由抽屉打开对话框，常驻侧栏自己打开。 */
+export interface DesktopSidebarGroups extends NavigationGroupsState {
+  onOpenForm?: (request: GroupFormRequest) => void;
+}
+
+export interface DesktopSidebarProps {
+  surface: "chat" | "runtime";
+  sessions: DesktopSidebarSession[];
+  activeSessionId: string;
+  pendingSessionId: string;
+  chatReady: boolean;
+  groups?: DesktopSidebarGroups;
+  navigationPins: NavigationPinsState;
+  /** 插件给的侧栏顶部目的地；有目的地时品牌行变成它的联系人行。 */
+  destination?: IdentityDestinationState;
+  /** 手机抽屉里打开目的地对话框：抽屉先关再弹；常驻侧栏不带此 prop，就地打开。 */
+  onOpenDestinationForm?: (form: DestinationForm) => void;
+  onSelectSession: (sessionId: string) => void;
+  onPrefetchSession?: (sessionId: string) => void;
+  onNewChat: () => void;
+  /** 会话软删：行内两步确认后调用；Promise 拒绝时行保持原位。 */
+  onDeleteSession?: (sessionId: string, title: string) => Promise<void>;
+  /** 会话重命名：双击或菜单进入行内编辑；Promise 拒绝时编辑态保留。 */
+  onRenameSession?: (sessionId: string, title: string) => Promise<void>;
+  /** 最近一次删除的撤销窗口；null 时不在导航区展示提示行。 */
+  deletedNotice?: { key: string; title: string } | null;
+  restorePending?: boolean;
+  onRestoreSession?: (sessionId: string) => void;
+  onDismissDeletedNotice?: () => void;
+  /** 宽屏侧栏的宽度控制；抽屉（compact）不带此 prop，因此不渲染拖拽柄。 */
+  rail?: SidebarRailControl;
+  /** 手机抽屉里打开插件面板：抽屉先关，关完再弹底部抽屉；常驻侧栏不带此 prop，面板锚在启动器下方。 */
+  onOpenPanels?: (open: () => void) => void;
+  /** 手机抽屉里点底部动作（如功能设置）：抽屉先关再执行。抽屉是模态框，开着时 body 不接收指针，压在上面的设置页点不动。 */
+  onRailAction?: (activate: () => void) => void;
+}
+
+/** 会话导航竖栏；底部动作由宿主 Shell 经 shell.rail-actions.v1 桥下发，主题行是 chat 域原生。 */
+
+// 品牌剪影跟随主题墨色。
+const brandMask = { WebkitMaskImage: `url(${akashicBrandIcon})`, maskImage: `url(${akashicBrandIcon})` };
+
+export const DesktopSidebar = memo(function DesktopSidebar({
+  surface,
+  sessions,
+  activeSessionId,
+  pendingSessionId,
+  groups,
+  navigationPins: pinsState,
+  destination,
+  onOpenDestinationForm,
+  onSelectSession,
+  onPrefetchSession,
+  onNewChat,
+  onDeleteSession,
+  onRenameSession,
+  deletedNotice,
+  restorePending = false,
+  onRestoreSession,
+  onDismissDeletedNotice,
+  onOpenPanels,
+  onRailAction,
+  rail,
+}: DesktopSidebarProps) {
+  const [query, setQuery] = useState("");
+  // 目的地指向的会话只在顶上出现：不进置顶、分组与最近会话。
+  const destinationId = destination?.value?.sessionId;
+  const navigationPins = useMemo(() => destinationId ? { ...pinsState,
+    pins: pinsState.pins.filter((pin) => pin.kind !== "session" || pin.id !== destinationId) } : pinsState, [pinsState, destinationId]);
+  const [destinationForm, setDestinationForm] = useState<DestinationForm | null>(null);
+  const openDestinationForm = onOpenDestinationForm ?? setDestinationForm;
+  const destinationReload = destination?.reload;
+  const destinationOpen = destination?.open;
+  const destinationControls = useMemo((): DestinationControls | null => destinationReload && destinationOpen
+    ? { reload: destinationReload, open: destinationOpen, openForm: openDestinationForm } : null,
+  [destinationReload, destinationOpen, openDestinationForm]);
+  const sidebarRef = useRef<HTMLElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  // 面板没有固定触发按钮（输入框里按快捷键也能打开）：打开前记下焦点与光标，关闭后放回原处接着写。
+  const shortcutsReturn = useRef<{ element: HTMLElement; selection: [number, number, "forward" | "backward" | "none"] | null } | null>(null);
+  const openShortcuts = useCallback(() => {
+    const element = document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : null;
+    const field = element instanceof HTMLTextAreaElement || element instanceof HTMLInputElement ? element : null;
+    shortcutsReturn.current = element ? { element, selection: field && field.selectionStart !== null && field.selectionEnd !== null ? [field.selectionStart, field.selectionEnd, field.selectionDirection ?? "none"] : null } : null;
+    setShortcutsOpen(true);
+  }, []);
+  const returnShortcutsFocus = useCallback(() => {
+    const target = shortcutsReturn.current;
+    shortcutsReturn.current = null;
+    if (!target?.element.isConnected) return;
+    target.element.focus({ preventScroll: true });
+    if (target.selection && (target.element instanceof HTMLTextAreaElement || target.element instanceof HTMLInputElement)) {
+      target.element.setSelectionRange(...target.selection);
+    }
+  }, []);
+  // 新会话继承当前所在的分组；要不归属任何分组，在新会话的分组条里改。
+  const newChat = useCallback(() => groups?.active ? groups.startChat(groups.active) : onNewChat(), [groups, onNewChat]);
+  useSidebarShortcuts(sidebarRef, searchRef, newChat, openShortcuts);
+  const [formRequest, setFormRequest] = useState<GroupFormRequest | null>(null);
+  const [sessionSort, setSessionSort] = useState(readSessionSort);
+  const [sessionOrder, setSessionOrder] = useState(readSessionOrder);
+  // 行拖拽的瞬态：被拖源 id + 当前插入指示（目标行 id 与上/下半）。提交时写入
+  // sessionOrder 并把排序切到「手动排序」——拖拽本身就是选择手动模式的意图。
+  const [drag, setDrag] = useState<{ id: string; over: { id: string; half: "before" | "after" } | null } | null>(null);
+  const openForm = groups?.onOpenForm ?? setFormRequest;
+  const needle = query.trim().toLowerCase();
+  const searching = Boolean(needle);
+  useSearchHighlight(sidebarRef, needle);
+  useRovingTabStop(sidebarRef);
+  const allSessions = useMemo(() => {
+    const rows = new Map<string, DesktopSidebarSession>(navigationPins.sessions.map((session) => [session.key, {
+      id: session.key, title: sessionLabel(session), preview: session.message_count === undefined ? "" : `${session.message_count} 条消息`,
+      active: activeSessionId === session.key,
+      scope: session.scope, scoped: Object.keys(session.scope ?? {}).length > 0,
+    }]));
+    // 目录里的新鲜 metadata 优先；置顶解析补齐不在最近分页内的会话。
+    for (const session of sessions) rows.set(session.id, session);
+    if (destinationId) rows.delete(destinationId);
+    return [...rows.values()];
+  }, [navigationPins.sessions, sessions, activeSessionId, destinationId]);
+  const destinationRow = destinationId ? sessions.find((session) => session.id === destinationId) : undefined;
+  // 搜索收窄不卸载行：不匹配的行保留挂载、以 hidden 隐藏。大目录下逐键收窄会成批
+  // 卸载上千行，React commitDeletion 的单行成本远高于属性翻转（2002 行实测 5.6s → 0.5s）。
+  const sessionMatches = useCallback((session: DesktopSidebarSession) =>
+    `${session.title} ${session.preview}`.toLowerCase().includes(needle), [needle]);
+  const hiddenIds = useMemo(() => {
+    if (!needle) return undefined;
+    const ids = new Set(allSessions.filter((session) => !sessionMatches(session)).map((session) => session.id));
+    // 全部匹配时保持 undefined：行 hidden 与分组标签的依赖身份不变，memo 不受搜索进出影响。
+    return ids.size ? ids : undefined;
+  }, [allSessions, needle, sessionMatches]);
+  // 排序只重排展示顺序：最近会话区与项目内子列表共享同一份投影，置顶区不经过它。
+  const mergedOrder = useMemo(
+    () => mergeSessionOrder(sessionOrder, allSessions.map((session) => session.id)),
+    [sessionOrder, allSessions],
+  );
+  const sortedSessions = useMemo(() => sortSessions(allSessions, sessionSort, mergedOrder), [allSessions, sessionSort, mergedOrder]);
+  useEffect(() => {
+    try { localStorage.setItem(SESSION_SORT_KEY, sessionSort); }
+    catch { /* 禁用存储时仍允许本次浏览的排序选择。 */ }
+  }, [sessionSort]);
+  useEffect(() => {
+    try { localStorage.setItem(SESSION_ORDER_KEY, JSON.stringify(sessionOrder)); }
+    catch { /* 禁用存储时仍允许本次浏览的手动排序。 */ }
+  }, [sessionOrder]);
+  // 行拖拽期间在 document 层接受 dragover/drop：行外不显示"禁止"光标，
+  // dragend 的提交仍由行自己的 onDrop 完成。
+  useEffect(() => {
+    if (!drag) return;
+    const acceptDrag = (event: DragEvent) => {
+      event.preventDefault();
+      if (event.dataTransfer !== null) event.dataTransfer.dropEffect = "move";
+    };
+    const acceptDrop = (event: DragEvent) => { event.preventDefault(); };
+    document.addEventListener("dragover", acceptDrag);
+    document.addEventListener("drop", acceptDrop);
+    return () => {
+      document.removeEventListener("dragover", acceptDrag);
+      document.removeEventListener("drop", acceptDrop);
+    };
+  }, [drag]);
+  const commitManualDrop = (targetId: string, half: "before" | "after") => {
+    if (!drag || drag.id === targetId) return;
+    const order = mergedOrder.filter((id) => id !== drag.id);
+    const targetIndex = order.indexOf(targetId);
+    if (targetIndex === -1) return;
+    order.splice(targetIndex + (half === "after" ? 1 : 0), 0, drag.id);
+    // 当前分页外的会话保留顺序尾巴，不因为本次可见提交丢掉位置。
+    const offscreen = sessionOrder.filter((id) => !mergedOrder.includes(id));
+    setSessionOrder([...order, ...offscreen]);
+    setSessionSort("manual");
+  };
+  // 行 memo 要求拖拽处理函数身份稳定：经 ref 取最新提交逻辑，处理函数本身永不重建。
+  const commitManualDropRef = useRef(commitManualDrop);
+  useEffect(() => { commitManualDropRef.current = commitManualDrop; });
+  // 搜索中拒绝拖拽改在 start 入口按 ref 拒绝：若用 drag=undefined 撤能力，
+  // 全部行的 memo 会在进出搜索时失效重渲染（2002 行实测首键 1.4s）。
+  const searchingRef = useRef(searching);
+  useEffect(() => { searchingRef.current = searching; });
+  const dragHandlers = useMemo<ConversationRowDragHandlers>(() => ({
+    start: (id) => {
+      if (searchingRef.current) return false;
+      setDrag({ id, over: null });
+      return true;
+    },
+    end: () => setDrag(null),
+    hover: (id, half) => setDrag((current) => current
+      && (current.over?.id !== id || current.over.half !== half)
+      ? { ...current, over: { id, half } }
+      : current),
+    drop: (id, half) => {
+      commitManualDropRef.current(id, half);
+      setDrag(null);
+    },
+  }), []);
+  const sessionDrag = (session: ConversationSession): ConversationRowDragState => ({
+    active: drag !== null,
+    source: drag?.id === session.id,
+    marker: drag?.over?.id === session.id ? drag.over.half : undefined,
+  });
+  // 目录未解析/归档不改变 Session.scope；这类会话回退到最近会话，仍可在全局置顶。
+  const { expandGroup } = navigationPins;
+  const activeGroupKey = groups?.active ? groupKey(groups.active) : "";
+  useEffect(() => { if (activeGroupKey) expandGroup(activeGroupKey); }, [activeGroupKey, expandGroup]);
+  const sections = useMemo(() => groups?.sections ?? [], [groups?.sections]);
+  const knownGroups = useMemo(() => new Map(sections.flatMap((section) => section.groups.map((group) =>
+    [groupKey({ dimension: section.source.provider.dimension, id: group.id }), { section, group }] as const))), [sections]);
+  // 会话归入第一个认得它取值的分区；都不认得时留在最近会话。
+  const groupOf = useCallback((session: DesktopSidebarSession) => sections
+    .map(({ source }) => session.scope?.[source.provider.dimension] ? groupKey({ dimension: source.provider.dimension, id: session.scope[source.provider.dimension] }) : "")
+    .find((key) => key && knownGroups.has(key)) ?? "", [sections, knownGroups]);
+  const pinnedSessions = useMemo(() => new Set(navigationPins.pins.filter((pin) => pin.kind === "session").map((pin) => pin.id)),
+    [navigationPins.pins]);
+  // 行 memo 以会话对象身份为凭：展示投影（surface 折叠进 active）缓存成图，
+  // 目录不变时身份不变，流式帧不再重建 2000 行视图对象。
+  const sessionViews = useMemo(() => {
+    const views = new Map<string, ConversationSession>();
+    for (const session of allSessions) views.set(session.id, { ...session, active: surface === "chat" && session.active });
+    return views;
+  }, [allSessions, surface]);
+  const recentSessions = useMemo(
+    () => sortedSessions.filter((session) => !pinnedSessions.has(session.id) && !groupOf(session)
+      && (groups?.ready !== false || !Object.values(session.scope ?? {}).some(Boolean)))
+      .map((session) => sessionViews.get(session.id) ?? session),
+    [sortedSessions, pinnedSessions, groupOf, sessionViews, groups?.ready]);
+  const { count: mountedRecent, completeNow: completeRecentRows } = useProgressiveRows(recentSessions.length, searching);
+  const focusEndRef = useRef(false);
+  const completeRowsForEnd = useCallback(() => {
+    if (mountedRecent >= recentSessions.length) return false;
+    focusEndRef.current = true;
+    completeRecentRows();
+    return true;
+  }, [mountedRecent, recentSessions.length, completeRecentRows]);
+  useLayoutEffect(() => {
+    if (!focusEndRef.current || mountedRecent < recentSessions.length) return;
+    focusEndRef.current = false;
+    sessionRows(sidebarRef.current).at(-1)?.focus();
+  }, [mountedRecent, recentSessions.length]);
+  const mountedRecentSessions = useMemo(() => mountedRecent < recentSessions.length
+    ? recentSessions.slice(0, mountedRecent) : recentSessions, [recentSessions, mountedRecent]);
+  // 搜索时行不卸载，"匹配的会话"语义落在可见数上。
+  const visibleRecentCount = useMemo(() => hiddenIds
+    ? recentSessions.reduce((count, session) => count + (hiddenIds.has(session.id) ? 0 : 1), 0)
+    : recentSessions.length, [recentSessions, hiddenIds]);
+  // 分组内置顶的会话排在所在文件夹最前面，其余保持当前排序。
+  // 分组内会话同样只隐藏不卸载：hidden 随逐键过滤翻转，行身份保持稳定。
+  const sessionsByGroup = useMemo(() => {
+    const byGroup = new Map<string, GroupSessionItem[]>();
+    for (const session of sortedSessions) {
+      const key = groupOf(session);
+      if (!key) continue;
+      byGroup.set(key, [...byGroup.get(key) ?? [], {
+        id: session.id, title: session.title, active: surface === "chat" && session.active, status: session.status,
+        pinned: pinnedSessions.has(session.id), hidden: hiddenIds?.has(session.id) || undefined,
+      }]);
+    }
+    for (const [key, items] of byGroup) byGroup.set(key, [...items.filter((item) => item.pinned), ...items.filter((item) => !item.pinned)]);
+    return byGroup;
+  }, [sortedSessions, groupOf, surface, pinnedSessions, hiddenIds]);
+  const pinnedGroups = new Set(navigationPins.pins.filter((pin) => pin.kind !== "session").map((pin) => groupKey({ dimension: pin.kind, id: pin.id })));
+  const visibleGroup = (key: string, label: string) => !needle || label.toLowerCase().includes(needle)
+    || Boolean(sessionsByGroup.get(key)?.some((item) => !item.hidden));
+  const sectionGroups = sections.map((section) => section.groups.filter((group) => {
+    const key = groupKey({ dimension: section.source.provider.dimension, id: group.id });
+    return !pinnedGroups.has(key) && visibleGroup(key, group.label);
+  }));
+  // 搜索时只留有匹配行的置顶分组，空分组标题一起收起。
+  const visiblePins = navigationPins.pins.filter((pin) => {
+    if (pin.kind !== "session") {
+      const key = groupKey({ dimension: pin.kind, id: pin.id });
+      const known = knownGroups.get(key);
+      if (known) return visibleGroup(key, known.group.label);
+    } else {
+      const session = allSessions.find((item) => item.id === pin.id);
+      // 分组里的会话置顶在自己的文件夹内，不进全局置顶区；分组已不在时仍按普通置顶显示。
+      if (session && groupOf(session)) return false;
+      if (session) {
+        return `${session.title} ${session.preview}`.toLowerCase().includes(needle);
+      }
+    }
+    return pin.id.toLowerCase().includes(needle);
+  });
+  const hasMatches = visibleRecentCount > 0 || sectionGroups.some((items) => items.length > 0) || visiblePins.length > 0;
+  const sessionById = useMemo(() => new Map(allSessions.map((session) => [session.id, session])), [allSessions]);
+  // 行 memo 需要稳定身份：navigationPins 对象每渲染新建，只取字段级依赖。
+  const { ready: pinsReady, pending: pinsPending, setPinned } = navigationPins;
+  const pinAction = useCallback((pin: NavigationPin, pinned: boolean): NavigationRowAction[] => [{
+    label: pinned ? "取消置顶" : "置顶",
+    icon: pinned ? <PinOff size={18} aria-hidden="true" /> : <Pin size={18} aria-hidden="true" />,
+    disabled: !pinsReady || pinsPending,
+    onSelect: () => { void setPinned(pin, !pinned); },
+  }], [pinsReady, pinsPending, setPinned]);
+  // 目的地插件给普通会话行的菜单项（例如“放到侧栏顶部”）；完成后重读目的地。
+  const destinationSource = destination?.source;
+  const destinationActions = useCallback((session: { id: string; title: string }): NavigationRowAction[] =>
+    destinationSource?.provider.sessionActions?.({ id: session.id, title: session.title }).map((action) => ({
+      label: action.label, icon: <ArrowUpToLine size={18} aria-hidden="true" />,
+      onSelect: () => { void action.run(destinationSource.context(new AbortController().signal)).finally(destinationReload); },
+    })) ?? [], [destinationSource, destinationReload]);
+  // 分组内的会话行：与最近会话同一套行菜单，置顶只在所在分组内生效。
+  const groupSessionRow: GroupSessionRenderer = (item, label) => <ConversationSessionRow
+    session={{ id: item.id, title: item.title, preview: "", active: item.active, status: item.status, pinned: item.pinned }}
+    hidden={item.hidden}
+    pendingSessionId={pendingSessionId} onActivate={onSelectSession} onPrefetch={onPrefetchSession}
+    actions={[{ ...pinAction({ kind: "session", id: item.id }, Boolean(item.pinned))[0],
+      label: item.pinned ? `取消${label}内置顶` : `在${label}内置顶` }, ...destinationActions(item)]}
+    onDelete={onDeleteSession ? (session) => onDeleteSession(session.id, session.title) : undefined}
+    onRename={onRenameSession ? (session, title) => onRenameSession(session.id, title) : undefined} />;
+  // 日分组标签一次投影成 Map：时间戳解析与"今天/昨天"判定只在目录或排序键变化时算一遍，
+  // 行渲染只查表。否则每次侧栏渲染（含搜索逐键）都是每行一次 Date.parse + new Date()，
+  // groupLabel 与上一行比较时再翻一倍。投影只按构建时刻的日期，跨午夜后随下一次列表更新重算即可。
+  const dayGroupLabels = useMemo(() => {
+    if (sessionSort !== "activity" && sessionSort !== "created") return null;
+    const now = new Date();
+    const labels = new Map<string, string>();
+    for (const [id, row] of sessionById) {
+      const label = sessionDayGroup(sessionSort === "created" ? row.createdAt : row.updatedAt, now);
+      if (label) labels.set(id, label);
+    }
+    return labels;
+  }, [sessionSort, sessionById]);
+  const sessionDayGroupOf = useCallback((session: ConversationSession) =>
+    dayGroupLabels?.get(session.id), [dayGroupLabels]);
+  const deleteHandler = useCallback((session: ConversationSession) => onDeleteSession?.(session.id, session.title) ?? Promise.resolve(),
+    [onDeleteSession]);
+  const renameHandler = useCallback(
+    (session: ConversationSession, title: string) => onRenameSession?.(session.id, title) ?? Promise.resolve(),
+    [onRenameSession]);
+  // 目录重拉只换 Map 身份、不换行内容：工厂经 ref 读最新映射，身份不随重拉变化,
+  // 否则每次目录刷新都会以 actions 身份变化击穿全部行的 memo。
+  const sessionByIdRef = useRef(sessionById);
+  useEffect(() => { sessionByIdRef.current = sessionById; });
+  const sessionPinActions = useCallback((session: ConversationSession): NavigationRowAction[] => {
+    const row = sessionByIdRef.current.get(session.id);
+    // 分组已不在的会话也落在这里，同样可以置顶（后端已接受带分组的会话）。
+    return row ? [...pinAction({ kind: "session", id: row.id }, false), ...destinationActions(session)] : [];
+  }, [pinAction, destinationActions]);
+  const railActions = useShellRailActions();
+  // 有目的地时品牌行让给联系人行，功能与新会话挪到搜索框右边。
+  const brandActions = <span className="chat-sidebar__brand-actions">
+    <SidebarPanelLauncher sheet={!!onOpenPanels} onOpenSheet={onOpenPanels} />
+    <button type="button" className="chat-sidebar__new" aria-label="新会话" title={`新会话（${SHORTCUT_MOD}+Shift+O）`} onClick={newChat}>
+      <MessageSquarePlus size={18} strokeWidth={1.75} aria-hidden="true" />
+    </button>
+  </span>;
+
+  return (
+    <aside ref={sidebarRef} className="chat-sidebar chat-sidebar--entry">
+      <div className="chat-sidebar__toolbar">
+        {destination?.value ? <div className="chat-sidebar__brand-row chat-sidebar__brand-row--destination">
+          <IdentityDestinationRow destination={destination.value} mark={brandMask} status={destinationRow?.status}
+            updatedAt={destinationRow?.updatedAt} active={Boolean(destinationId) && activeSessionId === destinationId}
+            actions={(destination.source?.provider.actions ?? []).map(({ label, form }) => ({
+              label, icon: <ArrowUpToLine size={18} aria-hidden="true" />, onSelect: () => openDestinationForm(form) }))}
+            onOpen={() => destinationId ? onSelectSession(destinationId) : destination.open()} />
+        </div> : <div className="chat-sidebar__brand-row">
+          <span className="chat-sidebar__brand">
+            <span className="chat-sidebar__mark" style={brandMask} aria-hidden="true" />
+            <strong>Akashic</strong>
+          </span>
+          {brandActions}
+        </div>}
+        {destination && destinationControls ? <DestinationNotice state={destination} controls={destinationControls} /> : null}
+        <div className="chat-sidebar__search-row">
+        <label className="chat-sidebar__search">
+          <Search size={14} aria-hidden="true" />
+          <input
+            ref={searchRef}
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
+              // 1. Esc 先清空，再按一次把焦点还给页面。
+              if (event.key === "Escape") {
+                if (query) setQuery("");
+                else event.currentTarget.blur();
+                return;
+              }
+              // 2. 回车打开第一条结果，↓ 进入结果列表；与命令面板同一手感。
+              if (event.key !== "Enter" && event.key !== "ArrowDown") return;
+              // 回车只打开会话，跳过项目标题行；↓ 落到列表首行（可能是项目）。
+              const rows = sessionRows(sidebarRef.current);
+              const first = event.key === "Enter" ? rows.find((row) => !row.matches(".navigation-group__open")) : rows[0];
+              if (!first || (event.key === "Enter" && !searching)) return;
+              event.preventDefault();
+              if (event.key !== "Enter") { first.focus(); return; }
+              // 回车是"跳过去"而不是"边搜边看"：打开后清掉筛选，宽屏把焦点交给输入框接着写；
+              // 抽屉里不抢焦点，免得软键盘再弹出来。
+              first.click();
+              setQuery("");
+              if (!sidebarRef.current?.closest("[role='dialog']")) {
+                window.requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>(".composer-wrap textarea")?.focus({ preventScroll: true }));
+              }
+            }}
+            placeholder="搜索会话"
+            aria-label="搜索会话"
+            aria-keyshortcuts={`${SHORTCUT_MOD === "⌘" ? "Meta" : "Control"}+K`}
+          />
+          <kbd className="chat-sidebar__search-key" aria-hidden="true">{SHORTCUT_MOD === "⌘" ? "⌘K" : "Ctrl K"}</kbd>
+          {/* 触屏没有 Esc：有输入时给一个清除钮，清完焦点留在框里接着搜。 */}
+          {query ? <button type="button" className="chat-sidebar__search-clear" aria-label="清除搜索" data-tip="清除搜索"
+            onClick={() => { setQuery(""); searchRef.current?.focus(); }}>
+            <X size={14} aria-hidden="true" />
+          </button> : null}
+        </label>
+        {destination?.value ? brandActions : null}
+        </div>
+      </div>
+
+      <div className="chat-sidebar__navigation" data-searching={searching || undefined} onKeyDown={(event) => moveSessionFocus(event, completeRowsForEnd)}>
+      {searching && !hasMatches ? <p className="navigation-search-empty" role="status">没有匹配的会话或分组</p> : null}
+      {navigationPins.error ? <div className="navigation-pins-error" role="alert">
+        <span>{navigationPins.error}</span>
+        <button type="button" disabled={navigationPins.pending} onClick={() => { void navigationPins.reload(); }}>刷新置顶列表</button>
+      </div> : null}
+      {deletedNotice ? <div className="session-delete-notice" role="status">
+        <span title={deletedNotice.title}>已删除「{deletedNotice.title}」</span>
+        <button type="button" disabled={restorePending} onClick={() => onRestoreSession?.(deletedNotice.key)}>
+          {restorePending ? "正在恢复…" : "撤销"}
+        </button>
+        <button type="button" className="session-delete-notice__dismiss" aria-label="关闭提示" onClick={onDismissDeletedNotice}>
+          <X size={14} aria-hidden="true" />
+        </button>
+      </div> : null}
+      {navigationPins.pins.length && (!searching || visiblePins.length) ? <section className="pinned-navigation" aria-label="置顶">
+        <header className="navigation-section__header"><span>置顶</span></header>
+        {/* 行按全量置顶渲染、用 hidden 收窄；visiblePins 只决定搜索时整个分区是否保留。 */}
+        {navigationPins.pins.map((pin) => {
+          if (pin.kind !== "session") {
+            const ref = { dimension: pin.kind, id: pin.id };
+            const known = knownGroups.get(groupKey(ref));
+            if (known && groups) return visibleGroup(groupKey(ref), known.group.label) ? <GroupNavigationRow
+              key={groupKey(ref)} groupRef={ref} group={known.group}
+              items={sessionsByGroup.get(groupKey(ref)) ?? []}
+              open={searching || navigationPins.expandedGroups.has(groupKey(ref))}
+              active={activeGroupKey === groupKey(ref)} pendingSessionId={pendingSessionId}
+              onToggle={() => navigationPins.toggleGroup(groupKey(ref))}
+              onNewChat={() => groups.startChat(ref)}
+              onSelectSession={onSelectSession} onPrefetchSession={onPrefetchSession}
+              actions={[...groupFormActions(known.section.source, known.group, openForm), ...pinAction(pin, true)]} searching={searching}
+              renderSession={(item) => groupSessionRow(item, known.section.source.provider.label)}
+            /> : null;
+          } else {
+            const session = allSessions.find((item) => item.id === pin.id);
+            // 置顶区会话行同样只隐藏不卸载：逐键过滤只翻转 hidden，行身份与内部状态保持。
+            if (session && !groupOf(session)) return <ConversationSessionRow
+              key={`session:${pin.id}`} session={sessionViews.get(session.id) ?? session} pendingSessionId={pendingSessionId}
+              hidden={Boolean(needle) && !`${session.title} ${session.preview}`.toLowerCase().includes(needle) || undefined}
+              onActivate={onSelectSession} onPrefetch={onPrefetchSession}
+              actions={[...pinAction(pin, true), ...destinationActions(session)]}
+              onDelete={onDeleteSession ? deleteHandler : undefined}
+              onRename={onRenameSession ? renameHandler : undefined}
+            />;
+          }
+          const unavailableHidden = Boolean(needle) && !pin.id.toLowerCase().includes(needle);
+          // 分组还在读（弱网下可能远超等待期限）时不报不可用；读完仍找不到才是取值已不存在或其插件不在。
+          const reading = pin.kind !== "session" && groups !== undefined && !groups.settled;
+          // 不可用时有该维度的分区就用它的名称，否则只说暂不可用。
+          const label = pin.kind === "session" ? "会话" : sections.find((section) => section.source.provider.dimension === pin.kind)?.source.provider.label ?? "";
+          const title = reading ? "正在读取…" : `${label}暂不可用`;
+          return <ConversationSessionRow key={`${pin.kind}:${pin.id}`}
+            session={{ id: pin.id, title, preview: pin.id, active: false, unavailable: true }}
+            hidden={unavailableHidden || undefined}
+            onActivate={onSelectSession} actions={pinAction(pin, true)} />;
+        })}
+      </section> : null}
+      {groups ? sections.map((section, index) => {
+        const { dimension, label } = section.source.provider;
+        return <GroupNavigation key={section.source.key} section={section} groups={sectionGroups[index]}
+          revision={groups.revision} sessionsByGroup={sessionsByGroup} active={groups.active}
+          pendingSessionId={pendingSessionId} expanded={navigationPins.expandedGroups} searching={searching}
+          heading={navigationPins.pins.some((pin) => pin.kind === dimension) ? `其他${label}` : label}
+          onToggle={navigationPins.toggleGroup} onSelectSession={onSelectSession} onPrefetchSession={onPrefetchSession}
+          onOpenForm={openForm} onNewChat={groups.startChat} onReload={groups.reload} renderSession={groupSessionRow}
+          actions={(group) => [...groupFormActions(section.source, group, openForm), ...pinAction({ kind: dimension, id: group.id }, false)]} />;
+      }) : null}
+
+      <ConversationNavigation
+        destinationHeading={false}
+        sessionHeading={!searching ? "最近会话" : visibleRecentCount ? "匹配的会话" : ""}
+        sessionHeadingAction={searching ? undefined : <SessionSortMenu sort={sessionSort} onSort={setSessionSort} />}
+        destinations={[]}
+        actions={[]}
+        sessions={mountedRecentSessions}
+        hiddenSessions={hiddenIds}
+        sessionGroup={sessionSort === "activity" || sessionSort === "created" ? sessionDayGroupOf : undefined}
+        sessionDrag={sessionDrag}
+        dragHandlers={dragHandlers}
+        onSessionDelete={onDeleteSession ? deleteHandler : undefined}
+        onSessionRename={onRenameSession ? renameHandler : undefined}
+        sessionActions={sessionPinActions}
+        onSessionActivate={onSelectSession}
+        onSessionPrefetch={onPrefetchSession}
+        pendingSessionId={pendingSessionId}
+      />
+      {activeSessionId && <PluginUiSlot name="drawer.panel" sessionId={activeSessionId} quiet />}
+      </div>
+      {/* 底栏只占一行：第一个动作带字占满，其余动作、主题与快捷键收成图标，名称进提示。 */}
+      <div className="chat-sidebar__footer">
+        {railActions.map((action, index) => (
+          <button key={action.id} type="button" className={index === 0 ? "chat-sidebar__action" : "chat-sidebar__icon-action"}
+            aria-label={index === 0 ? undefined : action.label} data-tip={index === 0 ? undefined : action.label}
+            onClick={() => {
+              const activate = () => activateShellRailAction(action.id);
+              if (onRailAction) onRailAction(activate); else activate();
+            }}>
+            <span className="chat-sidebar__action-icon" aria-hidden="true"
+              dangerouslySetInnerHTML={{ __html: action.iconSvg }} />
+            {index === 0 ? <span>{action.label}</span> : null}
+          </button>
+        ))}
+        <ThemeMenu />
+        <button type="button" className="chat-sidebar__icon-action chat-sidebar__shortcuts" aria-label="键盘快捷键" data-tip={`键盘快捷键（${SHORTCUT_MOD}+/）`}
+          onClick={openShortcuts}>
+          <Keyboard size={16} aria-hidden="true" />
+        </button>
+      </div>
+      <ShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} returnFocus={returnShortcutsFocus} />
+      {rail ? <SidebarRailResizer rail={rail} sidebarRef={sidebarRef} /> : null}
+      {destinationForm && destination?.source && destinationControls ? <DestinationFormDialog source={destination.source}
+        form={destinationForm} controls={destinationControls} onClose={() => { setDestinationForm(null); destination.reload(); }} /> : null}
+      {formRequest && groups ? <GroupFormDialog request={formRequest} groups={groups} onClose={() => setFormRequest(null)}
+        onCloseFocus={() => groupFormFocus(sidebarRef.current, formRequest)} /> : null}
+    </aside>
+  );
+});
+
+// 对话框关闭后回到打开它的地方：分组动作回到该行的菜单按钮，新建回到分区的新建按钮。
+function groupFormFocus(root: HTMLElement | null, request: GroupFormRequest) {
+  const { dimension, label } = request.source.provider;
+  const target = request.group
+    ? Array.from(root?.querySelectorAll<HTMLElement>("[data-group-key]") ?? [])
+      .find((row) => row.dataset.groupKey === groupKey({ dimension, id: request.group!.id }))?.querySelector<HTMLElement>(".navigation-menu-trigger")
+    : root?.querySelector<HTMLElement>(`.navigation-section[aria-label="${CSS.escape(label)}"] .navigation-section__header button`);
+  target?.focus();
+}
+
+/** "最近会话"分组标题行的排序入口；选中项持久化，菜单复用行菜单的浮层样式。 */
+function SessionSortMenu({ sort, onSort }: { sort: SessionSortId; onSort: (sort: SessionSortId) => void }) {
+  const current = SESSION_SORT_CHOICES.find((choice) => choice.id === sort) ?? SESSION_SORT_CHOICES[0];
+  return <DropdownMenu modal={false}>
+    <DropdownMenuTrigger asChild>
+      <button type="button" className="navigation-section__icon conversation-sort-trigger"
+        aria-label={`会话排序：${current.label}`} data-tip="会话排序">
+        <ArrowUpDown size={15} aria-hidden="true" />
+      </button>
+    </DropdownMenuTrigger>
+    <DropdownMenuContent className="navigation-row-menu" align="end" sideOffset={4} collisionPadding={12} aria-label="会话排序">
+      <DropdownMenuRadioGroup value={sort} aria-label="会话排序">
+        {SESSION_SORT_CHOICES.map((choice) => <DropdownMenuRadioItem key={choice.id} value={choice.id}
+          className="session-sort-menu__choice" onSelect={() => onSort(choice.id)}>
+          <span>{choice.label}</span>
+        </DropdownMenuRadioItem>)}
+      </DropdownMenuRadioGroup>
+    </DropdownMenuContent>
+  </DropdownMenu>;
+}
+
+/** 侧栏右缘拖拽柄：只写 --chat-rail-width；双击复位，方向键以 0.5rem 步进。 */
+function SidebarRailResizer({ rail, sidebarRef }: {
+  rail: SidebarRailControl;
+  sidebarRef: RefObject<HTMLElement | null>;
+}) {
+  const [dragging, setDragging] = useState(false);
+  const [nowRem, setNowRem] = useState(SIDEBAR_RAIL_MIN_REM);
+  useLayoutEffect(() => {
+    const aside = sidebarRef.current;
+    if (!aside) return;
+    const rootPx = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+    setNowRem(aside.getBoundingClientRect().width / rootPx);
+  }, [rail.widthRem, sidebarRef]);
+  const widthPx = () => sidebarRef.current?.getBoundingClientRect().width ?? 0;
+  return <div
+    className="chat-sidebar__resizer"
+    role="separator"
+    aria-orientation="vertical"
+    aria-label="侧栏宽度"
+    aria-valuemin={SIDEBAR_RAIL_MIN_REM}
+    aria-valuemax={SIDEBAR_RAIL_MAX_REM}
+    aria-valuenow={Math.round(nowRem * 2) / 2}
+    tabIndex={0}
+    data-dragging={dragging || undefined}
+    onPointerDown={(event) => {
+      if (!event.isPrimary || event.button !== 0) return;
+      event.preventDefault();
+      event.currentTarget.setPointerCapture(event.pointerId);
+      rail.dragStart(event.clientX, widthPx());
+      setDragging(true);
+    }}
+    onPointerMove={(event) => {
+      if (!dragging) return;
+      // 拖拽中宽度不经过 React state（见 use-sidebar-rail），aria-valuenow 直写保持同步。
+      const next = rail.dragTo(event.clientX);
+      if (next !== null) event.currentTarget.setAttribute("aria-valuenow", String(Math.round(next * 2) / 2));
+    }}
+    onPointerUp={(event) => {
+      if (!dragging) return;
+      event.currentTarget.releasePointerCapture(event.pointerId);
+      setDragging(false);
+      rail.dragEnd();
+    }}
+    onPointerCancel={() => { setDragging(false); rail.dragEnd(); }}
+    // capture 丢失而 pointerup/pointercancel 没到时兜底：清掉直写列宽，按最后位置收尾。
+    onLostPointerCapture={() => { if (dragging) { setDragging(false); rail.dragEnd(); } }}
+    onDoubleClick={(event) => {
+      event.preventDefault();
+      rail.reset();
+    }}
+    onKeyDown={(event) => {
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+      event.preventDefault();
+      rail.stepBy(event.key === "ArrowRight" ? SIDEBAR_RAIL_STEP_REM : -SIDEBAR_RAIL_STEP_REM, widthPx());
+    }}
+  />;
+}

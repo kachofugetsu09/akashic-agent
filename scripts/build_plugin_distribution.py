@@ -24,7 +24,6 @@ if str(_SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(_SOURCE_ROOT))
 
 from agent.plugins.static_manifest import load_static_plugin_manifest
-from scripts.compose_source import compose_source, composed_overrides, composed_parts, read_plugins_lock
 from utils.timing import measure
 
 
@@ -172,16 +171,6 @@ def _run_web_command(
             )
 
 
-# 插件仓库 4c83437d 及以前的 build 不放置外壳产物，这里按旧约定补放；锁定提交越过它后删除。
-def _place_legacy_shell_assets(source: Path) -> None:
-    for owner, app in (("ui", "dashboard"), ("akashic_clients", "chat")):
-        target, built = source / "plugins" / owner / "static" / app, source / "static" / app
-        if not target.is_dir():
-            if not built.is_dir() or not any(built.iterdir()):
-                raise RuntimeError(f"Web 资产构建没有产生 {owner} 的 static/{app}")
-            shutil.copytree(built, target)
-
-
 def _build_web_assets(
     repository: Path,
     commit: str,
@@ -189,7 +178,12 @@ def _build_web_assets(
 ) -> tuple[Path | None, Path | None, dict[str, object]]:
     """在一次性完整源码目录构建 Web，不向调用方 checkout 写入产物。"""
 
-    required = ("package.json", "package-lock.json")
+    required = (
+        "package.json",
+        "package-lock.json",
+        "frontend/chat/vite.config.ts",
+        "frontend/dashboard/vite.config.ts",
+    )
     missing = [path for path in required if _git_file(repository, commit, path) is None]
     if missing:
         return None, None, {"enabled": False, "missing_source_paths": missing}
@@ -211,11 +205,19 @@ def _build_web_assets(
             / "npm"
         ),
     }
-    # 插件仓库的 npm run build 负责把产物放进所属插件目录；Core 不点名哪个插件拥有哪个应用。
     _run_web_command(["npm", "ci", "--ignore-scripts"], cwd=source, env=env)
-    _run_web_command(["npm", "run", "build"], cwd=source, env=env)
+    _run_web_command(["npm", "run", "build:dashboard"], cwd=source, env=env)
+    _run_web_command(["npm", "run", "build:chat"], cwd=source, env=env)
+    _run_web_command(["npm", "run", "build:web-plugins"], cwd=source, env=env)
     asset_root = source / "static"
-    _place_legacy_shell_assets(source)
+    required_outputs = (asset_root / "dashboard", asset_root / "chat")
+    if any(not path.is_dir() for path in required_outputs):
+        raise RuntimeError(
+            "Web 资产构建没有产生 static/dashboard 与 static/chat: "
+            + ", ".join(str(path) for path in required_outputs)
+        )
+    if any(not any(path.iterdir()) for path in required_outputs):
+        raise RuntimeError("Web 资产构建产生了空的静态目录")
 
     def version(command: list[str]) -> str:
         return subprocess.run(
@@ -228,14 +230,29 @@ def _build_web_assets(
             text=True,
         ).stdout.strip()
 
+    shutil.copytree(asset_root / "dashboard", source / "plugins/ui/static/dashboard")
+    shutil.copytree(asset_root / "chat", source / "plugins/akashic_clients/static/chat")
     return asset_root, source / "plugins", {
         "enabled": True,
         "source_commit": commit,
-        "source_paths": ["frontend", "packages", "plugins", "scripts", "package.json", "package-lock.json"],
-        "build_commands": ["npm ci --ignore-scripts", "npm run build"],
+        "source_paths": [
+            "frontend/chat",
+            "frontend/dashboard",
+            "frontend/plugins",
+            "frontend/theme",
+            "packages",
+            "plugins",
+            "scripts/build-web-plugins.mjs",
+        ],
+        "build_commands": [
+            "npm ci --ignore-scripts",
+            "npm run build:dashboard",
+            "npm run build:chat",
+            "npm run build:web-plugins",
+        ],
         "node_version": version(["node", "--version"]),
         "npm_version": version(["npm", "--version"]),
-        "file_count": sum(1 for path in asset_root.rglob("*") if path.is_file()) if asset_root.is_dir() else 0,
+        "file_count": sum(1 for path in asset_root.rglob("*") if path.is_file()),
     }
 
 
@@ -317,46 +334,10 @@ def _copy_runtime_wiring(
     return copied
 
 
-# 固定作者与时间，使同一份内容在任意源提交下得到同一个 Git 提交。
-_BUNDLE_AUTHOR_ENV = {
-    "GIT_AUTHOR_NAME": "Akashic build",
-    "GIT_AUTHOR_EMAIL": "build@akashic.invalid",
-    "GIT_COMMITTER_NAME": "Akashic build",
-    "GIT_COMMITTER_EMAIL": "build@akashic.invalid",
-    "GIT_AUTHOR_DATE": "2000-01-01T00:00:00+00:00",
-    "GIT_COMMITTER_DATE": "2000-01-01T00:00:00+00:00",
-}
-
-
-# 提交制品目录的完整内容并返回提交号；临时仓库关闭自动 gc，避免清理时后台仍写对象库。
-def _commit_package(package: Path, message: str) -> str:
-    git(package, "add", "--all")
-    git(
-        package,
-        "-c",
-        "commit.gpgSign=false",
-        "-c",
-        "gc.auto=0",
-        "-c",
-        "maintenance.auto=false",
-        # 身份只由内容决定：固定提交编码，不跑操作者的提交钩子。
-        "-c",
-        "i18n.commitEncoding=UTF-8",
-        "-c",
-        "core.hooksPath=/dev/null",
-        "commit",
-        "--no-verify",
-        "--allow-empty",
-        "-m",
-        message,
-        env={**os.environ, **_BUNDLE_AUTHOR_ENV},
-    )
-    return git(package, "rev-parse", "HEAD").decode().strip()
-
-
 def _bundle_plugin(
     repository: Path,
     commit: str,
+    stamp: str,
     root: str,
     output: Path,
     names: set[str],
@@ -384,14 +365,35 @@ def _bundle_plugin(
         provenance = package / ".akashic-source.json"
         if provenance.exists():
             raise ValueError(f"插件源码已经占用构建来源文件: {root}")
-        # 内容提交只由插件制品内容决定；无关提交不改变来源身份，部署可复用旧输入。
-        git(package, "init", "--initial-branch=source")
-        content = _commit_package(package, f"Akashic plugin {manifest.name} content")
         provenance.write_text(
-            json.dumps({"commit": content, "path": root}, sort_keys=True) + "\n",
+            json.dumps({"commit": commit, "path": root}, sort_keys=True) + "\n",
             encoding="utf-8",
         )
-        _commit_package(package, f"Akashic plugin {manifest.name} source label")
+        git(package, "init", "--initial-branch=source")
+        git(package, "add", "--all")
+        env = {
+            **os.environ,
+            "GIT_AUTHOR_NAME": "Akashic build",
+            "GIT_AUTHOR_EMAIL": "build@akashic.invalid",
+            "GIT_COMMITTER_NAME": "Akashic build",
+            "GIT_COMMITTER_EMAIL": "build@akashic.invalid",
+            "GIT_AUTHOR_DATE": stamp,
+            "GIT_COMMITTER_DATE": stamp,
+        }
+        # 临时仓库随 with 块删除；关闭自动 gc/maintenance，避免后台进程在清理时仍写对象库。
+        git(
+            package,
+            "-c",
+            "commit.gpgSign=false",
+            "-c",
+            "gc.auto=0",
+            "-c",
+            "maintenance.auto=false",
+            "commit",
+            "-m",
+            f"Build {root} from {commit}",
+            env=env,
+        )
         identity = git(package, "rev-parse", "HEAD").decode().strip()
         bundle = output / f"{manifest.name}.bundle"
         git(package, "bundle", "create", str(bundle.resolve()), "HEAD", "source")
@@ -402,7 +404,6 @@ def _bundle_plugin(
         return {
             "name": manifest.name,
             "source_commit": commit,
-            "content_commit": content,
             "source_path": root,
             "file": bundle.name,
             "source_revision": identity,
@@ -421,10 +422,8 @@ def build(repository: Path, revision: str, output: Path) -> dict[str, object]:
         "--end-of-options",
         revision + "^{commit}",
     ).decode().strip()
-    # 拆分后的 Core 提交先与锁定的插件合成；已经是合成提交时原样构建。
-    if composed_parts(repository, commit) is None and read_plugins_lock(repository, commit) is not None:
-        commit = compose_source(repository, commit).commit
     tree = git(repository, "rev-parse", f"{commit}^{{tree}}").decode().strip()
+    stamp = git(repository, "show", "-s", "--format=%cI", commit).decode().strip()
     commit_epoch = int(git(repository, "show", "-s", "--format=%ct", commit).decode())
     files = git(repository, "ls-tree", "-r", "--name-only", commit).decode().splitlines()
     roots = sorted(
@@ -464,6 +463,7 @@ def build(repository: Path, revision: str, output: Path) -> dict[str, object]:
             _bundle_plugin(
                 repository,
                 commit,
+                stamp,
                 root,
                 output,
                 names,
@@ -476,13 +476,9 @@ def build(repository: Path, revision: str, output: Path) -> dict[str, object]:
     (output / "requirements.lock").write_bytes(
         git(repository, "show", f"{commit}:docker/host-runtime/requirements.lock")
     )
-    parts = composed_parts(repository, commit)
     report: dict[str, object] = {
         "schema_version": 3,
         "source_commit": commit,
-        # 合成提交记录它由哪个 Core 提交与插件提交组成；未拆分的提交为 null。
-        "source_parts": None if parts is None else {"core": parts[0], "plugins": parts[1],
-                                                    "overrides": composed_overrides(repository, commit)},
         "source_tree": tree,
         "core": {
             "file": "core.tar",

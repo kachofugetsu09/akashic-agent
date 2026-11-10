@@ -1,0 +1,11 @@
+schema_version = 2
+bundle_id = "context"
+version = "1.0.0"
+migration_root = "context_migrations"
+package_name = "context_migrations"
+
+[[migrations]]
+id = "20261019_01_skills_prompt_source"
+path = "20261019_01_skills_prompt_source.py"
+depends = []
+transactional = false

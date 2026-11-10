@@ -1,0 +1,65 @@
+"""由消息投影的 Turn 引用，不创建第二份执行状态。"""
+
+from __future__ import annotations
+
+from collections.abc import Iterable
+from dataclasses import dataclass
+from typing import Literal, Protocol
+
+from agent.plugin_composition import ServiceKey
+from plugins.ledger.contract import CallRef, Message
+
+
+@dataclass(frozen=True, slots=True)
+class Turn:
+    """一个日志区间的消息引用；不代表运行任务或持久化行。"""
+
+    source: str
+    after_seq: int
+    through_seq: int
+    ending_message_id: str | None
+    status: Literal["open", "complete", "quiet", "abandoned"]
+    message_ids: tuple[str, ...]
+    observations: tuple[tuple[CallRef, str], ...]
+
+
+class TurnProjection(Protocol):
+    def project(
+        self, messages: Iterable[Message], source: str, *,
+        after_seq: int = -1, include_closed: bool = True,
+    ) -> tuple[Turn, ...]:
+        """输入完整前缀或闭合 Turn 后的尾部；只返回引用，不保留正文。"""
+        ...
+
+
+TURN_PROJECTION = ServiceKey[TurnProjection]("turn.projection.v1")
+
+
+
+from collections.abc import Mapping
+from enum import StrEnum
+
+TURN_EFFECTS_KEY = "effects"
+POST_COMMIT_EFFECT_KEY = "post_commit"
+
+
+class PostCommitEffect(StrEnum):
+    """Declare whether durable projections may consume a closed Turn."""
+
+    ALLOW = "allow"
+    SUPPRESS = "suppress"
+
+
+def post_commit_effect(metadata: Mapping[str, object] | None) -> PostCommitEffect:
+    """Read the generic post-commit effect from a live Turn."""
+
+    if not metadata:
+        return PostCommitEffect.ALLOW
+    raw_effects = metadata.get(TURN_EFFECTS_KEY)
+    if raw_effects is not None:
+        if not isinstance(raw_effects, Mapping):
+            raise ValueError("Turn effects metadata 必须是 object")
+        raw_post_commit = raw_effects.get(POST_COMMIT_EFFECT_KEY)
+        if raw_post_commit is not None:
+            return PostCommitEffect(raw_post_commit)
+    return PostCommitEffect.ALLOW

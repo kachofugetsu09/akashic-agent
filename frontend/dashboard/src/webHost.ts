@@ -1,0 +1,993 @@
+import type {
+  WebChildRenderOptions,
+  WebEntry,
+  WebEntryView,
+  WebHostContextV1,
+  WebMountCardinality,
+  WebMountRegistration,
+  WebUiDisposer,
+} from "@akashic/web-ui-v1";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { bytesToHex } from "@noble/hashes/utils.js";
+import { WebDataRegistry } from "./webData";
+
+type Disposer = WebUiDisposer;
+type MountCardinality = WebMountCardinality;
+
+interface WebModulePayload {
+  pluginId: string;
+  generationId: string;
+  module: string;
+  moduleSha256: string;
+  moduleBytes: number;
+  stylesheet: string;
+  stylesheetSha256: string | null;
+  stylesheetBytes: number;
+  requires: string[];
+  provides: string[];
+  contractDigests: Record<string, string>;
+  contractSha256: string;
+}
+
+interface WebUiBootstrap {
+  schemaVersion: 1;
+  snapshotId: string;
+  catalogId: string;
+  modules: WebModulePayload[];
+}
+
+interface WebModuleExports {
+  activate(ctx: WebHostContextV1): Disposer;
+}
+
+interface MountedEntry {
+  readonly entry: WebEntry;
+  readonly owner: ModuleActivation;
+  readonly childMountIds: string[];
+}
+
+interface MountNode {
+  readonly id: string;
+  readonly cardinality: MountCardinality;
+  readonly parentEntry: MountedEntry | null;
+  readonly entries: Map<string, MountedEntry>;
+}
+
+interface Injection {
+  readonly mountId: string;
+  readonly owner: ModuleActivation;
+  readonly connect: (mount: WebMountRegistration) => Disposer;
+  connection: Disposer | null;
+}
+
+interface ModuleActivation {
+  readonly module: WebModulePayload;
+  readonly effects: Disposer[];
+  admitting: boolean;
+  disposed: boolean;
+}
+
+export interface WebHostSession {
+  close(): void;
+}
+
+class BrowserCatalogSession implements WebHostSession {
+  readonly errors = new Map<string, Error>();
+  private readonly mounts = new Map<string, MountNode>();
+  private readonly injections: Injection[] = [];
+  private readonly activations: ModuleActivation[] = [];
+  private readonly renderEffects: Disposer[] = [];
+  private admissionOpen = true;
+  private closing = false;
+  private closed = false;
+  private staleCatalog = false;
+  private staleNotice: HTMLElement | null = null;
+  private readonly data = new WebDataRegistry();
+
+  constructor(readonly bootstrap: WebUiBootstrap) {
+    this.mounts.set("web.root.v1", {
+      id: "web.root.v1",
+      cardinality: "single",
+      parentEntry: null,
+      entries: new Map(),
+    });
+  }
+
+  async checkCurrent(): Promise<"current" | "stale"> {
+    this.requireOpen();
+    const response = await fetch("/api/chat/web-ui/state", {
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+    });
+    if (!response.ok) throw new Error(`界面状态暂时不可用（${response.status}）`);
+    const state = await response.json() as unknown;
+    if (!isRecord(state)
+      || typeof state.snapshotId !== "string"
+      || typeof state.catalogId !== "string" || typeof state.updating !== "boolean") throw new Error("界面状态格式无效");
+    // 当前 UI 目录由实际贡献方决定，管理操作进行中不使未变目录失效。
+    if (state.snapshotId === this.bootstrap.snapshotId
+      && state.catalogId === this.bootstrap.catalogId) return "current";
+    this.markStale();
+    return "stale";
+  }
+
+  private markStale(): void {
+    this.staleCatalog = true;
+    if (!this.staleNotice) {
+      const notice = document.createElement("div");
+      notice.className = "web-host-stale";
+      notice.setAttribute("role", "status");
+      notice.textContent = "界面配置已更新，稍后将自动刷新。进行中的操作不受影响。";
+      document.body.prepend(notice);
+      this.staleNotice = notice;
+    }
+  }
+
+  async activateModules(
+    cached: Map<string, string>,
+  ): Promise<void> {
+    const ordered = activationOrder(this.bootstrap.modules);
+    // 描述符完整性校验先行、import 并行预取：下载与编译在浏览器后台线程重叠，
+    // activate 调用仍按挂载依赖顺序串行。校验失败的模块不进 import，单模块失败不影响其余。
+    // 内联模块字节的整段哈希推迟到真正执行它的回落路径,URL import 由服务端摘要围栏。
+    const preimported = new Map<string, Promise<WebModuleExports>>();
+    for (const module of ordered) {
+      try {
+        verifyModuleDescriptor(module);
+      } catch (reason) {
+        const error = asError(reason);
+        console.error(`[web-host] failed to activate ${module.pluginId}`, error);
+        this.errors.set(module.pluginId, error);
+        continue;
+      }
+      const imported = importModule(module, cached);
+      // 拒绝在轮到该模块 activate 前可能先落地；统一由 activateModule 的 catch 记账。
+      imported.catch(() => undefined);
+      preimported.set(module.pluginId, imported);
+    }
+    for (const module of ordered) {
+      const imported = preimported.get(module.pluginId);
+      if (imported) await this.activateModule(module, imported);
+    }
+    this.flushInjections();
+    this.rejectUnresolvedInjections();
+    this.verifyContractUse();
+    this.admissionOpen = false;
+    this.data.warmWhenIdle();
+  }
+
+  renderRoot(host: HTMLElement): Disposer {
+    this.requireOpen();
+    disposeReverse(this.renderEffects);
+    const root = this.mounts.get("web.root.v1");
+    const entry = root ? this.sortedEntries(root)[0] : undefined;
+    host.replaceChildren();
+    if (!entry) {
+      const empty = document.createElement("p");
+      empty.className = this.errors.size ? "web-host-entry-error" : "web-host-empty";
+      if (this.errors.size) empty.setAttribute("role", "alert");
+      empty.textContent = this.errors.size
+        ? `Web 界面加载失败：${[...this.errors.keys()].join("、")}`
+        : "没有插件提供 Web 界面。";
+      host.appendChild(empty);
+      return () => host.replaceChildren();
+    }
+    const dispose = this.renderEntry(entry, host);
+    const notice = document.createElement("p");
+    if (this.errors.size) {
+      notice.className = "web-host-entry-error";
+      notice.setAttribute("role", "alert");
+      notice.textContent = `部分插件界面加载失败：${[...this.errors]
+        .map(([id, error]) => `${id}：${error.message}`).join("；")}`;
+      // 根插件拥有 host 的内容；错误提示不插入它的渲染树。
+      document.body.prepend(notice);
+    }
+    const close = once(() => { notice.remove(); dispose(); });
+    this.renderEffects.push(close);
+    return close;
+  }
+
+  close(): void {
+    if (this.closed || this.closing) return;
+    this.closing = true;
+    this.admissionOpen = false;
+    disposeReverse(this.renderEffects);
+    for (const activation of [...this.activations].reverse()) {
+      activation.disposed = true;
+      disposeReverse(activation.effects);
+    }
+    this.injections.length = 0;
+    this.mounts.clear();
+    this.staleNotice?.remove();
+    this.staleNotice = null;
+    this.closed = true;
+    this.closing = false;
+  }
+
+  private async activateModule(module: WebModulePayload, imported: Promise<WebModuleExports>): Promise<void> {
+    const activation: ModuleActivation = {
+      module,
+      effects: [],
+      admitting: false,
+      disposed: false,
+    };
+    this.activations.push(activation);
+    try {
+      // 字节已在 activateModules 里统一校验过；这里不重复。
+      if (module.stylesheetSha256 !== null) {
+        activation.effects.push(installStyle(module));
+      }
+      const exports = await imported;
+      if (typeof exports.activate !== "function") {
+        throw new Error("web module does not export activate(ctx)");
+      }
+      activation.admitting = true;
+      const disposer = exports.activate(this.contextFor(activation));
+      activation.admitting = false;
+      if (typeof disposer !== "function") {
+        throw new Error("web module activate(ctx) must return a disposer");
+      }
+      if (!activation.effects.includes(disposer)) activation.effects.push(once(disposer));
+      this.flushInjections();
+    } catch (reason) {
+      activation.admitting = false;
+      activation.disposed = true;
+      disposeReverse(activation.effects);
+      this.removeOwner(activation);
+      const error = asError(reason);
+      console.error(`[web-host] failed to activate ${module.pluginId}`, error);
+      this.errors.set(module.pluginId, error);
+    }
+  }
+
+  private contextFor(owner: ModuleActivation): WebHostContextV1 {
+    const keys = new Set<string>();
+    return {
+      data: {
+        resource: (key, load, options) => {
+          if (owner.disposed) throw new Error("web module is disposed");
+          if (keys.has(key)) throw new Error(`duplicate resource ${key}`);
+          keys.add(key);
+          const created = this.data.create(key, load, options);
+          owner.effects.push(once(created.dispose));
+          return created.resource;
+        },
+      },
+      http: {
+        request: (path, init) => this.request(owner, path, init),
+        webSocketUrl: (path) => this.webSocketUrl(owner, path),
+      },
+      ui: {
+        inject: (mountId, connect) => this.inject(owner, mountId, connect),
+      },
+    };
+  }
+
+  private async request(owner: ModuleActivation, path: string, init: RequestInit = {}): Promise<Response> {
+    const readOnly = (init.method ?? "GET").toUpperCase() === "GET";
+    if (this.staleCatalog && readOnly) return this.readCurrent(owner, path, init);
+    const url = this.dashboardUrl(owner, path);
+    const headers = new Headers(init.headers);
+    headers.set("X-Akashic-Web-Snapshot", this.bootstrap.snapshotId);
+    headers.set("X-Akashic-Web-Catalog", this.bootstrap.catalogId);
+    headers.set("X-Akashic-Web-Module", owner.module.pluginId);
+    headers.set("X-Akashic-Web-Generation", owner.module.generationId);
+    headers.set("X-Akasic-CSRF", "1");
+    const response = await fetch(`${url.pathname}${url.search}`, {...init, headers});
+    if (!this.closed && response.headers.get("X-Akashic-Web-Stale") === "1") {
+      this.markStale();
+      if (readOnly) return this.readCurrent(owner, path, init);
+    }
+    return response;
+  }
+
+  private async readCurrent(owner: ModuleActivation, path: string, init: RequestInit): Promise<Response> {
+    // 只读恢复必须仍由同一份已授权代码发起，不能替已卸载或已变更的模块执行。
+    this.requireOpen();
+    if (owner.disposed) throw new Error("设置界面已关闭");
+    const response = await fetch("/api/chat/web-ui/bootstrap", {signal: init.signal, cache: "no-cache"});
+    if (!response.ok) throw new Error(`设置界面正在更新或暂不可用（${response.status}）`);
+    const next = parseBootstrap(await response.json());
+    const module = next.modules.find(item => item.pluginId === owner.module.pluginId);
+    if (!module || module.moduleSha256 !== owner.module.moduleSha256 || module.contractSha256 !== owner.module.contractSha256) {
+      throw new Error("此设置界面已撤回或更换，请重新打开当前设置");
+    }
+    this.requireOpen();
+    if (owner.disposed) throw new Error("设置界面已关闭");
+    const url = new URL(path, window.location.origin);
+    if (url.origin !== window.location.origin || !url.pathname.startsWith("/api/dashboard/")) throw new Error("设置请求不属于 Dashboard");
+    const headers = new Headers(init.headers);
+    headers.set("X-Akashic-Web-Snapshot", next.snapshotId);
+    headers.set("X-Akashic-Web-Catalog", next.catalogId);
+    headers.set("X-Akashic-Web-Module", module.pluginId);
+    headers.set("X-Akashic-Web-Generation", module.generationId);
+    headers.set("X-Akasic-CSRF", "1");
+    const result = await fetch(`${url.pathname}${url.search}`, {...init, headers});
+    const output = new Headers(result.headers);
+    if (next.snapshotId !== this.bootstrap.snapshotId || next.catalogId !== this.bootstrap.catalogId) output.set("X-Akashic-Web-Rebound", "1");
+    return new Response(result.body, {status: result.status, statusText: result.statusText, headers: output});
+  }
+
+  private webSocketUrl(owner: ModuleActivation, path: string): string {
+    const url = this.dashboardUrl(owner, path);
+    url.protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    url.hash = "";
+    url.searchParams.set("__akashic_web_snapshot", this.bootstrap.snapshotId);
+    url.searchParams.set("__akashic_web_catalog", this.bootstrap.catalogId);
+    url.searchParams.set("__akashic_web_module", owner.module.pluginId);
+    url.searchParams.set("__akashic_web_generation", owner.module.generationId);
+    return url.toString();
+  }
+
+  private dashboardUrl(owner: ModuleActivation, path: string): URL {
+    if (this.closed) throw new Error("web catalog session is closed");
+    if (owner.disposed) throw new Error("web module is disposed");
+    if (this.staleCatalog) throw new Error("web catalog is stale");
+    const url = new URL(path, window.location.origin);
+    if (url.origin !== window.location.origin || !url.pathname.startsWith("/api/dashboard/")) {
+      throw new Error("web modules may only call their own dashboard API");
+    }
+    return url;
+  }
+
+  private inject(
+    owner: ModuleActivation,
+    mountId: string,
+    connect: (mount: WebMountRegistration) => Disposer,
+  ): Disposer {
+    this.requireAdmission();
+    if (!owner.admitting) throw new Error("web registration must be synchronous");
+    requireMountId(mountId, "mount");
+    if (typeof connect !== "function") throw new Error("mount injector must be a function");
+    const injection: Injection = { mountId, owner, connect, connection: null };
+    this.injections.push(injection);
+    const dispose = once(() => {
+      injection.connection?.();
+      injection.connection = null;
+      const index = this.injections.indexOf(injection);
+      if (index >= 0) this.injections.splice(index, 1);
+    });
+    owner.effects.push(dispose);
+    this.connectInjection(injection);
+    return dispose;
+  }
+
+  private connectInjection(injection: Injection): void {
+    if (injection.connection || injection.owner.disposed) return;
+    const mount = this.mounts.get(injection.mountId);
+    if (!mount) return;
+    const previousAdmission = injection.owner.admitting;
+    injection.owner.admitting = true;
+    let disposer: Disposer;
+    try {
+      disposer = injection.connect({
+        register: (entry) => this.registerEntry(injection.owner, mount, entry),
+      });
+    } finally {
+      injection.owner.admitting = previousAdmission;
+    }
+    if (typeof disposer !== "function") {
+      throw new Error(`mount injector ${injection.mountId} must return a disposer`);
+    }
+    injection.connection = injection.owner.effects.includes(disposer) ? disposer : once(disposer);
+  }
+
+  private flushInjections(): void {
+    let connected = -1;
+    while (connected !== this.connectedInjectionCount()) {
+      connected = this.connectedInjectionCount();
+      for (const injection of [...this.injections]) {
+        try {
+          this.connectInjection(injection);
+        } catch (reason) {
+          injection.owner.disposed = true;
+          disposeReverse(injection.owner.effects);
+          this.removeOwner(injection.owner);
+          this.errors.set(injection.owner.module.pluginId, asError(reason));
+        }
+      }
+    }
+  }
+
+  private connectedInjectionCount(): number {
+    return this.injections.filter((item) => item.connection !== null).length;
+  }
+
+  private rejectUnresolvedInjections(): void {
+    for (const injection of [...this.injections]) {
+      if (injection.connection !== null || injection.owner.disposed) continue;
+      injection.owner.disposed = true;
+      disposeReverse(injection.owner.effects);
+      this.removeOwner(injection.owner);
+      this.errors.set(
+        injection.owner.module.pluginId,
+        new Error(`mount is unavailable: ${injection.mountId}`),
+      );
+    }
+  }
+
+  private verifyContractUse(): void {
+    for (const owner of this.activations) {
+      if (owner.disposed) continue;
+      // 同一 list mount 可以登记多个 entry；依赖描述的是 mount 集合。
+      const requires = [...new Set(this.injections
+        .filter((item) => item.owner === owner)
+        .map((item) => item.mountId))].sort();
+      const provides = [...this.mounts.values()]
+        .filter((mount) => mount.parentEntry?.owner === owner)
+        .map((mount) => mount.id)
+        .sort();
+      if (sameStrings(requires, [...owner.module.requires].sort())
+        && sameStrings(provides, [...owner.module.provides].sort())) continue;
+      owner.disposed = true;
+      disposeReverse(owner.effects);
+      this.removeOwner(owner);
+      this.errors.set(
+        owner.module.pluginId,
+        new Error("web module contract does not match its declared mounts"),
+      );
+    }
+  }
+
+  private registerEntry(owner: ModuleActivation, mount: MountNode, raw: WebEntry): Disposer {
+    this.requireAdmission();
+    if (!owner.admitting) throw new Error("web registration must be synchronous");
+    if (!raw || typeof raw !== "object") throw new Error("mount entry must be an object");
+    requireEntryId(raw.id);
+    if (raw.render !== undefined && typeof raw.render !== "function") {
+      throw new Error(`entry ${raw.id} has invalid render`);
+    }
+    if (mount.entries.has(raw.id)) throw new Error(`duplicate entry ${mount.id}:${raw.id}`);
+    if (mount.cardinality === "single" && mount.entries.size > 0) {
+      throw new Error(`single mount ${mount.id} already has an entry`);
+    }
+    if (raw.order !== undefined && !Number.isFinite(raw.order)) {
+      throw new Error(`entry ${raw.id} has invalid order`);
+    }
+    if (raw.children !== undefined && !Array.isArray(raw.children)) {
+      throw new Error(`entry ${raw.id} children must be an array`);
+    }
+    const definitions = raw.children ?? [];
+    const childIds = new Set<string>();
+    for (const child of definitions) {
+      if (!child || typeof child !== "object") throw new Error("child mount must be an object");
+      requireMountId(child.id, "child mount");
+      if (child.cardinality !== "single" && child.cardinality !== "list") {
+        throw new Error(`mount ${child.id} has invalid cardinality`);
+      }
+      if (childIds.has(child.id) || this.mounts.has(child.id)) {
+        throw new Error(`duplicate mount ${child.id}`);
+      }
+      childIds.add(child.id);
+    }
+    const childMountIds: string[] = [];
+    const mounted: MountedEntry = { entry: raw, owner, childMountIds };
+    for (const child of definitions) {
+      this.mounts.set(child.id, {
+        id: child.id,
+        cardinality: child.cardinality,
+        parentEntry: mounted,
+        entries: new Map(),
+      });
+      childMountIds.push(child.id);
+    }
+    mount.entries.set(raw.id, mounted);
+    const dispose = once(() => this.removeEntry(mount, mounted));
+    owner.effects.push(dispose);
+    return dispose;
+  }
+
+  private removeEntry(mount: MountNode, mounted: MountedEntry): void {
+    for (const mountId of [...mounted.childMountIds].reverse()) {
+      this.removeMount(mountId);
+    }
+    if (mount.entries.get(mounted.entry.id) === mounted) {
+      mount.entries.delete(mounted.entry.id);
+    }
+  }
+
+  private removeMount(mountId: string): void {
+    const mount = this.mounts.get(mountId);
+    if (!mount) return;
+    for (const entry of [...mount.entries.values()].reverse()) this.removeEntry(mount, entry);
+    this.mounts.delete(mountId);
+    for (const injection of [...this.injections]) {
+      if (injection.mountId === mountId) {
+        injection.connection?.();
+        injection.connection = null;
+      }
+    }
+  }
+
+  private removeOwner(owner: ModuleActivation): void {
+    for (const mount of [...this.mounts.values()]) {
+      for (const entry of [...mount.entries.values()]) {
+        if (entry.owner === owner) this.removeEntry(mount, entry);
+      }
+    }
+  }
+
+  private sortedEntries(mount: MountNode): MountedEntry[] {
+    return [...mount.entries.values()].sort((left, right) =>
+      (left.entry.order ?? 0) - (right.entry.order ?? 0)
+      || left.entry.id.localeCompare(right.entry.id),
+    );
+  }
+
+  // 子挂载失败时通知父插件：props 里的回调是父插件给的，只有它能撤销。
+  private renderEntry(
+    mounted: MountedEntry, host: HTMLElement, props?: unknown, options?: WebChildRenderOptions,
+  ): Disposer {
+    if (!mounted.entry.render) throw new Error(`entry ${mounted.entry.id} cannot be rendered`);
+    const releaseStyle = installEntryStyle(mounted, host);
+    const childIds = new Set(mounted.childMountIds);
+    const childRenderEffects: Disposer[] = [];
+    const trackChildEffect = (dispose: Disposer): Disposer => {
+      const tracked = once(() => {
+        dispose();
+        const index = childRenderEffects.indexOf(tracked);
+        if (index >= 0) childRenderEffects.splice(index, 1);
+      });
+      childRenderEffects.push(tracked);
+      return tracked;
+    };
+    const view: WebEntryView = {
+      child: (mountId) => {
+        if (!childIds.has(mountId)) throw new Error(`entry does not own mount ${mountId}`);
+        const mount = this.mounts.get(mountId);
+        if (!mount) throw new Error(`mount is unavailable: ${mountId}`);
+        const entries = this.sortedEntries(mount);
+        return {
+          entries: entries.map((item) => item.entry),
+          render: (entryId, target, childProps, options) => {
+            const child = entries.find((item) => item.entry.id === entryId);
+            if (!child) throw new Error(`entry is unavailable: ${mountId}:${entryId}`);
+            target.replaceChildren();
+            return trackChildEffect(this.renderEntry(child, target, childProps, options));
+          },
+          style: (entryId, target) => {
+            const child = entries.find((item) => item.entry.id === entryId);
+            if (!child) throw new Error(`entry is unavailable: ${mountId}:${entryId}`);
+            return trackChildEffect(installEntryStyle(child, target));
+          },
+        };
+      },
+    };
+    let pluginDispose: void | Disposer;
+    try {
+      pluginDispose = mounted.entry.render(host, view, props);
+      if (pluginDispose !== undefined && typeof pluginDispose !== "function") {
+        throw new Error(`entry ${mounted.entry.id} render returned an invalid disposer`);
+      }
+    } catch (reason) {
+      host.replaceChildren();
+      const error = document.createElement("p");
+      error.className = "web-host-entry-error";
+      error.setAttribute("role", "alert");
+      error.textContent = `界面模块加载失败：${asError(reason).message}`;
+      host.appendChild(error);
+      pluginDispose = undefined;
+      options?.onError?.(asError(reason));
+    }
+    return once(() => {
+      disposeReverse(childRenderEffects);
+      pluginDispose?.();
+      host.replaceChildren();
+      releaseStyle();
+    });
+  }
+
+  private requireAdmission(): void {
+    this.requireOpen();
+    if (!this.admissionOpen) throw new Error("web mount admission is closed");
+  }
+
+  private requireOpen(): void {
+    if (this.closed || this.closing) throw new Error("web catalog session is closed");
+  }
+}
+
+function installEntryStyle(mounted: MountedEntry, host: HTMLElement): Disposer {
+  const entryId = mounted.entry.id;
+  const moduleId = mounted.owner.module.pluginId;
+  const styleScope = styleScopeId(mounted.owner.module);
+  if (host.hasAttribute("data-akashic-style")) {
+    throw new Error("entry host already has a stylesheet owner");
+  }
+  host.dataset.akashicEntry = entryId;
+  host.dataset.akashicModule = moduleId;
+  host.dataset.akashicStyle = styleScope;
+  return once(() => {
+    if (host.dataset.akashicEntry === entryId) delete host.dataset.akashicEntry;
+    if (host.dataset.akashicModule === moduleId) delete host.dataset.akashicModule;
+    if (host.dataset.akashicStyle === styleScope) delete host.dataset.akashicStyle;
+  });
+}
+
+/** Load providers before consumers so inherited CSS follows the mount tree. */
+function activationOrder(modules: WebModulePayload[]): WebModulePayload[] {
+  const provider = new Map<string, WebModulePayload>();
+  for (const module of modules) {
+    for (const mountId of module.provides) {
+      if (provider.has(mountId)) throw new Error(`duplicate Web mount provider: ${mountId}`);
+      provider.set(mountId, module);
+    }
+  }
+  const pending = new Set(modules);
+  const ordered: WebModulePayload[] = [];
+  while (pending.size) {
+    const ready = modules.filter((module) => pending.has(module) && module.requires.every((mountId) => {
+      const dependency = provider.get(mountId);
+      // 模块先声明再使用自己的子挂载点，不构成跨模块依赖。
+      return dependency === module || dependency === undefined || !pending.has(dependency);
+    }));
+    if (!ready.length) throw new Error("Web UI mount dependencies contain a cycle");
+    for (const module of ready) {
+      pending.delete(module);
+      ordered.push(module);
+    }
+  }
+  return ordered;
+}
+
+export async function startWebHost(host: HTMLElement): Promise<WebHostSession> {
+  const preloads = preloadHostModules();
+  // 运行时下载与目录读取彼此独立；插件执行仍等共享运行时发布完成。
+  const runtimeReady = import("./design/runtime").then((runtime) => runtime.exposeRuntime());
+  const cached = loadCachedDigests();
+  const open = async (): Promise<BrowserCatalogSession> => {
+    // 消费 index.html 内联脚本的预热请求（一次性钩子，取走即删；重试与无钩子的
+    // 夹具/桌面页面自行 fetch）。响应体只读一次，不能共享已消费的 Response。
+    const windowWithPrefetch = window as { __akashicWebUiBootstrap?: Promise<Response> };
+    const prefetched = windowWithPrefetch.__akashicWebUiBootstrap;
+    delete windowWithPrefetch.__akashicWebUiBootstrap;
+    const [, response] = await Promise.all([
+      runtimeReady,
+      prefetched ?? fetch("/api/chat/web-ui/bootstrap", {headers: {Accept: "application/json"}, cache: "no-cache"}),
+    ]);
+    if (!response.ok) throw new Error(`界面目录暂时不可用（${response.status}）`);
+    const next = new BrowserCatalogSession(parseBootstrap(await response.json()));
+    try {
+      await next.activateModules(cached);
+      rememberCatalogDigests(next.bootstrap);
+      // 经内联字节激活的模块还没有 URL 缓存;空闲时补齐,不占用启动关键路径。
+      const missed = next.bootstrap.modules.filter(
+        (module) => cached.get(module.pluginId) !== module.moduleSha256,
+      );
+      if (missed.length && !next.errors.size) warmModuleCache(missed);
+      return next;
+    }
+    catch (error) { next.close(); throw error; }
+  };
+  let session: BrowserCatalogSession;
+  try { session = await open(); }
+  finally { for (const link of preloads) link.remove(); }
+  session.renderRoot(host);
+  host.dataset.akashicCatalog = session.bootstrap.catalogId;
+  let closed = false;
+  let checking = false;
+  let timer: number | undefined;
+  let attempts = 0;
+  let sawChange = false;
+  const notice = document.createElement("div");
+  notice.className = "web-host-stale";
+  notice.setAttribute("role", "status");
+  const message = document.createElement("span");
+  const retry = document.createElement("button");
+  retry.type = "button"; retry.textContent = "重新核对";
+  notice.append(message, retry);
+  const show = (text: string): void => { message.textContent = text; if (!notice.isConnected) document.body.prepend(notice); };
+  const check = async (): Promise<void> => {
+    if (closed || checking) return;
+    checking = true;
+    try {
+      const state = await session.checkCurrent();
+      if (state === "current") { if (sawChange) { window.clearInterval(timer); notice.remove(); } return; }
+      sawChange = true;
+      const next = await open();
+      if (closed) { next.close(); return; }
+      let applied = false;
+      let available = true;
+      const go = (): void => {
+        if (closed || applied) return;
+        if (!available) { window.setTimeout(() => void check(), 0); return; }
+        applied = true;
+        session.close(); session = next;
+        session.renderRoot(host);
+        host.dataset.akashicCatalog = session.bootstrap.catalogId;
+        window.clearInterval(timer); notice.remove();
+      };
+      // 仅在正式目录稳定后更换宿主；保留路由与非敏感回执，不重载浏览器。
+      if (window.dispatchEvent(new CustomEvent("akashic:before-navigate", {cancelable: true, detail: {go, reason: "catalog"}}))) go();
+      if (!applied) { available = false; next.close(); show("界面已更新，当前页面暂时阻止切换。请等待原操作结果或处理页面提示，再重新核对。"); }
+    } catch (error) { if (!closed) show(error instanceof Error ? error.message : String(error)); }
+    finally { checking = false; }
+  };
+  const submitted = (): void => {
+    window.clearInterval(timer); attempts = 0; sawChange = false;
+    timer = window.setInterval(() => {
+      attempts += 1;
+      void check();
+      if (attempts >= 60) { window.clearInterval(timer); show("自动核对已结束；操作不因此取消。请点击重新核对查看实际结果。"); }
+    }, 500);
+  };
+  const focus = (): void => { void check(); };
+  retry.onclick = () => { submitted(); sawChange = true; };
+  window.addEventListener("akashic:configuration-submitted", submitted);
+  window.addEventListener("focus", focus);
+  document.addEventListener("visibilitychange", focus);
+  return {close: once(() => {
+    closed = true; window.clearInterval(timer); notice.remove();
+    window.removeEventListener("akashic:configuration-submitted", submitted);
+    window.removeEventListener("focus", focus);
+    document.removeEventListener("visibilitychange", focus);
+    session.close();
+  })};
+}
+
+/** 提前下载 Host SDK；modulepreload 不执行读取共享 runtime 的模块正文。 */
+function preloadHostModules(): HTMLLinkElement[] {
+  // URL 只由页面的 import map 拥有，避免再维护一份 SDK 路径表。
+  const map = document.querySelector<HTMLScriptElement>('script[type="importmap"]');
+  if (!map) throw new Error("Web Host import map is missing");
+  const { imports } = JSON.parse(map.text) as { imports: Record<string, string> };
+  return Object.values(imports).map((href) => {
+    const link = document.createElement("link");
+    link.rel = "modulepreload";
+    link.href = href;
+    document.head.appendChild(link);
+    return link;
+  });
+}
+
+function parseBootstrap(value: unknown): WebUiBootstrap {
+  if (!isRecord(value) || value.schemaVersion !== 1 || typeof value.snapshotId !== "string"
+    || !value.snapshotId || typeof value.catalogId !== "string" || !/^[0-9a-f]{64}$/.test(value.catalogId)
+    || !Array.isArray(value.modules)) {
+    throw new Error("Web UI bootstrap is invalid");
+  }
+  const modules = value.modules.map((raw, index): WebModulePayload => {
+    if (!isRecord(raw)
+      || typeof raw.pluginId !== "string" || !raw.pluginId
+      || typeof raw.generationId !== "string" || !raw.generationId
+      || typeof raw.module !== "string"
+      || typeof raw.moduleSha256 !== "string" || !/^[0-9a-f]{64}$/.test(raw.moduleSha256)
+      || typeof raw.moduleBytes !== "number" || !Number.isSafeInteger(raw.moduleBytes) || raw.moduleBytes < 1
+      || typeof raw.stylesheet !== "string"
+      || (raw.stylesheetSha256 !== null
+        && (typeof raw.stylesheetSha256 !== "string" || !/^[0-9a-f]{64}$/.test(raw.stylesheetSha256)))
+      || typeof raw.stylesheetBytes !== "number"
+      || !Number.isSafeInteger(raw.stylesheetBytes)
+      || raw.stylesheetBytes < 0
+      || !stringList(raw.requires) || !stringList(raw.provides)
+      || !digestRecord(raw.contractDigests)
+      || typeof raw.contractSha256 !== "string"
+      || !/^[0-9a-f]{64}$/.test(raw.contractSha256)) {
+      throw new Error(`Web UI module ${index} is invalid`);
+    }
+    return raw as unknown as WebModulePayload;
+  });
+  if (new Set(modules.map((item) => item.pluginId)).size !== modules.length) {
+    throw new Error("Web UI bootstrap contains duplicate modules");
+  }
+  return { schemaVersion: 1, snapshotId: value.snapshotId, catalogId: value.catalogId, modules };
+}
+
+function verifyAsset(content: string, bytes: number, digest: string): void {
+  const encoded = new TextEncoder().encode(content);
+  if (encoded.byteLength !== bytes) throw new Error("Web UI asset byte count mismatch");
+  const actual = bytesToHex(sha256(encoded));
+  if (actual !== digest) throw new Error("Web UI asset digest mismatch");
+}
+
+// 大字节校验优先用原生 SubtleCrypto：纯 JS noble 在降速设备上哈希整段模块要花
+// 数百毫秒主线程；subtle 在浏览器内部线程算且不阻塞激活链。非安全上下文
+// （如局域网裸 HTTP 入口）没有 subtle，回落 noble，校验语义不变。
+async function verifyAssetAsync(content: string, bytes: number, digest: string): Promise<void> {
+  const encoded = new TextEncoder().encode(content);
+  if (encoded.byteLength !== bytes) throw new Error("Web UI asset byte count mismatch");
+  const subtle = globalThis.crypto?.subtle;
+  const actual = subtle
+    ? bytesToHex(new Uint8Array(await subtle.digest("SHA-256", encoded)))
+    : bytesToHex(sha256(encoded));
+  if (actual !== digest) throw new Error("Web UI asset digest mismatch");
+}
+
+function verifyModuleDescriptor(module: WebModulePayload): void {
+  if (module.stylesheetSha256 !== null) {
+    verifyAsset(module.stylesheet, module.stylesheetBytes, module.stylesheetSha256);
+  } else if (module.stylesheet || module.stylesheetBytes !== 0) {
+    throw new Error("stylesheet descriptor is inconsistent");
+  }
+  const contract = JSON.stringify({
+    contractDigests: module.contractDigests,
+    provides: module.provides,
+    requires: module.requires,
+  });
+  verifyAsset(contract, new TextEncoder().encode(contract).byteLength, module.contractSha256);
+}
+
+function digestRecord(value: unknown): value is Record<string, string> {
+  return isRecord(value) && Object.entries(value).every(([contract, digest]) => (
+    contract.length > 0 && contract === contract.trim()
+      && typeof digest === "string" && /^[0-9a-f]{64}$/.test(digest)
+  ));
+}
+
+// 模块 import 双通道:暖启动按内容寻址 URL import,V8 code cache 以 URL 为身份
+// 跨重启复用编译结果;首访、目录换代或缓存失效时回落到 bootstrap 内联字节的
+// blob import,冷启动网络量与字节围栏不变。
+const cachedCatalogKey = "akashic.webui.modules.v1";
+// A URL module is evaluated once per document; later catalogs need fresh instances.
+const importedModuleUrls = new Set<string>();
+
+function moduleUrl(pluginId: string, sha256: string): string {
+  return `/api/chat/web-ui/module?plugin_id=${encodeURIComponent(pluginId)}&sha256=${sha256}`;
+}
+
+async function importModuleFromBytes(module: WebModulePayload): Promise<WebModuleExports> {
+  // 只有真正执行内联字节时才支付整模块哈希;URL import 的字节由服务端按摘要围栏。
+  await verifyAssetAsync(module.module, module.moduleBytes, module.moduleSha256);
+  const url = URL.createObjectURL(new Blob([module.module], { type: "text/javascript" }));
+  try {
+    return await import(/* @vite-ignore */ url) as WebModuleExports;
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+/** Load cache hints without executing code from an old catalog. */
+function loadCachedDigests(): Map<string, string> {
+  const digests = new Map<string, string>();
+  try {
+    const stored = JSON.parse(localStorage.getItem(cachedCatalogKey) ?? "null") as unknown;
+    if (!isRecord(stored) || !isRecord(stored.modules)) return digests;
+    for (const [pluginId, sha256] of Object.entries(stored.modules)) {
+      if (typeof sha256 === "string" && /^[0-9a-f]{64}$/.test(sha256)) digests.set(pluginId, sha256);
+    }
+  } catch (error) {
+    if (!(error instanceof SyntaxError) && !(error instanceof DOMException)) throw error;
+    // Unavailable or damaged cache hints leave the inline path available.
+  }
+  return digests;
+}
+
+function rememberCatalogDigests(bootstrap: WebUiBootstrap): void {
+  try {
+    const modules: Record<string, string> = {};
+    for (const module of bootstrap.modules) modules[module.pluginId] = module.moduleSha256;
+    localStorage.setItem(cachedCatalogKey, JSON.stringify({ modules }));
+  } catch (error) {
+    if (!(error instanceof DOMException)) throw error;
+    // 存储不可写时下一次启动退回内联字节路径。
+  }
+}
+
+// 首屏读取（会话、目录、历史、插件资源）都在挂载后几秒内发出；补缓存再等一会儿，不在弱网上和它们抢连接与带宽。
+const MODULE_WARM_DELAY_MS = 20_000;
+
+/** 内联字节路径启动后,首屏读取过后空闲时把内容寻址 URL 写入 HTTP 缓存,下一次暖启动才能命中。 */
+function warmModuleCache(modules: WebModulePayload[]): void {
+  const idle = (callback: () => void) => window.setTimeout(() => window.requestIdleCallback
+    ? window.requestIdleCallback(callback) : callback(), MODULE_WARM_DELAY_MS);
+  idle(() => {
+    const connection = (navigator as { connection?: { saveData?: boolean } }).connection;
+    if (connection?.saveData) return;
+    for (const module of modules) {
+      void fetch(moduleUrl(module.pluginId, module.moduleSha256))
+        .then((response) => response.blob())
+        .catch(() => undefined);
+    }
+  });
+}
+
+/** 按实际 HTTP 缓存选择导入路径，缺失时校验并执行当前目录的内联字节。 */
+async function importModule(
+  module: WebModulePayload,
+  cached: Map<string, string>,
+): Promise<WebModuleExports> {
+  const url = moduleUrl(module.pluginId, module.moduleSha256);
+  if (cached.get(module.pluginId) === module.moduleSha256 && !importedModuleUrls.has(url)) {
+    // 1. 本机摘要只说明执行过，不证明 HTTP 缓存仍在；提前刷新、缓存逐出和省流量都会缺缓存。
+    // 只查缓存，不为启动响应里已经携带的模块再等一次网络下载；未命中撤回提示，让空闲预热补缓存。
+    let response: Response;
+    try {
+      response = await fetch(url, { cache: "only-if-cached", mode: "same-origin" });
+    } catch (error) {
+      // Chromium 的缓存未命中返回 TypeError，而不是规范中的 504 响应。
+      if (!(error instanceof TypeError)) throw error;
+      cached.delete(module.pluginId);
+      return importModuleFromBytes(module);
+    }
+    await response.body?.cancel();
+    if (!response.ok) {
+      cached.delete(module.pluginId);
+      return importModuleFromBytes(module);
+    }
+    // 2. 当前目录已批准该模块；跨页面复用编译缓存，同一页面换目录仍创建新模块实例。
+    if (importedModuleUrls.has(url)) return importModuleFromBytes(module);
+    importedModuleUrls.add(url);
+    return (import(/* @vite-ignore */ url) as Promise<WebModuleExports>)
+      .catch(() => importModuleFromBytes(module));
+  }
+  return importModuleFromBytes(module);
+}
+
+// 不同模块常携带字节相同的样式表（共享底包分别打包）：按样式哈希引用计数共享同一个
+// <style>，最后一个使用者释放才移除。@scope 锚点是内容哈希，宿主元素本就各自带同一哈希。
+const installedStyles = new Map<string, { element: HTMLStyleElement; users: number }>();
+
+function installStyle(module: WebModulePayload): Disposer {
+  const scope = styleScopeId(module);
+  const existing = installedStyles.get(scope);
+  if (existing && existing.element.isConnected) {
+    existing.users += 1;
+    return once(() => releaseStyle(scope));
+  }
+  const style = document.createElement("style");
+  style.dataset.akashicModuleStyle = module.pluginId;
+  style.textContent = `@scope ([data-akashic-style="${scope}"]) {\n${module.stylesheet}\n}`;
+  document.head.appendChild(style);
+  installedStyles.set(scope, { element: style, users: 1 });
+  return once(() => releaseStyle(scope));
+}
+
+function releaseStyle(scope: string): void {
+  const installed = installedStyles.get(scope);
+  if (!installed) return;
+  installed.users -= 1;
+  if (installed.users > 0) return;
+  installedStyles.delete(scope);
+  installed.element.remove();
+}
+
+function styleScopeId(module: WebModulePayload): string {
+  return module.stylesheetSha256 ?? module.moduleSha256;
+}
+
+function disposeReverse(disposers: Disposer[]): void {
+  for (const dispose of [...disposers].reverse()) {
+    try { dispose(); } catch (error) { console.error("[web-host] cleanup failed", error); }
+  }
+  disposers.length = 0;
+}
+
+function once(dispose: Disposer): Disposer {
+  let active = true;
+  return () => {
+    if (!active) return;
+    active = false;
+    dispose();
+  };
+}
+
+function requireMountId(value: string, label: string): void {
+  if (typeof value !== "string" || !/^[a-z][a-z0-9.-]*\.v[1-9][0-9]*$/.test(value)) {
+    throw new Error(`${label} id is invalid: ${String(value)}`);
+  }
+}
+
+function requireEntryId(value: string): void {
+  if (typeof value !== "string" || !/^[a-z][a-z0-9.-]*$/.test(value)) {
+    throw new Error(`entry id is invalid: ${String(value)}`);
+  }
+}
+
+function asError(reason: unknown): Error {
+  return reason instanceof Error ? reason : new Error(String(reason));
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function stringList(value: unknown): value is string[] {
+  return Array.isArray(value)
+    && new Set(value).size === value.length
+    && value.every((item) => typeof item === "string"
+      && /^[a-z][a-z0-9.-]*\.v[1-9][0-9]*$/.test(item));
+}
+
+function sameStrings(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((item, index) => item === right[index]);
+}

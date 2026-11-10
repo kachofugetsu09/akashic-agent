@@ -775,11 +775,6 @@ def ui_host_findings(files: dict[str, str], policy: dict[str, list[str]] | None 
     return findings
 
 
-# 目录已整体搬走的前端根没有可扫描的文件，从策略里删掉它不算放宽。
-def _scanned_roots(roots: list[str], files: dict[str, str]) -> set[str]:
-    return {root for root in roots if any(rel.startswith(f"{root}/") for rel in files)}
-
-
 # 基线只许减少：相对 base 不能新增点名，也不能放宽宿主策略来绕过。
 def check_ui_hosts(base: str | None, baseline: set[str]) -> tuple[list[str], int]:
     current = ui_snapshot(None)
@@ -795,7 +790,7 @@ def check_ui_hosts(base: str | None, baseline: set[str]) -> tuple[list[str], int
         for key, widened in (("infrastructure", set(now["infrastructure"]) - set(policy["infrastructure"])),
                              ("host_routes", set(now["host_routes"]) - set(policy["host_routes"])),
                              ("plugins", set(policy["plugins"]) - set(now["plugins"])),
-                             ("frontend", _scanned_roots(policy["frontend"], current) - set(now["frontend"]))):
+                             ("frontend", set(policy["frontend"]) - set(now["frontend"]))):
             errors.extend(f"R12: 相对 {base} 放宽 ui_hosts.{key}: {item}" for item in sorted(widened))
     return errors, len(findings)
 

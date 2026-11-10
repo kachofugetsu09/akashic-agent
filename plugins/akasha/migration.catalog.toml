@@ -1,0 +1,41 @@
+schema_version = 2
+bundle_id = "akasha"
+version = "1.5.0"
+migration_root = "akasha_migrations"
+package_name = "akasha_migrations"
+
+[[migrations]]
+id = "20260918_01_register_graph_replay"
+path = "20260918_01_register_graph_replay.py"
+depends = []
+transactional = false
+
+[[migrations]]
+id = "20260918_02_correct_graph_replay_request"
+path = "20260918_02_correct_graph_replay_request.py"
+depends = ["20260918_01_register_graph_replay"]
+transactional = false
+
+[[migrations]]
+id = "20260918_03_register_replay_without_memory_config"
+path = "20260918_03_register_replay_without_memory_config.py"
+depends = ["20260918_02_correct_graph_replay_request"]
+transactional = false
+
+[[migrations]]
+id = "20260918_04_retire_removed_config_keys"
+path = "20260918_04_retire_removed_config_keys.py"
+depends = ["20260918_03_register_replay_without_memory_config"]
+transactional = false
+
+[[migrations]]
+id = "20261029_01_replay_with_single_thread_dense"
+path = "20261029_01_replay_with_single_thread_dense.py"
+depends = ["20260918_04_retire_removed_config_keys"]
+transactional = false
+
+[[migrations]]
+id = "20261107_01_replay_with_user_model_text"
+path = "20261107_01_replay_with_user_model_text.py"
+depends = ["20261029_01_replay_with_single_thread_dense"]
+transactional = false

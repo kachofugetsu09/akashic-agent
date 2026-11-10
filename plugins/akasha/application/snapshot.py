@@ -1,0 +1,53 @@
+"""归档调用读取已发布学习图，不借用或争抢正式 writer。"""
+from __future__ import annotations
+
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager, closing
+from pathlib import Path
+import sqlite3
+from tempfile import TemporaryDirectory
+
+from plugins.ledger.contract import Bindings
+from plugins.ledger.contract import MessageCatalog, MessageEmbeddings
+
+from ..domain.model import MemoryConfig
+from ..infrastructure.consumption import Consumption
+from .consumer import MessageConsumer, RestoreEmbeddings, run_memory_job
+from .cycle import MemoryCycle
+
+
+def _copy_published(source: Path, target: Path) -> None:
+    """SQLite 原生备份固定同一版本，复制期间发布新图不会混合消费出处。"""
+    with closing(sqlite3.connect(source.resolve().as_uri() + "?mode=ro", uri=True)) as incoming:
+        with closing(sqlite3.connect(target)) as outgoing:
+            incoming.backup(outgoing)
+            if outgoing.execute("PRAGMA integrity_check").fetchall() != [("ok",)]:
+                raise ValueError("学习图只读快照完整性检查失败")
+
+
+@asynccontextmanager
+async def read_memory(
+    path: Path, *, catalog: MessageCatalog,
+    embeddings: MessageEmbeddings, bindings: Bindings, config: MemoryConfig,
+    embedding_space: tuple[str, int] | None = None,
+    allow_initial: bool = False,
+    restore_embeddings: RestoreEmbeddings | None = None,
+) -> AsyncGenerator[tuple[MemoryCycle, Consumption]]:
+    """只从一致副本恢复图，重用原 binding 校验；不给调用者提交或正式文件权限。"""
+    # 1. 默认只读已发布图；材料可显式沿原初次启用算法在临时目录建立空图。
+    with TemporaryDirectory(prefix="akasha-read-") as temporary:
+        snapshot = Path(temporary) / "memory.db"
+        if not allow_initial or path.exists():
+            await run_memory_job(lambda: _copy_published(path, snapshot))
+        # 2. 复用完整恢复校验；恢复器的本地 lease 只保护临时副本。
+        restored = await MessageConsumer.load(
+            snapshot, catalog=catalog,
+            embeddings=embeddings, bindings=bindings, config=config,
+            restore_embeddings=restore_embeddings,
+        )
+        try:
+            if embedding_space is not None:
+                await run_memory_job(lambda: restored.check_embedding_space(*embedding_space, bindings))
+            yield restored.cycle, restored.state
+        finally:
+            restored.close()

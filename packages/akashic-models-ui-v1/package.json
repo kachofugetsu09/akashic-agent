@@ -1,0 +1,12 @@
+{
+  "name": "@akashic/models-ui-v1",
+  "version": "1.0.0",
+  "private": false,
+  "description": "Type-only contract for model Provider Web entries",
+  "types": "index.d.ts",
+  "files": ["index.d.ts", "contract.json"],
+  "peerDependencies": {
+    "@akashic/web-ui-v1": "^1.0.0"
+  },
+  "license": "MIT"
+}

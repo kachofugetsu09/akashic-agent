@@ -1,0 +1,30 @@
+services:
+  akashic-debug:
+    build:
+      context: ../..
+      dockerfile: docker/debug/Dockerfile
+    image: akashic-agent-debug:latest
+    working_dir: /app
+    environment:
+      AKASHIC_DEBUG_CONFIG: /sandbox/config.toml
+      AKASHIC_DEBUG_WORKSPACE: /sandbox/workspace
+      AKASHIC_WEB_HOST: 0.0.0.0
+      AKASHIC_WEB_PORT: "2236"
+      AKASHIC_WEB_ALLOW_NON_LOOPBACK: "1"
+      AKASHIC_READINESS_TIMEOUT_S: "60"
+      AKASHIC_HOST_GID: "${GID:-1000}"
+      AKASHIC_HOST_UID: "${UID:-1000}"
+      AKASHIC_DEBUG_PROFILE: "${AKASHIC_DEBUG_PROFILE:-default}"
+      AKASHIC_EXTRA_PLUGIN_DIRS: /opt/akashic-debug-plugins
+      HOME: /sandbox/home
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ../..:/app
+      - ./profiles/${AKASHIC_DEBUG_PROFILE:-default}:/sandbox
+      - ${HOME}/.akashic-plugin/cache:/sandbox/home/.akashic-plugin/cache:ro
+    ports:
+      - "127.0.0.1:2236:2236"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    stdin_open: true
+    tty: true

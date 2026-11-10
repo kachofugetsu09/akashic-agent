@@ -1,0 +1,1320 @@
+import React, { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+
+import { createUuid as createRequestId } from "./browser-uuid.ts";
+import { PluginUiQueryQueue } from "./plugin-ui-query-queue";
+import { takeStartupResponse } from "./web-chat-data";
+import { PluginUiResultCache } from "./plugin-ui-result-cache";
+import { composerControls } from "./composer-contributions";
+import type { ScopeFields } from "./scope-fields";
+import { openInWorkbench, subscribeWorkbenchIntents, workbenchAccepts } from "./shell-workbench";
+
+import type { ComposerControls, ComposerSuggestProvider, DestinationControls, DestinationForm, HeaderMetaControls, NavigationControls, NavigationDestinationsProvider, NavigationForm, NavigationFormControls, NavigationGroupsProvider, NavigationNotice, PluginUiDefinition, PluginUiHostContext, PluginUiMountSlotName, PluginUiQueryOptions, PluginUiSlotFacts, PluginUiSlotName, ScopeFieldControls, SidebarPanelControls, SidebarPanelProvider } from "@akashic/chat-ui-v1";
+
+// 插槽合同由 @akashic/chat-ui-v1 发布，宿主与插件共用同一份类型。
+export type { ComposerSuggestProvider, ComposerSuggestion, PluginUiContext, PluginUiDefinition, PluginUiQueryOptions, PluginUiRenderer, PluginUiSlotName } from "@akashic/chat-ui-v1";
+
+export interface PluginUiCatalog {
+  catalogRevision: string;
+  updating: boolean;
+  error?: string;
+  plugins: PluginUiCatalogItem[];
+}
+
+export interface PluginUiCatalogItem {
+  id: string;
+  revision: string;
+  moduleUrl: string;
+  stylesheetUrl?: string;
+  slots: PluginUiSlotName[];
+}
+
+export interface PluginUiResult {
+  requestId: string;
+  resultJson?: string;
+  error?: string;
+}
+
+const definitions = new Map<string, {
+  revision: string;
+  definition: PluginUiDefinition;
+}>();
+const styleNodes = new Map<string, HTMLLinkElement>();
+const listeners = new Set<() => void>();
+const shownListeners = new Set<() => void>();
+interface PendingQuery {
+  pluginId: string;
+  method: string;
+  sessionId?: string;
+  messageId?: string;
+  queuedAt: number;
+  resolve: (value: Record<string, unknown>) => void;
+  reject: (error: Error) => void;
+  ownerId: string;
+  timeout?: number;
+  cacheKey?: string;
+  sharedKey?: string;
+  interactive: boolean;
+  slot: PluginUiSlotName;
+  started: boolean;
+  abort: AbortController;
+  send: () => void;
+}
+
+const pendingQueries = new PluginUiQueryQueue<PendingQuery>(
+  (request) => request.interactive,
+);
+const immutableResults = new PluginUiResultCache();
+const sharedQueries = new Map<string, {
+  requestId: string;
+  promise: Promise<Record<string, unknown>>;
+  owners: Set<string>;
+}>();
+let catalog: PluginUiCatalog = {
+  catalogRevision: "",
+  updating: true,
+  plugins: [],
+};
+let registryVersion = 0;
+let activeRevision = "";
+let activation: Promise<void> = Promise.resolve();
+let staleCatalogRead: Promise<void> | null = null;
+let staleRecoveryAttempted = false;
+const quarantinedRevisions = new Map<string, Error>();
+const MODULE_ATTEMPTS = 4;
+// 弱网冷启动实测（单向 400ms、1Mbit）十来个几 KB 的模块要排队 4–22 秒才到；补发太早只会多占连接。
+const MODULE_PATIENCE_MS = 20_000;
+const SLOT_NAMES = new Set<PluginUiSlotName>([
+  "turn.before_reasoning",
+  "turn.after_answer",
+  "message.actions",
+  "message.meta",
+  "drawer.panel",
+  "tool.result",
+  "message.attachment",
+  "chat.notice",
+  "header.end",
+  "header.meta",
+  "composer.toolbar",
+  "composer.status",
+  "composer.suggest",
+  "scope.fields",
+  "scope.badge",
+  "navigation.groups",
+  "navigation.destinations",
+  "sidebar.panels",
+]);
+
+/** 目录或模块变化时通知；宿主内的数据型扩展点据此对齐自己的缓存。 */
+export function subscribePluginUiCatalog(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => { listeners.delete(listener); };
+}
+
+function emitChange() {
+  registryVersion += 1;
+  listeners.forEach((listener) => listener());
+}
+
+export function receivePluginUiCatalog(next: PluginUiCatalog): Promise<void> {
+  const revisionChanged = next.catalogRevision !== catalog.catalogRevision;
+  // 核对读到同一份目录：不清缓存、不打断在途查询，也不让订阅目录版本的消息行重渲染。
+  if (!revisionChanged && !next.updating && !catalog.updating && next.error === catalog.error) return activation;
+  if (revisionChanged) immutableResults.clear();
+  catalog = next;
+  if (next.updating || revisionChanged) rejectAllPending("插件界面正在更新");
+  emitChange();
+  if (next.updating || next.error || next.catalogRevision === activeRevision) {
+    return Promise.resolve();
+  }
+  const quarantined = quarantinedRevisions.get(next.catalogRevision);
+  if (quarantined) return Promise.reject(quarantined);
+  activation = activation.catch(() => undefined).then(async () => {
+    try {
+      if (await activateCatalog(next)) activeRevision = next.catalogRevision;
+    } catch (error) {
+      const normalized = error instanceof Error ? error : new Error("插件界面加载失败");
+      if (normalized instanceof PluginDefinitionError) quarantinedRevisions.set(next.catalogRevision, normalized);
+      if (catalog.catalogRevision === next.catalogRevision) {
+        catalog = { ...catalog, error: normalized.message };
+        emitChange();
+      }
+      throw normalized;
+    }
+  });
+  return activation;
+}
+
+// 初始加载、核对与 409 恢复共用读取代次：比已发布读取更早开始的响应不能再发布（旧目录回退）。
+let catalogReadGeneration = 0;
+let catalogPublishedGeneration = 0;
+
+/** 通过桌面适配器加载同一份内容寻址插件界面。 */
+export async function loadWebPluginCatalog(signal?: AbortSignal): Promise<void> {
+  const generation = ++catalogReadGeneration;
+  const response = await takeStartupResponse("/api/chat/plugin-ui/catalog", signal) ?? await fetch("/api/chat/plugin-ui/catalog", { signal });
+  if (!response.ok) throw await webPluginError(response);
+  const catalog = parseWebPluginCatalog(await response.json());
+  // 预热响应的正文读取不受 signal 约束：失去 owner 的旧目录不能再发布。
+  signal?.throwIfAborted();
+  if (generation < catalogPublishedGeneration) return;
+  catalogPublishedGeneration = generation;
+  await receivePluginUiCatalog(catalog);
+}
+
+// 首次读取目录：网络失败或模块没加载全就退避重读，直到成功或页面撤下；只报告第一次失败。
+// 定义无效的目录已被隔离，重读也只会再拒绝一次，不再重试。
+export async function loadWebPluginCatalogPatiently(signal: AbortSignal, report: (error: unknown) => void): Promise<void> {
+  initialCatalogLoads += 1;
+  try {
+    for (let attempt = 0; !signal.aborted; attempt += 1) {
+      try {
+        await loadWebPluginCatalog(AbortSignal.any([signal, AbortSignal.timeout(20_000)]));
+        return;
+      } catch (error) {
+        if (signal.aborted) return;
+        if (attempt === 0) report(error);
+        if (error instanceof PluginDefinitionError) return;
+        await new Promise((resolve) => {
+          const timer = window.setTimeout(resolve, Math.min(30_000, 1_000 * 2 ** attempt));
+          signal.addEventListener("abort", () => { window.clearTimeout(timer); resolve(null); }, { once: true });
+        });
+      }
+    }
+  } finally {
+    initialCatalogLoads -= 1;
+  }
+}
+
+// 页面重新可见、回复结束时核对一次目录：别处安装或换代的插件不刷新页面也能渲染（#1568）。
+// 读取有最短间隔且同一时刻只有一次；触发不丢弃，在途读取或间隔结束后尾随补读一次。
+let catalogRecheck: Promise<void> | null = null;
+let catalogRecheckPending = false;
+let catalogRecheckTimer: number | null = null;
+let catalogCheckedAt = 0;
+// 启动加载还在进行时，页面第一次拿到焦点之类的核对不再另读一份目录：启动这次读到的就是最新的。
+let initialCatalogLoads = 0;
+const CATALOG_RECHECK_INTERVAL_MS = 3_000;
+export function recheckWebPluginCatalog(): void {
+  if (initialCatalogLoads > 0) return;
+  catalogRecheckPending = true;
+  drainCatalogRecheck();
+}
+
+// 1. 有读取在飞（含 409 恢复）时等它结束再判断；它开始于本次触发之前，不能算覆盖。
+// 2. 距上次核对不足间隔时排一个尾随 timer；只有真正发起的读取才清掉待处理标志。
+function drainCatalogRecheck(): void {
+  if (!catalogRecheckPending || catalogRecheck || staleCatalogRead || catalogRecheckTimer !== null) return;
+  const wait = catalogCheckedAt + CATALOG_RECHECK_INTERVAL_MS - Date.now();
+  if (wait > 0) {
+    catalogRecheckTimer = window.setTimeout(() => { catalogRecheckTimer = null; drainCatalogRecheck(); }, wait);
+    return;
+  }
+  catalogRecheckPending = false;
+  catalogCheckedAt = Date.now();
+  const read = loadWebPluginCatalog(AbortSignal.timeout(10_000));
+  catalogRecheck = read;
+  read.catch((error: unknown) => console.warn("[plugin-ui] catalog recheck failed", error))
+    .finally(() => { if (catalogRecheck === read) catalogRecheck = null; drainCatalogRecheck(); });
+}
+
+function parseWebPluginCatalog(value: unknown): PluginUiCatalog {
+  const raw = requireRecord(value, "plugin catalog");
+  const revision = requireString(raw.catalog_revision, "catalog_revision");
+  if (!/^[0-9a-f]{64}$/.test(revision)) throw new Error("插件目录版本无效");
+  const rawItems = raw.items;
+  if (!Array.isArray(rawItems)) throw new Error("插件目录列表无效");
+  const plugins = rawItems.map((value, index) => {
+    const item = requireRecord(value, `plugins[${index}]`);
+    const id = requireString(item.id, `plugins[${index}].id`);
+    const pluginRevision = requireString(item.revision, `plugins[${index}].revision`);
+    const moduleSha256 = requireDigest(item.module_sha256, `plugins[${index}].module_sha256`);
+    const stylesheetSha256 = item.stylesheet_sha256 === null
+      ? undefined
+      : requireDigest(item.stylesheet_sha256, `plugins[${index}].stylesheet_sha256`);
+    const slots = requireSlots(item.slots, index);
+    return {
+      id,
+      revision: pluginRevision,
+      moduleUrl: webPluginAssetUrl(id, pluginRevision, "module", moduleSha256),
+      stylesheetUrl: stylesheetSha256
+        ? webPluginAssetUrl(id, pluginRevision, "stylesheet", stylesheetSha256)
+        : undefined,
+      slots,
+    } satisfies PluginUiCatalogItem;
+  });
+  if (new Set(plugins.map((plugin) => plugin.id)).size !== plugins.length) {
+    throw new Error("插件目录包含重复 ID");
+  }
+  return { catalogRevision: revision, updating: false, plugins };
+}
+
+function webPluginAssetUrl(
+  pluginId: string,
+  pluginRevision: string,
+  kind: "module" | "stylesheet",
+  sha256: string,
+): string {
+  const query = new URLSearchParams({ plugin_id: pluginId, plugin_revision: pluginRevision, kind, sha256 });
+  // 远端对 asset URL 发 immutable 年缓存；dev 下插件资源可能被本地中间件替换，
+  // 需要让 URL 每次加载都不同，否则浏览器直接命中远端旧缓存、本地改动不可见。
+  if (import.meta.env.DEV) query.set("_dev", String(Date.now()));
+  return `/api/chat/plugin-ui/asset?${query}`;
+}
+
+function requireRecord(value: unknown, label: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} 无效`);
+  return value as Record<string, unknown>;
+}
+
+function requireString(value: unknown, label: string): string {
+  if (typeof value !== "string" || !value) throw new Error(`${label} 无效`);
+  return value;
+}
+
+function requireDigest(value: unknown, label: string): string {
+  const digest = requireString(value, label);
+  if (!/^[0-9a-f]{64}$/.test(digest)) throw new Error(`${label} 无效`);
+  return digest;
+}
+
+function requireSlots(
+  value: unknown,
+  pluginIndex: number,
+): PluginUiSlotName[] {
+  if (!Array.isArray(value)) throw new Error(`plugins[${pluginIndex}].slots 无效`);
+  return value.map((slot, slotIndex) => {
+    if (typeof slot !== "string" || !SLOT_NAMES.has(slot as PluginUiSlotName)) {
+      throw new Error(`plugins[${pluginIndex}].slots[${slotIndex}] 无效`);
+    }
+    return slot as PluginUiSlotName;
+  });
+}
+
+// 各插件模块各自加载、到一个发布一个：慢的不拖住已到的，一个失败也不连坐整版目录。
+// 只有定义无效（确定性错误）才隔离这一版目录；网络失败留给下一次读取目录时补齐。
+async function activateCatalog(next: PluginUiCatalog): Promise<boolean> {
+  const current = () => catalog.catalogRevision === next.catalogRevision && !catalog.updating;
+  const listed = new Set(next.plugins.map((plugin) => plugin.id));
+  retirePlugins([...new Set([...definitions.keys(), ...styleNodes.keys()])].filter((id) => !listed.has(id)));
+  const results = await Promise.allSettled(next.plugins.map(async (plugin) => {
+    if (definitions.get(plugin.id)?.revision === plugin.revision) return;
+    if (!definitions.has(plugin.id)) attachStylesheet(plugin);
+    const module = await importPluginModule(plugin, current);
+    let definition: PluginUiDefinition;
+    try { definition = parseDefinition(module.default, plugin); }
+    catch (error) { throw new PluginDefinitionError(error instanceof Error ? error.message : String(error)); }
+    if (current()) installPlugin(plugin, definition);
+  }));
+  if (!current()) return false;
+  const failed = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+  if (failed) throw failed.reason;
+  return true;
+}
+
+class PluginDefinitionError extends Error {}
+
+// 同一插件换代时先退役旧代的推送与样式，再挂新代；其余插件不受影响。
+function installPlugin(plugin: PluginUiCatalogItem, definition: PluginUiDefinition) {
+  const previous = definitions.get(plugin.id);
+  if (previous && previous.revision !== plugin.revision) retirePushes(new Set([JSON.stringify([plugin.id, previous.revision])]));
+  definitions.set(plugin.id, { revision: plugin.revision, definition });
+  attachStylesheet(plugin);
+  emitChange();
+}
+
+// 样式表与模块并行下载：首次加载时就挂上（样式只作用于插件自己的类名，提前生效无害），不再等模块到了再串行取一趟。
+// 已挂的是同一份就保留；换代时换成新的。
+function attachStylesheet(plugin: PluginUiCatalogItem) {
+  const current = styleNodes.get(plugin.id);
+  if (current && current.getAttribute("href") === (plugin.stylesheetUrl ?? null)) return;
+  current?.remove();
+  styleNodes.delete(plugin.id);
+  if (!plugin.stylesheetUrl) return;
+  const node = document.createElement("link");
+  node.rel = "stylesheet";
+  node.href = plugin.stylesheetUrl;
+  node.dataset.pluginUi = plugin.id;
+  document.head.appendChild(node);
+  styleNodes.set(plugin.id, node);
+}
+
+function retirePlugins(ids: readonly string[]) {
+  if (!ids.length) return;
+  retirePushes(new Set(ids.map((id) => JSON.stringify([id, definitions.get(id)?.revision]))));
+  for (const id of ids) {
+    definitions.delete(id);
+    styleNodes.get(id)?.remove();
+    styleNodes.delete(id);
+  }
+  emitChange();
+}
+
+// 浏览器模块表记住失败的 URL，重试必须换地址；慢请求不判死，等满期限仍未回来就并行补发下一次，先到为准。
+// 全部尝试都失败或最后一次也超期才算失败。
+function importPluginModule(plugin: PluginUiCatalogItem, current: () => boolean): Promise<{ default?: unknown }> {
+  return new Promise((resolve, reject) => {
+    let started = 0;
+    let failed = 0;
+    let done = false;
+    let timer: number | undefined;
+    const finish = (settle: () => void) => {
+      if (done) return;
+      done = true;
+      window.clearTimeout(timer);
+      settle();
+    };
+    const start = () => {
+      window.clearTimeout(timer);
+      if (done) return;
+      if (!current()) { finish(() => reject(new Error("插件目录已更新"))); return; }
+      const url = started === 0 ? plugin.moduleUrl : `${plugin.moduleUrl}&attempt=${started}`;
+      started += 1;
+      timer = window.setTimeout(() => started < MODULE_ATTEMPTS ? start()
+        : finish(() => reject(new Error(`插件界面加载超时: ${plugin.id}`))), MODULE_PATIENCE_MS * started);
+      (import(/* @vite-ignore */ url) as Promise<{ default?: unknown }>).then(
+        (module) => finish(() => resolve(module)),
+        (error: unknown) => {
+          failed += 1;
+          if (done || failed < started) return;
+          if (started >= MODULE_ATTEMPTS) { finish(() => reject(error)); return; }
+          window.clearTimeout(timer);
+          timer = window.setTimeout(start, 1_000 * 2 ** (failed - 1));
+        },
+      );
+    };
+    start();
+  });
+}
+
+function parseDefinition(value: unknown, plugin: PluginUiCatalogItem): PluginUiDefinition {
+  if (!value || typeof value !== "object") {
+    throw new Error(`插件界面必须默认导出定义对象: ${plugin.id}`);
+  }
+  const raw = value as { slots?: unknown };
+  const slots = raw.slots ?? {};
+  if (!slots || typeof slots !== "object" || Array.isArray(slots)) {
+    throw new Error(`插件界面 slots 无效: ${plugin.id}`);
+  }
+  for (const [name, renderer] of Object.entries(slots)) {
+    if (!SLOT_NAMES.has(name as PluginUiSlotName)) {
+      throw new Error(`插件界面 slot 无效: ${plugin.id}.${name}`);
+    }
+    const valid = name === "composer.suggest" ? isSuggestProvider(renderer)
+      : name === "navigation.groups" ? isGroupsProvider(renderer)
+      : name === "navigation.destinations" ? isDestinationsProvider(renderer)
+      : name === "sidebar.panels" ? isPanelProvider(renderer) : isRenderer(renderer);
+    if (!valid) {
+      throw new Error(`插件界面 renderer 无效: ${plugin.id}.${name}`);
+    }
+  }
+  const declaredSlots = Object.keys(slots).sort().join("|");
+  if (declaredSlots !== [...plugin.slots].sort().join("|")) {
+    throw new Error(`插件界面 slots 与 catalog 不一致: ${plugin.id}`);
+  }
+  return { slots: slots as PluginUiDefinition["slots"] };
+}
+
+function isRenderer(value: unknown): value is HostRenderer {
+  if (!value || typeof value !== "object") return false;
+  const renderer = value as { mount?: unknown; prefetch?: unknown; accepts?: unknown };
+  return typeof renderer.mount === "function"
+    && (renderer.accepts === undefined || typeof renderer.accepts === "function")
+    && (renderer.prefetch === undefined || typeof renderer.prefetch === "function");
+}
+
+function isSuggestProvider(value: unknown): value is ComposerSuggestProvider {
+  if (!value || typeof value !== "object") return false;
+  const provider = value as Partial<Record<keyof ComposerSuggestProvider, unknown>>;
+  return typeof provider.label === "string" && typeof provider.empty === "string" && typeof provider.load === "function"
+    && (provider.keepOpenOnMatch === undefined || typeof provider.keepOpenOnMatch === "boolean")
+    && (provider.prefix === "/" || provider.prefix === "@") && Array.isArray(provider.sigils)
+    && provider.sigils.every((sigil) => sigil === "/" || sigil === "@");
+}
+
+function isGroupsProvider(value: unknown): value is NavigationGroupsProvider {
+  if (!value || typeof value !== "object") return false;
+  const provider = value as Partial<Record<keyof NavigationGroupsProvider, unknown>>;
+  const form = (item: unknown) => item === undefined || (typeof item === "object" && item !== null
+    && typeof (item as { title?: unknown }).title === "string" && typeof (item as { mount?: unknown }).mount === "function");
+  return typeof provider.dimension === "string" && typeof provider.label === "string" && typeof provider.load === "function"
+    && form(provider.create) && (provider.actions === undefined || typeof provider.actions === "function")
+    && (provider.notice === undefined || isRenderer(provider.notice));
+}
+
+function isDestinationsProvider(value: unknown): value is NavigationDestinationsProvider {
+  if (!value || typeof value !== "object") return false;
+  const provider = value as Partial<Record<keyof NavigationDestinationsProvider, unknown>>;
+  const forms = provider.actions === undefined || (Array.isArray(provider.actions) && provider.actions.every((item: unknown) =>
+    typeof item === "object" && item !== null && typeof (item as { label?: unknown }).label === "string"
+    && isDestinationForm((item as { form?: unknown }).form)));
+  return provider.placement === "identity" && typeof provider.load === "function" && forms
+    && (provider.adopt === undefined || typeof provider.adopt === "function")
+    && (provider.sessionActions === undefined || typeof provider.sessionActions === "function")
+    && (provider.notice === undefined || isRenderer(provider.notice));
+}
+
+function isDestinationForm(value: unknown): value is DestinationForm {
+  return typeof value === "object" && value !== null && typeof (value as { title?: unknown }).title === "string"
+    && typeof (value as { mount?: unknown }).mount === "function";
+}
+
+function isPanelProvider(value: unknown): value is SidebarPanelProvider {
+  if (!value || typeof value !== "object") return false;
+  const provider = value as Partial<Record<keyof SidebarPanelProvider, unknown>>;
+  return typeof provider.label === "string" && typeof provider.iconSvg === "string" && typeof provider.mount === "function"
+    && (provider.status === undefined || typeof provider.status === "function");
+}
+
+/** 已加载的侧栏面板，按目录顺序；宿主不按插件名挑选。 */
+export interface SidebarPanelSource {
+  /** 插件身份加版本；目录更新后变化。 */
+  key: string;
+  pluginId: string;
+  pluginRevision: string;
+  provider: SidebarPanelProvider;
+  context(signal: AbortSignal, sessionId: string | undefined): Pick<PluginUiHostContext, "query">;
+}
+
+let panelSources: SidebarPanelSource[] = [];
+
+export function sidebarPanelSources(): SidebarPanelSource[] {
+  const next = catalog.updating ? [] : catalog.plugins.flatMap((plugin) => {
+    const loaded = definitions.get(plugin.id);
+    const provider = loaded?.revision === plugin.revision ? loaded.definition.slots["sidebar.panels"] : undefined;
+    return provider ? [{ key: `${plugin.id}:${plugin.revision}`, pluginId: plugin.id, pluginRevision: plugin.revision, provider,
+      context: (signal: AbortSignal, sessionId: string | undefined) => ({
+        query: (method: string, payload: Record<string, unknown> = {}) => queryWebPluginUi({
+          pluginId: plugin.id, pluginRevision: plugin.revision, method, payload, slot: "sidebar.panels", sessionId, signal,
+        }),
+      }) }] : [];
+  });
+  // 无关插件激活也会通知目录；面板没变时不能因此取消并重启状态读取。
+  if (next.length !== panelSources.length || next.some((source, index) =>
+    source.key !== panelSources[index].key || source.provider !== panelSources[index].provider)) {
+    panelSources = next;
+  }
+  return panelSources;
+}
+
+/** 在宿主外框里挂侧栏面板；size 变化经 refreshToken 通知插件，不重新挂载。 */
+export function SidebarPanelMount({ source, sessionId, panel, size }: {
+  source: SidebarPanelSource;
+  sessionId?: string;
+  panel: SidebarPanelControls;
+  size: string;
+}) {
+  // extra 进挂载 effect 的依赖：每次渲染给新对象会拆掉重挂，插件页内状态随之丢失。
+  const extra = React.useMemo(() => ({ panel }), [panel]);
+  return <MountedPlugin pluginId={source.pluginId} pluginRevision={source.pluginRevision}
+    renderer={source.provider as HostRenderer} extra={extra} refreshToken={size}
+    context={{ slot: "sidebar.panels", sessionId }} />;
+}
+
+/** 已加载的说明行数据源，按目录顺序；宿主不按插件名挑选。 */
+export interface HeaderMetaSource {
+  /** 插件身份加版本；目录更新后变化。 */
+  key: string;
+  pluginId: string;
+  pluginRevision: string;
+  renderer: HostRenderer;
+}
+
+export function headerMetaSources(): HeaderMetaSource[] {
+  if (catalog.updating) return [];
+  return catalog.plugins.flatMap((plugin) => {
+    const loaded = definitions.get(plugin.id);
+    const renderer = loaded?.revision === plugin.revision ? loaded.definition.slots["header.meta"] as HostRenderer | undefined : undefined;
+    return renderer ? [{ key: `${plugin.id}:${plugin.revision}`, pluginId: plugin.id, pluginRevision: plugin.revision, renderer }] : [];
+  });
+}
+
+/** 挂一个说明行数据源：插件只经 meta 登记说明项，挂载元素不显示。 */
+export function HeaderMetaSourceMount({ source, sessionId, meta, refreshToken }: {
+  source: HeaderMetaSource;
+  sessionId: string;
+  /** 身份变化即重新挂载，调用方需保持稳定。 */
+  meta: HeaderMetaControls;
+  refreshToken?: string | number;
+}) {
+  const extra = React.useMemo(() => ({ meta }), [meta]);
+  return <MountedPlugin pluginId={source.pluginId} pluginRevision={source.pluginRevision} renderer={source.renderer}
+    extra={extra} refreshToken={refreshToken} context={{ slot: "header.meta", sessionId }} />;
+}
+
+/** 已加载的侧栏分组数据源，按目录顺序；宿主不按插件名挑选。 */
+export interface NavigationGroupSource {
+  /** 插件身份加版本；目录更新后变化。 */
+  key: string;
+  pluginId: string;
+  pluginRevision: string;
+  provider: NavigationGroupsProvider;
+  context(signal: AbortSignal): Pick<PluginUiHostContext, "query">;
+}
+
+export function navigationGroupSources(): NavigationGroupSource[] {
+  if (catalog.updating) return [];
+  return catalog.plugins.flatMap((plugin) => {
+    const loaded = definitions.get(plugin.id);
+    const provider = loaded?.revision === plugin.revision ? loaded.definition.slots["navigation.groups"] : undefined;
+    return provider ? [groupSource(plugin, provider)] : [];
+  });
+}
+
+function groupSource(plugin: PluginUiCatalogItem, provider: NavigationGroupsProvider): NavigationGroupSource {
+  return { key: `${plugin.id}:${plugin.revision}`, pluginId: plugin.id, pluginRevision: plugin.revision, provider,
+    context: (signal) => ({
+      query: (method, payload = {}) => queryWebPluginUi({
+        pluginId: plugin.id, pluginRevision: plugin.revision, method, payload, slot: "navigation.groups", signal,
+      }),
+    }) };
+}
+
+/** 目录未定或声明了侧栏分组的插件还没激活：分组数据源还会再出现。定义无效被隔离的目录不再重试，不算等待。 */
+export function navigationGroupsPending(): boolean {
+  if (quarantinedRevisions.has(catalog.catalogRevision)) return false;
+  return catalog.updating || catalog.plugins.some((plugin) => plugin.slots.includes("navigation.groups")
+    && definitions.get(plugin.id)?.revision !== plugin.revision);
+}
+
+/** 在宿主外框里挂分组数据源的表单或提示：表单配表单控制，提示配导航能力，类型上不能混用。 */
+export function NavigationGroupMount({ source, renderer, extra, scope, refreshToken }: {
+  source: NavigationGroupSource;
+  /** 变化时通知插件重新读取宿主状态（例如表单 busy）。 */
+  refreshToken?: string | number;
+} & (
+  | { renderer: NavigationForm; extra: { form: NavigationFormControls }; scope: { dimension: string; value?: string } }
+  | { renderer: NavigationNotice; extra: { navigation: NavigationControls }; scope: { dimension: string } }
+)) {
+  return <MountedPlugin pluginId={source.pluginId} pluginRevision={source.pluginRevision} renderer={renderer as HostRenderer}
+    extra={extra} refreshToken={refreshToken} context={{ slot: "navigation.groups", scope }} />;
+}
+
+/** 目录里第一个 identity 目的地数据源；宿主不按插件名挑选。 */
+export interface DestinationSource {
+  /** 插件身份加版本；目录更新后变化。 */
+  key: string;
+  pluginId: string;
+  pluginRevision: string;
+  provider: NavigationDestinationsProvider;
+  context(signal: AbortSignal): Pick<PluginUiHostContext, "query">;
+}
+
+export function identityDestinationSource(): DestinationSource | null {
+  if (catalog.updating) return null;
+  for (const plugin of catalog.plugins) {
+    const loaded = definitions.get(plugin.id);
+    const provider = loaded?.revision === plugin.revision ? loaded.definition.slots["navigation.destinations"] : undefined;
+    if (provider?.placement !== "identity") continue;
+    return { key: `${plugin.id}:${plugin.revision}`, pluginId: plugin.id, pluginRevision: plugin.revision, provider,
+      context: (signal) => ({
+        query: (method, payload = {}) => queryWebPluginUi({
+          pluginId: plugin.id, pluginRevision: plugin.revision, method, payload, slot: "navigation.destinations", signal,
+        }),
+      }) };
+  }
+  return null;
+}
+
+/** 目录未定或声明了目的地的插件还没激活：品牌行先保持上次的样子。 */
+export function destinationsPending(): boolean {
+  return catalog.updating || catalog.plugins.some((plugin) => plugin.slots.includes("navigation.destinations")
+    && definitions.get(plugin.id)?.revision !== plugin.revision);
+}
+
+/** 在宿主外框里挂目的地的提示或对话框表单。 */
+export function DestinationMount({ source, renderer, destination, close, refreshToken }: {
+  source: DestinationSource;
+  renderer: { mount: DestinationForm["mount"] } | NonNullable<NavigationDestinationsProvider["notice"]>;
+  destination: DestinationControls;
+  /** 对话框才有；提示区不给。 */
+  close?: () => void;
+  refreshToken?: string | number;
+}) {
+  const extra = React.useMemo(() => ({ destination, ...(close ? { close } : {}) }), [destination, close]);
+  return <MountedPlugin pluginId={source.pluginId} pluginRevision={source.pluginRevision} renderer={renderer as HostRenderer}
+    extra={extra} refreshToken={refreshToken} context={{ slot: "navigation.destinations" }} />;
+}
+
+export interface ComposerSuggestSource {
+  /** 插件身份加版本；目录更新后变化。 */
+  key: string;
+  provider: ComposerSuggestProvider;
+  /** 每次加载一个上下文；宿主撤下数据源或超时时经 signal 中止它的查询。 */
+  context(signal: AbortSignal): Pick<PluginUiHostContext, "query">;
+}
+
+/** 已加载的输入框建议数据源，按目录顺序；宿主不按插件名挑选。 */
+export function composerSuggestSources(): ComposerSuggestSource[] {
+  if (catalog.updating) return [];
+  return catalog.plugins.flatMap((plugin) => {
+    const loaded = definitions.get(plugin.id);
+    const provider = loaded?.revision === plugin.revision ? loaded.definition.slots["composer.suggest"] : undefined;
+    return provider ? [{ key: `${plugin.id}:${plugin.revision}`, provider, context: (signal) => ({
+      query: (method, payload = {}) => queryWebPluginUi({
+        pluginId: plugin.id, pluginRevision: plugin.revision, method, payload, slot: "composer.suggest", signal,
+      }),
+    }) }] : [];
+  });
+}
+
+/** 宿主据目录变化重读插件数据源；宿主不按插件名挑选插件。 */
+export function usePluginUiCatalogVersion(): { version: number; catalogRevision: string } {
+  const version = useSyncExternalStore(
+    (listener) => { listeners.add(listener); return () => listeners.delete(listener); },
+    () => registryVersion,
+  );
+  return { version, catalogRevision: catalog.catalogRevision };
+}
+
+// 插件推送按“插件|revision|会话”记住最新一帧，晚挂载的界面先拿到当前状态；换代后旧代的帧（包括它的 null）
+// 碰不到新代界面。新代帧可能先于新目录到达，所以目录激活时只清掉被这次激活确认退役的 revision，其余留着。
+const pushed = new Map<string, Record<string, unknown>>();
+const pushListeners = new Map<string, Set<(value: Record<string, unknown> | null) => void>>();
+
+function pushKey(pluginId: string, revision: string, sessionId: string): string {
+  return JSON.stringify([pluginId, revision, sessionId]);
+}
+
+// 结束帧是尽力送达的：同一插件与会话只留当前 revision 和最新到达的一个未确认 revision，丢了 null 也不会越攒越多。
+function capPushes(pluginId: string, latest: string, sessionId: string) {
+  const current = definitions.get(pluginId)?.revision;
+  for (const key of pushed.keys()) {
+    const [id, revision, session] = JSON.parse(key) as [string, string, string];
+    if (id === pluginId && session === sessionId && revision !== latest && revision !== current) pushed.delete(key);
+  }
+}
+
+function retirePushes(retired: ReadonlySet<string>) {
+  for (const key of pushed.keys()) {
+    const [pluginId, revision] = JSON.parse(key) as [string, string, string];
+    if (retired.has(JSON.stringify([pluginId, revision]))) pushed.delete(key);
+  }
+}
+
+function deliverPush(key: string, value: Record<string, unknown> | null) {
+  for (const listener of pushListeners.get(key) ?? []) {
+    try { listener(value); }
+    catch (error) { console.error(`[plugin-ui] push listener failed: ${key}`, error); }
+  }
+}
+
+/** WebSocket 上的插件推送帧；不是该帧时返回 false，交给其他解析器。 */
+export function receivePluginUiEvent(value: unknown, activeSessionId: string): boolean {
+  if (typeof value !== "object" || value === null || (value as { type?: unknown }).type !== "plugin_ui.event") return false;
+  const frame = value as Record<string, unknown>;
+  const state = frame.value;
+  if (typeof frame.plugin_id !== "string" || typeof frame.plugin_revision !== "string" || typeof frame.session_id !== "string"
+    || (state !== null && (typeof state !== "object" || Array.isArray(state)))) throw new Error("插件推送帧无效");
+  // 已换会话时，旧订阅在途的帧不能重新填回被清空的状态。
+  if (frame.session_id !== activeSessionId) return true;
+  const key = pushKey(frame.plugin_id, frame.plugin_revision, frame.session_id);
+  // null 表示流已结束，直接忘掉这个键，长连接跨会话不会越攒越多。
+  if (state === null) pushed.delete(key);
+  else {
+    pushed.set(key, state as Record<string, unknown>);
+    capPushes(frame.plugin_id, frame.plugin_revision, frame.session_id);
+  }
+  deliverPush(key, state as Record<string, unknown> | null);
+  return true;
+}
+
+/** 连接结束时全部推送状态失效；重连后的基线帧再装回。 */
+export function resetPluginUiEvents() {
+  const keys = [...pushed.keys()];
+  pushed.clear();
+  keys.forEach((key) => deliverPush(key, null));
+}
+
+/** 连接保留、只换跟随的会话切换：旧会话的推送状态即刻失效，回到它时由新跟随的基线帧重建。 */
+export function invalidatePluginUiSession(sessionId: string) {
+  const keys = [...pushed.keys()]
+    .filter((key) => (JSON.parse(key) as [string, string, string])[2] === sessionId);
+  for (const key of keys) {
+    pushed.delete(key);
+    deliverPush(key, null);
+  }
+}
+
+function subscribePush(pluginId: string, revision: string, sessionId: string | undefined, callback: (value: Record<string, unknown> | null) => void): () => void {
+  if (!sessionId) return () => undefined;
+  const key = pushKey(pluginId, revision, sessionId);
+  const listeners = pushListeners.get(key) ?? new Set();
+  pushListeners.set(key, listeners);
+  listeners.add(callback);
+  const latest = pushed.get(key);
+  if (latest) callback(latest);
+  return () => {
+    listeners.delete(callback);
+    if (!listeners.size) pushListeners.delete(key);
+  };
+}
+
+export function receivePluginUiResult(response: PluginUiResult) {
+  const request = pendingQueries.get(response.requestId);
+  if (!request) return;
+  tracePluginQuery(response.requestId, request, response.error ? "failed" : "received");
+  completePending(response.requestId, request);
+  if (response.error) {
+    request.reject(new Error(response.error));
+    return;
+  }
+  try {
+    const resultJson = response.resultJson ?? "{}";
+    const result = JSON.parse(resultJson) as Record<string, unknown>;
+    if (
+      request.cacheKey
+      && result.pending !== true
+      && Object.values(result).some((value) => value !== null)
+    ) {
+      immutableResults.set(request.cacheKey, resultJson);
+    }
+    request.resolve(result);
+  } catch (error) {
+    request.reject(error instanceof Error ? error : new Error("插件响应 JSON 无效"));
+  }
+}
+
+type InlineSlotName = PluginUiMountSlotName;
+
+// 页面重新可见的三种来源合成一个信号：标签切回、窗口获得焦点、宿主重新显示聊天（经 ChatHandle.shown）。
+export function notifyShown(): void {
+  windowLeft = false;
+  for (const listener of [...shownListeners]) {
+    try { listener(); }
+    catch (error) { console.error("[plugin-ui] shown callback failed", error); }
+  }
+}
+
+// 切回标签时 visibilitychange 与 focus 几乎同时到达：按“离开→回来”一个周期只算一次，订阅者不重复读取。
+// 在后台标签里打开、从没获得过焦点的页面，第一次切过来也算回来。
+let windowLeft = typeof document !== "undefined" && (document.visibilityState !== "visible" || !document.hasFocus());
+const windowReturned = () => { if (windowLeft) notifyShown(); };
+const windowDeparted = () => { windowLeft = true; };
+
+if (typeof window !== "undefined") {
+  window.addEventListener("focus", windowReturned);
+  window.addEventListener("blur", windowDeparted);
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") windowReturned(); else windowDeparted(); });
+}
+
+// 宿主组件订阅同一个合并后的"重新可见"信号。
+export function onPageShown(listener: () => void): () => void {
+  shownListeners.add(listener);
+  return () => { shownListeners.delete(listener); };
+}
+
+// 一次挂载登记的"重新可见"回调；挂载卸载时一并撤销，卸载后不再回调。
+function shownSubscriptions(isLive: () => boolean): { onShown(callback: () => void): () => void; dispose(): void } {
+  const owned = new Set<() => void>();
+  return {
+    onShown(callback) {
+      const listener = () => { if (isLive()) callback(); };
+      owned.add(listener);
+      shownListeners.add(listener);
+      return () => { owned.delete(listener); shownListeners.delete(listener); };
+    },
+    dispose() { owned.forEach((listener) => shownListeners.delete(listener)); owned.clear(); },
+  };
+}
+
+// 宿主内部组装挂载上下文用的松散形状；各挂载点必须给出的事实由 PluginUiSlot 的属性类型保证。
+type HostMountContext = PluginUiHostContext & {
+  slot: InlineSlotName | "navigation.groups" | "navigation.destinations" | "sidebar.panels";
+  sessionId?: string;
+  messageId?: string;
+  block?: unknown;
+  scope?: { dimension: string; value?: string };
+  composer?: ComposerControls;
+  fields?: ScopeFieldControls;
+  form?: NavigationFormControls;
+  navigation?: NavigationControls;
+  panel?: SidebarPanelControls;
+  meta?: HeaderMetaControls;
+  destination?: DestinationControls;
+  close?: () => void;
+};
+type HostMountFacts = Pick<HostMountContext, "slot" | "sessionId" | "messageId" | "block" | "scope">;
+
+interface HostRenderer {
+  accepts?(block: unknown): boolean;
+  prefetch?(context: HostMountContext): Promise<void>;
+  mount(host: HTMLElement, context: HostMountContext): void | (() => void);
+}
+
+// 挂载点按插槽给出的事实：插件合同里的事实去掉宿主自己构造的输入框与表单控制。
+type HostSlotFacts<S extends InlineSlotName> = Omit<PluginUiSlotFacts[S], "composer" | "fields">
+  & (S extends "scope.fields" ? { fields: ScopeFields } : unknown);
+
+interface SlotMatch {
+  plugin: PluginUiCatalogItem;
+  renderer: HostRenderer;
+  error?: string;
+}
+
+function useRegistryVersion(): number {
+  return useSyncExternalStore(
+    (listener) => { listeners.add(listener); return () => listeners.delete(listener); },
+    () => registryVersion,
+  );
+}
+
+// 目录或模块尚未就绪时，已挂载的展示保持原样。
+function slotWaiting(name: InlineSlotName): boolean {
+  return catalog.updating || catalog.plugins.some(plugin =>
+    plugin.slots.includes(name) && definitions.get(plugin.id)?.revision !== plugin.revision);
+}
+
+// 选出已加载且认领该 block 的 renderer；accepts 抛错只成为该插件的局部错误。
+// 只属于某个 owner 的插槽（工具结果）只问该插件；没有 owner 时谁也不认领。
+const OWNED_SLOTS = new Set<InlineSlotName>(["tool.result"]);
+
+function slotMatches(name: InlineSlotName, block: unknown, prefetch: boolean, owner?: string): SlotMatch[] {
+  if (OWNED_SLOTS.has(name) && !owner) return [];
+  return catalog.plugins.flatMap((plugin) => {
+    if (owner !== undefined && plugin.id !== owner) return [];
+    const loaded = definitions.get(plugin.id);
+    const renderer = loaded?.revision === plugin.revision
+      ? loaded.definition.slots[name] as HostRenderer | undefined
+      : undefined;
+    let accepted = true;
+    let error: string | undefined;
+    try { accepted = !renderer?.accepts || renderer.accepts(block); }
+    catch (cause) { error = cause instanceof Error ? cause.message : String(cause); }
+    return renderer && accepted && (!prefetch || renderer.prefetch) ? [{ plugin, renderer, error }] : [];
+  });
+}
+
+/** 宿主据此决定附件交给插件插槽还是普通附件条；调用方需随目录版本重新渲染。 */
+export function pluginSlotAccepts(name: InlineSlotName, block: unknown, owner?: string): boolean {
+  return slotMatches(name, block, false, owner).length > 0;
+}
+
+export function PluginUiSlot<S extends InlineSlotName>(props: {
+  name: S;
+  /** 只挂这个插件的渲染器；tool.result 必须提供。 */
+  owner?: string;
+  prefetch?: boolean;
+  refreshToken?: string | number;
+  /** 宿主另有降级展示时不显示目录更新和卸载提示。 */
+  quiet?: boolean;
+  fallback?: React.ReactNode;
+  /** Mount failures can use a shorter fallback than an absent renderer. */
+  errorFallback?: React.ReactNode;
+} & HostSlotFacts<S>) {
+  const { name, owner, refreshToken, prefetch = false, quiet = false, fallback = null, errorFallback = fallback } = props;
+  const { sessionId, messageId, block, scope, fields } = props as unknown as Omit<HostMountFacts, "slot"> & { fields?: ScopeFields };
+  const version = useRegistryVersion();
+  const renderers = slotMatches(name, block, prefetch, owner);
+  // 目录加载失败时保留本页已经挂载的卡片；新页面不会执行旧模块。
+  const previous = React.useRef<typeof renderers>([]);
+  const hadRenderer = React.useRef(false);
+  const contextKey = JSON.stringify([name, prefetch, sessionId, messageId, block, scope]);
+  const previousContext = React.useRef(contextKey);
+  const waiting = slotWaiting(name);
+  const keepPrevious = waiting && previousContext.current === contextKey && previous.current.length > 0
+    && previous.current.every(({plugin}) => catalog.plugins.some(item => item.id === plugin.id));
+  const shown = keepPrevious ? previous.current : renderers;
+  if (!keepPrevious) { previous.current = renderers; previousContext.current = contextKey; }
+  if (shown.length) hadRenderer.current = true;
+  const notice = quiet ? "" : waiting ? catalog.error ? `插件界面暂不可用：${catalog.error}` : "插件界面正在更新…"
+    : !shown.length && hadRenderer.current ? "本页插件界面已卸载或不再提供此展示。" : "";
+  return shown.length || notice ? (
+    <div className={prefetch ? "plugin-ui-prefetch" : "plugin-ui-slot"} data-slot={name} data-version={version}>
+      {notice && !prefetch && <p role="status">{notice} <button type="button" onClick={() => window.location.reload()}>刷新页面</button></p>}
+      {shown.map(({ plugin, renderer, error }) => error ? (
+        <div key={plugin.id}><p role="alert">插件界面错误：{error}</p>{errorFallback}</div>
+      ) : (
+        <ViewportMountedPlugin
+          key={`${plugin.id}:${plugin.revision}:${name}`}
+          pluginId={plugin.id}
+          pluginRevision={plugin.revision}
+          renderer={renderer}
+          fallback={errorFallback}
+          prefetch={prefetch}
+          refreshToken={refreshToken}
+          fields={fields}
+          context={{ slot: name, sessionId, messageId, block, scope }}
+        />
+      ))}
+    </div>
+  ) : fallback;
+}
+
+function ViewportMountedPlugin(props: React.ComponentProps<typeof MountedPlugin>) {
+  const [visible, setVisible] = useState(false);
+  const markerRef = React.useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const marker = markerRef.current;
+    if (!marker || visible) return;
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) setVisible(true);
+    }, { rootMargin: "100% 0px" });
+    observer.observe(marker);
+    return () => observer.disconnect();
+  }, [visible]);
+  if (visible) return <MountedPlugin {...props} />;
+  return <div ref={markerRef} className="plugin-ui-host" data-plugin={props.pluginId} />;
+}
+
+function MountedPlugin({
+  pluginId,
+  pluginRevision,
+  renderer,
+  context,
+  refreshToken,
+  prefetch = false,
+  fallback,
+  fields,
+  extra,
+}: {
+  fallback?: React.ReactNode;
+  pluginId: string;
+  pluginRevision: string;
+  renderer: HostRenderer;
+  prefetch?: boolean;
+  fields?: ScopeFields;
+  /** 宿主外框给这次挂载的额外能力（分组表单与提示）；身份变化即重新挂载。 */
+  extra?: Pick<HostMountContext, "form" | "navigation" | "panel" | "meta" | "destination" | "close">;
+  context: HostMountFacts;
+  refreshToken?: string | number;
+}) {
+  const hostRef = React.useRef<HTMLDivElement>(null);
+  const [error, setError] = useState<string | null>(null);
+  const ownerIdRef = React.useRef(createOwnerId());
+  const invalidatorsRef = React.useRef<Set<() => void> | null>(null);
+  const previousRefreshToken = React.useRef(refreshToken);
+  const { block, messageId, sessionId, slot } = context;
+  const dimension = context.scope?.dimension;
+  const scopeValue = context.scope?.value;
+  const blockRevision = block === undefined ? undefined : JSON.stringify(block);
+  const stableBlock = useMemo(
+    () => blockRevision === undefined ? undefined : JSON.parse(blockRevision) as unknown,
+    [blockRevision],
+  );
+  // 先通知仍存活的挂载；身份切换已执行 cleanup，新挂载只需自己的首次读取。
+  useEffect(() => {
+    if (Object.is(previousRefreshToken.current, refreshToken)) return;
+    previousRefreshToken.current = refreshToken;
+    for (const callback of invalidatorsRef.current ?? []) {
+      try { callback(); }
+      catch (error) { console.error(`[plugin-ui] invalidation failed: ${pluginId}`, error); }
+    }
+  }, [pluginId, refreshToken]);
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host) return;
+    const ownerId = ownerIdRef.current;
+    const invalidators = new Set<() => void>();
+    invalidatorsRef.current = invalidators;
+    let cleanup: void | (() => void);
+    let live = true;
+    const stopPushes = new Set<() => void>();
+    const shown = shownSubscriptions(() => live);
+    const composer = slot === "composer.toolbar" ? composerControls() : null;
+    const scopeFields = slot === "scope.fields" && fields ? fields.controls() : null;
+    setError(null);
+    const stopIntents = subscribeWorkbenchIntents(() => {
+      for (const callback of invalidators) {
+        try { callback(); }
+        catch (error) { console.error(`[plugin-ui] invalidation failed: ${pluginId}`, error); }
+      }
+    });
+    try {
+      const queryContext: HostMountContext = {
+        slot, sessionId, messageId, block: stableBlock,
+        onInvalidate: (callback) => {
+          invalidators.add(callback);
+          return () => { invalidators.delete(callback); };
+        },
+        reportError: (message) => { if (live) setError(message); },
+        onShown: shown.onShown,
+        subscribe: (callback) => {
+          const stop = subscribePush(pluginId, pluginRevision, sessionId, (value) => { if (live) callback(value); });
+          stopPushes.add(stop);
+          return () => { stop(); stopPushes.delete(stop); };
+        },
+        capabilities: { queryCacheModes: ["none", "memory", "immutable"] },
+        query: (method, payload = {}, options = {}) => queryPlugin({
+          pluginId, pluginRevision, ownerId, slot, sessionId, messageId, method, payload, options, prefetch,
+        }),
+        workbench: {
+          accepts: workbenchAccepts,
+          open: (name, payload) => live ? openInWorkbench(name, sessionId ?? "", payload) : Promise.resolve("invalid"),
+        },
+        ...(composer ? { composer: composer.controls } : {}),
+        ...(dimension ? { scope: { dimension, ...(scopeValue ? { value: scopeValue } : {}) } } : {}),
+        ...(scopeFields ? { fields: scopeFields.controls } : {}),
+        ...extra,
+      };
+      if (prefetch) {
+        void renderer.prefetch!(queryContext).catch((error: unknown) => {
+          console.debug(`[plugin-ui] prefetch failed: ${pluginId}`, error);
+        });
+      } else {
+        cleanup = renderer.mount(host, queryContext);
+      }
+    } catch (error) {
+      setError(error instanceof Error ? error.message : String(error));
+    }
+    return () => {
+      live = false;
+      stopPushes.forEach((stop) => stop());
+      shown.dispose();
+      stopIntents();
+      invalidators.clear();
+      invalidatorsRef.current = null;
+      releaseQueryOwner(ownerId);
+      composer?.release();
+      scopeFields?.release();
+      try {
+        cleanup?.();
+      } catch (error) {
+        console.error(`[plugin-ui] cleanup failed: ${pluginId}`, error);
+      }
+      host.replaceChildren();
+    };
+  }, [messageId, pluginId, pluginRevision, renderer, sessionId, slot, stableBlock, prefetch, dimension, scopeValue, fields, extra]);
+  return <><div ref={hostRef} className="plugin-ui-host" data-plugin={pluginId} hidden={error !== null} />
+    {error !== null && <><p role="status">交互内容暂不可用：{error}</p>{fallback}</>}</>;
+}
+
+/** 页面缓存查询拥有独立请求，折叠只释放订阅，不打断已经发出的读取。 */
+function queryPlugin({ pluginId, pluginRevision, ownerId, slot, sessionId, messageId, method, payload, options, prefetch }: {
+  pluginId: string; pluginRevision: string; ownerId: string; slot: PluginUiSlotName;
+  sessionId?: string; messageId?: string; method: string; payload: Record<string, unknown>;
+  options: PluginUiQueryOptions; prefetch: boolean;
+}): Promise<Record<string, unknown>> {
+  // 1. 已读卡片可暂留；旧上下文不能发送请求或读取新版本缓存。
+  const current = catalog.plugins.find(plugin => plugin.id === pluginId);
+  if (catalog.updating || current?.revision !== pluginRevision || definitions.get(pluginId)?.revision !== pluginRevision) {
+    return Promise.reject(new WebPluginError(409, "插件界面正在更新或暂不可用，请刷新页面。", "plugin_ui_stale_revision"));
+  }
+  // 参数只在插件调用边界校验；缓存沿用原有插件、消息与版本身份。
+  if (method.length < 1 || method.length > 256) return Promise.reject(new Error("插件方法名无效"));
+  let encoded: string;
+  try {
+    encoded = JSON.stringify(payload);
+  } catch (error) {
+    return Promise.reject(error instanceof Error ? error : new Error("插件参数无法序列化"));
+  }
+  if (new TextEncoder().encode(encoded).byteLength > 64 * 1024) {
+    return Promise.reject(new Error("插件参数超过 64 KiB"));
+  }
+  const cacheKey = options.cache === "immutable" || options.cache === "memory"
+    ? pluginQueryCacheKey(pluginId, pluginRevision, method, encoded, sessionId) : undefined;
+  const cachedJson = cacheKey === undefined ? undefined : immutableResults.get(cacheKey);
+  if (cachedJson !== undefined) return Promise.resolve(JSON.parse(cachedJson) as Record<string, unknown>);
+  const sharedKey = options.cache === "memory" ? cacheKey : undefined;
+  const shared = sharedKey === undefined ? undefined : sharedQueries.get(sharedKey);
+  if (shared) {
+    shared.owners.add(ownerId);
+    const request = pendingQueries.get(shared.requestId)!;
+    if (!prefetch && !request.started) request.interactive = true;
+    drainQueryQueue();
+    return shared.promise;
+  }
+
+  // 2. 同一内存缓存键共享一个有界请求。
+  const requestId = createRequestId();
+  const requestOwnerId = sharedKey === undefined ? ownerId : createOwnerId();
+  const promise = new Promise<Record<string, unknown>>((resolve, reject) => {
+    const abort = new AbortController();
+    const request: PendingQuery = {
+      resolve, reject, ownerId: requestOwnerId, cacheKey, sharedKey, slot, started: false, abort,
+      pluginId, method, sessionId, messageId, queuedAt: performance.now(),
+      // 已挂载的槽位是用户正在看的内容，走交互通道；只有预取占后台名额。
+      interactive: !prefetch,
+      send: () => {
+        tracePluginQuery(requestId, request, "sent");
+        request.timeout = window.setTimeout(() => {
+          tracePluginQuery(requestId, request, "timeout");
+          rejectOwnerPending(requestOwnerId, "插件请求超时");
+        }, 30_000);
+        void queryWebPluginUi({ pluginId, pluginRevision, method, payload, slot, sessionId,
+          signal: abort.signal }).then(
+          (result) => receivePluginUiResult({ requestId, resultJson: JSON.stringify(result) }),
+          (error: unknown) => {
+            const pending = pendingQueries.get(requestId);
+            if (!pending) return;
+            tracePluginQuery(requestId, pending, "failed");
+            completePending(requestId, pending);
+            pending.reject(error instanceof Error ? error : new Error("插件查询失败"));
+          },
+        );
+      },
+    };
+    try {
+      pendingQueries.enqueue(requestId, request);
+      tracePluginQuery(requestId, request, "queued");
+    } catch (error) {
+      reject(error instanceof Error ? error : new Error("插件请求无法入队"));
+    }
+  });
+  if (sharedKey !== undefined && pendingQueries.get(requestId)) {
+    sharedQueries.set(sharedKey, { requestId, promise, owners: new Set([ownerId]) });
+  }
+  drainQueryQueue();
+  return promise;
+}
+
+/** 未发出的孤立预取直接撤销；在途读取最多继续到现有传输期限。 */
+function releaseQueryOwner(ownerId: string) {
+  for (const shared of sharedQueries.values()) {
+    shared.owners.delete(ownerId);
+    const request = pendingQueries.get(shared.requestId)!;
+    if (shared.owners.size === 0 && !request.started) {
+      completePending(shared.requestId, request, false);
+      request.reject(new Error("插件界面已卸载"));
+    }
+  }
+  rejectOwnerPending(ownerId, "插件界面已卸载");
+}
+
+async function queryWebPluginUi({
+  pluginId,
+  pluginRevision,
+  method,
+  payload,
+  slot,
+  sessionId,
+  signal,
+}: {
+  pluginId: string;
+  pluginRevision: string;
+  method: string;
+  payload: Record<string, unknown>;
+  slot: PluginUiSlotName;
+  sessionId?: string;
+  signal: AbortSignal;
+}): Promise<Record<string, unknown>> {
+  const response = await fetch("/api/chat/plugin-ui/query", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      plugin_id: pluginId,
+      plugin_revision: pluginRevision,
+      method,
+      payload,
+      slot,
+      session_id: sessionId ?? null,
+    }),
+    signal,
+  });
+  if (!response.ok) {
+    const error = await webPluginError(response);
+    if (response.status === 409 && error.code === "plugin_ui_stale_revision") {
+      await refreshStaleCatalog();
+    }
+    throw error;
+  }
+  if (!staleCatalogRead && !catalog.updating && !catalog.error
+      && catalog.plugins.some(item => item.id === pluginId && item.revision === pluginRevision)) {
+    staleRecoveryAttempted = false;
+  }
+  return requireRecord(await response.json(), "插件响应");
+}
+
+class WebPluginError extends Error {
+  constructor(readonly status: number, message: string, readonly code?: string) { super(message); }
+}
+
+/** 同一恢复周期只读取一次正式目录，不重放旧模块查询。 */
+async function refreshStaleCatalog(): Promise<void> {
+  if (staleCatalogRead) return staleCatalogRead;
+  if (staleRecoveryAttempted) {
+    throw new WebPluginError(409, "插件界面仍未恢复，请刷新页面。", "plugin_ui_stale_revision");
+  }
+  staleRecoveryAttempted = true;
+  const read = loadWebPluginCatalog(AbortSignal.timeout(10_000));
+  staleCatalogRead = read;
+  try { await read; }
+  catch (error) {
+    throw new WebPluginError(409, `插件界面更新失败：${error instanceof Error ? error.message : String(error)}。请刷新页面。`, "plugin_ui_stale_revision");
+  }
+  finally {
+    if (staleCatalogRead === read) staleCatalogRead = null;
+    drainCatalogRecheck();
+  }
+}
+
+async function webPluginError(response: Response): Promise<WebPluginError> {
+  const value = await response.json().catch(() => null);
+  const detail = value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>).detail : undefined;
+  if (detail && typeof detail === "object" && !Array.isArray(detail)) {
+    const body = detail as Record<string, unknown>;
+    if (typeof body.code === "string" && typeof body.message === "string") {
+      return new WebPluginError(response.status, body.message, body.code);
+    }
+  }
+  return new WebPluginError(response.status, typeof detail === "string" ? detail : `插件请求失败 (${response.status})`);
+}
+
+function pluginQueryCacheKey(
+  pluginId: string,
+  pluginRevision: string,
+  method: string,
+  payloadJson: string,
+  sessionId?: string,
+): string {
+  return [pluginId, pluginRevision, method, sessionId ?? "", payloadJson].join("\n");
+}
+
+function rejectOwnerPending(ownerId: string, message: string) {
+  const owned = pendingQueries.removeOwner(ownerId);
+  for (const [, request] of owned) {
+    if (request.sharedKey) sharedQueries.delete(request.sharedKey);
+    window.clearTimeout(request.timeout);
+    request.abort.abort();
+    request.reject(new Error(message));
+  }
+  drainQueryQueue();
+}
+
+function rejectAllPending(message: string) {
+  const requests = pendingQueries.clear();
+  sharedQueries.clear();
+  for (const [, request] of requests) {
+    window.clearTimeout(request.timeout);
+    request.abort.abort();
+    request.reject(new Error(message));
+  }
+  drainQueryQueue();
+}
+
+function drainQueryQueue() {
+  while (true) {
+    const next = pendingQueries.startNext();
+    if (!next) return;
+    const [requestId, request] = next;
+    try {
+      request.send();
+    } catch (error) {
+      completePending(requestId, request, false);
+      request.reject(error instanceof Error ? error : new Error("插件请求失败"));
+    }
+  }
+}
+
+function completePending(requestId: string, request: PendingQuery, shouldDrain = true) {
+  if (pendingQueries.complete(requestId) !== request) {
+    throw new Error("插件请求完成状态失配");
+  }
+  if (request.sharedKey) sharedQueries.delete(request.sharedKey);
+  window.clearTimeout(request.timeout);
+  if (shouldDrain) drainQueryQueue();
+}
+
+function createOwnerId(): string {
+  return `owner:${createRequestId()}`;
+}
+
+/** 复用原生已有的结构日志入口，只记录请求身份和阶段耗时。 */
+function tracePluginQuery(requestId: string, request: PendingQuery, phase: string) {
+  console.log(`[akashic-trace] ${JSON.stringify({
+    event: `webui.plugin_query.${phase}`, request_id: requestId, owner_id: request.ownerId,
+    plugin_id: request.pluginId, method: request.method, slot: request.slot,
+    session_id: request.sessionId, message_id: request.messageId, wall_ms: Date.now(),
+    elapsed_ms: Math.round((performance.now() - request.queuedAt) * 1000) / 1000,
+  })}`);
+}

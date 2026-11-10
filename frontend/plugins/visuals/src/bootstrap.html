@@ -1,0 +1,17 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>交互图</title></head>
+<body>
+<script>
+  // 此响应拥有独立 CSP 和 opaque origin；只接收父页面的一次文档交付。
+  addEventListener('message', function openVisual(event) {
+    if (event.source !== parent || event.data?.channel !== 'akashic.visual.v1'
+        || event.data.type !== 'init' || typeof event.data.document !== 'string') return;
+    removeEventListener('message', openVisual);
+    document.open();
+    document.write(event.data.document);
+    document.close();
+  });
+</script>
+</body>
+</html>

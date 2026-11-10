@@ -23,9 +23,6 @@ from scripts.akashic_release.source import commit_subject, resolve_target
 from scripts.akashic_release.source import verify_bootstrap_checkout
 from scripts.akashic_release.systemd import verify_external_service_contract
 from scripts.akashic_release.warm import StateCacheWarmer
-from scripts.akashic_release.hot import GateRejected, hot_install, revert_hot
-from scripts.akashic_release.store import active_source
-from scripts.compose_source import compose_source, parse_override, settle_overrides
 
 _DEFAULT_ORIGIN = "https://github.com/kachofugetsu09/akashic-agent.git"
 _DEFAULT_ROOT = Path("/srv/data/services/akashic")
@@ -50,47 +47,18 @@ def _confirm(commit: str, subject: str, current: str | None, *, yes: bool) -> No
         raise RuntimeError("operator 取消安装")
 
 
-# 拆仓前的自部署 worker 用 --no-activate 准备后，按它请求的 Core 提交找 Bridge 解释器再以 --prepared 进入
-# 目标版本 worker；产物按合成提交命名，给它一个指向合成产物的入口，老实例才能自部署到拆仓后的版本。
-def _link_core_bridge(paths: ReleasePaths, core_commit: str, commit: str) -> None:
-    link = paths.bridge_venv(core_commit)
-    if core_commit != commit and not link.exists() and not link.is_symlink():
-        link.symlink_to(commit)
-
-
-# 插件覆盖 = 当前发行版记录的覆盖加上本次 --plugin / --reset-plugin；锁定提交已包含的自动退役。
-def _settle_overrides(args: argparse.Namespace, checkout: Path, core_commit: str) -> tuple[dict[str, str], dict[str, str]]:
-    requested = active_source(args.runtime_env).overrides
-    for value in args.plugin:
-        name, commit = parse_override(value)
-        requested[name] = commit
-    for name in args.reset_plugin:
-        _ = requested.pop(name, None)
-    return settle_overrides(checkout, core_commit, requested)
-
-
 def install(args: argparse.Namespace, *, self_deploy: dict[str, object] | None = None) -> dict[str, object]:
     paths = ReleasePaths(args.root.resolve())
     checkout = args.source_checkout.resolve(strict=True)
-    core_commit = resolve_target(args.origin, args.commit, run=_run)
-    verify_bootstrap_checkout(checkout, core_commit, args.origin, run=_run)
-    # 拆分后的 Core 提交带 plugins.lock：合成出确定性的源提交，后续全部以它为发布身份。
-    overrides, retired = _settle_overrides(args, checkout, core_commit)
-    source = compose_source(checkout, core_commit, overrides=overrides)
-    commit = source.commit
-    origin_info = {"coreCommit": core_commit, "pluginsCommit": source.plugins_commit,
-                   "pluginOverrides": overrides, "retiredOverrides": retired}
+    commit = resolve_target(args.origin, args.commit, run=_run)
+    verify_bootstrap_checkout(checkout, commit, args.origin, run=_run)
     active_path = paths.activation / "active.json"
     current = (
         str(read_json(active_path).get("targetCommit"))
         if active_path.exists()
         else None
     )
-    subject = commit_subject(checkout, run=_run)
-    if source.plugins_commit is not None:
-        pinned = "".join(f" + {name}@{value[:12]}" for name, value in sorted(overrides.items()))
-        subject = f"{subject} (core {core_commit[:12]} + plugins {source.plugins_commit[:12]}{pinned})"
-    _confirm(commit, subject, current, yes=args.yes)
+    _confirm(commit, commit_subject(checkout, run=_run), current, yes=args.yes)
 
     if args.inputs is not None and args.plan is None:
         raise ValueError("--inputs 需要 --plan")
@@ -99,22 +67,6 @@ def install(args: argparse.Namespace, *, self_deploy: dict[str, object] | None =
 
     with release_lock(paths.run / "release.lock"):
         paths.create_layout()
-        # 只改内置插件时先试热更新：不重建镜像、不重启实例；不满足条件就走完整发布。
-        reasons: list[str] = []
-        if not args.no_activate and args.plan is None and not args.full:
-            try:
-                hot = hot_install(paths=paths, checkout=checkout, commit=commit,
-                                  runtime_env=args.runtime_env, reasons=reasons)
-            except GateRejected as error:
-                if args.hot_only:
-                    return {"status": "rejected", "commit": commit, "reasons": [str(error)]}
-                raise
-            if hot is not None:
-                return {**hot, **origin_info}
-        if args.hot_only:
-            return {"status": "needs-full", "commit": commit, "reasons": reasons}
-        if reasons:
-            print("完整发布：" + "；".join(reasons), file=sys.stderr)
         verify_host_prerequisites(mise=args.mise, run=_run)
         verify_external_service_contract(run=_run, unit_root=args.unit_root)
         # 页缓存跨进程保留：只准备产物的一轮也预热，自部署 worker 停机前即可命中。
@@ -133,7 +85,6 @@ def install(args: argparse.Namespace, *, self_deploy: dict[str, object] | None =
         status = "prepared"
         if args.no_activate:
             warmer.wait()
-            _link_core_bridge(paths, core_commit, commit)
         else:
             status = activate_release(
                 paths=paths,
@@ -153,7 +104,6 @@ def install(args: argparse.Namespace, *, self_deploy: dict[str, object] | None =
     return {
         "status": status,
         "commit": commit,
-        **origin_info,
         "imageId": manifest["imageId"],
         "backupRequested": args.backup,
         "degradedExternal": (runtime_check.get("degraded_external", {})
@@ -173,12 +123,6 @@ def resume(args: argparse.Namespace) -> dict[str, object]:
                                 environment_file=args.runtime_env, mise=args.mise, run=_run,
                                 unit_root=args.unit_root, cli_path=args.cli_path)
     return {"status": status, "attempt": str(args.attempt)}
-
-
-def revert(args: argparse.Namespace) -> dict[str, object]:
-    paths = ReleasePaths(args.root.resolve(strict=True))
-    with release_lock(paths.run / "release.lock"):
-        return revert_hot(paths=paths, runtime_env=args.runtime_env)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -203,12 +147,6 @@ def _parser() -> argparse.ArgumentParser:
     install_parser.add_argument("--plan", type=Path, help="显式外置插件目标；省略时更新 Core/Bridge 与内置 preset，并先执行必要内置迁移")
     install_parser.add_argument("--inputs", type=Path, help="清单引用的 bundle/wheels 目录")
     install_parser.add_argument("--backup", action="store_true", help="停止期备份 state 和 runtime.env；默认不备份")
-    install_parser.add_argument("--full", action="store_true", help="跳过热更新，总是重建镜像并重启")
-    install_parser.add_argument("--hot-only", action="store_true", help="只尝试热更新；不满足条件时不做任何改动")
-    install_parser.add_argument("--plugin", action="append", default=[], metavar="NAME@SHA",
-                                help="把一个内置插件换成插件仓库 main 上这个提交的版本；之后的部署沿用，直到锁定提交包含它")
-    install_parser.add_argument("--reset-plugin", action="append", default=[], metavar="NAME",
-                                help="撤掉一个插件覆盖，回到 plugins.lock 的版本")
     install_parser.set_defaults(handler=install)
 
     doctor_parser = subparsers.add_parser("doctor")
@@ -224,11 +162,6 @@ def _parser() -> argparse.ArgumentParser:
     resume_parser.add_argument("--cli-path", type=Path, default=Path.home() / ".local/bin/akashic-release")
     resume_parser.set_defaults(handler=resume)
 
-    revert_parser = subparsers.add_parser("revert-hot", help="撤回最近一次热更新，换回上一个发行版")
-    revert_parser.add_argument("--root", type=Path, default=_DEFAULT_ROOT)
-    revert_parser.add_argument("--runtime-env", type=Path, default=_DEFAULT_ENV)
-    revert_parser.set_defaults(handler=revert)
-
     migrate_parser = subparsers.add_parser("migrate")
     migrate_parser.add_argument("--snapshot-manifest", type=Path, required=True)
     migrate_parser.set_defaults(
@@ -236,11 +169,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     from scripts.akashic_release.self_deploy import submit, status, worker
     submit_parser = subparsers.add_parser("submit", help="在本次 Shell 回合正常结束并送达后部署")
-    submit_parser.add_argument("--commit", help="Core 提交；只传 --plugin/--reset-plugin 时默认是当前 Core")
-    submit_parser.add_argument("--plugin", action="append", default=[], metavar="NAME@SHA",
-                               help="把一个内置插件换成插件仓库 main 上这个提交的版本；可重复")
-    submit_parser.add_argument("--reset-plugin", action="append", default=[], metavar="NAME",
-                               help="撤掉一个插件覆盖，回到 plugins.lock 的版本；可重复")
+    submit_parser.add_argument("--commit", required=True)
     submit_parser.add_argument("--root", type=Path, default=_DEFAULT_ROOT)
     submit_parser.add_argument("--runtime-env", type=Path, default=_DEFAULT_ENV)
     submit_parser.add_argument("--mise", type=Path, default=_DEFAULT_MISE)

@@ -1,0 +1,420 @@
+.conversation-navigation {
+  position: relative;
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+  color: var(--ak-ink-primary);
+  background: var(--ak-paper-canvas);
+  outline: none;
+}
+
+.conversation-navigation__header {
+  display: flex;
+  min-height: 64px;
+  align-items: flex-end;
+  justify-content: space-between;
+  padding-block: 12px 10px;
+  padding-inline: 18px 14px;
+}
+
+.conversation-destination small,
+.conversation-session small {
+  color: var(--ak-color-text-secondary);
+}
+
+.conversation-destinations {
+  display: grid;
+  gap: 2px;
+  padding: 0 10px 8px;
+}
+
+.conversation-destinations.featured {
+  padding: 0 10px 0;
+}
+
+.conversation-destination {
+  display: grid;
+  width: 100%;
+  min-height: 52px;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  border: 0;
+  border-radius: var(--ak-radius-sm);
+  padding-block: 6px;
+  padding-inline: 14px 12px;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  text-align: start;
+  text-decoration: none;
+  transition:
+    background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard),
+    color var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+}
+
+.conversation-destination:hover,
+.conversation-destination:focus-visible {
+  background: color-mix(in oklab, var(--ak-ink-primary) 5%, transparent);
+}
+
+.conversation-destination.active {
+  color: var(--ak-ink-primary);
+  background: var(--ak-paper-sheet);
+  box-shadow: inset 2px 0 0 var(--ak-rule-strong);
+}
+
+.conversation-destination.active .conversation-destination__icon,
+.conversation-destination.active small,
+.conversation-destination.active .conversation-destination__trail > svg {
+  color: inherit;
+}
+
+.conversation-destination:focus-visible,
+.conversation-session:focus-visible,
+.conversation-navigation__action:focus-visible {
+  outline: 2px solid var(--ak-color-action-primary);
+  outline-offset: -2px;
+}
+
+.conversation-destination:disabled {
+  opacity: 0.48;
+}
+
+.conversation-destination.featured {
+  min-height: 64px;
+}
+
+.conversation-destination__icon {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  color: var(--ak-ink-secondary);
+  background: transparent;
+}
+
+.conversation-destination__copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.conversation-destination__copy strong {
+  font-size: 0.9375rem;
+  font-weight: 650;
+  line-height: 1.25;
+}
+
+.conversation-destination__copy small {
+  overflow: hidden;
+  font-size: 0.75rem;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversation-destination__badge {
+  color: var(--ak-color-text-secondary);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.conversation-destination__trail {
+  display: flex;
+  min-width: 20px;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* 行尾 Chevron：光学右移（墨水偏左）。 */
+.conversation-destination__trail > svg {
+  flex: 0 0 auto;
+  translate: 0.75px 0;
+}
+
+.conversation-navigation__sessions {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.conversation-navigation__heading {
+  color: var(--ak-color-text-secondary);
+  font-size: var(--chat-type-section, 0.8125rem);
+  font-weight: 650;
+  line-height: 1rem;
+  letter-spacing: normal;
+}
+
+.conversation-navigation__heading--section {
+  padding: 14px 24px 6px;
+}
+
+.conversation-session-list {
+  display: grid;
+  min-height: 0;
+  flex: 1;
+  grid-auto-rows: min-content;
+  align-content: start;
+  gap: 1px;
+  padding: 0 10px 8px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.conversation-session {
+  display: flex;
+  width: 100%;
+  min-height: 64px;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  border-radius: var(--ak-radius-sm);
+  padding-block: 8px;
+  padding-inline: 10px 12px;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  text-align: start;
+  transition:
+    background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard),
+    color var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+}
+
+.conversation-session:hover,
+.conversation-session:focus-visible {
+  background: color-mix(in oklab, var(--ak-ink-primary) 5%, transparent);
+}
+
+.conversation-session.active {
+  background: var(--ak-paper-sheet);
+  box-shadow: inset 2px 0 0 var(--ak-rule-strong);
+}
+
+/* Desktop entry 侧栏（styles.css 的 .chat-sidebar--entry）有自己的 active 底色，
+   不继承基础会话导航的左侧墨色标记线。 */
+.chat-sidebar--entry .conversation-destination.active,
+.chat-sidebar--entry .conversation-session.active {
+  box-shadow: none;
+}
+
+.conversation-session.unavailable {
+  opacity: 0.7;
+}
+
+.conversation-session.unavailable .conversation-session__copy small {
+  color: var(--ak-color-status-warning);
+}
+
+.conversation-session__copy,
+.conversation-session__title {
+  min-width: 0;
+}
+
+.conversation-session__copy {
+  display: grid;
+  flex: 1;
+  gap: 4px;
+}
+
+.conversation-session__title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.conversation-session__title strong {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+/* 行内重命名：输入框沿用标题排版，只以发丝底线标示编辑态。 */
+.conversation-session.editing {
+  cursor: default;
+}
+
+.conversation-session.editing:active {
+  scale: none;
+}
+
+.conversation-session-title-input {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-block-end: 1px solid var(--ak-ink-secondary, currentColor);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  line-height: 1.4;
+  outline: none;
+}
+
+.conversation-session__title time {
+  flex: 0 0 auto;
+  color: var(--ak-color-text-secondary);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.35;
+}
+
+.conversation-session small {
+  min-width: 0;
+  font-size: 0.75rem;
+  line-height: 1.35;
+}
+
+.conversation-session.active .conversation-session__title time,
+.conversation-session.active .conversation-session__copy small {
+  color: var(--ak-ink-secondary);
+  opacity: 1;
+}
+
+.conversation-navigation__actions {
+  display: grid;
+  gap: 2px;
+  padding: 10px 10px 14px;
+}
+
+.conversation-navigation__action {
+  display: flex;
+  min-height: 44px;
+  align-items: center;
+  gap: 12px;
+  border: 0;
+  border-radius: var(--ak-radius-sm);
+  padding-block: 8px;
+  padding-inline: 14px;
+  color: var(--ak-ink-secondary);
+  background: transparent;
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 500;
+  line-height: 1.35;
+  text-align: start;
+  transition:
+    background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard),
+    color var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+}
+
+.conversation-navigation__action:hover,
+.conversation-navigation__action:focus-visible {
+  color: var(--ak-ink-primary);
+  background: var(--ak-paper-sheet);
+}
+
+.conversation-navigation__action.primary {
+  width: fit-content;
+  margin-top: 8px;
+  padding-inline: 14px 18px;
+  color: var(--ak-color-on-action-primary);
+  background: var(--ak-color-action-primary);
+  font-weight: 600;
+}
+
+.conversation-navigation__action.primary:hover,
+.conversation-navigation__action.primary:focus-visible {
+  color: var(--ak-color-on-action-primary);
+  background: color-mix(in srgb, var(--ak-color-action-primary) 92%, var(--ak-color-on-action-primary) 8%);
+}
+
+.conversation-navigation__action:disabled {
+  opacity: 0.45;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .conversation-destination,
+  .conversation-session,
+  .conversation-navigation__action {
+    transition-duration: 0.01ms;
+  }
+}
+
+/* 两行会话：状态槽位对齐标题行，而不是落在标题与预览之间。 */
+.conversation-session > .session-status-slot {
+  align-self: start;
+  margin-block-start: 2px;
+}
+
+/* 时间分组标签：比分组标题更轻，只是列表里的一段留白和一行小字，不加线不加底。 */
+.conversation-session-group {
+  padding: 14px 10px 4px;
+  color: var(--chat-faint, var(--ak-color-text-secondary));
+  font-size: 0.75rem;
+  line-height: 1rem;
+}
+
+.conversation-session-group:first-child {
+  padding-block-start: 2px;
+}
+
+/* 一行标题放不下时右缘 28px 渐隐，代替省略号；行悬停或键盘聚焦 0.35s 后以 30px/s 往返滚出尾部（参考 Memoh 的 marquee）。
+   只动画 --marquee-pos 一个量：位移与两侧渐隐都是它的函数，滚动与渐隐同步；越界部分被 clamp 钉住，就是两端的停顿。 */
+.marquee {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.marquee__content {
+  display: inline-block;
+  white-space: nowrap;
+}
+
+/* 位移与遮罩只给放不下的标题：放得下的行不建合成层，文字保持普通灰度抗锯齿。 */
+.marquee.is-truncated > .marquee__content {
+  transform: translateX(clamp(calc(-1 * var(--marquee-travel, 0px)), calc(-1 * var(--marquee-pos, 0px)), 0px));
+}
+
+.marquee.is-truncated {
+  mask-image: linear-gradient(to right,
+    transparent,
+    #000 min(var(--marquee-pos, 0px), 12px),
+    #000 calc(100% - min(var(--marquee-travel) - var(--marquee-pos, 0px), 28px)),
+    transparent);
+}
+
+@property --marquee-pos {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 0px;
+}
+
+@keyframes marquee-pingpong {
+  0%, 100% { --marquee-pos: -6px; }
+  50% { --marquee-pos: calc(var(--marquee-travel, 0px) + 6px); }
+}
+
+@media (hover: hover) and (prefers-reduced-motion: no-preference) {
+  :is(
+    .conversation-session-row:hover,
+    .conversation-session:focus-visible,
+    .group-session:is(:hover, :focus-visible),
+    .navigation-group__open:is(:hover, :focus-visible),
+    .conversation-heading h1:hover,
+    .turn-rail__list button:is(:hover, :focus-visible)
+  ) .marquee.is-truncated.is-animatable:not(.is-still) {
+    animation: marquee-pingpong var(--marquee-duration, 4s) linear 0.35s infinite;
+  }
+}
+
+/* Only a mounted plugin reserves space below the session list. */
+.plugin-ui-slot[data-slot="drawer.panel"] {
+  position: relative;
+  z-index: 2;
+  min-height: 80px;
+  flex: 0 0 auto;
+}

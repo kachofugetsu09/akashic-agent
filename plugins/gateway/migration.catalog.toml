@@ -1,0 +1,17 @@
+schema_version = 2
+bundle_id = "gateway_config"
+version = "1.0.1"
+migration_root = "migrations/gateway_migrations"
+package_name = "gateway_migrations"
+
+[[migrations]]
+id = "20261010_01_gateway_config_copy"
+path = "20261010_01_gateway_config_copy.py"
+depends = []
+transactional = false
+
+[[migrations]]
+id = "20261011_01_retire_gateway_config"
+path = "20261011_01_retire_gateway_config.py"
+depends = ["20261010_01_gateway_config_copy"]
+transactional = false

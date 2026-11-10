@@ -1,0 +1,206 @@
+from __future__ import annotations
+
+import asyncio
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
+from dataclasses import dataclass
+from typing import Any
+
+from agent.plugin_composition import Context, Effect
+from plugins.channels.contract import CHANNEL_INPUT_V2 as CHANNEL_INPUT, ChannelInboundMessage
+from plugins.ledger.contract import MESSAGE_WRITERS, ContentPart, ContentReferences, Message, MessageReader, MessageWriter, UserInputs
+from plugins.sources.contract import (
+    SOURCE_CHECK_V2 as SOURCE_CHECK,
+    SOURCE_INTERRUPT_V2 as SOURCE_INTERRUPT,
+    SOURCE_SESSION_V4 as SOURCE_SESSION,
+    SOURCES_V5 as SOURCES,
+    AsyncSource as Source,
+    GuardedSourceSession as SourceSession,
+)
+
+api_version = 3
+name = "sources"
+version = "1.0.0"
+desc = "按来源注册接纳与控制，供渠道和默认回复组合使用"
+inject = (MESSAGE_WRITERS,)
+
+Accept = Callable[[str, str, ChannelInboundMessage], Awaitable[Message]]
+Changed = Callable[[MessageReader, str], None]
+
+
+from .session import SourceSession as _SourceSession, check_source
+
+
+@dataclass(slots=True)
+class _Registration:
+    source: Source
+    visible: bool = False
+
+
+class Sources:
+    """每个来源和输入渠道只绑定一个 owner；不拥有 Message 或活动 Task。"""
+
+    def __init__(self, context: Context, user_inputs: UserInputs):
+        self._context = context
+        self._user_inputs = user_inputs
+        self._items: dict[str, _Registration] = {}
+        self._changes: set[asyncio.Event] = set()
+
+    def _notify_changes(self) -> None:
+        """唤醒只读订阅者；订阅者随后重读唯一注册表事实。"""
+        for event in tuple(self._changes):
+            event.set()
+
+    async def register(
+        self, ctx: Context, *, name: str, open: Callable[[str], SourceSession],
+        needs_reply: Callable[[MessageReader], Awaitable[bool]], accept: Accept | None = None,
+        channels: tuple[str, ...] | None = (),
+    ) -> Effect:
+        """来源注册随插件 effect 生灭；None channels 表示唯一默认输入来源。"""
+        source = Source(
+            ctx, name, open, needs_reply, accept,
+            None if channels is None else tuple(channels),
+        )
+        if ctx.require(SOURCES) is not self:
+            raise PermissionError("来源注册不属于当前组合")
+        if not source.name or source.accept is None and source.channels != () or (
+            source.channels is not None and any(not channel for channel in source.channels)
+        ):
+            raise ValueError("来源名称和渠道必须明确")
+
+        registration: _Registration | None = None
+
+        def setup():
+            nonlocal registration
+            if source.name in self._items:
+                raise ValueError("来源已有 owner: " + source.name)
+            for existing in self._items.values():
+                if source.channels is None and existing.source.channels is None or (
+                    source.channels is not None and existing.source.channels is not None
+                    and set(source.channels).intersection(existing.source.channels)
+                ):
+                    raise ValueError("输入渠道已有来源 owner")
+            registration = _Registration(source)
+            self._items[source.name] = registration
+
+            def close() -> None:
+                assert registration is not None
+                if self._items.get(source.name) is not registration:
+                    return
+                del self._items[source.name]
+                if registration.visible:
+                    self._notify_changes()
+
+            return close
+
+        effect = await ctx.effect(setup, label="source:" + source.name)
+        assert registration is not None
+
+        async def publish_when_ready() -> None:
+            """首个 activation-ready 后发布 exact registration。"""
+            if self._items.get(source.name) is not registration:
+                return
+            registration.visible = True
+            self._notify_changes()
+
+        try:
+            _ = await ctx.spawn(
+                publish_when_ready(), name="source-ready:" + source.name,
+            )
+        except BaseException as error:
+            try:
+                await effect.aclose()
+            except BaseException as cleanup_error:
+                raise BaseExceptionGroup(
+                    "来源登记和通知任务清理失败", [error, cleanup_error]
+                ) from None
+            raise
+        return effect
+
+    async def needs_reply(self, reader: MessageReader, source: str) -> bool:
+        """来源自己解释是否待回复；注册表不猜来源的完成规则。"""
+        return await self._items[source].source.needs_reply(reader)
+
+    def user_inputs(
+        self, ctx: Context, *, name: str,
+        content: Mapping[str, Callable[[ContentPart], ContentReferences]],
+        part_metadata: bool = False,
+    ) -> Callable[..., MessageWriter]:
+        """只有登记该来源的插件能取得它的用户输入写入器；登记撤销后不能再打开新的写入器。"""
+        registration = self._items.get(name)
+        if registration is None or registration.source.context is not ctx:
+            raise PermissionError("用户输入只属于已登记的来源: " + name)
+        bound = self._user_inputs.bind(ctx, source=name, content=content, part_metadata=part_metadata)
+
+        def open(*args: Any, **kwargs: Any) -> MessageWriter:
+            if self._items.get(name) is not registration:
+                raise PermissionError("来源登记已撤销: " + name)
+            return bound(*args, **kwargs)
+        return open
+
+    def entries(self) -> tuple[Source, ...]:
+        return tuple(
+            registration.source
+            for registration in self._items.values()
+            if registration.visible
+        )
+
+    async def changes(self) -> AsyncGenerator[tuple[Source, ...], None]:
+        """订阅登记的 active 快照，不保存 cursor，也不执行业务回调。"""
+        event = asyncio.Event()
+        self._changes.add(event)
+        previous: tuple[Source, ...] | None = None
+        try:
+            while True:
+                event.clear()
+                current = self.entries()
+                if previous is None or len(current) != len(previous) or any(
+                    left is not right for left, right in zip(current, previous)
+                ):
+                    previous = current
+                    yield current
+                    continue
+                await event.wait()
+        finally:
+            self._changes.discard(event)
+
+    def _route(self, channel: str) -> Source:
+        """输入和控制共用唯一的专属渠道优先规则。"""
+        default: Source | None = None
+        for registration in self._items.values():
+            source = registration.source
+            if source.channels is None:
+                default = source
+            elif channel in source.channels:
+                return source
+        if default is None:
+            raise ValueError("输入渠道没有来源: " + channel)
+        return default
+
+    async def accept(self, session_id: str, message_id: str, message: ChannelInboundMessage) -> Message:
+        """在所选来源的作用域中接纳输入。"""
+        async with self._context.runtime_scope():
+            selected = self._route(message.channel)
+            assert selected.accept is not None
+            async with selected.context.runtime_scope():
+                return await selected.accept(session_id, message_id, message)
+
+    async def interrupt(self, reader: MessageReader, message_id: str, channel: str) -> bool:
+        """同一来源解释待回复状态并提交 pause；渠道仍拥有停止确认。"""
+        async with self._context.runtime_scope():
+            selected = self._route(channel)
+            async with selected.context.runtime_scope():
+                with reader.read_snapshot():
+                    if reader.head(source=selected.name) < 0:
+                        return False
+                pending = await selected.needs_reply(reader)
+                await selected.open(reader.session_id).pause(message_id)
+                return pending
+
+
+async def apply(ctx: Context) -> None:
+    sources = Sources(ctx, await ctx.require(MESSAGE_WRITERS).claim_user_inputs(ctx))
+    _ = await ctx.provide(SOURCE_CHECK, check_source)
+    _ = await ctx.provide(SOURCE_SESSION, _SourceSession)
+    _ = await ctx.provide(SOURCES, sources)
+    _ = await ctx.provide(CHANNEL_INPUT, sources.accept)
+    _ = await ctx.provide(SOURCE_INTERRUPT, sources.interrupt)

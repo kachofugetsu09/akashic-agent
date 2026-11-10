@@ -3,22 +3,12 @@ name: CI
 on:
   workflow_dispatch:
   pull_request:
-  # 插件仓库的 PR 调用同一套检查：Core 取 main，插件取 PR 提交。
-  workflow_call:
-    inputs:
-      plugins_commit:
-        type: string
-        required: true
-      plugins_base:
-        type: string
-        default: ""
 
 permissions:
   contents: read
 
-# 固定前缀：被插件仓库调用时 github.workflow 是调用方名称，两个工作流会落进同一组互相取消。
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -29,16 +19,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
         with:
-          repository: ${{ inputs.plugins_commit && 'kachofugetsu09/akashic-agent' || github.repository }}
-          ref: ${{ inputs.plugins_commit && 'main' || '' }}
           fetch-depth: 0
-
-      - name: Compose with plugins
-        env:
-          BASE: origin/main
-          PLUGINS_COMMIT: ${{ inputs.plugins_commit }}
-          PLUGINS_BASE: ${{ inputs.plugins_base }}
-        run: sh scripts/ci_compose.sh
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -74,7 +55,7 @@ jobs:
           .venv/bin/pyright --level error
           .venv/bin/pyright --project pyrightconfig.tests.json --level error
           .venv/bin/python scripts/generate_control_schema.py --check
-          python scripts/check_yoyo_migrations.py --base "$COMPOSED_BASE"
+          python scripts/check_yoyo_migrations.py --base origin/main
 
       - name: Check Python SDK
         run: |
@@ -118,14 +99,6 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
-        with:
-          repository: ${{ inputs.plugins_commit && 'kachofugetsu09/akashic-agent' || github.repository }}
-          ref: ${{ inputs.plugins_commit && 'main' || '' }}
-
-      - name: Compose with plugins
-        env:
-          PLUGINS_COMMIT: ${{ inputs.plugins_commit }}
-        run: sh scripts/ci_compose.sh
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -140,8 +113,4 @@ jobs:
         run: npx playwright-core install --with-deps chromium
 
       - name: Verify chat reconnect scenarios
-        run: |
-          # 聊天应用随插件仓库归属调整搬进 akashic_clients；旧布局在锁定提交越过前仍然有效。
-          script=frontend/plugins/akashic_clients/chat/src/verify-reconnect.mjs
-          [ -f "$script" ] || script=frontend/chat/src/verify-reconnect.mjs
-          CHROMIUM_PATH="$(node -e 'console.log(require("playwright-core").chromium.executablePath())')" node "$script"
+        run: CHROMIUM_PATH="$(node -e 'console.log(require("playwright-core").chromium.executablePath())')" node frontend/chat/src/verify-reconnect.mjs

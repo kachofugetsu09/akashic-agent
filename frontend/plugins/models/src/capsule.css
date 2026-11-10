@@ -1,0 +1,306 @@
+/* 模型选择胶囊与思考强度面板；随胶囊组件加载，规则保持原有顺序。 */
+.model-picker {
+  position: relative;
+  z-index: 20;
+}
+
+.model-picker.is-open {
+  z-index: 60;
+}
+
+.model-picker__trigger {
+  position: relative;
+  display: flex;
+  max-width: 12rem;
+  height: 28px;
+  align-items: center;
+  gap: 5px;
+  border: 0;
+  border-radius: var(--ak-radius-sm);
+  padding: 0 8px;
+  color: var(--md-sys-color-on-surface-variant);
+  background: transparent;
+  font: inherit;
+  font-size: var(--chat-type-caption);
+  font-weight: 500;
+  line-height: 20px;
+  cursor: pointer;
+  transition-property: background-color, color;
+  transition-duration: var(--ak-sys-duration-short);
+  transition-timing-function: var(--ak-sys-motion-standard);
+}
+
+.model-picker.is-open .model-picker__trigger {
+  color: var(--md-sys-color-on-surface);
+  background: color-mix(in oklab, var(--md-sys-color-on-surface) 5%, transparent);
+}
+@media (hover: hover) {
+  .model-picker__trigger:hover {
+    color: var(--md-sys-color-on-surface);
+    background: color-mix(in oklab, var(--md-sys-color-on-surface) 5%, transparent);
+  }
+}
+
+.model-picker__trigger:focus-visible {
+  outline: 2px solid var(--ak-rule-focus);
+  outline-offset: 2px;
+}
+
+.model-picker__trigger:active { scale: 0.96; }
+
+.model-picker__trigger:disabled {
+  color: color-mix(in oklab, var(--ak-ink-primary) 38%, transparent);
+  cursor: default;
+}
+
+.model-picker.is-pinned .model-picker__name {
+  color: var(--ak-ink-primary);
+  font-weight: 600;
+}
+
+/* 放不下时省略开头、留下后半段（"…v4.1-flash"）：同一厂商的型号靠后缀区分。
+   外层从右往左排只为把省略号放到左边，<bdi> 里的模型名仍按自身方向显示。 */
+.model-picker__name {
+  overflow: hidden;
+  direction: rtl;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-picker__trigger > svg {
+  flex: 0 0 auto;
+  opacity: 0.55;
+  translate: 0 0.5px;
+}
+
+/* 面板只是外框；搜索行固定在顶，来源栏与列表各自滚动。 */
+.model-picker__panel {
+  position: fixed;
+  inset: auto;
+  z-index: 80;
+  display: flex;
+  flex-direction: column;
+  width: 320px;
+  max-height: min(23.75rem, calc(100vh - 1.5rem));
+  overflow: hidden;
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--ak-radius-md);
+  background: var(--md-sys-color-surface-container-high);
+  scrollbar-color: var(--ak-rule-strong) transparent;
+  scrollbar-width: thin;
+}
+
+/* —— 思考强度：与模型选择解耦的独立工具行控件 —— */
+.model-effort {
+  position: relative;
+  z-index: 20;
+}
+
+.model-effort.is-open {
+  z-index: 60;
+}
+
+.model-effort__trigger {
+  position: relative;
+  display: flex;
+  height: 28px;
+  align-items: center;
+  gap: 5px;
+  border: 0;
+  border-radius: var(--ak-radius-sm);
+  padding: 0 8px;
+  color: var(--ak-ink-secondary);
+  background: transparent;
+  font: inherit;
+  font-size: var(--chat-type-micro);
+  font-weight: 500;
+  line-height: 20px;
+  cursor: pointer;
+  transition-property: background-color, color;
+  transition-duration: var(--ak-sys-duration-short);
+  transition-timing-function: var(--ak-sys-motion-standard);
+}
+
+.model-effort.is-open .model-effort__trigger {
+  color: var(--md-sys-color-on-surface);
+  background: color-mix(in oklab, var(--md-sys-color-on-surface) 5%, transparent);
+}
+@media (hover: hover) {
+  .model-effort__trigger:hover {
+    color: var(--md-sys-color-on-surface);
+    background: color-mix(in oklab, var(--md-sys-color-on-surface) 5%, transparent);
+  }
+}
+
+.model-effort__trigger:focus-visible {
+  outline: 2px solid var(--ak-rule-focus);
+  outline-offset: 2px;
+}
+
+.model-effort__trigger:active { scale: 0.96; }
+
+.model-effort__trigger:disabled {
+  color: color-mix(in oklab, var(--ak-ink-primary) 38%, transparent);
+  cursor: default;
+}
+
+.model-effort.is-active .model-effort__trigger {
+  color: color-mix(in oklab, var(--ak-ink-primary) 85%, transparent);
+}
+
+.model-effort__panel {
+  position: fixed;
+  inset: auto;
+  z-index: 80;
+  width: 176px;
+  max-height: min(20rem, calc(100vh - 1.5rem));
+  overflow: hidden;
+  border: 1px solid var(--ak-rule-default);
+  border-radius: var(--ak-radius-md);
+  background: var(--ak-paper-raised);
+}
+
+/* 强度选项只有一行档名：桌面紧凑 36px，触屏按 44px 触控目标，文字垂直居中。 */
+.model-effort__option { min-height: 36px; align-items: center; }
+.model-effort__option .model-picker__check { margin-block-start: 0; }
+@media (pointer: coarse) { .model-effort__option { min-height: 44px; } }
+
+.model-effort__list {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 4px;
+  scrollbar-width: thin;
+}
+
+.model-effort__hint {
+  margin: 0;
+  border-top: 1px solid var(--ak-rule-default);
+  padding: 8px 10px;
+  color: var(--ak-ink-secondary);
+  font-size: var(--chat-type-caption);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .model-picker__trigger,
+  .model-picker__star,
+  .model-effort__trigger { transition-duration: 0.01ms; }
+}
+
+/* 宽度断点按聊天根节点（ADR 0126：聊天与工作台同页，窗口宽度不等于聊天宽度），属性由 chat-layout 写入。 */
+:where([data-chat-width~="36rem"]) .chat-main .model-picker {
+  min-width: 0;
+  max-width: 100%;
+}
+
+:where([data-chat-width~="36rem"]) .chat-main .model-picker__trigger {
+  height: 28px;
+  max-width: min(11rem, 100%);
+}
+
+:where([data-chat-width~="36rem"]) .chat-main .model-picker__trigger::before,
+:where([data-chat-width~="36rem"]) .chat-main .model-effort__trigger::before {
+  content: "";
+  position: absolute;
+  inset-block: -8px;
+  inset-inline: -4px;
+}
+
+.picker-sheet-scrim { display: none; }
+
+/* 浮层从触发点长出来：锚点写在 --models-pop-origin（触发钮那条边上的水平中心，由定位代码算出），
+   和 Radix 下拉已有的 zoom-in 同一档观感，只是那两个面板此前没有任何入场。
+   窄屏走下面的底部抽屉 picker-sheet-in，本规则按源码顺序让位。 */
+@keyframes ak-panel-in {
+  from { opacity: 0; scale: 0.96; filter: blur(2px); }
+}
+
+.model-picker__panel,
+.model-effort__panel {
+  transform-origin: var(--models-pop-origin, bottom center);
+  animation: ak-panel-in var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .model-picker__panel,
+  .model-effort__panel { animation-name: ak-panel-in-plain; }
+}
+
+@keyframes ak-panel-in-plain {
+  from { opacity: 0; }
+}
+
+/* 窄屏模型与思考强度面板是底部抽屉：贴底全宽、顶部圆角、遮罩压暗正文。
+   内联定位来自宽屏贴触发器的算法，这里用 !important 统一覆盖。
+   横屏或软键盘把视口压到 30rem 以下时仍是 inset 8px 的浮动盒子，抽屉外观只给常规高度。 */
+:where([data-chat-width~="820"]:not([data-chat-low])) .model-picker__panel,
+:where([data-chat-width~="820"]:not([data-chat-low])) .model-effort__panel {
+  inset: auto 0 0 0 !important;
+  width: auto !important;
+  max-height: min(70dvh, 32rem) !important;
+  border-width: 1px 0 0;
+  border-radius: var(--ak-radius-lg) var(--ak-radius-lg) 0 0;
+  padding-block-end: env(safe-area-inset-bottom, 0px);
+  /* token-exempt: 底部抽屉的投影朝上，高度 token 只朝下 */
+  box-shadow: 0 -8px 24px color-mix(in oklab, var(--ak-color-shadow) 10%, transparent);
+  animation: picker-sheet-in 180ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+:where([data-chat-width~="820"], [data-chat-short]) .model-picker__panel,
+:where([data-chat-width~="820"], [data-chat-short]) .model-effort__panel {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+:where([data-chat-width~="820"], [data-chat-short]) .picker-sheet-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 79;
+  display: block;
+  background: var(--chat-scrim);
+  animation: picker-scrim-in 180ms ease-out;
+}
+
+/* 面板与遮罩在输入区的层叠上下文里；打开时把输入区抬到浮动标题条（z 6）之上，遮罩才能盖住整屏。 */
+:where([data-chat-width~="820"], [data-chat-short]) .chat-main .composer-wrap:has(.model-picker.is-open, .model-effort.is-open) { z-index: 7; }
+
+:where([data-chat-width~="820"], [data-chat-short]) .model-picker__search input { font-size: 16px; }
+
+@keyframes picker-sheet-in { from { transform: translateY(24px); opacity: 0; } }
+@keyframes picker-scrim-in { from { opacity: 0; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .model-picker__panel, .model-effort__panel, .picker-sheet-scrim { animation: none; }
+}
+
+:where([data-chat-width~="820"][data-chat-low], [data-chat-short]) .model-picker__panel,
+:where([data-chat-width~="820"][data-chat-low], [data-chat-short]) .model-effort__panel {
+  inset: 8px !important;
+  width: auto !important;
+  height: auto !important;
+  max-height: none;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* 模型不可用或目录读取失败时，工具位里留一个去处理的入口；与输入框工具同一行高。 */
+.models-capsule-settings,
+.models-capsule-retry {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 6px;
+  border: 0;
+  background: none;
+  color: var(--ak-color-text-secondary, inherit);
+  font: inherit;
+  font-size: 13px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.models-capsule-settings:focus-visible,
+.models-capsule-retry:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; border-radius: var(--ak-radius-xs); }

@@ -1,0 +1,7 @@
+{
+  "//": "设计编辑器单独检查：open-pencil 的类型声明依赖 Figma 插件类型等全局声明，跳过库检查，只检查我们自己的代码。",
+  "extends": "../../../../tsconfig.json",
+  "compilerOptions": { "skipLibCheck": true },
+  "exclude": [],
+  "include": ["./**/*.ts", "../../../../types/**/*.d.ts"]
+}

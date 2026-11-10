@@ -1,0 +1,12 @@
+{
+  "name": "@akashic/chat-ui-v1",
+  "version": "1.0.0",
+  "private": false,
+  "description": "Public contract and runtime atoms for Akashic chat plugin UI slots",
+  "types": "index.d.ts",
+  "files": ["index.d.ts"],
+  "peerDependencies": {
+    "react": "^19.0.0"
+  },
+  "license": "MIT"
+}

@@ -1,0 +1,333 @@
+"""归档召回工具从一致学习快照查询，重试只读取原查询出处。"""
+from __future__ import annotations
+
+from collections.abc import Callable, Mapping
+from contextlib import AbstractAsyncContextManager
+from datetime import UTC, datetime
+import json
+from pathlib import Path
+from typing import Annotated, cast
+
+import numpy as np
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+
+from plugins.ledger.contract import Bindings
+from plugins.models.contract import BoundEmbeddingModel
+from plugins.ledger.contract import MessageCatalog, MessageEmbeddings
+from plugins.ledger.contract import ContentPart, ContentReferences, Message, Output, ToolCall, ToolResult
+from plugins.ledger.contract import json_value
+from ._boundaries import CallSource, Result, TOOLS
+
+from .application.consumer import run_memory_job
+from .application.cycle import MemoryCycle
+from .application.snapshot import read_memory
+from .infrastructure.consumption import Consumption
+from .domain.model import MemoryConfig
+from .learning import AKASHA_LEARNING, Learning, LearningConfig
+from .scopes import MemoryDisabled
+from .contract import ProgramSource, Recall, ToolSource
+from .recalls import RecallRecords, query_memory, render_materials
+
+
+class RecallArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    query: str = Field(min_length=1, max_length=32000)
+    limit: int = Field(default=10, ge=1, le=40)
+
+    @field_validator("query")
+    @classmethod
+    def check_query(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("召回问题不能为空白")
+        return value
+
+
+class PreparedRecall(RecallArguments):
+    source: ToolSource | None
+    learning_binding: str = Field(min_length=1)
+    embedding_binding: str = Field(min_length=1)
+    max_chars: int = Field(gt=0)
+
+
+class RecallReference(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    retrieval_ref: str = Field(min_length=1)
+
+
+def check_recall(part: ContentPart) -> ContentReferences:
+    _ = RecallReference.model_validate_json(json.dumps(json_value(part.value)))
+    return ContentReferences()
+
+
+def tool_references(
+    snapshot: tuple[Message, ...], source: str, learning: Learning,
+    bindings: Bindings, records: RecallRecords,
+) -> tuple[Mapping[str, object], ...]:
+    """只有实际 Akasha 调用产生且属于该 CallRef 的查询记录能授予本地引用。"""
+    turns = learning.projection.project(snapshot, source)
+    if not turns or turns[-1].status != "open":
+        return ()
+    by_id = {message.message_id: message for message in snapshot}
+    references: dict[str, Mapping[str, object]] = {}
+    for call_ref, identity in turns[-1].observations:
+        result = by_id[identity].body
+        if not isinstance(result, ToolResult) or result.outcome != "success":
+            continue
+        for part in result.parts:
+            if part.kind != "akasha.recall":
+                continue
+            request = by_id[call_ref.message_id]
+            if not isinstance(request.body, Output):
+                raise ValueError("召回出处不是工具请求")
+            call = request.body.parts[call_ref.part_index]
+            if not isinstance(call, ToolCall):
+                raise ValueError("召回出处没有指向 ToolCall")
+            metadata = bindings.describe(call.binding_id, TOOLS)
+            tool = metadata["tool"]
+            if not isinstance(tool, Mapping) or tool["owner"] != learning.owner:
+                raise ValueError("其他工具不能伪造 Akasha 召回出处")
+            marker = RecallReference.model_validate_json(json.dumps(json_value(part.value)))
+            recall = records.read(marker.retrieval_ref)
+            if (recall is None or not isinstance(recall.source, ToolSource)
+                or recall.source.session_id != request.session_id or recall.source.call_ref != call_ref):
+                raise ValueError("召回记录不属于实际工具调用")
+            for message_id in recall.presented_message_ids:
+                references[message_id] = {
+                    "ref": message_id,
+                    "resolved_ref": message_id,
+                    "retrieval_ref": marker.retrieval_ref,
+                }
+    return tuple(references.values())
+
+
+# 运行中的图按调用 Session 路由并持串行锁交出只读视图；图未运行时给 None，调用方退回已发布副本。
+type LiveGraph = Callable[
+    [str | None, tuple[str, int]], AbstractAsyncContextManager[tuple[MemoryCycle, Consumption] | None]
+]
+
+
+class RecallTool:
+    """查询记录是幂等与恢复 owner；工具 receipt 不要求再次调用 embedding。"""
+
+    idempotent = True
+
+    def __init__(
+        self, *, memory: Callable[[str | None], Path], config: MemoryConfig,
+        catalog: MessageCatalog, embeddings: MessageEmbeddings, bindings: Bindings,
+        select_learning: Callable[[], tuple[str, str]], records: RecallRecords,
+        open_embedding: Callable[[str], AbstractAsyncContextManager[BoundEmbeddingModel]],
+        live: LiveGraph | None = None, max_chars: int = 12000,
+    ):
+        if max_chars <= 0:
+            raise ValueError("召回文本预算必须为正")
+        self._memory = memory
+        self._config = config
+        self._catalog = catalog
+        self._embeddings = embeddings
+        self._bindings = bindings
+        self._select_learning = select_learning
+        self._records = records
+        self._open_embedding = open_embedding
+        self._live = live
+        self._max_chars = max_chars
+
+    async def prepare(
+        self, arguments: Mapping[str, object], source: CallSource | None = None,
+    ) -> Mapping[str, object] | str:
+        """只固定用户查询和实际 CallRef；后来输入不会改变参数出处。"""
+        try:
+            request = RecallArguments.model_validate(json_value(arguments))
+        except ValidationError as error:
+            return str(error)
+        origin = None if source is None else ToolSource(
+            session_id=source.messages[0].session_id, call_ref=source.call_ref,
+        )
+        try:
+            _ = self._memory(None if origin is None else origin.session_id)
+        except MemoryDisabled as error:
+            return str(error)
+        binding, model_id = self._select_learning()
+        return PreparedRecall(**request.model_dump(), source=origin,
+                              learning_binding=binding,
+                              embedding_binding=model_id,
+                              max_chars=self._max_chars).model_dump(mode="json")
+
+    async def invoke(self, key: str, arguments: Mapping[str, object]) -> Result:
+        """缺少原查询时才嵌入和读图；发布成功的重试返回原材料。"""
+        existing = await self.query(key)
+        if existing is not None:
+            return existing
+        request = PreparedRecall.model_validate_json(json.dumps(json_value(arguments)))
+        identity = "tool:" + key
+        source = request.source or ProgramSource(key=key, query=request.query)
+        # 1. 打开工具实际固定的学习规则；读图前先嵌入查询，运行中的图不持锁等待模型。
+        async with self._bindings.open(request.learning_binding, AKASHA_LEARNING) as (learning, metadata):
+            rule = LearningConfig.model_validate(dict(metadata))
+            session_id = None if request.source is None else request.source.session_id
+            path = self._memory(session_id)
+            dense = await self._embed_query(request, rule)
+            recall = await self._search(request, rule, dense, source, session_id=session_id, path=path)
+            # 2. 材料和呈现出处固定后一次发布；失败不能暴露成功 Result。
+            material = await run_memory_job(lambda: render_materials(
+                identity, recall, learning, self._catalog, max_chars=request.max_chars,
+            ))
+            recall = recall.model_copy(update={
+                "max_chars": request.max_chars,
+                "presented_message_ids": tuple(dict.fromkeys(ref["ref"] for ref in cast(tuple[Mapping[str, str], ...], material["references"]))),
+            })
+            _ = await run_memory_job(lambda: self._records.save(identity, recall))
+            return self._result(identity, recall, tuple(ContentPart("text", part["text"]) for part in cast(tuple[Mapping[str, str], ...], material["reminders"])))
+
+    # 查询向量与学习图同一空间，并归一化为有限单位向量。
+    async def _embed_query(self, request: PreparedRecall, rule: LearningConfig) -> np.ndarray:
+        async with self._open_embedding(request.embedding_binding) as model:
+            if model.descriptor.identity != rule.embedding_model:
+                raise ValueError("实际 embedding 模型不匹配已准备的学习 binding")
+            values = (await model.embed([request.query])).vectors
+        if len(values) != 1 or len(values[0]) != rule.dimension:
+            raise ValueError("召回 embedding 数量或维度不匹配")
+        dense = np.asarray(values[0], dtype=np.float32)
+        if not np.isfinite(dense).all():
+            raise ValueError("召回 embedding 必须是有限向量")
+        norm = float(np.linalg.norm(dense))
+        if not np.isfinite(norm) or norm <= 0.0:
+            raise ValueError("召回 embedding 必须具有有限正模长")
+        return dense / norm
+
+    # 调用所在 Session 已决定读取哪张图；运行中的图直接检索，未运行时才从已发布副本完整恢复。
+    async def _search(
+        self, request: PreparedRecall, rule: LearningConfig, dense: np.ndarray,
+        source: ToolSource | ProgramSource, *, session_id: str | None, path: Path,
+    ) -> Recall:
+        space = (rule.embedding_model, rule.dimension)
+        def query(cycle: MemoryCycle, state: Consumption) -> Recall:
+            return query_memory(
+                cycle, state, learning_binding=request.learning_binding, text=request.query,
+                dense=dense, stamp=datetime.now(UTC), source=source, limit=request.limit,
+            )
+        if self._live is not None:
+            async with self._live(session_id, space) as view:
+                if view is not None:
+                    return await run_memory_job(lambda: query(*view))
+        async def restore_embeddings(original: LearningConfig, texts: list[str]) -> list[list[float]]:
+            async with self._open_embedding(request.embedding_binding) as model:
+                if (model.descriptor.identity, model.descriptor.dimensions) != (original.embedding_model, original.dimension):
+                    raise ValueError("补算向量不属于原学习模型空间")
+                return [list(vector) for vector in (await model.embed(texts)).vectors]
+        async with read_memory(
+            path, catalog=self._catalog, embeddings=self._embeddings, bindings=self._bindings,
+            config=self._config, embedding_space=space, restore_embeddings=restore_embeddings,
+        ) as (cycle, state):
+            return await run_memory_job(lambda: query(cycle, state))
+
+    async def query(self, key: str) -> Result | None:
+        """工具外部结果恢复只读实际查询记录；不读当前图或重跑模型。"""
+        identity = "tool:" + key
+        recall = await run_memory_job(lambda: self._records.read(identity))
+        if recall is None:
+            return None
+        async with self._bindings.open(recall.learning_binding, AKASHA_LEARNING) as (learning, _metadata):
+            material = await run_memory_job(lambda: render_materials(
+                identity, recall, learning, self._catalog, max_chars=recall.max_chars,
+                presented=recall.presented_message_ids,
+            ))
+        if tuple(dict.fromkeys(ref["ref"] for ref in cast(tuple[Mapping[str, str], ...], material["references"]))) != recall.presented_message_ids:
+            raise ValueError("原查询呈现的材料发生变化，不能用当前结果冒充恢复")
+        return self._result(identity, recall, tuple(ContentPart("text", part["text"]) for part in cast(tuple[Mapping[str, str], ...], material["reminders"])))
+
+    @staticmethod
+    def _result(identity: str, recall: Recall, parts: tuple[ContentPart, ...]) -> Result:
+        metadata = json.dumps({
+            "retrieval_ref": identity, "graph_version": recall.graph_version,
+            "count": len(recall.hits), "presented_message_ids": recall.presented_message_ids,
+        }, ensure_ascii=False)
+        return Result("success", (
+            ContentPart("text", metadata), *parts,
+            ContentPart("akasha.recall", {"retrieval_ref": identity}),
+        ))
+
+
+# 读原文的单次总预算；召回预览里的 ref 多数只需读一两条。
+FETCH_MAX_CHARS = 30000
+
+
+class FetchArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    message_ids: list[Annotated[str, Field(min_length=1)]] = Field(min_length=1, max_length=20)
+
+
+class PreparedFetch(FetchArguments):
+    session_id: str | None
+
+
+class FetchedMessages(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    message_ids: tuple[str, ...]
+
+
+def check_fetch(part: ContentPart) -> ContentReferences:
+    _ = FetchedMessages.model_validate_json(json.dumps(json_value(part.value)))
+    return ContentReferences()
+
+
+class FetchTool:
+    """按 ref 读召回消息原文；只认调用会话可读的记忆图学过的消息和本会话自己的消息。"""
+
+    idempotent = True
+
+    def __init__(
+        self, *, memory: Callable[[str | None], Path], catalog: MessageCatalog,
+        learning: Learning, owners: Callable[[Path], Mapping[str, str]],
+    ):
+        self._memory = memory
+        self._catalog = catalog
+        self._learning = learning
+        self._owners = owners
+
+    async def prepare(
+        self, arguments: Mapping[str, object], source: CallSource | None = None,
+    ) -> Mapping[str, object] | str:
+        try:
+            request = FetchArguments.model_validate(json_value(arguments))
+        except ValidationError as error:
+            return str(error)
+        session_id = None if source is None else source.messages[0].session_id
+        try:
+            _ = self._memory(session_id)
+        except MemoryDisabled as error:
+            return str(error)
+        return PreparedFetch(message_ids=list(dict.fromkeys(request.message_ids)),
+                             session_id=session_id).model_dump(mode="json")
+
+    async def invoke(self, key: str, arguments: Mapping[str, object]) -> Result:
+        request = PreparedFetch.model_validate_json(json.dumps(json_value(arguments)))
+        path = self._memory(request.session_id)
+        return await run_memory_job(lambda: self._read(request, self._owners(path)))
+
+    # 1. 学习图里查到所属会话才读；2. 本会话自己的消息直接读；3. 超出总预算的部分截断并提示。
+    def _read(self, request: PreparedFetch, owners: Mapping[str, str]) -> Result:
+        rows: list[str] = []
+        fetched: list[str] = []
+        budget = FETCH_MAX_CHARS
+        for message_id in request.message_ids:
+            owner = owners.get(message_id, request.session_id)
+            message = None if owner is None else self._catalog.reader(owner).get(message_id)
+            if message is None:
+                rows.append(f"### ref={message_id}\n不存在，或不在当前会话的记忆范围内。")
+                continue
+            text = self._learning.text(message)
+            if budget <= 0:
+                rows.append(f"### ref={message_id}\n本次读取已达 {FETCH_MAX_CHARS} 字上限，请分开读取。")
+                continue
+            shown = text[:budget] + ("\n（已截断，超出本次读取上限）" if len(text) > budget else "")
+            budget -= len(text)
+            stamp = message.recorded_at.astimezone().strftime("%Y-%m-%d %H:%M")
+            rows.append(f"### ref={message_id}\n{stamp} · {message.author}\n\n{shown}")
+            fetched.append(message_id)
+        return Result("success", (
+            ContentPart("text", "\n\n".join(rows)),
+            ContentPart("akasha.fetch", FetchedMessages(message_ids=tuple(fetched)).model_dump(mode="json")),
+        ))
+
+    async def query(self, key: str) -> Result | None:
+        return None

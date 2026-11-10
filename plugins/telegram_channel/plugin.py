@@ -1,0 +1,93 @@
+from __future__ import annotations
+
+from functools import partial
+from typing import TYPE_CHECKING
+
+from agent.plugin_composition import Context
+from plugins.channels.contract import CHANNELS, ChannelCapability, ChannelDefinition, InboundIdentity
+from plugins.channels.contract import CHANNEL_INPUT_V2 as CHANNEL_INPUT, RawInbound
+from agent.plugin_composition.credentials import CREDENTIALS
+from plugins.ledger.contract import MESSAGE_CATALOG
+from plugins.sources.contract import (
+    SOURCE_INTERRUPT_V2 as SOURCE_INTERRUPT,
+)
+
+from .config import TelegramChannelConfig
+
+if TYPE_CHECKING:
+    from .channel import TelegramChannelAdapter, build_telegram_channel
+
+api_version = 3
+name = "telegram_channel"
+version = "3.0.0"
+desc = "Telegram inbound and outbound v3 channel adapter"
+author = "Akashic"
+function_inject = (CHANNELS, CHANNEL_INPUT, CREDENTIALS, MESSAGE_CATALOG, SOURCE_INTERRUPT)
+Config = TelegramChannelConfig
+
+
+async def run(ctx: Context) -> None:
+    """Register Telegram only when its ordinary plugin config enables it."""
+    config = Config.model_validate(ctx.config)
+
+    if not config.enabled:
+        return
+    # python-telegram-bot 只在启用后加载；停用时不进入插件启动成本。
+    from .channel import build_telegram_channel
+
+    async def interrupt(raw: RawInbound) -> bool:
+        """先通过来源提交 pause 并等待旧工作，再由原 binding 发送 ack。"""
+        session_id = f"telegram:{raw.message.chat_id}"
+        reader = ctx.require(MESSAGE_CATALOG).reader(session_id)
+        return await ctx.require(SOURCE_INTERRUPT)(reader, raw.message_id, raw.message.channel)
+
+    await ctx.require(CHANNELS).register(
+        ctx,
+        ChannelDefinition(
+            name="telegram",
+            capabilities=frozenset(
+                {ChannelCapability.INBOUND, ChannelCapability.OUTBOUND, ChannelCapability.CONTROL}
+            ),
+            factory=partial(build_telegram_channel, create_client=partial(ctx.require(CREDENTIALS).create, ctx)),
+            config=ctx.config,
+            interrupt=interrupt,
+            inbound_identity=InboundIdentity.PROVIDER_MESSAGE_ID,
+        ),
+    )
+
+
+# 保留模块公开名称；适配器实现按需导入。
+def __getattr__(name: str) -> object:
+    if name in {"TelegramChannelAdapter", "build_telegram_channel"}:
+        from . import channel
+
+        return getattr(channel, name)
+    raise AttributeError(name)
+
+
+__all__ = [
+    "Config",
+    "TelegramChannelAdapter",
+    "api_version",
+    "apply",
+    "author",
+    "build_telegram_channel",
+    "desc",
+    "inject",
+    "name",
+    "version",
+]
+
+
+from agent.plugin_composition import CREDENTIALS
+from agent.plugin_composition.plugin_config import PLUGIN_CONFIG
+from agent.plugin_composition.runtime_catalog import RUNTIME_CATALOG
+
+inject = (PLUGIN_CONFIG, RUNTIME_CATALOG, CREDENTIALS)
+
+
+async def apply(ctx: Context) -> None:
+    """设置入口常驻，业务依赖只影响功能分支。"""
+    from .settings import mount
+    function = await ctx.inject(function_inject, run, name="function")
+    await mount(ctx, Config, function)

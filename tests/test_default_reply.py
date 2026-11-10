@@ -1,0 +1,377 @@
+import asyncio
+from contextlib import asynccontextmanager
+from datetime import UTC, datetime
+from pathlib import Path
+import shutil
+import pytest
+from tests.fixtures.plugin_workspace import initialize_plugin_workspace
+from agent.plugin_composition.config_input import save_config
+from plugins.channels.contract import CHANNEL_INPUT_V2 as CHANNEL_INPUT, ChannelInboundMessage
+from agent.plugins.manager import PluginManager
+from plugins.ledger.log import MessageLog
+from plugins.ledger.contract import Input, Output, ToolResult
+
+@asynccontextmanager
+async def live_root(host: PluginManager):
+    """Read the one formal Root used by the installed reply consumer."""
+    root = host.live_root
+    assert root is not None
+    yield root
+
+@asynccontextmanager
+async def application(tmp_path, *, replying, missing_tool=False, discovery=False, compaction=False,
+                      output_tokens=4096, max_steps=None, keep_recent_tokens=128, summary_padding=0,
+                      provider_effect_data=False, updates=False, validation_passed=True, extra_sources=None,
+                      shell=False):
+    sources = tmp_path / "plugins"
+    workspace = tmp_path / "workspace"
+    initialize_plugin_workspace(workspace)
+    # 夹具模型只有 10K 上下文；预算由配置固定，不依赖产品默认值。
+    reply_config: dict[str, object] = {"max_output_tokens": output_tokens}
+    if max_steps is not None:
+        # 轮次上限走正式配置项，不改写 reply 插件源码：改源码会让格式调整变成夹具失败。
+        reply_config["max_steps"] = max_steps
+    save_config(workspace / "plugin-data/reply-builtin", reply_config)
+    for name in (
+        "ledger",
+        "commands",
+        "sources",
+        "content",
+        "context",
+        "tools",
+        "conversation",
+        "react",
+        "turn_projection",
+        "reply_program",
+        "models",
+        "reply",
+        "working_directory",
+        "shell",
+        "files",
+        *(("tool_search",) if replying else ()),
+    ):
+        shutil.copytree(
+            Path(__file__).parents[1] / "plugins" / name,
+            sources / name,
+            ignore=shutil.ignore_patterns("__pycache__"),
+        )
+    if updates:
+        from tests.support.delivery_sources import sources as delivery_sources
+        delivery_sources(sources)
+        shutil.copytree(
+            Path(__file__).parents[1] / "plugins/delivery_policy",
+            sources / "delivery_policy",
+            ignore=shutil.ignore_patterns("__pycache__"),
+        )
+        for name in ("assets", "plugin_update"):
+            shutil.copytree(Path(__file__).parents[1] / "plugins" / name, sources / name,
+                            ignore=shutil.ignore_patterns("__pycache__"))
+    if compaction:
+        shutil.copytree(Path(__file__).parents[1] / "plugins/compaction", sources / "compaction",
+                        ignore=shutil.ignore_patterns("__pycache__"))
+        settings = tmp_path / "workspace/plugin-data/context-builtin"
+        settings.parent.mkdir(parents=True, exist_ok=True)
+        save_config(settings, {"summary_source": ["compaction", "compaction"]})
+        module = sources / "compaction/plugin.py"
+        module.write_text(module.read_text().replace('Field(default=20_000,', f'Field(default={keep_recent_tokens},'))
+    if missing_tool:
+        settings = tmp_path / "workspace/plugin-data/reply-builtin"
+        settings.parent.mkdir(parents=True, exist_ok=True)
+        save_config(settings, {"tools": ["gone"]})
+    provider = sources / "test_provider"
+    provider.mkdir()
+    (provider / "plugin.py").write_text('''
+from contextlib import asynccontextmanager
+from functools import partial
+from types import SimpleNamespace
+from pathlib import Path
+from agent.plugin_composition import ServiceKey
+from plugins.models.contract import CHAT_MODELS, MODEL_CATALOG
+from plugins.models.contract import LLMResponse, ToolCall
+from plugins.models.contract import (
+    BoundModelDescriptor,
+    CapabilitySources,
+    ModelCapabilities,
+)
+from plugins.models.projection import MODEL_CALLS, MODEL_PROJECTION, ProjectionOwner, MODEL_MESSAGE_CHECKS, MessageChecksOwner
+from plugins.models.content import MODEL_CONTENT, ContentOwner
+from plugins.models.selection import MODEL_SELECTION, SelectionOwner
+from plugins.models.state import _BoundChat, ModelsState
+from plugins.models.settings import MODEL_SETTINGS
+from plugins.models.store import ModelsStore
+from plugins.tools.api import Result
+from agent.plugin_composition.tasks import TASKS
+from plugins.ledger.contract import BINDINGS
+from plugins.tools.plugin import TOOLS
+from plugins.ledger.contract import ContentPart
+api_version = 3
+name = "test_provider"
+version = "1.0.0"
+inject = (TOOLS, TASKS, BINDINGS)
+async def apply(ctx):
+    calls = []
+    store = ModelsStore(ctx.data_root / "models.db", ctx.data_root / "backups")
+    store.initialize()
+    await ctx.effect(lambda: store.close, label="model-store")
+    settings = ModelsState(store, context=ctx)
+    await ctx.provide(MODEL_SETTINGS, settings.settings)
+    await ctx.provide(MODEL_CATALOG, settings.catalog)
+    class Driver:
+        max_tool_schemas = None
+        def estimate_context_tokens(self, messages, tools):
+            return 10
+        async def complete(self, request):
+            calls.append(request)
+            if len(calls) == 1:
+                return LLMResponse(None, [ToolCall("provider-call", "write_evidence", {})])
+            return LLMResponse("finished")
+    descriptor = BoundModelDescriptor(
+        binding_id="fixture-model", plugin_snapshot_id="fixture", model_revision=0,
+        model_id="fixture", connection_id="fixture", driver_id="fixture",
+        driver_contract_version="1", auth_identity="fixture", model="fixture", role="agent",
+        reasoning_effort=None, capabilities=ModelCapabilities(context_window=10000),
+        capability_sources=CapabilitySources(), capability_digest="fixture",
+    )
+    model = _BoundChat(descriptor, Driver(), store)
+    async def use(use, choice):
+        return model
+    class Models:
+        @asynccontextmanager
+        async def execution(self, *, model_id=None, reasoning_effort=None):
+            # 与正式 models 一致：执行期间调用方切换为提供者自己的 Context。
+            async with ctx.runtime_scope():
+                yield SimpleNamespace(chat=lambda: model, use=use)
+    class Target:
+        idempotent = False
+        async def prepare(self, args, source=None):
+            return args
+        async def invoke(self, key, args):
+            with Path(EFFECT_PATH).open("a") as handle:
+                handle.write("once\\n")
+            return Result("success", (ContentPart("text", "written"),))
+        async def query(self, key):
+            return None
+    @asynccontextmanager
+    async def open(state):
+        yield Target()
+    await ctx.require(TOOLS).declare_group(ctx, always_on=True)
+    await ctx.require(TOOLS).register(ctx, name="write_evidence", description="record local test evidence",
+        parameters={"type":"object"}, open=open)
+    await ctx.provide(CHAT_MODELS, Models())
+    await ctx.provide(MODEL_CALLS, store.read_call)
+    await ctx.provide(MODEL_PROJECTION, ProjectionOwner())
+    await ctx.provide(MODEL_MESSAGE_CHECKS, MessageChecksOwner())
+    await ctx.provide(MODEL_CONTENT, ContentOwner())
+    await ctx.provide(MODEL_SELECTION, SelectionOwner())
+    await ctx.provide(ServiceKey("fixture.calls"), calls)
+'''.replace("EFFECT_PATH", repr(str(tmp_path / "effect.txt"))))
+    if provider_effect_data:
+        module = provider / "plugin.py"
+        module.write_text(module.read_text().replace(
+            repr(str(tmp_path / "effect.txt")), 'ctx.runtime.data_dir / "effect.txt"'))
+    if updates and not validation_passed:
+        module = provider / "plugin.py"
+        module.write_text(module.read_text().replace(
+            'return LLMResponse("finished")', 'raise RuntimeError("candidate execution failed")'))
+    if discovery:
+        module = provider / "plugin.py"
+        module.write_text(module.read_text().replace(
+            'if len(calls) == 1:',
+            'if len(calls) == 1:\n                return LLMResponse(None, [ToolCall("load-call", "load_tools", {"plugin": "test_provider"})])\n            if len(calls) == 2:').replace('declare_group(ctx, always_on=True)', 'declare_group(ctx, description="Write local evidence")').replace(
+            'ToolCall("provider-call", "write_evidence", {})',
+            'ToolCall("provider-call", "tool_call", {"name": "write_evidence", "arguments": {}})'))
+    if compaction:
+        module = provider / "plugin.py"
+        module.write_text(module.read_text().replace('calls = []', 'calls = []\n    business = []').replace(
+            'return 10', 'return len(str(messages)) // 4').replace('if len(calls) == 1:', '''if "[Source messages]" in str(request.messages):
+                from plugins.compaction.message_summary import HEADINGS
+                return LLMResponse("\\n".join(heading + "\\nPreserved facts." for heading in HEADINGS))
+            business.append(request)
+            if len(business) == 1:''').replace("Preserved facts.", "Preserved facts." + "z" * summary_padding))
+    if shell:
+        save_config(workspace / "plugin-data/context-builtin", {"prompt_sources": {"skills": "skills"}})
+        for name in ("host_execution", "assets"):
+            if not (sources / name).exists():
+                shutil.copytree(Path(__file__).parents[1] / "plugins" / name, sources / name,
+                                ignore=shutil.ignore_patterns("__pycache__"))
+    if extra_sources is not None:
+        extra_sources(sources)
+    from agent.plugins.bundles import set_plugin_choice
+    for name in {"models", *(() if shell else ("working_directory", "shell", "files")), *(() if replying else ("reply",))}:
+        set_plugin_choice(workspace, name, enabled=False)
+    host = PluginManager(
+        [sources],
+        workspace=workspace,
+        installed_cache_root=tmp_path / "home/cache",
+    )
+    try:
+        await host.load_all()
+        from plugins.ledger.contract import MESSAGE_CATALOG
+        log = host.live_root.context.require(MESSAGE_CATALOG)._log
+        yield log, host
+    finally:
+        await host.terminate_all()
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("replying", [False, True])
+async def test_installed_default_reply_is_an_independent_log_consumer(tmp_path, replying):
+    from agent.plugin_composition import ServiceKey
+    async with application(tmp_path, replying=replying) as (log, host):
+        message = ChannelInboundMessage("test", "user", "room", "do the work",
+                                        datetime(2026, 9, 5, tzinfo=UTC), {})
+        async with live_root(host) as root:
+            accept = root.context.require(CHANNEL_INPUT)
+            accepted = await accept("test:room", "u1", message)
+        assert isinstance(accepted.body, Input)
+        if replying:
+            async def completed():
+                async for _ in log.catalog().follow():
+                    rows = log.reader("test:room").snapshot()
+                    if any(isinstance(row.body, Output) and row.body.finish == "complete" for row in rows):
+                        return rows
+            rows = await asyncio.wait_for(completed(), 5)
+            assert rows is not None
+            assert [type(row.body) for row in rows] == [Input, Output, ToolResult, Output]
+            assert (tmp_path / "effect.txt").read_text() == "once\n"
+        else:
+            async with live_root(host) as root:
+                calls = root.context.require(ServiceKey("fixture.calls"))
+                assert calls == []
+                assert all("[Source messages]" in str(call.messages) for call in calls)
+            assert log.reader("test:room").snapshot() == (accepted,)
+            assert not (tmp_path / "effect.txt").exists()
+
+
+@pytest.mark.asyncio
+async def test_default_reply_loads_one_complete_granted_plugin_group(tmp_path):
+    """PLG-018: 一个准确插件 ID 只加载该次获授 view 中的一整组 schema。"""
+    import json
+    from agent.plugin_composition import ServiceKey
+
+    async with application(tmp_path, replying=True, discovery=True) as (log, host):
+        async with live_root(host) as root:
+            accepted = await root.context.require(CHANNEL_INPUT)(
+                "test:room", "u1", ChannelInboundMessage(
+                    "test", "user", "room", "do the work", datetime(2026, 9, 5, tzinfo=UTC), {},
+                ),
+            )
+        assert isinstance(accepted.body, Input)
+
+        async def completed():
+            async for _ in log.catalog().follow():
+                rows = log.reader("test:room").snapshot()
+                if any(isinstance(row.body, Output) and row.body.finish == "complete" for row in rows):
+                    return rows
+
+        rows = await asyncio.wait_for(completed(), 5)
+        assert rows is not None
+        assert [type(row.body) for row in rows] == [
+            Input, Output, ToolResult, Output, ToolResult, Output,
+        ]
+        value = rows[2].body.parts[0].value
+        assert isinstance(value, str)
+        loaded = json.loads(value)
+        assert loaded["plugin"] == "test_provider"
+        assert [tool["function"]["name"] for tool in loaded["tools"]] == ["write_evidence"]
+        assert (tmp_path / "effect.txt").read_text() == "once\n"
+
+        async with live_root(host) as root:
+            requests = root.context.require(ServiceKey("fixture.calls"))
+        prompt = next(
+            row["content"] for row in requests[0].messages if row["role"] == "system"
+        )
+        assert "test_provider · Write local evidence · 1 个工具" in prompt
+        assert "write_evidence" not in prompt
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("vision", [False, True])
+@pytest.mark.parametrize("attach_image", [False, True])
+async def test_reply_projects_images_by_model_capability(tmp_path, vision, attach_image):
+    """图片与附件身份沿同一回复链路进入模型，文本模型保留明确能力说明。"""
+    import io
+    from PIL import Image
+    from agent.plugin_composition import ServiceKey
+    from plugins.ledger.contract import ContentPart, Control
+    from plugins.ledger.attachments import ChannelAttachmentArtifactStore
+    from plugins.content.plugin import check_artifact
+    from plugins.ledger.artifact_store import ArtifactStore
+    from plugins.ledger.contract import AttachmentKind
+
+    def vision_provider(sources):
+        module = sources / "test_provider/plugin.py"
+        module.write_text(module.read_text().replace(
+            "ModelCapabilities(context_window=10000)",
+            f'ModelCapabilities(context_window=10000, input_modalities={(("text", "image") if vision else ("text",))!r})',
+        ))
+
+    async with application(tmp_path, replying=True, extra_sources=vision_provider) as (log, host):
+        # 1. Publish five real image artifacts on separate settled history messages.
+        metadata = ArtifactStore(tmp_path / "workspace/sessions.db")
+        store = ChannelAttachmentArtifactStore(
+            workspace=tmp_path / "workspace", metadata_store=metadata,
+        )
+        try:
+            writer = log.writer(
+                "test:room", author="scheduler", source="scheduler", body_types=(Output,),
+                content={"artifact_ref": check_artifact},
+            )
+            refs = []
+            for index in range(5):
+                data = io.BytesIO()
+                Image.new("RGB", (2, 2), (index * 40, 0, 0)).save(data, format="PNG")
+                ref = await store.import_bytes(
+                    data.getvalue(), kind=AttachmentKind.IMAGE,
+                    filename=f"history-{index}.png", media_type="image/png",
+                )
+                refs.append(ref)
+                writer.append(f"history-{index}", Output((ContentPart("artifact_ref", ref.artifact_id),), "complete"))
+            writer.expire()
+        finally:
+            metadata.close()
+
+        # 2. Observe the durable terminal result, including the old failure path.
+        async with live_root(host) as root:
+            accepted = await root.context.require(CHANNEL_INPUT)(
+                "test:room", "u1", ChannelInboundMessage(
+                    "test", "user", "room", "Will it rain tomorrow morning?",
+                    datetime(2026, 9, 29, tzinfo=UTC), {},
+                    attachments=(refs[-1],) if attach_image else (),
+                ),
+            )
+            requests = root.context.require(ServiceKey("fixture.calls"))
+        assert log.reader("test:room").attachments(accepted.message_id) == ((refs[-1],) if attach_image else ())
+
+        async def completed():
+            async for _ in log.catalog().follow():
+                for row in log.reader("test:room").snapshot():
+                    if row.seq > accepted.seq and (
+                        isinstance(row.body, Control)
+                        or isinstance(row.body, Output) and row.body.finish == "complete"
+                    ):
+                        return row
+
+        terminal = await asyncio.wait_for(completed(), 5)
+        assert terminal is not None
+        assert isinstance(terminal.body, Output), terminal.body
+        assert terminal.body.finish == "complete"
+        assert len(requests) == 2
+        for request in requests:
+            images = [part for row in request.messages if isinstance(row["content"], (list, tuple))
+                      for part in row["content"] if part["type"] == "image_url"]
+            assert len(images) == (5 + int(attach_image) if vision else 0)
+            text = str(request.messages)
+            if vision:
+                import base64
+                colors = set()
+                for part in images:
+                    encoded = part["image_url"]["url"].split(",", 1)[1]
+                    with Image.open(io.BytesIO(base64.b64decode(encoded, validate=True))) as image:
+                        colors.add(image.getpixel((0, 0)))
+                assert colors == {(index * 40, 0, 0) for index in range(5)}
+            else:
+                assert "data:image" not in text
+                assert "当前模型不接收图片" in text
+            for ref in refs:
+                assert ref.artifact_id in text
+                assert ref.filename in text
