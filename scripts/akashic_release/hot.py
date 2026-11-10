@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import ast
 import asyncio
 from dataclasses import dataclass
 import hashlib
@@ -17,7 +18,7 @@ import tarfile
 import tempfile
 
 from scripts.akashic_release.doctor import read_environment
-from scripts.akashic_release.manifest import read_json, write_json
+from scripts.akashic_release.manifest import atomic_write, read_json, write_json
 from scripts.akashic_release.model import ReleasePaths
 from scripts.plugin_store import materialize
 
@@ -53,6 +54,11 @@ def _tree_digest(root: Path) -> str:
         if path.is_file():
             digest.update(str(path.relative_to(root)).encode() + b"\0" + path.read_bytes())
     return digest.hexdigest()
+
+
+def _contract_shape(plugin_root: Path) -> str | None:
+    path = plugin_root / "contract.py"
+    return ast.dump(ast.parse(path.read_text(encoding="utf-8"))) if path.is_file() else None
 
 
 # Core 身份：tar 成员的路径与内容（不含 mtime 和带提交号的记录），加上依赖文件摘要。
@@ -93,6 +99,9 @@ def classify(active: Path, target: Path) -> HotPlan | str:
         if name in _HOST_PLUGINS:
             return f"Host Bridge 插件变化: {name}"
         old, new = (active / "sources" / name).resolve(), target / "sources" / name
+        # 公共合同在进程内只加载一次；停用插件的合同也可能已被其他插件导入。
+        if _contract_shape(old) != _contract_shape(new):
+            return f"{name} 的公共合同变化"
         for file in _DEPENDENCY_FILES:
             olds = sorted(p.relative_to(old) for p in old.rglob(file))
             news = sorted(p.relative_to(new) for p in new.rglob(file))
@@ -119,12 +128,14 @@ def _gate(checkout: Path, image: str, distribution: Path, plan: HotPlan) -> None
         raise GateRejected("制品兼容门未通过:\n" + (result.stdout + result.stderr)[-4000:])
 
 
-async def _adopt(environment: dict[str, str], root: Path) -> dict[str, object]:
+_ADOPT_DEADLINE_SECONDS = 900.0
+
+
+async def _request_adopt(workspace: Path, root: Path) -> dict[str, object]:
     # 只走本机 unix 端点：不需要 token，也不必导入另一个版本的网关插件代码。
     from akashic_sdk import AsyncAkashic
     from agent.plugin_composition import load_endpoint_plan
 
-    workspace = Path(environment["AKASHIC_WORKSPACE"])
     endpoints = [endpoint for endpoint in load_endpoint_plan(workspace / "runtime/endpoints.json")
                  if endpoint.protocol == "jsonrpc+unix"]
     if len(endpoints) != 1:
@@ -136,9 +147,29 @@ async def _adopt(environment: dict[str, str], root: Path) -> dict[str, object]:
     return {str(key): value for key, value in result.items()}
 
 
+# 实例接受后在宿主任务里换代，这里轮询到终态；换代 Gateway 时连接会断开，期限内重连。
+async def _adopt(environment: dict[str, str], root: Path) -> dict[str, object]:
+    workspace = Path(environment["AKASHIC_WORKSPACE"])
+    result = await _request_adopt(workspace, root)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _ADOPT_DEADLINE_SECONDS
+    while result.get("state") in {"accepted", "running"}:
+        if loop.time() > deadline:
+            raise TimeoutError("实例在期限内没有完成热更新")
+        await asyncio.sleep(1)
+        try:
+            result = await _request_adopt(workspace, root)
+        except (ConnectionError, OSError):
+            continue
+    return result
+
+
 # 尝试热更新；返回 None 表示需要完整发布，原因写进 reason 列表。
 def hot_install(*, paths: ReleasePaths, checkout: Path, commit: str, runtime_env: Path,
                 reasons: list[str]) -> dict[str, object] | None:
+    if not runtime_env.is_file():
+        reasons.append("还没有运行中的实例")
+        return None
     environment = read_environment(runtime_env)
     active = Path(environment.get("AKASHIC_PLUGIN_DISTRIBUTION", ""))
     if not active.is_relative_to(paths.plugin_store / "distributions") or not active.is_dir():
@@ -165,17 +196,19 @@ def hot_install(*, paths: ReleasePaths, checkout: Path, commit: str, runtime_env
         reasons.append(f"实例不能热更新: {type(error).__name__}: {error}")
         return None
     if result.get("state") != "active":
-        reasons.append(f"实例拒绝热更新: {json.dumps(result, ensure_ascii=False)[:2000]}")
+        # rolled_back/rollback_failed/failed 都改走完整发布：重启会按目标版本重新提交全部选择。
+        reasons.append(f"实例没有完成热更新: {json.dumps(result, ensure_ascii=False)[:2000]}")
         return None
     _record(paths, runtime_env, environment, stored, commit, plan)
     return {"status": "hot-activated", "commit": commit, "changed": list(plan.changed), "adopt": result}
 
 
+# 原子替换：runtime.env 是唯一的启动环境，不能留下截断的文件。
 def _point_runtime_env(runtime_env: Path, distribution: Path) -> None:
     lines = [line for line in runtime_env.read_text().splitlines()
              if not line.startswith("AKASHIC_PLUGIN_DISTRIBUTION=")]
     lines.append(f"AKASHIC_PLUGIN_DISTRIBUTION={distribution}")
-    runtime_env.write_text("\n".join(lines) + "\n")
+    atomic_write(runtime_env, "\n".join(lines) + "\n", mode=runtime_env.stat().st_mode & 0o777)
 
 
 # 重启后沿用新发行版；回执记下镜像版本不变、发行版换成目标提交。

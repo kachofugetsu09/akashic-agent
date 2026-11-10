@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 import tempfile
 from pathlib import Path
@@ -10,7 +11,8 @@ _IMAGE_DISTRIBUTION = "/opt/akashic/distribution"
 
 
 # 把镜像里已准备好 wheels 的发行版原样放进制品库；同一提交已存在时直接返回。
-def store_image_distribution(*, image: str, store: Path, commit: str) -> Path:
+# #1973 之前的镜像没有逐插件 content_commit，不放进制品库，运行时继续用镜像内发行版。
+def store_image_distribution(*, image: str, store: Path, commit: str) -> Path | None:
     target = store / "distributions" / commit
     if target.exists():
         return target
@@ -22,6 +24,9 @@ def store_image_distribution(*, image: str, store: Path, commit: str) -> Path:
             copied = Path(directory) / "distribution"
             _ = subprocess.run(["docker", "cp", f"{container}:{_IMAGE_DISTRIBUTION}", str(copied)],
                                check=True, capture_output=True, text=True)
+            report = json.loads((copied / "distribution.json").read_text())
+            if any("content_commit" not in row for row in report["plugins"]):
+                return None
             return materialize(copied, store, commit)
     finally:
         _ = subprocess.run(["docker", "rm", "-f", container], check=False, capture_output=True)

@@ -47,9 +47,10 @@ def _verify_selected_runtime(
     if not isinstance(status, dict) or status.get("selection_ref") != root_ref:
         raise RuntimeError("live runtime selection 与已发布的完整 Root 不一致")
     # preset 启用的行整行缺席时，"选择里的都 ACTIVE" 也会成立，必须单独核对。
+    # 回滚到 #1973 之前的 Core 时它不报告 preset，只做原有核对。
     preset = status.get("preset")
-    if not isinstance(preset, dict) or preset.get("missing") != []:
-        missing = preset.get("missing") if isinstance(preset, dict) else "未报告"
+    if "preset" in status and (not isinstance(preset, dict) or preset.get("missing") != []):
+        missing = preset.get("missing") if isinstance(preset, dict) else "格式无效"
         raise RuntimeError(f"live runtime 缺少 preset 启用的插件: {missing}")
     plugins = status.get("plugins")
     components = status.get("selection_components")
@@ -246,6 +247,12 @@ def _publish(
     for key in ("AKASHIC_CONFIG", "AKASHIC_WORKSPACE", "AKASHIC_PLUGIN_HOME",
                 "AKASHIC_RUNTIME_COMMIT", "AKASHIC_RUNTIME_TREE"):
         command += ["--env", f"{key}={candidate[key]}"]
+    # 发布与正式运行必须从同一个发行版路径提交输入，否则启动会因代码路径不同再改一次 Root。
+    store = candidate.get("AKASHIC_PLUGIN_STORE")
+    if store:
+        command += ["--mount", f"type=bind,src={store},dst={store},readonly",
+                    "--env", f"AKASHIC_PLUGIN_STORE={store}",
+                    "--env", f"AKASHIC_PLUGIN_DISTRIBUTION={candidate['AKASHIC_PLUGIN_DISTRIBUTION']}"]
     command += [candidate["AKASHIC_IMAGE"], "publish", "--plan", "/opt/akashic/deploy-plan.json",
                 "--inputs", "/opt/akashic/deploy-inputs"]
     if preflight:

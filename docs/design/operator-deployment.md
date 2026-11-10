@@ -143,8 +143,10 @@ python3 scripts/akashic_release/cli.py install \
 
 1. 在宿主构建目标发行版，沿用当前 wheels，在当前镜像里跑 `scripts/distribution_compat_gate.py`
    （资产完整、CSS 变量闭包、SDK 导出闭包）。不通过时拒绝发布，不会退回完整发布，因为完整发布也会带上同样的问题。
-2. 放进 `<release-root>/plugin-store`，通过本机控制端点调用 `plugin/adopt-distribution`。实例只换代内容变化的插件；
-   合同结构变化或换代失败时整体退回原发行版，发布器改走完整发布。
+2. 放进 `<release-root>/plugin-store`，通过本机控制端点调用 `plugin/adopt-distribution`。实例在宿主任务里换代并立即返回
+   `accepted`，发布器用同一请求轮询终态（换代 Gateway 时连接会断开，期限内重连）。实例只换代内容变化的插件；
+   新版本启动失败时换回原发行版并重新挂上原输入（`rolled_back`），恢复不了时报告 `rollback_failed`。
+   这两种情况以及变化插件的公共合同（`contract.py`）变化，发布器都改走完整发布。
 3. 成功后 `runtime.env` 的 `AKASHIC_PLUGIN_DISTRIBUTION` 指向新发行版，`active.json` 记录 `distributionCommit` 与 `hotUpdate`；
    镜像、`targetCommit`、Bridge 都不变，重启后选择原样复用。
 

@@ -138,6 +138,21 @@ def _reject_retired_owner_recovery(action: ReloadRecoveryAction) -> None:
     )
 
 
+# 用户停用的插件不在选择里，换发行版后仍保持停用，也算换上。
+_ADOPTED_STATES = frozenset({"active", "unselected_source"})
+
+
+def _adoption_state(task: asyncio.Task[object]) -> dict[str, object]:
+    if not task.done():
+        return {"state": "running"}
+    if task.cancelled():
+        return {"state": "failed", "error": "热更新任务被取消"}
+    error = task.exception()
+    if error is not None:
+        return {"state": "failed", "error": f"{type(error).__name__}: {error}"}
+    return cast(dict[str, object], task.result())
+
+
 class PluginManager:
     # 应用预算覆盖实际输入准备、受影响分支挂载与恢复；
     # 用于截断挂起操作，不能按交互请求的延迟设定。
@@ -158,6 +173,8 @@ class PluginManager:
     ) -> None:
         self._dirs = plugin_dirs
         self._distribution = distribution
+        # 最近一次热更新：发行版路径与执行它的宿主任务，供发布器轮询终态。
+        self._adoption: tuple[str, asyncio.Task[object]] | None = None
         self._workspace = workspace
         self._selection = PluginSelection(workspace)
         self._python_environments = PythonEnvironments(workspace)
@@ -1138,9 +1155,16 @@ class PluginManager:
         """应用指定的变化输入；显式全量请求仍检查当前已选来源。"""
         return await self._run_operation(lambda: self._reconcile_changed(plugin_ids))
 
+    # 换上制品库里的另一个发行版，只换代内容变化的内置插件。宿主任务执行、立即返回：
+    # 请求方可能正是要换代的插件（Gateway 或它的 provider），在请求里等待会等到自己被排空。
+    # 同一发行版再次调用只读取这次热更新的状态。
     async def adopt_distribution(self, root: Path) -> dict[str, object]:
-        """换上制品库里的另一个发行版，只换代内容变化的内置插件。"""
-        return await self._run_operation(lambda: self._adopt_distribution(root))
+        key = str(root.resolve(strict=True))
+        if self._adoption is not None and self._adoption[0] == key:
+            return _adoption_state(self._adoption[1])
+        operation = self._start_operation(lambda: self._adopt_distribution(Path(key)), background=True)
+        self._adoption = (key, operation.task)
+        return {"state": "accepted"}
 
     # 1. 新发行版必须来自制品库且插件集合不变；2. 只调和内容变化的插件；
     # 3. 任一插件需要重启或没有进入 active，整体退回原发行版，不留半套。
@@ -1165,17 +1189,23 @@ class PluginManager:
         self._use_distribution(target)
         try:
             results = await self._reconcile_changed(changed)
-        except BaseException:
-            self._use_distribution(previous)
-            _ = await self._reconcile_changed(changed)
-            raise
-        # 用户停用的插件不在选择里，换发行版后仍保持停用。
-        if all(result.get("publication_state") in {"active", "unselected_source"} for result in results):
+        except Exception as error:
+            reverted = await self._revert_distribution(previous, changed)
+            return {"state": reverted["state"], "changed": sorted(changed),
+                    "error": f"{type(error).__name__}: {error}", "reverted": reverted["results"]}
+        if all(result.get("publication_state") in _ADOPTED_STATES for result in results):
             return {"state": "active", "changed": sorted(changed), "results": results}
+        reverted = await self._revert_distribution(previous, changed)
+        return {"state": reverted["state"], "changed": sorted(changed), "results": results,
+                "reverted": reverted["results"]}
+
+    # 换回原发行版：新输入启动失败后已是"已选但失败"，要按原发行版重新准备，不能沿用失败的选择。
+    async def _revert_distribution(self, previous: DistributionSources,
+                                   changed: frozenset[str]) -> dict[str, object]:
         self._use_distribution(previous)
-        reverted = await self._reconcile_changed(changed)
-        return {"state": "rolled_back", "changed": sorted(changed), "results": results,
-                "reverted": reverted}
+        results = await self._reconcile_changed(changed, retry_failed=changed)
+        restored = all(result.get("publication_state") in _ADOPTED_STATES for result in results)
+        return {"state": "rolled_back" if restored else "rollback_failed", "results": results}
 
     def _use_distribution(self, sources: DistributionSources) -> None:
         self._distribution = sources
@@ -1578,7 +1608,7 @@ class PluginManager:
             f"{source.plugin_name}@{source.marketplace}" for source in self._distribution.sources)
 
     async def _reconcile_changed(
-        self, plugin_ids: frozenset[str] | None = None,
+        self, plugin_ids: frozenset[str] | None = None, *, retry_failed: frozenset[str] = frozenset(),
     ) -> list[dict[str, object]]:
         """Reconcile changed inputs in the one formal Root and owner map."""
         if self._live_root is None:
@@ -1660,7 +1690,8 @@ class PluginManager:
             active = self._active_generations.get(plugin_id)
             mod = discovered[plugin_id]
             if (
-                active is not None
+                plugin_id not in retry_failed
+                and active is not None
                 and active.load_error is not None
                 and active.fiber is None
                 and active.state == "failed"

@@ -17,6 +17,7 @@ from scripts.build_plugin_distribution import _bundle_plugin
 from agent.plugins.static_manifest import load_static_plugin_manifest
 from scripts.distribution_runtime import prepare_wheels
 from scripts.plugin_store import materialize
+from scripts.akashic_release.hot import classify
 from plugins.ledger.log import MessageLog
 from plugins.ledger.contract import Input
 from scripts.install_plugin_distribution import (
@@ -120,7 +121,11 @@ def distribution(repo, out, names, defaults, *, legacy=False):
     out.mkdir()
     rows = [(legacy_bundle_plugin(repo, sha, "plugins/" + n, out) if legacy
              else _bundle_plugin(repo, sha, "plugins/" + n, out, set())) for n in names]
-    (out / "core.tar").write_bytes(b"isolated fixture core identity")
+    # 真实 tar：热更新分类按成员内容比较 Core。
+    with tarfile.open(out / "core.tar", "w") as archive:
+        marker = repo / "core-marker.txt"
+        if marker.exists():
+            archive.add(marker, arcname="core-marker.txt")
     bundle = ['schema_version = 1', '[rows]']
     for name in defaults:
         bundle.extend([f'[rows."{name}"]', f'plugin = "{name}@release"'])
@@ -137,6 +142,7 @@ def distribution(repo, out, names, defaults, *, legacy=False):
             "sha256": hashlib.sha256((out / "core.tar").read_bytes()).hexdigest(),
         },
         "plugins": rows,
+        "runtime_dependencies": {"source_commit": sha},
         "marketplace": "release",
         "bundles": [
             {
@@ -352,9 +358,9 @@ async def store_hot_update_stage(root, args):
     previous = {key: os.environ.get(key) for key in ("AKASHIC_PLUGIN_HOME", "AKASHIC_PLUGIN_STORE")}
     os.environ.update(AKASHIC_PLUGIN_HOME=str(home), AKASHIC_PLUGIN_STORE=str(store))
 
-    def build(marker):
+    def build(marker, name=None):
         (repo / "core-marker.txt").write_text(marker + "\n")
-        out = root / f"store-build-{marker}"
+        out = root / f"store-build-{name or marker}"
         distribution(repo, out, names, names)
         if args.with_wheels:
             prepare_wheels(out)
@@ -366,6 +372,14 @@ async def store_hot_update_stage(root, args):
 
     def generations(m):
         return {plugin_id: generation.generation_id for plugin_id, generation in m._active_generations.items()}
+
+    async def adopt(m, distribution):
+        # 实例接受后在宿主任务里换代；同一发行版再次调用读取终态。
+        result = await m.adopt_distribution(distribution)
+        while result["state"] in {"accepted", "running"}:
+            await asyncio.sleep(0.05)
+            result = await m.adopt_distribution(distribution)
+        return result
 
     try:
         subprocess.run([sys.executable, str(ROOT / "main.py"), "init", "--config", str(config),
@@ -391,7 +405,7 @@ async def store_hot_update_stage(root, args):
         before = generations(m)
         plugin(repo, "changing", "2")
         third = build("third")
-        result = await m.adopt_distribution(third)
+        result = await adopt(m, third)
         assert result["state"] == "active" and result["changed"] == ["changing@release"], result
         after = generations(m)
         assert {pid for pid in before if before[pid] != after[pid]} == {"changing@release"}, (before, after)
@@ -400,11 +414,24 @@ async def store_hot_update_stage(root, args):
         plugin(repo, "changing", "3")
         contract.write_text("class Port:\n    value: int\n    extra: str\n")
         fourth = build("fourth")
-        rolled = await m.adopt_distribution(fourth)
+        rolled = await adopt(m, fourth)
         assert rolled["state"] == "rolled_back", rolled
         assert builtin_refs() == live and generations(m) == after
+        # 4. 新版本启动失败：实例换回原发行版并重新挂上原输入，选择恢复、插件 ACTIVE。
+        contract.write_text("class Port:\n    value: int\n")
+        (repo / "plugins/changing/plugin.py").write_text(
+            "api_version=3\nname='changing'\nversion='5'\nasync def apply(ctx):\n    raise RuntimeError('boom')\n")
+        failing = await adopt(m, build("fifth"))
+        assert failing["state"] == "rolled_back", failing
+        assert builtin_refs() == live, (builtin_refs(), live)
+        assert m._active_generations["changing@release"].state == "active"
+        # 5. 停用插件只改合同也不能热更新：发布器在换代前按合同分到完整发布。
+        plugin(repo, "changing", "2")
+        contract.write_text("class Port:\n    value: int\n    other: str\n")
+        assert classify(third, build("third", "sixth")) == "changing 的公共合同变化"
+        contract.write_text("class Port:\n    value: int\n")
         await m.terminate_all()
-        # 4. 热更新后重启：启动入口用同一个发行版核对，选择原样复用。
+        # 6. 热更新后重启：启动入口用同一个发行版核对，选择原样复用。
         ensure_bundle(third, third / "bundles/base.toml", workspace=work, plugins_home=home,
                       config_path=config, receipt_path=receipt)
         assert builtin_refs() == live
