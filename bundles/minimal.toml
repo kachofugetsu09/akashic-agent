@@ -5,8 +5,16 @@ schema_version = 1
 plugin = "ledger@release"
 disabled = true
 
+[rows."userinformation"]
+plugin = "userinformation@release"
+disabled = true
+
 [rows."timer"]
 plugin = "timer@release"
+disabled = true
+
+[rows."scheduler"]
+plugin = "scheduler@release"
 disabled = true
 
 [rows."channels"]
