@@ -73,6 +73,10 @@ class BundleRecords:
         self._distribution = distribution
         self._repo = workdir / "records.git"
         _ = subprocess.run(["git", "init", "-q", "--bare", str(self._repo)], check=True)
+        # 临时仓库关掉自动 gc 与后台维护：否则 fetch 结束后的维护进程还在写 objects，
+        # TemporaryDirectory 清理时会与它撞成 "Directory not empty"（实测默认配置约 1/3 概率）。
+        for key, value in (("gc.auto", "0"), ("maintenance.auto", "false")):
+            _ = self._git("config", key, value)
 
     def _git(self, *args: str, stdin: bytes | None = None) -> subprocess.CompletedProcess[bytes]:
         return subprocess.run(["git", "-C", str(self._repo), *args], input=stdin, capture_output=True, check=False)
@@ -331,7 +335,8 @@ def run(distribution: Path, selected: list[str] | None, python_tag: str | None) 
     import_map = host_import_map(distribution, report)
     core = core_runtime(distribution, python_tag, report)
     exports: dict[str, set[str]] = {}
-    with tempfile.TemporaryDirectory(prefix="akashic-compat-gate-") as directory:
+    # 清理失败不能让检查结论失真：残留的临时目录交给 /tmp 回收，不抛清理异常。
+    with tempfile.TemporaryDirectory(prefix="akashic-compat-gate-", ignore_cleanup_errors=True) as directory:
         records = BundleRecords(distribution, Path(directory))
         for row in (by_name[name] for name in (selected or sorted(by_name))):
             report.count("plugins")
