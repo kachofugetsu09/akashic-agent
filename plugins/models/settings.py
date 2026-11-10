@@ -1,0 +1,219 @@
+"""Models-owned settings commands and the generation-local service key."""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from types import MappingProxyType
+from typing import Any, Protocol, TypeAlias
+
+from agent.plugin_composition.model import ServiceKey
+from plugins.models.contract import (
+    CapabilitySources,
+    CatalogMode,
+    DiscoveredModel,
+    ModelCapabilities,
+    ModelKind,
+)
+
+from .quota import ConnectionQuota
+
+
+@dataclass(frozen=True, slots=True)
+class AddConnection:
+    expected_revision: int
+    connection_id: str
+    name: str
+    driver_id: str
+    endpoint: str
+    auth_identity: str
+    credential: Mapping[str, str]
+    driver_config: Mapping[str, Any] = field(default_factory=dict)
+    # all：建连接时读取目录，对话模型全部启用；picked 配 adopt_models 只启用这几个。
+    catalog_mode: CatalogMode = "picked"
+    adopt_models: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class UpdateConnection:
+    expected_revision: int
+    connection_id: str
+    name: str
+    auth_identity: str
+    endpoint: str | None = None
+    credential: Mapping[str, str] | None = None
+    driver_config: Mapping[str, Any] | None = None
+    remove_model_ids: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class DisableConnection:
+    expected_revision: int
+    connection_id: str
+
+
+# 重新启用停用的连接；凭据与模型配置原样保留，失效时由下次调用或额度读取暴露。
+@dataclass(frozen=True, slots=True)
+class EnableConnection:
+    expected_revision: int
+    connection_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class AddModel:
+    expected_revision: int
+    model_id: str
+    connection_id: str
+    kind: ModelKind
+    model: str
+    capabilities: ModelCapabilities
+    capability_sources: CapabilitySources
+    default_reasoning_effort: str | None = None
+    driver_config: Mapping[str, Any] = field(default_factory=dict)
+    make_default_embedding: bool = False
+    discovery_owned: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class VerifyModel:
+    expected_revision: int
+    model_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class UpdateModel:
+    """写入一个对话模型的用户声明能力参数（上下文窗口/最大输出/图像输入）。"""
+
+    expected_revision: int
+    model_id: str
+    context_window: int | None
+    max_output_tokens: int | None
+    image_input: bool
+
+
+@dataclass(frozen=True, slots=True)
+class RemoveModel:
+    """移除模型选择，后续聊天引用跟随默认模型；历史事实不变。"""
+
+    expected_revision: int
+    model_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class SetDefaultModel:
+    expected_revision: int
+    role: str | None
+    model_id: str
+    verify_embedding: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class SyncModels:
+    expected_revision: int
+    connection_id: str
+
+
+# 切换连接的模型范围；切到 all 时读取目录，把还没有的对话模型补上。
+@dataclass(frozen=True, slots=True)
+class SetCatalogMode:
+    expected_revision: int
+    connection_id: str
+    mode: CatalogMode
+
+
+@dataclass(frozen=True, slots=True)
+class StartConnectionAuth:
+    driver_id: str
+    connection_id: str
+    input: Mapping[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class FinishConnectionAuth:
+    expected_revision: int
+    attempt_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class CancelConnectionAuth:
+    attempt_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class CreateConnectionWithModel:
+    """Probe and commit one new connection and its first model atomically."""
+
+    connection: AddConnection
+    model: AddModel
+
+
+ModelChange: TypeAlias = (
+    AddConnection
+    | UpdateConnection
+    | DisableConnection
+    | EnableConnection
+    | AddModel
+    | VerifyModel
+    | UpdateModel
+    | RemoveModel
+    | SetDefaultModel
+    | SyncModels
+    | SetCatalogMode
+    | StartConnectionAuth
+    | FinishConnectionAuth
+    | CancelConnectionAuth
+    | CreateConnectionWithModel
+)
+
+
+@dataclass(frozen=True, slots=True)
+class SettingsReceipt:
+    revision: int
+    status: str
+    attempt_id: str | None = None
+    challenge: Mapping[str, Any] | None = None
+
+    def __post_init__(self) -> None:
+        if self.challenge is not None:
+            object.__setattr__(
+                self,
+                "challenge",
+                MappingProxyType(dict(self.challenge)),
+            )
+
+
+class ModelSettings(Protocol):
+    async def probe_embedding(self, model: str, expected_revision: int, *, connection: AddConnection | None = None, connection_id: str | None = None) -> DiscoveredModel: ...
+
+    async def discover_saved(self, connection_id: str, expected_revision: int) -> tuple[DiscoveredModel, ...]: ...
+
+    async def discover(self, connection: AddConnection) -> tuple[DiscoveredModel, ...]: ...
+
+    async def apply(self, command: ModelChange) -> SettingsReceipt: ...
+
+    async def quotas(self, *, fresh: bool, connection_id: str | None = None) -> tuple[ConnectionQuota, ...]: ...
+
+
+MODEL_SETTINGS = ServiceKey[ModelSettings]("models.settings.v1")
+
+
+__all__ = [
+    "AddConnection",
+    "AddModel",
+    "VerifyModel",
+    "CancelConnectionAuth",
+    "CreateConnectionWithModel",
+    "DisableConnection",
+    "EnableConnection",
+    "FinishConnectionAuth",
+    "MODEL_SETTINGS",
+    "ModelChange",
+    "ModelSettings",
+    "SetDefaultModel",
+    "RemoveModel",
+    "SettingsReceipt",
+    "StartConnectionAuth",
+    "SyncModels",
+    "UpdateConnection",
+    "UpdateModel",
+]

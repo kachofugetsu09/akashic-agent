@@ -1,0 +1,2358 @@
+from __future__ import annotations
+
+import fcntl
+import json
+import hashlib
+import logging
+import math
+import os
+import sqlite3
+import time
+import threading
+import uuid
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import AbstractContextManager, closing, contextmanager
+from dataclasses import asdict, dataclass, fields, replace
+from pathlib import Path
+from types import MappingProxyType
+from typing import Any, Literal, cast
+from urllib.parse import quote
+
+from plugins.models.contract import (
+    CapabilitySources,
+    CatalogMode,
+    DiscoveredModel,
+    ModelCapabilities,
+    ModelKind,
+)
+from plugins.models.contract import (
+    ModelUnavailableError,
+    RevisionConflictError,
+)
+
+from .credentials import StoredCredentialHandle, encode_credential
+from .settings import (
+    AddConnection,
+    AddModel,
+    CreateConnectionWithModel,
+    DisableConnection,
+    EnableConnection,
+    SetDefaultModel,
+    RemoveModel,
+    UpdateConnection,
+    UpdateModel,
+)
+from plugins.models.contract import (
+    LLMResponse,
+    ModelRequest,
+    ModelUsage,
+    UsageCoverage,
+)
+from plugins.models.contract import BoundModelDescriptor
+from plugins.models.contract import ModelCallStats
+from .composition import CompositionLog
+
+# 只剩全局默认；旧库里的 fast/agent/vision 行不再读取，保留原样便于回滚。
+MODEL_ROLES = ("default",)
+_LEGACY_OPENAI_DRIVER_IDS = ("openai", "deepseek", "qwen")
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class StoredConnection:
+    connection_id: str
+    name: str
+    driver_id: str
+    endpoint: str
+    auth_identity: str
+    driver_config: Mapping[str, Any]
+    enabled: bool
+    catalog_mode: CatalogMode = "picked"
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "driver_config", _freeze_json(self.driver_config))
+
+
+@dataclass(frozen=True, slots=True)
+class StoredModel:
+    model_id: str
+    connection_id: str
+    kind: ModelKind
+    model: str
+    default_reasoning_effort: str | None
+    capabilities: ModelCapabilities
+    capability_sources: CapabilitySources
+    driver_config: Mapping[str, Any]
+    discovery_owned: bool
+    enabled: bool
+
+    @classmethod
+    def from_command(cls, command: AddModel) -> StoredModel:
+        """Build the exact model candidate used by settings validation."""
+
+        return cls(
+            model_id=_required(command.model_id, "model_id"),
+            connection_id=_required(command.connection_id, "connection_id"),
+            kind=command.kind,
+            model=_required(command.model, "model"),
+            default_reasoning_effort=(
+                command.default_reasoning_effort.strip()
+                if command.default_reasoning_effort
+                else None
+            ),
+            capabilities=command.capabilities,
+            capability_sources=command.capability_sources,
+            driver_config=_freeze_json(command.driver_config),
+            discovery_owned=command.discovery_owned,
+            enabled=True,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class StoredSnapshot:
+    revision: int
+    connections: Mapping[str, StoredConnection]
+    models: Mapping[str, StoredModel]
+    role_bindings: Mapping[str, str]
+    role_reasoning_efforts: Mapping[str, str]
+    default_embedding_model_id: str | None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "connections", MappingProxyType(dict(self.connections))
+        )
+        object.__setattr__(self, "models", MappingProxyType(dict(self.models)))
+        object.__setattr__(
+            self, "role_bindings", MappingProxyType(dict(self.role_bindings))
+        )
+        object.__setattr__(
+            self,
+            "role_reasoning_efforts",
+            MappingProxyType(dict(self.role_reasoning_efforts)),
+        )
+
+    @classmethod
+    def empty(cls) -> StoredSnapshot:
+        """Represent a valid initialized registry without configured models."""
+
+        return cls(
+            revision=0,
+            connections={},
+            models={},
+            role_bindings={},
+            role_reasoning_efforts={},
+            default_embedding_model_id=None,
+        )
+
+
+class ModelCallReader:
+    """只读调用账；同一账本版本内复用已经成功的协议事实。"""
+
+    def __init__(
+        self,
+        connect: Callable[[], AbstractContextManager[sqlite3.Connection]],
+        replay_connection: Callable[[], AbstractContextManager[tuple[sqlite3.Connection, object]]],
+    ) -> None:
+        self._connect = connect
+        self._replay_connection = replay_connection
+        self._replay_cache: tuple[object, Mapping[str, Mapping[str, Any]]] = (None, {})
+
+    def __call__(self, call_id: str) -> Mapping[str, Any]:
+        with self.open() as read:
+            return read(call_id)
+
+    @contextmanager
+    def open(self) -> Iterator[Callable[[str], Mapping[str, Any]]]:
+        """在同步组装内复用连接；不开启跨查询事务，退出时关闭。"""
+        with self._connect() as connection:
+            def read(call_id: str) -> Mapping[str, Any]:
+                """逐条读取并解码，结算变化在下一次查询可见。"""
+                require_model_calls_schema(connection)
+                row = connection.execute(
+                    "SELECT * FROM model_calls WHERE id=?", (call_id,)
+                ).fetchone()
+                if row is None:
+                    raise KeyError(call_id)
+                return _decode_call(row)
+
+            yield read
+
+    def replay(self, call_ids: tuple[str, ...]) -> Mapping[str, Mapping[str, Any]]:
+        """读取结算、binding 和调用协议扩展，不向投影提供完整响应。"""
+        if not call_ids:
+            self._replay_cache = (None, {})
+            return {}
+        with self._replay_connection() as (connection, revision):
+            columns = require_model_calls_schema(connection)
+            previous_revision, previous = self._replay_cache
+            known = previous if revision == previous_revision else {}
+            records = {identity: known[identity] for identity in call_ids if identity in known}
+            missing = tuple(identity for identity in call_ids if identity not in records)
+            # 旧账本没有响应正文，无法提供尚未保存的协议扩展。
+            response_metadata = (
+                "json_extract(response_json,'$.provider_metadata')"
+                if "response_json" in columns else "NULL"
+            )
+            estimate_column = "estimated_input_tokens" if "estimated_input_tokens" in columns else "NULL"
+            rows = connection.execute(
+                "SELECT id,state,json_extract(binding_json,'$.binding_id') AS binding_id, "
+                "json_extract(binding_json,'$.driver_id') AS driver_id, "
+                "json_extract(binding_json,'$.connection_id') AS connection_id, "
+                "json_extract(binding_json,'$.model') AS model, "
+                f"{response_metadata} AS provider_metadata, {estimate_column} AS estimated_input_tokens, "
+                "json_extract(usage_json,'$.input_tokens') AS input_tokens "
+                "FROM model_calls WHERE id IN (SELECT value FROM json_each(?))",
+                (json.dumps(missing),),
+            ).fetchall() if missing else ()
+        for row in rows:
+            records[row["id"]] = _freeze_json({
+                "state": row["state"],
+                "binding": {
+                    "binding_id": row["binding_id"], "driver_id": row["driver_id"],
+                    "connection_id": row["connection_id"], "model": row["model"],
+                },
+                "estimated_input_tokens": row["estimated_input_tokens"],
+                "usage": {"input_tokens": row["input_tokens"]},
+                "provider_metadata": (
+                    None if row["provider_metadata"] is None
+                    else json.loads(row["provider_metadata"])
+                ),
+            })
+        for identity in call_ids:
+            if identity not in records:
+                raise KeyError(identity)
+        # 只保留当前窗口的成功回执；在途状态仍需重读，外部写入使整个缓存失效。
+        self._replay_cache = (revision, {
+            identity: record for identity, record in records.items() if record["state"] == "success"
+        })
+        return records
+
+
+# 宿主锁表达“进程级宿主”身份：同进程多个 store 共享同一把锁，
+# 只有跨进程接管（或旧 store 显式 close）才递增 host_epoch。
+_PROCESS_HOST_LOCKS: dict[Path, tuple[int, int]] = {}
+
+
+
+@dataclass(frozen=True, slots=True)
+class CallUsage:
+    """用量统计需要的一次调用：结算用量，以及绑定时的模型名与上下文窗口（未知为 0）。"""
+
+    usage: Mapping[str, object] | None
+    model: str
+    context_window: int
+
+class ModelsStore:
+    """Own the ordinary models plugin's durable registry and write protocol."""
+
+    def __init__(self, path: Path, backup_dir: Path, writable: bool = True,
+                 composition: CompositionLog | None = None) -> None:
+        self.path = path
+        self.backup_dir = backup_dir
+        self.writable = writable
+        # 上下文构成另存一个文件，归 models 插件数据目录；没有时不统计构成。
+        self.composition = composition
+        self.read_call = ModelCallReader(lambda: self._connect(read_only=True), self._replay_connection)
+        self._host_epoch: int | None = None
+        self._write_connection: sqlite3.Connection | None = None
+        self._write_lock = threading.Lock()
+        # 同进程活 attempt 登记属于账本身份：同一 store 的同 key 调用才合并。
+        self.live_runs: dict[object, object] = {}
+        self._host_lock_file: object | None = None
+        # descriptor 冻结且整个绑定周期不变；binding JSON 只随 descriptor 变化。
+        self._binding_cache: dict[BoundModelDescriptor, str] = {}
+        # 快照只随 meta 行变化：领域写入递增 revision，宿主接管的升级递增 host_epoch。
+        self._snapshot_cache: tuple[tuple[object, ...], StoredSnapshot] | None = None
+
+    @property
+    def host_epoch(self) -> int | None:
+        """当前宿主的账本纪元；只读或未初始化的 store 按需要读取，旧库记为 0。"""
+        if self._host_epoch is None and self.path.is_file():
+            with self._connect(read_only=True) as connection:
+                if "host_epoch" not in _columns(connection, "model_registry_meta"):
+                    self._host_epoch = 0
+                else:
+                    row = connection.execute(
+                        "SELECT host_epoch FROM model_registry_meta WHERE singleton = 1"
+                    ).fetchone()
+                    self._host_epoch = None if row is None else int(row[0])
+        return self._host_epoch
+
+    def initialize(self) -> None:
+        """Create a new registry or expand the two approved additive columns."""
+
+        if not self.writable:
+            if not self.path.is_file():
+                raise FileNotFoundError(self.path)
+            return
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        new_host = self._acquire_host_lock()
+        try:
+            created = self._create_database_file()
+            with self._connect() as connection:
+                if connection.execute("PRAGMA journal_mode=WAL").fetchone()[0] != "wal":
+                    raise RuntimeError("模型账本需要 WAL 日志模式")
+                if created:
+                    connection.executescript(_SCHEMA)
+                    connection.execute(
+                        "INSERT INTO model_registry_meta(singleton, revision) VALUES (1, 0)"
+                    )
+                    connection.commit()
+                else:
+                    connection.execute("BEGIN IMMEDIATE")
+                    _require_base_schema(connection)
+                    additions = _missing_schema_additions(connection)
+                    legacy_driver_ids = _legacy_openai_driver_ids(connection)
+                    if additions or legacy_driver_ids:
+                        self._backup_locked(connection, "upgrade-schema")
+                        for statement in additions:
+                            connection.execute(statement)
+                        if legacy_driver_ids:
+                            connection.execute(
+                                "UPDATE model_connections "
+                                "SET provider = 'openai-compatible' "
+                                f"WHERE provider IN ({','.join('?' for _ in legacy_driver_ids)})",
+                                legacy_driver_ids,
+                            )
+                    # 独占接纳该账本的新宿主才递增 epoch；同进程收养租约的
+                    # store 仍是同一宿主，旧 owner 不能被 epoch 证据判死。
+                    if new_host:
+                        connection.execute(
+                            "UPDATE model_registry_meta SET host_epoch = host_epoch + 1 "
+                            "WHERE singleton = 1"
+                        )
+                    connection.commit()
+                    # 同进程收养租约的升级不递增 epoch，旧快照不能再按 meta 行复用。
+                    self._snapshot_cache = None
+                self._host_epoch = int(
+                    connection.execute(
+                        "SELECT host_epoch FROM model_registry_meta WHERE singleton = 1"
+                    ).fetchone()[0]
+                )
+        except BaseException:
+            # 初始化中途失败回滚本次取得的宿主租约份额；其他 store 的合法
+            # 持有（同进程收养或别的宿主）不受影响。
+            self.close()
+            raise
+
+    def read_snapshot(self) -> StoredSnapshot | None:
+        """Read connections, models, bindings, and revision from one transaction."""
+
+        if not self.path.is_file():
+            return None
+        with self._connect(read_only=True) as connection:
+            connection.execute("BEGIN")
+            _require_base_schema(connection)
+            # 每次绑定都读完整注册表；meta 行未变时复用同一份不可变快照，只付一次单行查询。
+            meta_row = tuple(connection.execute(
+                "SELECT * FROM model_registry_meta WHERE singleton = 1"
+            ).fetchone() or ())
+            cached = self._snapshot_cache
+            if cached is not None and cached[0] == meta_row:
+                return cached[1]
+            snapshot = self._read_snapshot(connection)
+        self._snapshot_cache = (meta_row, snapshot)
+        return snapshot
+
+    # 在调用方的读事务内解码完整注册表。
+    def _read_snapshot(self, connection: sqlite3.Connection) -> StoredSnapshot:
+        meta_columns = _columns(connection, "model_registry_meta")
+        connection_columns = _columns(connection, "model_connections")
+        model_columns = _columns(connection, "model_definitions")
+        embedding_columns = _columns(connection, "embedding_models")
+        default_column = (
+            ", default_embedding_model_id"
+            if "default_embedding_model_id" in meta_columns
+            else ""
+        )
+        meta = connection.execute(
+            f"SELECT revision{default_column} FROM model_registry_meta "
+            "WHERE singleton = 1"
+        ).fetchone()
+        if meta is None:
+            raise RuntimeError("model registry is missing revision metadata")
+        config_column = (
+            "driver_config_json"
+            if "driver_config_json" in connection_columns
+            else "'{}'"
+        )
+        mode_column = "catalog_mode" if "catalog_mode" in connection_columns else "'picked'"
+        connection_rows = connection.execute(
+            "SELECT id, name, provider, catalog_provider_id, base_url, auth_id, "
+            f"{config_column}, enabled, {mode_column} FROM model_connections ORDER BY created_at, id"
+        ).fetchall()
+        chat_rows = connection.execute(
+            _SELECT_CHAT_MODELS.format(
+                capabilities_json=(
+                    "capabilities_json"
+                    if "capabilities_json" in model_columns
+                    else "NULL"
+                )
+            )
+        ).fetchall()
+        embedding_rows = connection.execute(
+            _SELECT_EMBEDDING_MODELS.format(
+                capabilities_json=(
+                    "capabilities_json"
+                    if "capabilities_json" in embedding_columns
+                    else "NULL"
+                )
+            )
+        ).fetchall()
+        role_rows = connection.execute(
+            "SELECT role, model_id, reasoning_effort "
+            "FROM model_role_bindings WHERE role = 'default'"
+        ).fetchall()
+
+        connections = {
+            item.connection_id: item
+            for item in (_connection_from_row(row) for row in connection_rows)
+        }
+        model_items = tuple(_chat_model_from_row(row) for row in chat_rows) + tuple(
+            _embedding_model_from_row(row) for row in embedding_rows
+        )
+        models: dict[str, StoredModel] = {}
+        for item in model_items:
+            if item.model_id in models:
+                raise RuntimeError(f"duplicate model id across kinds: {item.model_id}")
+            models[item.model_id] = item
+        roles = {str(row[0]): str(row[1]) for row in role_rows}
+        efforts = {str(row[0]): str(row[2]) for row in role_rows}
+        default_embedding = str(meta[1]) if len(meta) > 1 and meta[1] else None
+        return StoredSnapshot(
+            revision=int(meta[0]),
+            connections=connections,
+            models=models,
+            role_bindings=roles,
+            role_reasoning_efforts=efforts,
+            default_embedding_model_id=default_embedding,
+        )
+
+    def start_call(
+        self, descriptor: BoundModelDescriptor, request: ModelRequest
+    ) -> str:
+        """先耐久记录一次真实请求；不把诊断输入或凭据复制进会话历史。"""
+        return self.resume_call(
+            descriptor, _request_digest(request), request_key=None, owner_id=None, max_attempts=1
+        )
+
+    def calls_for_key(self, request_key: str) -> tuple[Mapping[str, Any], ...]:
+        """按稳定请求身份读取全部真实 attempt；started 记录仍需结算证据。"""
+        if not isinstance(request_key, str) or not request_key:
+            raise ValueError("模型请求 key 不能为空")
+        with self._connect(read_only=True) as connection:
+            require_attempt_schema(connection)
+            rows = connection.execute(
+                "SELECT * FROM model_calls WHERE request_key=? ORDER BY attempt, id",
+                (request_key,),
+            ).fetchall()
+        return tuple(_decode_call(row) for row in rows)
+
+    def resume_call(
+        self,
+        descriptor: BoundModelDescriptor,
+        digest: str,
+        *,
+        request_key: str | None,
+        owner_id: str | None,
+        max_attempts: int | None,
+    ) -> str:
+        """在同一事务内核对 keyed 准入并记账，过时的读取不能再次发送。"""
+        if not self.writable:
+            raise RuntimeError("只读 Model store 不能开始外部调用")
+        binding = self._binding_cache.get(descriptor)
+        if binding is None:
+            binding = _strict_json(asdict(descriptor), "model binding")
+            self._binding_cache[descriptor] = binding
+        call_id = uuid.uuid4().hex
+        with self._connect() as connection, connection:
+            # 1. 读取与追加共用写事务；线程等待期间其他 Root 可能已结算。
+            connection.execute("BEGIN IMMEDIATE")
+            if request_key is None:
+                require_model_calls_schema(connection)
+                _ = connection.execute(
+                    "INSERT INTO model_calls (id,binding_json,request_digest,state) VALUES (?,?,?,'started')",
+                    (call_id, binding, digest),
+                )
+                return call_id
+            require_attempt_schema(connection)
+            rows = connection.execute(
+                "SELECT request_digest, attempt, binding_json, state, next_attempt_at "
+                "FROM model_calls WHERE request_key=? "
+                "ORDER BY attempt, id",
+                (request_key,),
+            ).fetchall()
+            if rows and any(row["request_digest"] != digest for row in rows):
+                raise ValueError("同一模型请求 key 的请求内容不一致")
+            if any(json.loads(row["binding_json"])["binding_id"] != descriptor.binding_id for row in rows):
+                raise ValueError("同一模型请求 key 的 binding 不一致")
+            if any(row["state"] != "error" for row in rows):
+                raise ModelUnavailableError("同一请求已有成功或正在结算的调用").exception()
+            if max_attempts is not None and len(rows) >= max_attempts:
+                raise ModelUnavailableError("模型调用重试预算耗尽").exception()
+            if rows:
+                next_at = rows[-1]["next_attempt_at"]
+                if next_at is None:
+                    raise ModelUnavailableError("该请求 key 已终结失败，同 key 不得重新付费").exception()
+                if next_at > time.time():
+                    raise ModelUnavailableError("同一请求仍在耐久退避，请稍后显式重试").exception()
+            # 2. 只有此次提交仍获准，才创建一次真实外部调用的记录。
+            attempt = max((row["attempt"] for row in rows), default=-1) + 1
+            _ = connection.execute(
+                "INSERT INTO model_calls "
+                "(id,binding_json,request_digest,state,request_key,attempt,owner_id) "
+                "VALUES (?,?,?,'started',?,?,?)",
+                (call_id, binding, digest, request_key, attempt, owner_id),
+            )
+        return call_id
+
+    def finish_call(
+        self, call_id: str, *, usage: ModelUsage | None, failure: str | None,
+        duration_ms: float | None = None, response: LLMResponse | None = None,
+        next_attempt_at: float | None = None,
+        partial_response: bool | None = None,
+        send_evidence: str | None = None,
+        first_token_ms: float | None = None,
+        estimated_input_tokens: int | None = None,
+    ) -> None:
+        """只结算同一 started 记录；成功先耐久保存响应，未知 usage 不记成零。"""
+        if not self.writable:
+            raise RuntimeError("只读 Model store 不能结算外部调用")
+        state = "success" if failure is None else "error"
+        encoded = None if usage is None else _strict_json(asdict(usage), "model usage")
+        body = None if response is None else _strict_json(
+            _response_payload(response), "model response"
+        )
+        columns = self._attempt_columns()
+        has_response = "response_json" in columns
+        has_next = "next_attempt_at" in columns
+        has_partial = "partial_response" in columns
+        has_evidence = "send_evidence" in columns
+        has_estimate = "estimated_input_tokens" in columns
+        update = (
+            "UPDATE model_calls SET state=?,usage_json=?,failure=?,"
+            "finished_at=CURRENT_TIMESTAMP,duration_ms=?,"
+            "first_token_ms=COALESCE(first_token_ms,?)"
+            + (",response_json=?" if has_response else "")
+            + (",next_attempt_at=?" if has_next else "")
+            + (",partial_response=?" if has_partial else "")
+            + (",send_evidence=?" if has_evidence else "")
+            + (",estimated_input_tokens=?" if has_estimate else "")
+            + " WHERE id=? AND state='started'"
+        )
+        extras = (
+            ([body] if has_response else [])
+            + ([next_attempt_at] if has_next else [])
+            + (
+                [None if partial_response is None else int(partial_response)]
+                if has_partial else []
+            )
+            + ([send_evidence] if has_evidence else [])
+            + ([estimated_input_tokens] if has_estimate else [])
+        )
+        values = (state, encoded, failure, duration_ms, first_token_ms, *extras, call_id)
+        commit_error: Exception | None = None
+        try:
+            with self._connect() as connection, connection:
+                cursor = connection.execute(update, values)
+                if cursor.rowcount == 1:
+                    return
+        except Exception as error:
+            commit_error = error
+        # 提交确认可能丢失；先回读已结算事实，相异回执视为契约违反。
+        try:
+            record = self.read_call(call_id)
+        except KeyError:
+            raise RuntimeError("Model 调用不存在")
+        if record["state"] == "started":
+            raise RuntimeError("Model 调用结算未提交") from commit_error
+        same = (
+            record["state"] == state
+            and record["failure"] == failure
+            and record.get("usage") == (None if usage is None else asdict(usage))
+            and (body is None or (response is not None and record.get("response") == _response_payload(response)))
+            and (not has_estimate or record.get("estimated_input_tokens") == estimated_input_tokens)
+            and (
+                not has_partial
+                or record.get("partial_response")
+                == (None if partial_response is None else int(partial_response))
+            )
+            and (
+                not has_evidence
+                or record.get("send_evidence") == send_evidence
+            )
+        )
+        if not same:
+            raise RuntimeError("Model 调用已经结算为相异回执")
+        logger.info("Model 调用 %s 结算回执已在库中，视为已提交", call_id)
+
+    def _attempt_columns(self) -> set[str]:
+        """列清单复用 schema 校验缓存；写连接空闲时不再另开连接。"""
+        if self._write_lock.acquire(blocking=False):
+            try:
+                if self._write_connection is not None:
+                    return set(require_model_calls_schema(self._write_connection))
+            finally:
+                self._write_lock.release()
+        with self._connect(read_only=True) as connection:
+            return set(require_model_calls_schema(connection))
+
+    def read_calls(self, after_id: str, limit: int) -> tuple[Mapping[str, Any], ...]:
+        """按身份分页读取调用快照；每轮从头扫描，started 记录仍可能结算。"""
+        if not isinstance(after_id, str) or type(limit) is not int or not 1 <= limit <= 1000:
+            raise ValueError("Model 调用分页参数无效")
+        with self._connect(read_only=True) as connection:
+            require_model_calls_schema(connection)
+            rows = connection.execute(
+                "SELECT * FROM model_calls WHERE id>? ORDER BY id LIMIT ?", (after_id, limit)
+            ).fetchall()
+        return tuple(_decode_call(row) for row in rows)
+
+    def read_call_usages(self, call_ids: list[str]) -> dict[str, CallUsage]:
+        """批量读取调用用量与绑定的模型；未成功结算的调用 usage 为 None，未知身份不出现在结果中。"""
+        result: dict[str, CallUsage] = {}
+        unique = list(dict.fromkeys(call_ids))
+        with self._connect(read_only=True) as connection:
+            _ = require_model_calls_schema(connection)
+            for start in range(0, len(unique), 500):
+                chunk = unique[start:start + 500]
+                rows = connection.execute(
+                    "SELECT id, state, usage_json, json_extract(binding_json, '$.model') AS model, "
+                    "json_extract(binding_json, '$.capabilities.context_window') AS context_window "
+                    f"FROM model_calls WHERE id IN ({','.join('?' * len(chunk))})",
+                    chunk,
+                ).fetchall()
+                for row in rows:
+                    usage = row["usage_json"]
+                    model, window = row["model"], row["context_window"]
+                    result[str(row["id"])] = CallUsage(
+                        cast(Mapping[str, object], json.loads(usage))
+                        if row["state"] == "success" and usage is not None else None,
+                        model if isinstance(model, str) else "",
+                        window if type(window) is int and window > 0 else 0,
+                    )
+        return result
+
+    def read_call_stats(self, call_id: str) -> ModelCallStats:
+        """从同一调用账选取公开字段，不把完整 binding 暴露给客户端。"""
+        # 1. 在数据库边界校验持久字段；损坏记录不能误报成“调用不存在”。
+        record = self.read_call(call_id)
+        binding = record["binding"]
+        model = binding.get("model") if isinstance(binding, Mapping) else None
+        state = record["state"]
+        if not isinstance(model, str) or not model or state not in {"started", "success", "error"}:
+            raise ValueError("Model 调用的模型或状态无效")
+        first_token = record["first_token_ms"]
+        duration = record["duration_ms"]
+        for value in (first_token, duration):
+            if value is not None and (
+                type(value) not in (int, float) or not math.isfinite(value) or value < 0
+            ):
+                raise ValueError("Model 调用耗时无效")
+        usage = record["usage"]
+        if usage is not None:
+            if not isinstance(usage, Mapping) or set(usage) != {item.name for item in fields(ModelUsage)}:
+                raise ValueError("Model 调用用量字段无效")
+            usage = cast(Mapping[str, Any], usage)
+            if usage["coverage"] not in {"exact", "partial", "unavailable"}:
+                raise ValueError("Model 调用用量覆盖无效")
+            for key, value in usage.items():
+                if key == "coverage":
+                    continue
+                if value is None and key.endswith("_tokens"):
+                    continue
+                if type(value) is not int or value < 0:
+                    raise ValueError("Model 调用用量无效")
+        # 2. 只构造公开统计，原 binding 与调用摘要保留在 owner 内。
+        return ModelCallStats(
+            call_record_id=call_id,
+            model=model,
+            state=cast(Literal["started", "success", "error"], state),
+            first_token_ms=first_token,
+            duration_ms=duration,
+            usage=None if usage is None else ModelUsage(
+                **{**usage, "coverage": cast(UsageCoverage, usage["coverage"])},
+            ),
+        )
+
+    def add_connection(
+        self,
+        command: AddConnection,
+        adopted: tuple[DiscoveredModel, ...] = (),
+    ) -> int:
+        """Add one connection and credential as one revision."""
+
+        def write(connection: sqlite3.Connection) -> None:
+            _insert_connection(connection, command)
+            _ = _adopt_chat_models(connection, command.connection_id, adopted)
+
+        return self._domain_write(command.expected_revision, "add-connection", write)
+
+    # 切换模型范围；切到 all 时把目录里还没有的对话模型一并补上。
+    def set_catalog_mode(
+        self,
+        expected_revision: int,
+        connection_id: str,
+        mode: CatalogMode,
+        adopted: tuple[DiscoveredModel, ...] = (),
+    ) -> int:
+        target = _required(connection_id, "connection_id")
+        if mode not in ("picked", "all"):
+            raise ValueError(f"unsupported catalog mode: {mode}")
+
+        def write(connection: sqlite3.Connection) -> None:
+            cursor = connection.execute(
+                "UPDATE model_connections SET catalog_mode = ?, updated_at = CURRENT_TIMESTAMP "
+                "WHERE id = ? AND enabled = 1",
+                (mode, target),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError(f"connection does not exist or is disabled: {target}")
+            if mode == "all":
+                _ = _adopt_chat_models(connection, target, adopted, revive=True)
+
+        return self._domain_write(expected_revision, "set-catalog-mode", write)
+
+    def create_connection_with_model(
+        self,
+        command: CreateConnectionWithModel,
+    ) -> int:
+        """Commit one checked connection and first model in one write set."""
+
+        def write(connection: sqlite3.Connection) -> None:
+            _insert_connection(connection, command.connection)
+            _insert_model(connection, command.model)
+            _set_added_embedding_default(connection, command.model)
+
+        return self._domain_write(
+            command.connection.expected_revision,
+            "create-connection-with-model",
+            write,
+        )
+
+    def update_connection(self, command: UpdateConnection, *, fallback_model_id: str | None = None) -> int:
+        """Update the mutable fields of one existing connection."""
+
+        connection_id = _required(command.connection_id, "connection_id")
+        name = _required(command.name, "name")
+        endpoint = (
+            None
+            if command.endpoint is None
+            else _required(command.endpoint, "endpoint")
+        )
+        auth_identity = _required(command.auth_identity, "auth_identity")
+        config = (
+            None
+            if command.driver_config is None
+            else _json_object(command.driver_config, "driver_config")
+        )
+        catalog_provider_id = (
+            None
+            if command.driver_config is None
+            else _catalog_provider_id(command.driver_config)
+        )
+        credential = (
+            None
+            if command.credential is None
+            else encode_credential(command.credential)
+        )
+
+        def write(connection: sqlite3.Connection) -> None:
+            row = connection.execute(
+                "SELECT auth_id FROM model_connections WHERE id = ?", (connection_id,)
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"connection does not exist: {connection_id}")
+            if str(row[0]) != auth_identity and credential is None:
+                raise ValueError(
+                    "changing auth_identity requires a replacement credential"
+                )
+            assignments = [
+                "name = ?",
+                "auth_id = ?",
+                "updated_at = CURRENT_TIMESTAMP",
+            ]
+            values: list[object] = [name, auth_identity]
+            if endpoint is not None:
+                assignments.insert(1, "base_url = ?")
+                values.insert(1, endpoint)
+            if config is not None:
+                assignments.extend(
+                    ("driver_config_json = ?", "catalog_provider_id = ?")
+                )
+                values.extend((config, catalog_provider_id))
+            if credential is not None:
+                assignments.extend(("auth_kind = ?", "auth_payload = ?"))
+                values.extend(credential)
+            values.append(connection_id)
+            connection.execute(
+                f"UPDATE model_connections SET {', '.join(assignments)} WHERE id = ?",
+                values,
+            )
+
+            # 连接校验通过后，凭据和明确取消的模型在同一事务提交。
+            if command.remove_model_ids:
+                connection.execute("UPDATE model_connections SET catalog_mode = 'picked' WHERE id = ?", (connection_id,))
+            for model_id in command.remove_model_ids:
+                _remove_model(connection, model_id, fallback_model_id)
+
+        return self._domain_write(command.expected_revision, "update-connection", write)
+
+    def disable_connection(self, command: DisableConnection) -> int:
+        """Logically disable one connection while preserving all durable rows."""
+
+        connection_id = _required(command.connection_id, "connection_id")
+
+        def write(connection: sqlite3.Connection) -> None:
+            cursor = connection.execute(
+                """
+                UPDATE model_connections
+                SET enabled = 0, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND enabled = 1
+                """,
+                (connection_id,),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError(
+                    f"connection does not exist or is already disabled: {connection_id}"
+                )
+
+        return self._domain_write(
+            command.expected_revision, "disable-connection", write
+        )
+
+    def enable_connection(self, command: EnableConnection) -> int:
+        connection_id = _required(command.connection_id, "connection_id")
+
+        def write(connection: sqlite3.Connection) -> None:
+            cursor = connection.execute(
+                """
+                UPDATE model_connections
+                SET enabled = 1, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND enabled = 0
+                """,
+                (connection_id,),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError(
+                    f"connection does not exist or is already enabled: {connection_id}"
+                )
+
+        return self._domain_write(command.expected_revision, "enable-connection", write)
+
+    def add_model(self, command: AddModel) -> int:
+        """Add one chat or embedding model using the existing normalized tables."""
+
+        def write(connection: sqlite3.Connection) -> None:
+            _insert_model(connection, command)
+            _set_added_embedding_default(connection, command)
+
+        return self._domain_write(command.expected_revision, "add-model", write)
+
+    def remove_model(self, command: RemoveModel, *, fallback_model_id: str | None) -> int:
+        """删除用户选中的配置，并在同一事务中清除引用和替换默认聊天模型。"""
+        model_id = _required(command.model_id, "model_id")
+        return self._domain_write(
+            command.expected_revision, "remove-model",
+            lambda connection: _remove_model(connection, model_id, fallback_model_id),
+        )
+
+    def update_model(self, command: UpdateModel) -> int:
+        """在同一 revision CAS 中设置用户能力；空容量表示未知，其余输入模态保留。"""
+        model_id = _required(command.model_id, "model_id")
+        for name, value in (
+            ("context window", command.context_window),
+            ("max output tokens", command.max_output_tokens),
+        ):
+            if value is not None and value <= 0:
+                raise ValueError(f"model {name} must be positive")
+
+        def write(connection: sqlite3.Connection) -> bool:
+            # 1. 在写事务中检查模型和视觉绑定，拒绝会使当前绑定失效的编辑。
+            row = connection.execute(
+                "SELECT supported_reasoning_efforts, context_window, "
+                "max_output_tokens, input_modalities, capability_source, "
+                "context_window_source, max_output_tokens_source, "
+                "input_modalities_source, supports_parallel_tool_calls, "
+                "use_responses_lite, reasoning_summary, capabilities_json "
+                "FROM model_definitions WHERE id = ?",
+                (model_id,),
+            ).fetchone()
+            if row is None:
+                if connection.execute(
+                    "SELECT 1 FROM embedding_models WHERE id = ?", (model_id,)
+                ).fetchone():
+                    raise ValueError(
+                        f"embedding model does not take chat capabilities: {model_id}"
+                    )
+                raise ValueError(f"model does not exist: {model_id}")
+
+            modalities = list(_decode_string_list(str(row["input_modalities"]), "model modalities"))
+            if command.image_input and "image" not in modalities:
+                modalities.append("image")
+            if not command.image_input:
+                modalities = [item for item in modalities if item != "image"]
+            if not modalities:
+                modalities = ["text"]
+
+            # 2. capabilities_json 是权威载荷；旧行先由原字段合成等价载荷。
+            raw = row["capabilities_json"]
+            if raw is not None and str(raw):
+                payload: dict[str, Any] = json.loads(str(raw))
+            else:
+                payload = {
+                    "capabilities": {
+                        "context_window": int(row["context_window"]) or None,
+                        "max_output_tokens": int(row["max_output_tokens"]) or None,
+                        "input_modalities": modalities,
+                        "supports_tool_calls": True,
+                        "supports_parallel_tool_calls": bool(row["supports_parallel_tool_calls"]),
+                        "supported_reasoning_efforts": list(
+                            _decode_string_list(str(row["supported_reasoning_efforts"]), "model reasoning efforts")
+                        ),
+                    },
+                    "capability_sources": {
+                        "context_window": str(row["context_window_source"]),
+                        "max_output_tokens": str(row["max_output_tokens_source"]),
+                        "input_modalities": str(row["input_modalities_source"]),
+                        "tool_calls": str(row["capability_source"]),
+                        "parallel_tool_calls": str(row["capability_source"]),
+                        "reasoning_efforts": str(row["capability_source"]),
+                    },
+                    "driver_config": {
+                        "use_responses_lite": bool(row["use_responses_lite"]),
+                        "reasoning_summary": str(row["reasoning_summary"]),
+                    },
+                    "source": "manual",
+                }
+            capabilities = payload["capabilities"]
+            capabilities["context_window"] = command.context_window
+            capabilities["max_output_tokens"] = command.max_output_tokens
+            capabilities["input_modalities"] = modalities
+            sources = payload["capability_sources"]
+            sources["context_window"] = "user"
+            sources["max_output_tokens"] = "user"
+            sources["input_modalities"] = "user"
+
+            # 3. 同步现有索引字段和载荷，用户编辑字段的来源固定为 user。
+            connection.execute(
+                "UPDATE model_definitions SET "
+                "context_window = ?, max_output_tokens = ?, input_modalities = ?, "
+                "context_window_source = 'user', max_output_tokens_source = 'user', "
+                "input_modalities_source = 'user', capabilities_json = ?, "
+                "updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (
+                    int(command.context_window or 0),
+                    int(command.max_output_tokens or 0),
+                    json.dumps(modalities, ensure_ascii=False, separators=(",", ":")),
+                    _strict_json(payload, "model capabilities"),
+                    model_id,
+                ),
+            )
+            return True
+
+        return self._domain_write(command.expected_revision, "update-model", write)
+
+    def set_default(self, command: SetDefaultModel) -> int:
+        """Set one chat role or the workspace default embedding model."""
+
+        role = command.role
+        if role is not None and type(role) is not str:
+            raise ValueError("model role must be a string")
+        model_id = _required(command.model_id, "model_id")
+
+        def write(connection: sqlite3.Connection) -> None:
+            if role is None:
+                row = connection.execute(
+                    """
+                    SELECT 1 FROM embedding_models AS m
+                    JOIN model_connections AS c ON c.id = m.connection_id
+                    WHERE m.id = ? AND m.enabled = 1 AND c.enabled = 1
+                    """,
+                    (model_id,),
+                ).fetchone()
+                if row is None:
+                    raise ValueError(f"embedding model is unavailable: {model_id}")
+                connection.execute(
+                    "UPDATE model_registry_meta SET default_embedding_model_id = ? "
+                    "WHERE singleton = 1",
+                    (model_id,),
+                )
+                return
+            if role not in MODEL_ROLES:
+                raise ValueError(f"unsupported model role: {role}")
+            row = connection.execute(
+                """
+                SELECT m.input_modalities, m.capabilities_json
+                FROM model_definitions AS m
+                JOIN model_connections AS c ON c.id = m.connection_id
+                WHERE m.id = ? AND m.enabled = 1 AND c.enabled = 1
+                """,
+                (model_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"chat model is unavailable: {model_id}")
+            connection.execute(
+                """
+                INSERT INTO model_role_bindings(role, model_id, reasoning_effort)
+                VALUES (?, ?, '')
+                ON CONFLICT(role) DO UPDATE SET
+                    model_id = excluded.model_id,
+                    reasoning_effort = excluded.reasoning_effort,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (role, model_id),
+            )
+
+        return self._domain_write(command.expected_revision, "set-default", write)
+
+    def sync_models(
+        self,
+        expected_revision: int,
+        connection_id: str,
+        discovered: tuple[DiscoveredModel, ...],
+    ) -> int:
+        """刷新已选模型的目录证据；只有 all 模式的连接会采纳新型号。"""
+
+        target_connection = _required(connection_id, "connection_id")
+        catalog = tuple(discovered)
+        if not catalog:
+            raise ValueError("driver returned an empty model catalog")
+        keys: set[tuple[ModelKind | None, str]] = set()
+        for item in catalog:
+            if item.kind not in {None, 'chat', 'embedding'}:
+                raise ValueError("driver returned invalid model kind")
+            if not isinstance(item.capabilities, ModelCapabilities):
+                raise TypeError("driver returned invalid model capabilities")
+            if not isinstance(item.capability_sources, CapabilitySources):
+                raise TypeError("driver returned invalid capability sources")
+            model = _required(item.model, "discovered model")
+            if model != item.model:
+                raise ValueError("discovered model must not contain outer whitespace")
+            key = (item.kind, model)
+            if key in keys:
+                raise ValueError(
+                    f"driver returned duplicate model: {model}"
+                )
+            keys.add(key)
+            if item.kind == 'embedding':
+                dimensions = item.capabilities.embedding_dimensions
+                if dimensions is None or dimensions <= 0:
+                    raise ValueError(f"embedding model lacks dimensions: {model}")
+
+        def write(connection: sqlite3.Connection) -> bool:
+            active = connection.execute(
+                "SELECT enabled, catalog_mode FROM model_connections WHERE id = ?",
+                (target_connection,),
+            ).fetchone()
+            if active is None or not bool(active[0]):
+                raise ValueError(
+                    f"connection does not exist or is disabled: {target_connection}"
+                )
+            follow = str(active[1]) == "all"
+            current = self.read_snapshot()
+            if current is None:
+                raise RuntimeError("model registry disappeared during catalog sync")
+            # 1. 目录未声明用途时，只借用已选配置的验证事实；不推断新型号。
+            existing = _existing_model_ids(connection, target_connection)
+            known: dict[tuple[ModelKind, str], DiscoveredModel] = {
+                (item.kind, item.model): item for item in catalog if item.kind is not None
+            }
+            for item in catalog:
+                if item.kind is not None:
+                    continue
+                for kind in ('chat', 'embedding'):
+                    key = (cast(ModelKind, kind), item.model)
+                    stored = existing.get(key)
+                    if stored is None or key in known:
+                        continue
+                    model = current.models[stored[0]]
+                    # 无用途的型号清单不能改写已验证的调用配置。
+                    known[key] = replace(
+                        item, kind=model.kind, default_reasoning_effort=model.default_reasoning_effort,
+                        driver_config=model.driver_config,
+                    )
+            # 用户字段覆盖目录证据，其余能力和可用性继续由目录刷新。
+            for key, item in known.items():
+                stored = existing.get(key)
+                if item.kind == 'chat' and stored is not None:
+                    known[key] = _keep_user_capabilities(item, current.models[stored[0]])
+            items = tuple(known.values())
+            # 2. 可用性和能力只更新已选行，仍保护手工配置。
+            legacy_keys = frozenset(
+                key for key, (_, _, legacy) in existing.items() if legacy
+            )
+            if not _sync_would_change(
+                current,
+                target_connection,
+                items,
+                legacy_keys=legacy_keys,
+            ):
+                # 已选模型没变时，all 模式仍可能有新上的型号要收。
+                return follow and _adopt_chat_models(connection, target_connection, catalog) > 0
+            desired = {(item.kind, item.model) for item in items}
+            for key, (model_id, discovery_owned, _) in existing.items():
+                if discovery_owned and key not in desired:
+                    table = (
+                        "model_definitions"
+                        if key[0] == 'chat'
+                        else "embedding_models"
+                    )
+                    connection.execute(
+                        f"UPDATE {table} SET enabled = 0, updated_at = CURRENT_TIMESTAMP "
+                        "WHERE id = ? AND enabled = 1",
+                        (model_id,),
+                    )
+            for item in items:
+                key = (cast(ModelKind, item.kind), item.model)
+                stored = existing.get(key)
+                if stored is None or (not stored[1] and not stored[2]):
+                    continue
+                model_id = stored[0]
+                # 向量空间由显式探测确认；目录同步只改变其可用性。
+                if item.kind == 'embedding':
+                    connection.execute(
+                        "UPDATE embedding_models SET enabled = 1, updated_at = CURRENT_TIMESTAMP "
+                        "WHERE id = ? AND enabled = 0", (model_id,),
+                    )
+                    continue
+                command = AddModel(
+                    expected_revision=expected_revision,
+                    model_id=model_id,
+                    connection_id=target_connection,
+                    kind=cast(ModelKind, item.kind),
+                    model=item.model,
+                    capabilities=item.capabilities,
+                    capability_sources=item.capability_sources,
+                    default_reasoning_effort=item.default_reasoning_effort,
+                    driver_config=item.driver_config,
+                )
+                connection.execute(
+                    _UPSERT_CHAT_MODEL,
+                    _chat_model_values(
+                        command, model_id, target_connection, item.model, source="discovery",
+                    ),
+                )
+            if follow:
+                _ = _adopt_chat_models(connection, target_connection, catalog)
+            return True
+
+        return self._domain_write(expected_revision, "sync-models", write)
+
+    def credential_handle(
+        self, connection_id: str, auth_identity: str
+    ) -> StoredCredentialHandle:
+        """Create a handle scoped to one exact Connection and auth identity."""
+
+        return StoredCredentialHandle(
+            self.path,
+            connection_id,
+            auth_identity,
+            writable=self.writable,
+            before_write=self._backup_locked,
+        )
+
+    def integrity_check(self) -> None:
+        """Fail loudly unless SQLite and every foreign key are valid."""
+
+        with self._connect(read_only=True) as connection:
+            result = connection.execute("PRAGMA integrity_check").fetchone()
+            if result is None or str(result[0]) != "ok":
+                raise RuntimeError(f"model registry integrity check failed: {result}")
+            foreign_keys = connection.execute("PRAGMA foreign_key_check").fetchall()
+        if foreign_keys:
+            raise RuntimeError(
+                f"model registry foreign key check failed: {foreign_keys}"
+            )
+
+    def _domain_write(
+        self,
+        expected_revision: int,
+        operation: str,
+        write: Callable[[sqlite3.Connection], bool | None],
+    ) -> int:
+        """CAS, back up, apply one write set, and publish one new revision."""
+
+        if not self.writable:
+            raise PermissionError("model registry is read-only")
+        self.initialize()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            current = _revision(connection)
+            if current != expected_revision:
+                raise RevisionConflictError(
+                    "model registry revision changed: "
+                    f"expected {expected_revision}, actual {current}"
+                ).exception()
+            changed = write(connection)
+            if changed is False:
+                connection.rollback()
+                return current
+            self._backup_locked(connection, operation)
+            connection.execute(
+                "UPDATE model_registry_meta SET revision = revision + 1 "
+                "WHERE singleton = 1"
+            )
+            connection.commit()
+        return current + 1
+
+    def _backup_locked(self, connection: sqlite3.Connection, operation: str) -> None:
+        """Back up the exact pre-write database while the caller holds its lock."""
+
+        self.backup_dir.mkdir(parents=True, exist_ok=True)
+        os.chmod(self.backup_dir, 0o700)
+        revision = _revision(connection)
+        target = self.backup_dir / (
+            f"model-registry.before-{operation}.r{revision}.{uuid.uuid4().hex}.sqlite3"
+        )
+        descriptor = os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        os.close(descriptor)
+        try:
+            # Python's sqlite backup waits on a source connection that already
+            # owns BEGIN IMMEDIATE. A second reader sees the same committed
+            # pre-write image while the first connection keeps the CAS lock.
+            with closing(sqlite3.connect(self.path)) as source:
+                with closing(sqlite3.connect(target)) as destination:
+                    source.backup(destination)
+            os.chmod(target, 0o600)
+            with closing(sqlite3.connect(target)) as backup:
+                result = backup.execute("PRAGMA integrity_check").fetchone()
+                if result is None or str(result[0]) != "ok":
+                    raise RuntimeError(
+                        f"model registry backup failed integrity check: {target}"
+                    )
+        except BaseException:
+            target.unlink(missing_ok=True)
+            raise
+
+    @contextmanager
+    def _replay_connection(self) -> Iterator[tuple[sqlite3.Connection, object]]:
+        """空闲写连接只读快照；本连接的正常结算不使旧成功回执失效。"""
+        # 1. 不等待在途写事务。data_version 只在同一连接内比较，并捕捉外部修改。
+        if self._write_lock.acquire(blocking=False):
+            try:
+                connection = self._write_connection
+                if connection is not None:
+                    connection.execute("BEGIN")
+                    try:
+                        version = connection.execute("PRAGMA data_version").fetchone()[0]
+                        yield connection, (connection, version)
+                    finally:
+                        connection.rollback()
+                    return
+            finally:
+                self._write_lock.release()
+        # 2. 只读 store 或繁忙 writer 使用原独立读路径，不复用其他快照的结果。
+        with self._connect(read_only=True) as connection:
+            connection.execute("BEGIN")
+            try:
+                yield connection, object()
+            finally:
+                connection.rollback()
+
+    @contextmanager
+    def _connect(self, *, read_only: bool = False) -> Iterator[sqlite3.Connection]:
+        """读范围独占短连接；同一账本复用一条串行写连接。"""
+        if read_only:
+            encoded = quote(self.path.as_posix(), safe="/:")
+            with closing(sqlite3.connect(f"file:{encoded}?mode=ro", uri=True)) as connection:
+                connection.row_factory = sqlite3.Row
+                yield connection
+            return
+        with self._write_lock:
+            if self._write_connection is None:
+                connection = sqlite3.connect(self.path, check_same_thread=False)
+                connection.execute("PRAGMA foreign_keys = ON")
+                # 与 MessageLog 使用相同的进程崩溃保证；宿主故障边界见 ADR-0099。
+                connection.execute("PRAGMA synchronous = NORMAL")
+                # 小账目更早复用 WAL 空间，避免长期逐提交扩展文件；长读可越过此被动 checkpoint 目标。
+                connection.execute("PRAGMA wal_autocheckpoint = 256")
+                connection.row_factory = sqlite3.Row
+                self._write_connection = connection
+            try:
+                yield self._write_connection
+            finally:
+                # 调用方显式提交；未提交的事务不能泄漏到下一次使用。
+                self._write_connection.rollback()
+
+    def _acquire_host_lock(self) -> bool:
+        """账本宿主的独占证据：flock 由持有者在整个生命周期持有。
+
+        只有独占锁成立时，更早 host_epoch 的 owner 才能被证明已退出；
+        拿不到锁说明仍有宿主存活，epoch 递增不能作为死亡证据。
+        同进程后续 store 收养既有租约而不再次递增 epoch：它们仍是同一宿主，
+        旧 Root 的 started 记录依旧只能按含糊处理（fail-closed）。
+        返回 True 表示本进程新接管了账本宿主身份。
+        """
+        if self._host_lock_file is not None:
+            return False
+        lock_path = self.path.with_name(f"{self.path.name}.hostlock")
+        shared = _PROCESS_HOST_LOCKS.get(lock_path)
+        if shared is not None:
+            descriptor, holders = shared
+            _PROCESS_HOST_LOCKS[lock_path] = (descriptor, holders + 1)
+            self._host_lock_file = descriptor
+            return False
+        descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(descriptor)
+            raise RuntimeError(
+                "模型账本仍由另一宿主持有，无法证明旧 owner 已退出"
+            ) from None
+        _PROCESS_HOST_LOCKS[lock_path] = (descriptor, 1)
+        self._host_lock_file = descriptor
+        # 打开边界收紧一次：宿主锁既已存在也要归正，普通读写不再逐次巡检。
+        os.chmod(lock_path, 0o600)
+        return True
+
+    @property
+    def holds_host_lock(self) -> bool:
+        """本 store 是否持有账本宿主的独占证据。"""
+        return self._host_lock_file is not None
+
+    def close(self) -> None:
+        """关闭写连接并释放宿主锁；在途事务先完成。"""
+        with self._write_lock:
+            if self._write_connection is not None:
+                self._write_connection.close()
+                self._write_connection = None
+        descriptor = self._host_lock_file
+        self._host_lock_file = None
+        if descriptor is None:
+            return
+        lock_path = self.path.with_name(f"{self.path.name}.hostlock")
+        shared = _PROCESS_HOST_LOCKS.get(lock_path)
+        if shared is not None and shared[0] == descriptor:
+            holders = shared[1] - 1
+            if holders > 0:
+                _PROCESS_HOST_LOCKS[lock_path] = (cast(int, descriptor), holders)
+                return
+            del _PROCESS_HOST_LOCKS[lock_path]
+        os.close(cast(int, descriptor))
+
+    def _create_database_file(self) -> bool:
+        if self.path.exists():
+            # 打开边界收紧一次：既有账本权限不符时在初始化处归正（评审 #1082）。
+            os.chmod(self.path, 0o600)
+            return False
+        descriptor = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        os.close(descriptor)
+        return True
+
+
+
+def _revision(connection: sqlite3.Connection) -> int:
+    row = connection.execute(
+        "SELECT revision FROM model_registry_meta WHERE singleton = 1"
+    ).fetchone()
+    if row is None:
+        raise RuntimeError("model registry is missing revision metadata")
+    return int(row[0])
+
+
+def _existing_model_ids(
+    connection: sqlite3.Connection,
+    connection_id: str,
+) -> dict[tuple[ModelKind, str], tuple[str, bool, bool]]:
+    result: dict[tuple[ModelKind, str], tuple[str, bool, bool]] = {}
+    for table, kind in (
+        ("model_definitions", 'chat'),
+        ("embedding_models", 'embedding'),
+    ):
+        capabilities_column = (
+            "capabilities_json"
+            if "capabilities_json" in _columns(connection, table)
+            else "NULL"
+        )
+        rows = connection.execute(
+            f"SELECT id, model, {capabilities_column} FROM {table} WHERE connection_id = ?",
+            (connection_id,),
+        ).fetchall()
+        for row in rows:
+            key = (cast(ModelKind, kind), str(row[1]))
+            if key in result:
+                raise RuntimeError(
+                    f"duplicate stored model identity: {kind}/{row[1]}"
+                )
+            raw_payload = row[2]
+            result[key] = (
+                str(row[0]),
+                _payload_source(raw_payload) == "discovery",
+                raw_payload is None or not str(raw_payload),
+            )
+    return result
+
+
+def _keep_user_capabilities(item: DiscoveredModel, stored: StoredModel) -> DiscoveredModel:
+    """目录同步保留逐字段的用户声明，包括明确声明为未知的值。"""
+    caps = item.capabilities
+    sources = item.capability_sources
+    # 三项覆盖独立保留，不把整行变成手工模型而停掉其余目录更新。
+    if stored.capability_sources.context_window == "user":
+        caps = replace(caps, context_window=stored.capabilities.context_window)
+        sources = replace(sources, context_window="user")
+    if stored.capability_sources.max_output_tokens == "user":
+        caps = replace(caps, max_output_tokens=stored.capabilities.max_output_tokens)
+        sources = replace(sources, max_output_tokens="user")
+    if stored.capability_sources.input_modalities == "user":
+        caps = replace(caps, input_modalities=stored.capabilities.input_modalities)
+        sources = replace(sources, input_modalities="user")
+    return replace(item, capabilities=caps, capability_sources=sources)
+
+
+def _sync_would_change(
+    snapshot: StoredSnapshot,
+    connection_id: str,
+    items: tuple[DiscoveredModel, ...],
+    *,
+    legacy_keys: frozenset[tuple[ModelKind, str]] = frozenset(),
+) -> bool:
+    current = {
+        (model.kind, model.model): model
+        for model in snapshot.models.values()
+        if model.connection_id == connection_id
+    }
+    desired_keys = {(item.kind, item.model) for item in items}
+    if any(
+        model.discovery_owned and model.enabled and key not in desired_keys
+        for key, model in current.items()
+    ):
+        return True
+    for item in items:
+        stored = current.get((cast(ModelKind, item.kind), item.model))
+        if stored is None or (
+            not stored.discovery_owned and (item.kind, item.model) not in legacy_keys
+        ):
+            continue
+        if item.kind == 'embedding':
+            if not stored.enabled:
+                return True
+            continue
+        desired = StoredModel(
+            model_id=stored.model_id,
+            connection_id=connection_id,
+            kind=cast(ModelKind, item.kind),
+            model=item.model,
+            default_reasoning_effort=(
+                item.default_reasoning_effort.strip()
+                if item.default_reasoning_effort
+                else None
+            ),
+            capabilities=item.capabilities,
+            capability_sources=item.capability_sources,
+            driver_config=item.driver_config,
+            discovery_owned=True,
+            enabled=True,
+        )
+        if stored != desired:
+            return True
+    return False
+
+
+def _columns(connection: sqlite3.Connection, table: str) -> set[str]:
+    return {str(row[1]) for row in connection.execute(f"PRAGMA table_info({table})")}
+
+
+def _require_base_schema(connection: sqlite3.Connection) -> None:
+    required = {
+        "model_registry_meta",
+        "model_connections",
+        "model_definitions",
+        "embedding_models",
+        "model_role_bindings",
+    }
+    found = {
+        str(row[0])
+        for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        )
+    }
+    missing = sorted(required - found)
+    if missing:
+        raise RuntimeError(f"model registry schema is incomplete: {', '.join(missing)}")
+
+
+def _missing_schema_additions(connection: sqlite3.Connection) -> tuple[str, ...]:
+    """仅增加缺少的列和请求查询索引，既有调用事实保持不变。"""
+    statements: list[str] = []
+    if "driver_config_json" not in _columns(connection, "model_connections"):
+        statements.append(
+            "ALTER TABLE model_connections ADD COLUMN "
+            "driver_config_json TEXT NOT NULL DEFAULT '{}'"
+        )
+    if "default_embedding_model_id" not in _columns(connection, "model_registry_meta"):
+        statements.append(
+            "ALTER TABLE model_registry_meta ADD COLUMN "
+            "default_embedding_model_id TEXT DEFAULT NULL"
+        )
+    if "capabilities_json" not in _columns(connection, "model_definitions"):
+        statements.append(
+            "ALTER TABLE model_definitions ADD COLUMN capabilities_json TEXT"
+        )
+    if "capabilities_json" not in _columns(connection, "embedding_models"):
+        statements.append(
+            "ALTER TABLE embedding_models ADD COLUMN capabilities_json TEXT"
+        )
+    if "catalog_mode" not in _columns(connection, "model_connections"):
+        statements.append(
+            "ALTER TABLE model_connections ADD COLUMN "
+            "catalog_mode TEXT NOT NULL DEFAULT 'picked'"
+        )
+    if "host_epoch" not in _columns(connection, "model_registry_meta"):
+        statements.append(
+            "ALTER TABLE model_registry_meta ADD COLUMN host_epoch INTEGER NOT NULL DEFAULT 0"
+        )
+    call_columns = _columns(connection, "model_calls")
+    if call_columns:
+        statements.extend(
+            f"ALTER TABLE model_calls ADD COLUMN {name} {_MODEL_CALLS_ADDITIVE_TYPES[name]}"
+            for name in _MODEL_CALLS_ADDITIVE_TYPES
+            if name not in call_columns
+        )
+        if not any(row[1] == "model_calls_request_key" for row in connection.execute("PRAGMA index_list(model_calls)")):
+            statements.append(_MODEL_CALLS_REQUEST_INDEX)
+    return tuple(statements)
+
+
+def _legacy_openai_driver_ids(connection: sqlite3.Connection) -> tuple[str, ...]:
+    """Find retired provider IDs implemented by the OpenAI-compatible driver."""
+
+    placeholders = ",".join("?" for _ in _LEGACY_OPENAI_DRIVER_IDS)
+    rows = connection.execute(
+        "SELECT DISTINCT provider FROM model_connections "
+        f"WHERE provider IN ({placeholders}) ORDER BY provider",
+        _LEGACY_OPENAI_DRIVER_IDS,
+    ).fetchall()
+    return tuple(str(row[0]) for row in rows)
+
+
+def _connection_from_row(row: sqlite3.Row) -> StoredConnection:
+    config = _decode_json_object(str(row[6]), f"connection {row[0]} driver config")
+    # Legacy rows used this separate provider hint. New rows leave it empty and
+    # store every driver option in driver_config_json.
+    catalog_provider_id = str(row[3])
+    if catalog_provider_id:
+        existing = config.setdefault("catalog_provider_id", catalog_provider_id)
+        if existing != catalog_provider_id:
+            raise RuntimeError(f"connection {row[0]} catalog provider 冲突")
+    return StoredConnection(
+        connection_id=str(row[0]),
+        name=str(row[1]),
+        driver_id=str(row[2]),
+        endpoint=str(row[4]),
+        auth_identity=str(row[5]),
+        driver_config=MappingProxyType(config),
+        enabled=bool(row[7]),
+        catalog_mode="all" if str(row[8]) == "all" else "picked",
+    )
+
+
+def _chat_model_from_row(row: sqlite3.Row) -> StoredModel:
+    efforts = _decode_string_list(str(row[5]), f"model {row[0]} reasoning efforts")
+    modalities = _decode_string_list(str(row[8]), f"model {row[0]} modalities")
+    payload = _decode_model_payload(row[16], f"model {row[0]}")
+    if payload is None:
+        capabilities = ModelCapabilities(
+            context_window=int(row[6]) or None,
+            max_output_tokens=int(row[7]) or None,
+            input_modalities=tuple(modalities),
+            supports_tool_calls=True,
+            supports_parallel_tool_calls=bool(row[13]),
+            supported_reasoning_efforts=tuple(efforts),
+        )
+        sources = CapabilitySources(
+            context_window=str(row[10]),
+            max_output_tokens=str(row[11]),
+            input_modalities=str(row[12]),
+            tool_calls=str(row[9]),
+            parallel_tool_calls=str(row[9]),
+            reasoning_efforts=str(row[9]),
+        )
+        driver_config: Mapping[str, Any] = MappingProxyType(
+            {
+                "use_responses_lite": bool(row[14]),
+                "reasoning_summary": str(row[15]),
+            }
+        )
+    else:
+        capabilities, sources, driver_config, source = payload
+    if payload is None:
+        source = "manual"
+    return StoredModel(
+        model_id=str(row[0]),
+        connection_id=str(row[1]),
+        kind='chat',
+        model=str(row[2]),
+        default_reasoning_effort=str(row[4]) or None,
+        capabilities=capabilities,
+        capability_sources=sources,
+        driver_config=driver_config,
+        discovery_owned=source == "discovery",
+        enabled=bool(row[3]),
+    )
+
+
+def _embedding_model_from_row(row: sqlite3.Row) -> StoredModel:
+    payload = _decode_model_payload(row[5], f"embedding model {row[0]}")
+    if payload is None:
+        capabilities = ModelCapabilities(
+            input_modalities=("text",),
+            supports_tool_calls=False,
+            supports_parallel_tool_calls=False,
+            embedding_dimensions=int(row[4]),
+            embedding_normalization="none",
+        )
+        sources = CapabilitySources()
+        driver_config: Mapping[str, Any] = MappingProxyType({})
+    else:
+        capabilities, sources, driver_config, source = payload
+        if capabilities.embedding_dimensions != int(row[4]):
+            raise RuntimeError(f"embedding model {row[0]} dimensions 冲突")
+    return StoredModel(
+        model_id=str(row[0]),
+        connection_id=str(row[1]),
+        kind='embedding',
+        model=str(row[2]),
+        default_reasoning_effort=None,
+        capabilities=capabilities,
+        capability_sources=sources,
+        driver_config=driver_config,
+        discovery_owned=("manual" if payload is None else source) == "discovery",
+        enabled=bool(row[3]),
+    )
+
+
+def _insert_connection(
+    connection: sqlite3.Connection,
+    command: AddConnection,
+) -> None:
+    connection_id = _required(command.connection_id, "connection_id")
+    name = _required(command.name, "name")
+    driver_id = _required(command.driver_id, "driver_id")
+    endpoint = _required(command.endpoint, "endpoint")
+    auth_identity = _required(command.auth_identity, "auth_identity")
+    config = _json_object(command.driver_config, "driver_config")
+    catalog_provider_id = _catalog_provider_id(command.driver_config)
+    auth_kind, auth_payload = encode_credential(command.credential)
+    if command.catalog_mode not in ("picked", "all"):
+        raise ValueError(f"unsupported catalog mode: {command.catalog_mode}")
+    connection.execute(
+        """
+        INSERT INTO model_connections(
+            id, name, provider, catalog_provider_id, auth_id, base_url,
+            auth_kind, auth_payload, driver_config_json, catalog_mode
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            connection_id,
+            name,
+            driver_id,
+            catalog_provider_id,
+            auth_identity,
+            endpoint,
+            auth_kind,
+            auth_payload,
+            config,
+            command.catalog_mode,
+        ),
+    )
+
+
+def _set_added_embedding_default(connection: sqlite3.Connection, command: AddModel) -> None:
+    """新增与默认选择在同一个 Models 事务中提交。"""
+    if command.make_default_embedding:
+        if command.kind != 'embedding':
+            raise ValueError("只有向量模型可以设为默认向量模型")
+        connection.execute(
+            "UPDATE model_registry_meta SET default_embedding_model_id = ? WHERE singleton = 1",
+            (command.model_id,),
+        )
+
+
+def _insert_model(connection: sqlite3.Connection, command: AddModel) -> None:
+    model_id = _required(command.model_id, "model_id")
+    connection_id = _required(command.connection_id, "connection_id")
+    model = _required(command.model, "model")
+    kind = command.kind
+    if kind not in {"chat", "embedding"}:
+        raise ValueError(f"unsupported model kind: {kind}")
+    duplicate = connection.execute(
+        "SELECT id FROM model_definitions WHERE id = ? "
+        "UNION ALL SELECT id FROM embedding_models WHERE id = ? LIMIT 1",
+        (model_id, model_id),
+    ).fetchone()
+    if duplicate is not None:
+        raise ValueError(f"model already exists: {model_id}")
+    active = connection.execute(
+        "SELECT enabled FROM model_connections WHERE id = ?", (connection_id,)
+    ).fetchone()
+    if active is None or not bool(active[0]):
+        raise ValueError(f"connection does not exist or is disabled: {connection_id}")
+    source = "discovery" if command.discovery_owned else "manual"
+    if kind == "chat":
+        connection.execute(
+            _INSERT_CHAT_MODEL,
+            _chat_model_values(command, model_id, connection_id, model, source=source),
+        )
+        return
+    dimensions = command.capabilities.embedding_dimensions
+    if dimensions is None or int(dimensions) <= 0:
+        raise ValueError("embedding dimensions must be greater than zero")
+    normalization = command.capabilities.embedding_normalization or "none"
+    if not isinstance(normalization, str) or not normalization.strip():
+        raise ValueError("embedding normalization must be a non-empty string")
+    connection.execute(
+        "INSERT INTO embedding_models("
+        "id, connection_id, model, dimensions, capabilities_json"
+        ") VALUES (?, ?, ?, ?, ?)",
+        (
+            model_id,
+            connection_id,
+            model,
+            int(dimensions),
+            _model_payload(command, source=source),
+        ),
+    )
+
+
+# 把目录里还没有的对话模型写成目录所有的行；未声明用途的型号按对话收，名字带 embed 的跳过。
+# 目录里能当对话模型收的型号：没声明用途的按对话算，名字含 embed 的除外。
+def adoptable_chat_model(item: DiscoveredModel) -> bool:
+    return item.kind == "chat" or (item.kind is None and "embed" not in item.model.lower())
+
+
+# 收进目录里还没有的对话模型；revive 时把目录里重新出现、曾被停用的目录模型一并恢复。
+def _adopt_chat_models(
+    connection: sqlite3.Connection,
+    connection_id: str,
+    catalog: tuple[DiscoveredModel, ...],
+    *,
+    revive: bool = False,
+) -> int:
+    existing = _existing_model_ids(connection, connection_id)
+    adopted = 0
+    for item in catalog:
+        if not adoptable_chat_model(item):
+            continue
+        stored = existing.get(("chat", item.model))
+        if stored is not None:
+            if revive and stored[1]:
+                adopted += connection.execute(
+                    "UPDATE model_definitions SET enabled = 1, updated_at = CURRENT_TIMESTAMP "
+                    "WHERE id = ? AND enabled = 0", (stored[0],),
+                ).rowcount
+            continue
+        command = AddModel(
+            expected_revision=0,
+            model_id=f"{connection_id}__{uuid.uuid4().hex[:12]}",
+            connection_id=connection_id,
+            kind="chat",
+            model=item.model,
+            capabilities=item.capabilities,
+            capability_sources=item.capability_sources,
+            default_reasoning_effort=item.default_reasoning_effort,
+            driver_config=item.driver_config,
+            discovery_owned=True,
+        )
+        _insert_model(connection, command)
+        existing[("chat", item.model)] = (command.model_id, True, False)
+        adopted += 1
+    return adopted
+
+
+def _chat_model_values(
+    command: AddModel,
+    model_id: str,
+    connection_id: str,
+    model: str,
+    *,
+    source: str = "manual",
+) -> tuple[object, ...]:
+    capabilities = command.capabilities
+    sources = command.capability_sources
+    context_window = int(capabilities.context_window or 0)
+    max_output_tokens = int(capabilities.max_output_tokens or 0)
+    if context_window < 0 or max_output_tokens < 0:
+        raise ValueError("model token limits must not be negative")
+    modalities = tuple(capabilities.input_modalities)
+    efforts = tuple(capabilities.supported_reasoning_efforts)
+    if not modalities or any(
+        not isinstance(item, str) or not item for item in modalities
+    ):
+        raise ValueError("input modalities must be non-empty strings")
+    if any(not isinstance(item, str) or not item for item in efforts):
+        raise ValueError("reasoning efforts must be non-empty strings")
+    return (
+        model_id,
+        connection_id,
+        model,
+        str(command.default_reasoning_effort or "").strip(),
+        json.dumps(efforts, ensure_ascii=False, separators=(",", ":")),
+        context_window,
+        max_output_tokens,
+        json.dumps(modalities, ensure_ascii=False, separators=(",", ":")),
+        _required(sources.context_window, "context window source"),
+        _required(sources.context_window, "context window source"),
+        _required(sources.max_output_tokens, "max output tokens source"),
+        _required(sources.input_modalities, "input modalities source"),
+        int(bool(capabilities.supports_parallel_tool_calls)),
+        int(bool(command.driver_config.get("use_responses_lite", False))),
+        str(command.driver_config.get("reasoning_summary") or "none"),
+        _model_payload(command, source=source),
+    )
+
+
+def _model_payload(command: Any, *, source: str = "manual") -> str:
+    value = {
+        "capabilities": asdict(command.capabilities),
+        "capability_sources": asdict(command.capability_sources),
+        "driver_config": command.driver_config,
+        "source": source,
+    }
+    return _strict_json(value, "model capabilities")
+
+
+def _decode_model_payload(
+    raw: object,
+    name: str,
+) -> tuple[ModelCapabilities, CapabilitySources, Mapping[str, Any], str] | None:
+    if raw is None or not str(raw):
+        return None
+    try:
+        value: Any = json.loads(str(raw))
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"{name} capabilities JSON 已损坏") from exc
+    if not isinstance(value, dict):
+        raise RuntimeError(f"{name} capabilities 必须是 object")
+    capabilities = value.get("capabilities")
+    sources = value.get("capability_sources")
+    driver_config = value.get("driver_config", {})
+    source = value.get("source", "manual")
+    if not isinstance(capabilities, dict) or not isinstance(sources, dict):
+        raise RuntimeError(f"{name} capability fields 已损坏")
+    if not isinstance(driver_config, dict):
+        raise RuntimeError(f"{name} driver_config 已损坏")
+    if source not in {"manual", "discovery"}:
+        raise RuntimeError(f"{name} source 已损坏")
+    for field_name in (
+        "input_modalities",
+        "supported_reasoning_efforts",
+    ):
+        field_value = capabilities.get(field_name)
+        if isinstance(field_value, list):
+            capabilities[field_name] = tuple(field_value)
+    try:
+        return (
+            ModelCapabilities(**capabilities),
+            CapabilitySources(**sources),
+            cast(Mapping[str, Any], _freeze_json(driver_config)),
+            source,
+        )
+    except TypeError as exc:
+        raise RuntimeError(f"{name} capability fields 已损坏") from exc
+
+
+def _payload_source(raw: object) -> str:
+    if raw is None or not str(raw):
+        return "manual"
+    try:
+        value: Any = json.loads(str(raw))
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("model capability source JSON 已损坏") from exc
+    if not isinstance(value, dict) or value.get("source", "manual") not in {
+        "manual",
+        "discovery",
+    }:
+        raise RuntimeError("model capability source 已损坏")
+    return str(value.get("source", "manual"))
+
+
+def _json_object(value: Mapping[str, Any], name: str) -> str:
+    encoded = _strict_json(value, name)
+    decoded = json.loads(encoded)
+    if not isinstance(decoded, dict):
+        raise ValueError(f"{name} must be an object")
+    return encoded
+
+
+def _catalog_provider_id(config: Mapping[str, Any]) -> str:
+    """Keep the legacy column equal to the public driver config."""
+
+    value = config.get("catalog_provider_id", "")
+    if not isinstance(value, str):
+        raise ValueError("driver_config.catalog_provider_id must be a string")
+    if value != value.strip():
+        raise ValueError(
+            "driver_config.catalog_provider_id must not contain outer whitespace"
+        )
+    return value
+
+
+def _decode_json_object(encoded: str, name: str) -> dict[str, Any]:
+    try:
+        value: Any = json.loads(encoded)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"{name} is invalid JSON") from exc
+    if not isinstance(value, dict):
+        raise RuntimeError(f"{name} must be a JSON object")
+    return cast(dict[str, Any], value)
+
+
+def _decode_string_list(encoded: str, name: str) -> list[str]:
+    try:
+        value: Any = json.loads(encoded)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"{name} is invalid JSON") from exc
+    if not isinstance(value, list) or any(
+        not isinstance(item, str) or not item for item in value
+    ):
+        raise RuntimeError(f"{name} must be a list of non-empty strings")
+    return cast(list[str], value)
+
+
+def _required(value: str, name: str) -> str:
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError(f"{name} must not be empty")
+    return normalized
+
+
+def _freeze_json(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        frozen: dict[str, Any] = {}
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise TypeError("JSON object key must be a string")
+            frozen[key] = _freeze_json(item)
+        return MappingProxyType(frozen)
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_json(item) for item in value)
+    return value
+
+
+def _request_digest(
+    request: ModelRequest, encodings: dict[int, tuple[object, bytes]] | None = None,
+) -> str:
+    """保持原 JSON 摘要；绑定模型只复用当前请求中深冻结值的编码。"""
+    payload: dict[str, Any] = {
+        "messages": request.messages,
+        "tools": request.tools,
+        "max_output_tokens": request.max_output_tokens,
+        "system_prompt": request.system_prompt,
+        "tool_choice": request.tool_choice,
+        "prompt_cache_key": request.prompt_cache_key,
+        "disable_reasoning": request.disable_reasoning,
+        "continuation": (
+            None
+            if request.continuation is None
+            else {
+                "binding_id": request.continuation.binding_id,
+                "payload": request.continuation.payload,
+            }
+        ),
+    }
+    if request.max_retry_wait is not None:
+        payload["max_retry_wait"] = request.max_retry_wait
+    if request.max_attempts is not None:
+        payload["max_attempts"] = request.max_attempts
+    if request.reduce_on_empty:
+        payload["reduce_on_empty"] = True
+    if encodings is None:
+        return hashlib.sha256(
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":"),
+                       sort_keys=True, allow_nan=False, default=dict).encode()
+        ).hexdigest()
+
+    # 1. 请求边界已深冻结；必须同时持有原对象，不能只靠可复用的 id。
+    current: dict[int, tuple[object, bytes]] = {}
+
+    def encode(value: object) -> bytes:
+        previous = encodings.get(id(value))
+        encoded = previous[1] if previous is not None and previous[0] is value else json.dumps(
+            value, ensure_ascii=False, separators=(",", ":"),
+            sort_keys=True, allow_nan=False, default=dict,
+        ).encode()
+        current[id(value)] = (value, encoded)
+        return encoded
+
+    # 2. 与原 sorted JSON 的字段、数组次序和分隔符完全相同。
+    fields: list[bytes] = []
+    for name, value in sorted(payload.items()):
+        encoded = (b"[" + b",".join(encode(row) for row in value) + b"]"
+                   if name in {"messages", "tools"} else encode(value))
+        fields.append(('"' + name + '":').encode() + encoded)
+    digest = hashlib.sha256(b"{" + b",".join(fields) + b"}").hexdigest()
+    # 缩短或替换请求后，不保留已经离开本次输入的消息。
+    encodings.clear()
+    encodings.update(current)
+    return digest
+
+
+def _response_payload(response: LLMResponse) -> dict[str, Any]:
+    """持久响应只含可重放正文；usage 与调用身份留在调用账自己的列里。"""
+    return {
+        "content": response.content,
+        "thinking": response.thinking,
+        "finish_reason": response.finish_reason,
+        **({"provider_metadata": response.provider_metadata}
+           if response.provider_metadata is not None else {}),
+        "tool_calls": [
+            {"id": call.id, "name": call.name, "arguments": call.arguments}
+            for call in response.tool_calls
+        ],
+        "continuation": (
+            None
+            if response.continuation is None
+            else {
+                "binding_id": response.continuation.binding_id,
+                "payload": response.continuation.payload,
+            }
+        ),
+    }
+
+
+def _decode_call(row: sqlite3.Row) -> Mapping[str, Any]:
+    record = dict(row)
+    record["binding"] = json.loads(record.pop("binding_json"))
+    usage = record.pop("usage_json")
+    record["usage"] = None if usage is None else json.loads(usage)
+    response = record.pop("response_json", None)
+    record["response"] = None if response is None else json.loads(response)
+    return _freeze_json(record)
+
+
+def _strict_json(value: Any, name: str) -> str:
+    active: set[int] = set()
+
+    def plain(item: Any) -> Any:
+        if isinstance(item, Mapping):
+            identity = id(item)
+            if identity in active:
+                raise ValueError(f"{name} must not contain cycles")
+            active.add(identity)
+            try:
+                result: dict[str, Any] = {}
+                for key, nested in item.items():
+                    if not isinstance(key, str):
+                        raise ValueError(f"{name} keys must be strings")
+                    result[key] = plain(nested)
+                return result
+            finally:
+                active.remove(identity)
+        if isinstance(item, (list, tuple)):
+            identity = id(item)
+            if identity in active:
+                raise ValueError(f"{name} must not contain cycles")
+            active.add(identity)
+            try:
+                return [plain(nested) for nested in item]
+            finally:
+                active.remove(identity)
+        if isinstance(item, float) and not math.isfinite(item):
+            raise ValueError(f"{name} numbers must be finite")
+        if item is None or isinstance(item, (str, int, float, bool)):
+            return item
+        raise ValueError(f"{name} contains unsupported value {type(item).__name__}")
+
+    return json.dumps(
+        plain(value),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+        allow_nan=False,
+    )
+
+
+_SELECT_CHAT_MODELS = """
+SELECT
+    id, connection_id, model, enabled, reasoning_effort,
+    supported_reasoning_efforts, context_window, max_output_tokens,
+    input_modalities, capability_source, context_window_source,
+    max_output_tokens_source, input_modalities_source,
+    supports_parallel_tool_calls, use_responses_lite, reasoning_summary,
+    {capabilities_json}
+FROM model_definitions
+ORDER BY created_at, id
+"""
+
+
+_SELECT_EMBEDDING_MODELS = """
+SELECT id, connection_id, model, enabled, dimensions, {capabilities_json}
+FROM embedding_models
+ORDER BY created_at, id
+"""
+
+
+_INSERT_CHAT_MODEL = """
+INSERT INTO model_definitions(
+    id, connection_id, model, reasoning_effort, supported_reasoning_efforts,
+    context_window, max_output_tokens, input_modalities,
+    capability_source, context_window_source, max_output_tokens_source,
+    input_modalities_source, supports_parallel_tool_calls,
+    use_responses_lite, reasoning_summary, capabilities_json
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+"""
+
+
+_UPSERT_CHAT_MODEL = _INSERT_CHAT_MODEL.rstrip() + """
+ON CONFLICT(id) DO UPDATE SET
+    model = excluded.model,
+    enabled = 1,
+    reasoning_effort = excluded.reasoning_effort,
+    supported_reasoning_efforts = excluded.supported_reasoning_efforts,
+    context_window = excluded.context_window,
+    max_output_tokens = excluded.max_output_tokens,
+    input_modalities = excluded.input_modalities,
+    capability_source = excluded.capability_source,
+    context_window_source = excluded.context_window_source,
+    max_output_tokens_source = excluded.max_output_tokens_source,
+    input_modalities_source = excluded.input_modalities_source,
+    supports_parallel_tool_calls = excluded.supports_parallel_tool_calls,
+    use_responses_lite = excluded.use_responses_lite,
+    reasoning_summary = excluded.reasoning_summary,
+    capabilities_json = excluded.capabilities_json,
+    updated_at = CURRENT_TIMESTAMP
+"""
+
+
+_UPSERT_EMBEDDING_MODEL = """
+INSERT INTO embedding_models(id, connection_id, model, dimensions, capabilities_json)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT(id) DO UPDATE SET
+    model = excluded.model,
+    enabled = 1,
+    dimensions = excluded.dimensions,
+    capabilities_json = excluded.capabilities_json,
+    updated_at = CURRENT_TIMESTAMP
+"""
+
+
+_MODEL_CALLS_ATTEMPT_COLUMNS = (
+    "request_key", "attempt", "owner_id", "response_json", "next_attempt_at",
+    "partial_response", "send_evidence",
+)
+_MODEL_CALLS_BASE_COLUMNS = {
+    "id": "TEXT",
+    "binding_json": "TEXT",
+    "request_digest": "TEXT",
+    "state": "TEXT",
+    "usage_json": "TEXT",
+    "failure": "TEXT",
+    "started_at": "TEXT",
+    "finished_at": "TEXT",
+    "first_token_ms": "REAL",
+    "duration_ms": "REAL",
+}
+
+_MODEL_CALLS_ADDITIVE_TYPES = {
+    "request_key": "TEXT",
+    "attempt": "INTEGER",
+    "owner_id": "TEXT",
+    "response_json": "TEXT",
+    "next_attempt_at": "REAL",
+    "partial_response": "INTEGER",
+    "send_evidence": "TEXT",
+    "estimated_input_tokens": "INTEGER",
+}
+
+MODEL_CALLS_SCHEMA = """CREATE TABLE model_calls (
+    id TEXT PRIMARY KEY NOT NULL,
+    binding_json TEXT NOT NULL,
+    request_digest TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('started','success','error')),
+    usage_json TEXT,
+    failure TEXT,
+    started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    finished_at TEXT,
+    first_token_ms REAL CHECK (first_token_ms >= 0),
+    duration_ms REAL CHECK (duration_ms >= 0 AND (first_token_ms IS NULL OR duration_ms >= first_token_ms)),
+    request_key TEXT,
+    attempt INTEGER,
+    owner_id TEXT,
+    response_json TEXT,
+    next_attempt_at REAL,
+    partial_response INTEGER,
+    send_evidence TEXT,
+    estimated_input_tokens INTEGER
+)"""
+
+
+_schema_check_cache: dict[tuple[int, int, int], frozenset[str]] = {}
+
+
+def require_model_calls_schema(connection: sqlite3.Connection) -> frozenset[str]:
+    """缺列、类型不符、主键异构或多出未知列都必须在 provider I/O 前明确失败。
+
+    校验结果按实际数据库实例缓存：文件身份取 (st_dev, st_ino) 而非路径——
+    同路径换成另一个同 schema_version 的数据库会命中新 inode 重新校验；
+    schema_version 在任何连接修改 schema 时递增。内存库不跨连接缓存。
+    """
+    database_list = connection.execute("PRAGMA database_list").fetchall()
+    file = next((str(item[2]) for item in database_list if item[1] == "main"), "")
+    version = int(connection.execute("PRAGMA schema_version").fetchone()[0])
+    key: tuple[int, int, int] | None = None
+    if file:
+        try:
+            identity = os.stat(file)
+            key = (identity.st_dev, identity.st_ino, version)
+        except OSError:
+            key = None
+    if key is not None:
+        cached = _schema_check_cache.get(key)
+        if cached is not None:
+            return cached
+    info = {
+        str(item[1]): item
+        for item in connection.execute("PRAGMA table_info(model_calls)")
+    }
+    if not info:
+        raise RuntimeError("model_calls 缺失，请先运行对应 yoyo 迁移")
+    for name, expected in _MODEL_CALLS_BASE_COLUMNS.items():
+        column = info.get(name)
+        if column is None or str(column[2]).upper() != expected:
+            raise RuntimeError(f"model_calls.{name} 缺失或类型不匹配，请先运行对应 yoyo 迁移")
+    if int(info["id"][5]) != 1:
+        raise RuntimeError("model_calls 主键不匹配，请先运行对应 yoyo 迁移")
+    attempt_columns = set(_MODEL_CALLS_ATTEMPT_COLUMNS) & set(info)
+    if attempt_columns and attempt_columns != set(_MODEL_CALLS_ATTEMPT_COLUMNS):
+        raise RuntimeError("model_calls attempt 记账列不完整，请先运行对应 yoyo 迁移")
+    optional_columns = set(_MODEL_CALLS_ADDITIVE_TYPES) & set(info)
+    for name in optional_columns:
+        if str(info[name][2]).upper() != _MODEL_CALLS_ADDITIVE_TYPES[name]:
+            raise RuntimeError(f"model_calls.{name} 类型不匹配，请先运行对应 yoyo 迁移")
+    unknown = set(info) - set(_MODEL_CALLS_BASE_COLUMNS) - optional_columns
+    if unknown:
+        raise RuntimeError(f"model_calls 存在未知列 {sorted(unknown)}，schema 不被本实现接受")
+    columns = frozenset(info)
+    if key is not None:
+        if len(_schema_check_cache) >= 64:
+            _schema_check_cache.pop(next(iter(_schema_check_cache)))
+        _schema_check_cache[key] = columns
+    return columns
+
+
+def require_attempt_schema(connection: sqlite3.Connection) -> None:
+    """request key 记账需要扩展列；旧库先由 additive 迁移接纳。"""
+    columns = require_model_calls_schema(connection)
+    if not set(_MODEL_CALLS_ATTEMPT_COLUMNS) <= columns:
+        raise RuntimeError("model_calls 缺少 attempt 记账列，请先运行对应 yoyo 迁移")
+
+
+_MODEL_CALLS_REQUEST_INDEX = (
+    "CREATE INDEX model_calls_request_key ON model_calls(request_key, attempt, id)"
+)
+
+
+_SCHEMA = MODEL_CALLS_SCHEMA + ";\n" + _MODEL_CALLS_REQUEST_INDEX + ";\n" + """
+CREATE TABLE model_registry_meta (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    revision INTEGER NOT NULL CHECK (revision >= 0),
+    default_embedding_model_id TEXT DEFAULT NULL,
+    host_epoch INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE model_connections (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    catalog_provider_id TEXT NOT NULL DEFAULT '',
+    auth_id TEXT NOT NULL DEFAULT '',
+    base_url TEXT NOT NULL DEFAULT '',
+    auth_kind TEXT NOT NULL DEFAULT '',
+    auth_payload TEXT NOT NULL DEFAULT '',
+    enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    driver_config_json TEXT NOT NULL DEFAULT '{}',
+    catalog_mode TEXT NOT NULL DEFAULT 'picked' CHECK (catalog_mode IN ('picked', 'all'))
+);
+
+CREATE TABLE model_definitions (
+    id TEXT PRIMARY KEY,
+    connection_id TEXT NOT NULL REFERENCES model_connections(id) ON DELETE RESTRICT,
+    model TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+    reasoning_effort TEXT NOT NULL DEFAULT '',
+    supported_reasoning_efforts TEXT NOT NULL DEFAULT '[]',
+    context_window INTEGER NOT NULL DEFAULT 0 CHECK (context_window >= 0),
+    max_output_tokens INTEGER NOT NULL DEFAULT 0 CHECK (max_output_tokens >= 0),
+    input_modalities TEXT NOT NULL DEFAULT '["text"]',
+    capability_source TEXT NOT NULL DEFAULT 'unknown',
+    context_window_source TEXT NOT NULL DEFAULT 'unknown',
+    max_output_tokens_source TEXT NOT NULL DEFAULT 'unknown',
+    input_modalities_source TEXT NOT NULL DEFAULT 'unknown',
+    effective_context_percent REAL NOT NULL DEFAULT 0.9,
+    compaction_trigger_percent REAL NOT NULL DEFAULT 0.74,
+    use_responses_lite INTEGER NOT NULL DEFAULT 0 CHECK (use_responses_lite IN (0, 1)),
+    supports_parallel_tool_calls INTEGER NOT NULL DEFAULT 1 CHECK (supports_parallel_tool_calls IN (0, 1)),
+    reasoning_summary TEXT NOT NULL DEFAULT 'none',
+    capabilities_json TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(connection_id, model)
+);
+
+CREATE TABLE embedding_models (
+    id TEXT PRIMARY KEY,
+    connection_id TEXT NOT NULL REFERENCES model_connections(id) ON DELETE RESTRICT,
+    model TEXT NOT NULL,
+    dimensions INTEGER NOT NULL CHECK (dimensions > 0),
+    enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+    capabilities_json TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(connection_id, model)
+);
+
+CREATE TABLE model_role_bindings (
+    role TEXT PRIMARY KEY CHECK (role IN ('default', 'fast', 'agent', 'vision')),
+    model_id TEXT NOT NULL REFERENCES model_definitions(id) ON DELETE RESTRICT,
+    reasoning_effort TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+"""
+
+
+def _remove_model(connection: sqlite3.Connection, model_id: str, fallback_model_id: str | None) -> bool:
+    """在调用者的事务内移除模型配置，并按原规则更新默认选择。"""
+    # 1. 只减少模型配置；连接、调用账本和会话消息不在此写入范围。
+    row = connection.execute(
+        "SELECT 'chat' FROM model_definitions WHERE id = ? "
+        "UNION ALL SELECT 'embedding' FROM embedding_models WHERE id = ?",
+        (model_id, model_id),
+    ).fetchone()
+    if row is None:
+        return False
+    if row[0] == "embedding":
+        connection.execute(
+            "UPDATE model_registry_meta SET default_embedding_model_id = NULL "
+            "WHERE default_embedding_model_id = ?", (model_id,),
+        )
+        connection.execute("DELETE FROM embedding_models WHERE id = ?", (model_id,))
+        return True
+
+    # 2. 取消角色特选后自然跟随 default；默认被移除才选定替代者。
+    was_default = connection.execute(
+        "SELECT 1 FROM model_role_bindings WHERE role = 'default' AND model_id = ?",
+        (model_id,),
+    ).fetchone() is not None
+    connection.execute("DELETE FROM model_role_bindings WHERE model_id = ?", (model_id,))
+    connection.execute("DELETE FROM model_definitions WHERE id = ?", (model_id,))
+    if was_default and fallback_model_id is not None:
+        connection.execute(
+            "INSERT INTO model_role_bindings(role, model_id, reasoning_effort) "
+            "VALUES ('default', ?, '')", (fallback_model_id,),
+        )
+    return True
+
+
+__all__ = [
+    "MODEL_ROLES",
+    "ModelsStore",
+    "StoredConnection",
+    "StoredModel",
+    "StoredSnapshot",
+]

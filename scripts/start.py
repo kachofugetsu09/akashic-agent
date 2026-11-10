@@ -72,13 +72,7 @@ def prepare_source(preparation: Preparation, cache: Path) -> tuple[Path, Path, P
             raise RuntimeError(f"缺少 {command}。请安装 Git 和 Node.js 20+，然后重新运行 ./start。")
     if subprocess.run(["git", "diff", "--quiet", "HEAD", "--"], cwd=ROOT).returncode:
         raise RuntimeError("源码有未提交修改。请先提交，再运行 ./start；开发调试可直接使用 main.py。")
-    # 带 plugins.lock 的 Core 先与锁定的插件提交合成；AKASHIC_PLUGINS_SOURCE 可指向本地插件仓库。
-    compose = [sys.executable, str(ROOT / "scripts/compose_source.py"), "--repository", str(ROOT), "--commit", "HEAD"]
-    if os.environ.get("AKASHIC_PLUGINS_SOURCE"):
-        compose += ["--plugins-source", os.environ["AKASHIC_PLUGINS_SOURCE"]]
-    if os.environ.get("AKASHIC_PLUGINS_COMMIT"):
-        compose += ["--plugins-commit", os.environ["AKASHIC_PLUGINS_COMMIT"]]
-    revision = subprocess.check_output(compose, cwd=ROOT, text=True).strip().splitlines()[-1]
+    revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
     cache.mkdir(parents=True, exist_ok=True)
     target = cache / revision
     if (target / "complete").is_file():

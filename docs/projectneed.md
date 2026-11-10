@@ -156,7 +156,7 @@ Android Shell 只拥有服务器地址、WebView、系统通知、后台连接�
 
 ### WEBUI-001 聊天页只维护一份 Web 源码
 
-浏览器和 Android Shell 加载同一服务端 `frontend/chat` 页面。Shell 不消费单独打包的移动 WebUI，也不通过原生 bridge 驱动消息、插件或模型统计。窄屏布局、流式正文和插件控件仍在共享页面实现。
+浏览器和 Android Shell 加载同一服务端 `frontend/plugins/akashic_clients/chat` 页面。Shell 不消费单独打包的移动 WebUI，也不通过原生 bridge 驱动消息、插件或模型统计。窄屏布局、流式正文和插件控件仍在共享页面实现。
 
 ### WEBUI-002 平台状态各有 owner
 

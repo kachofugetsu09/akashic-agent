@@ -263,9 +263,7 @@ def distribution_plugin_sources(distribution: Path) -> tuple[ResolvedPluginSourc
     sources = []
     for row in report["plugins"]:
         name = row["name"]
-        # 制品库里的 sources/<name> 是指向内容目录的符号链接；按解析后的路径记录，
-        # 内容未变的插件在不同发行版里代码路径相同。镜像内的普通目录解析后不变。
-        root = (distribution / "sources" / name).resolve(strict=True)
+        root = distribution / "sources" / name
         identity = load_static_plugin_manifest(root)
         if identity.name != name:
             raise ValueError(f"distribution source identity mismatch: {name}")
@@ -274,7 +272,7 @@ def distribution_plugin_sources(distribution: Path) -> tuple[ResolvedPluginSourc
             plugin_root=root, source_type="builtin", marketplace=marketplace,
             plugin_name=name, static_manifest=identity,
             wheel_tree_sha256=digest.read_text().strip() if digest.exists() else "",
-            distribution_source=row["content_commit"],
+            distribution_source=report["source_commit"],
         ))
     return tuple(sources)
 

@@ -1,4 +1,0 @@
-#!/bin/sh
-# 在共用工作目录里操作插件仓库，例如 scripts/plugins-git status / commit / push。
-root="$(git rev-parse --show-toplevel)" || exit 1
-exec git --git-dir="$(git -C "$root" rev-parse --absolute-git-dir)/akashic-plugins.git" --work-tree="$root" "$@"

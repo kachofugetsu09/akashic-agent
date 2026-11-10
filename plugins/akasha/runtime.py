@@ -1,0 +1,256 @@
+"""消息学习与实际召回共用一个运行 owner，不保存第二份对话状态。"""
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
+from contextlib import asynccontextmanager
+from datetime import UTC, datetime
+from typing import cast
+
+from core.common.file_io import shield_until_done
+from plugins.ledger.contract import Bindings
+from plugins.ledger.contract import MessageCatalog, MessageEmbeddings
+from plugins.ledger.contract import Message, ToolResult, json_value
+from plugins.ledger.contract import is_user_input
+
+from .application.consumer import MessageConsumer, run_memory_job
+from .learning import AKASHA_LEARNING, Learning, LearningConfig
+from .application.cycle import MemoryCycle
+from .infrastructure.consumption import Consumption
+from .projection import input_features
+from .contract import ContextSource
+from .recalls import RecallRecords, context_identity, query_memory, render_materials
+from .recall_tool import FetchedMessages, RecallReference, tool_references
+
+MaterialData = Mapping[str, object]
+logger = logging.getLogger(__name__)
+
+
+def _reference_rows(material: MaterialData) -> tuple[Mapping[str, object], ...]:
+    """读取 provider 已发布的引用行，并拒绝无法保存出处的形状。"""
+    value = material.get("references", ())
+    if not isinstance(value, tuple):
+        raise TypeError("材料 references 必须是 tuple")
+    rows = cast(tuple[object, ...], value)
+    if any(not isinstance(row, Mapping) for row in rows):
+        raise TypeError("材料 references 必须是对象数组")
+    typed = tuple(cast(Mapping[str, object], row) for row in rows)
+    if any(not isinstance(row.get("ref"), str) or not row["ref"] for row in typed):
+        raise TypeError("材料 reference 必须有非空 ref")
+    return typed
+
+
+class MessageMemory:
+    """串行拥有学习、查询和关闭；线程未排空时不能释放图 writer。"""
+
+    def __init__(
+        self, consumer: MessageConsumer, *, catalog: MessageCatalog,
+        embeddings: MessageEmbeddings, bindings: Bindings, learning_binding: str,
+        records: RecallRecords, embed_batch: Callable[[list[str]], Awaitable[list[list[float]]]],
+        limit: int = 40, max_chars: int = 12000,
+        member: Callable[[str], bool] | None = None,
+    ):
+        if not 1 <= limit <= 40 or max_chars <= 0:
+            raise ValueError("召回数量或文本预算无效")
+        self._consumer = consumer
+        self._member = member
+        self._catalog = catalog
+        self._embeddings = embeddings
+        self._bindings = bindings
+        self._learning_binding = learning_binding
+        self._records = records
+        self._embed_batch = embed_batch
+        self._limit = limit
+        self._max_chars = max_chars
+        self._lock = asyncio.Lock()
+        self._closing = False
+
+    def _check_open(self) -> None:
+        if self._closing:
+            raise RuntimeError("Akasha 消息运行已关闭")
+        _ = self._consumer.cycle
+
+    async def close(self) -> None:
+        """关闭一旦开始就排空并释放 writer，随后再向调用者传播取消。"""
+        self._closing = True
+        async def drain() -> None:
+            async with self._lock:
+                try:
+                    # 已提交未发布的尾部先落盘；失败只记录，尾部下次启动由日志按原序重学。
+                    await run_memory_job(self._consumer.flush)
+                except Exception:
+                    logger.exception("Akasha 关闭时发布学习尾部失败，下次启动将从日志重学")
+                finally:
+                    self._consumer.close()
+        await shield_until_done(asyncio.create_task(drain()))
+
+    async def consume(self) -> int:
+        """按固定 binding 追赶已接纳日志，不与查询或关闭并发修改图。"""
+        async with self._lock:
+            self._check_open()
+            return await self._consumer.consume(
+                catalog=self._catalog, learning_binding=self._learning_binding,
+                embeddings=self._embeddings, bindings=self._bindings, embed_batch=self._embed_batch,
+                member=self._member,
+            )
+
+    # 显式召回与 Context 查询共用串行锁和空间核对；视图只在 with 内有效，查询不推进学习图。
+    @asynccontextmanager
+    async def view(self, space: tuple[str, int]) -> AsyncGenerator[tuple[MemoryCycle, Consumption]]:
+        async with self._lock:
+            self._check_open()
+            await run_memory_job(lambda: self._consumer.check_embedding_space(*space, self._bindings))
+            yield self._consumer.cycle, self._consumer.state
+
+    async def prepare(self, snapshot: tuple[Message, ...], source: str) -> MaterialData:
+        """Context 查询与学习、关闭共用串行锁；查询本身不推进学习图。"""
+        async with self._lock:
+            self._check_open()
+            async with self._bindings.open(self._learning_binding, AKASHA_LEARNING) as (learning, metadata):
+                rule = LearningConfig.model_validate(dict(metadata))
+                await run_memory_job(lambda: self._consumer.check_embedding_space(
+                    rule.embedding_model, rule.dimension, self._bindings,
+                ))
+                return await prepare_materials(
+                    snapshot, source, cycle=self._consumer.cycle, state=self._consumer.state,
+                    catalog=self._catalog, embeddings=self._embeddings, bindings=self._bindings,
+                    learning_binding=self._learning_binding, learning=learning, rule=rule,
+                    records=self._records, embed_batch=self._embed_batch,
+                    limit=self._limit, max_chars=self._max_chars,
+                )
+
+
+async def prepare_materials(
+    snapshot: tuple[Message, ...], source: str, *, cycle: MemoryCycle, state: Consumption,
+    catalog: MessageCatalog, embeddings: MessageEmbeddings, bindings: Bindings,
+    learning_binding: str, learning: Learning, rule: LearningConfig, records: RecallRecords,
+    embed_batch: Callable[[list[str]], Awaitable[list[list[float]]]], limit: int, max_chars: int,
+) -> MaterialData:
+    """在已核对空间的图上查询真实输入前缀，发布出处后交付材料。"""
+    if not snapshot:
+        return {}
+    # 1. 使用调用者已经固定的真实区间，后来输入不会进入本次 cue。
+    # 调用者可能只给摘要之后的窗口；按同一起点重读，复用共享读面，逐条比较走身份快路径。
+    session_id = snapshot[0].session_id
+    actual = await run_memory_job(lambda: tuple(
+        catalog.reader(session_id).committed_snapshot(
+            through_seq=snapshot[-1].seq, after_seq=snapshot[0].seq - 1)))
+    if actual != snapshot:
+        raise ValueError("召回材料需要连续且真实的 Message 区间")
+    projected = await run_memory_job(lambda: learning.projection.project(snapshot, source))
+    if not projected or projected[-1].status != "open":
+        return {}
+    members = set(projected[-1].message_ids)
+    inputs = tuple(message for message in snapshot
+                   if message.message_id in members and is_user_input(message))[-1:]
+    material: MaterialData = {}
+    if any(learning.text(message).strip() for message in inputs):
+        # 同一真实输入使用稳定身份；工具续步、Reminder 和重启只读原记录。
+        identity = context_identity(session_id, source, inputs[-1].message_id)
+        recall = await run_memory_job(lambda: records.read(identity))
+        if recall is None:
+            # 升级前的随机身份仍是实际查询证据；复用同一用户输入后的首次记录。
+            saved = await run_memory_job(lambda: records.legacy_context(
+                session_id, source, first_seq=inputs[-1].seq, through_seq=snapshot[-1].seq))
+            previous = next(((key, item) for key, item in reversed(saved)
+                if isinstance(item.source, ContextSource)), None)
+            if previous is not None:
+                identity, recall = previous
+            else:
+                # 扫描只覆盖稳定身份区间外；首次 read 之后并发准备刚以稳定身份保存的记录再读一次。
+                recall = await run_memory_job(lambda: records.read(identity))
+        if recall is not None:
+            # 已保存查询用它当时的固定 binding 重渲染；正文仍只从原 Message 读取。
+            async with bindings.open(recall.learning_binding, AKASHA_LEARNING) as (original, _):
+                material = await run_memory_job(lambda: render_materials(
+                    identity, recall, original, catalog, max_chars=recall.max_chars,
+                    presented=recall.presented_message_ids,
+                ))
+        else:
+            material = await query_inputs(
+                inputs, snapshot, source, identity=identity, cycle=cycle, state=state,
+                catalog=catalog, embeddings=embeddings, learning_binding=learning_binding,
+                learning=learning, rule=rule, records=records, embed_batch=embed_batch,
+                limit=limit, max_chars=max_chars,
+            )
+    references = {cast(str, ref["ref"]): ref for ref in _reference_rows(material)}
+    # 同一消息有多次真实查询时，当前工具结果的精确出处供后续 Citation 使用。
+    tool_refs = await run_memory_job(lambda: tool_references(snapshot, source, learning, bindings, records))
+    references.update((cast(str, ref["ref"]), ref) for ref in tool_refs)
+    result = dict(material)
+    result["references"] = tuple(references.values())
+    return result
+
+
+async def query_inputs(
+    inputs: tuple[Message, ...], snapshot: tuple[Message, ...], source: str, *, identity: str,
+    cycle: MemoryCycle, state: Consumption, catalog: MessageCatalog,
+    embeddings: MessageEmbeddings, learning_binding: str, learning: Learning,
+    rule: LearningConfig, records: RecallRecords,
+    embed_batch: Callable[[list[str]], Awaitable[list[list[float]]]], limit: int, max_chars: int,
+) -> MaterialData:
+    """真实用户输入首次准备时检索并保存结果，包括未命中。"""
+    session_id = snapshot[0].session_id
+    # 1. 空间身份必须在嵌入和写向量之前核对；历史向量只读取。
+    vectors = embeddings.bind(learning.text)
+    missing = await run_memory_job(lambda: [
+        message for message in inputs if learning.text(message).strip()
+        and vectors.read(message, model=rule.embedding_model, dimension=rule.dimension) is None
+    ])
+    if missing:
+        values = await embed_batch([learning.text(message) for message in missing])
+        if len(values) != len(missing) or any(len(value) != rule.dimension for value in values):
+            raise ValueError("召回 embedding 数量或维度不匹配")
+        def save_vectors() -> None:
+            for message, value in zip(missing, values):
+                vectors.save(message, model=rule.embedding_model, embedding=value)
+        await run_memory_job(save_vectors)
+    text, dense = await run_memory_job(lambda: input_features(
+        inputs, text=learning.text, embeddings=vectors,
+        embedding_model=rule.embedding_model, dimension=rule.dimension,
+    ))
+    # 2. 图读取移出事件循环；取消仍先排空，再释放 binding 与串行锁。
+    stamp = datetime.now(UTC)
+    origin = ContextSource(session_id=session_id, source=source, through_seq=snapshot[-1].seq)
+    recall = await run_memory_job(lambda: query_memory(
+        cycle, state, learning_binding=learning_binding,
+        text=text, dense=dense, stamp=stamp, source=origin, limit=limit,
+    ))
+    seen = await run_memory_job(lambda: window_seen(snapshot, records))
+    material = await run_memory_job(lambda: render_materials(
+        identity, recall, learning, catalog, max_chars=max_chars, exclude=seen,
+    ))
+    recall = recall.model_copy(update={
+        "max_chars": max_chars,
+        "presented_message_ids": tuple(
+            dict.fromkeys(
+                cast(str, ref["ref"]) for ref in _reference_rows(material)
+            )
+        ),
+    })
+    _ = await run_memory_job(lambda: records.save(identity, recall))
+    return material
+
+
+# 当前未压缩窗口里已经出现过的消息：窗口本身、窗口内各轮召回呈现过的、fetch_messages 读过原文的。
+# 只在首次查询时求值并随记录保存，重渲染按记录里的呈现集合，同一输入的结果不会变。
+def window_seen(snapshot: tuple[Message, ...], records: RecallRecords) -> frozenset[str]:
+    seen = {message.message_id for message in snapshot}
+    for message in snapshot:
+        body = message.body
+        if is_user_input(message):
+            recall = records.read(context_identity(message.session_id, message.source, message.message_id))
+            if recall is not None:
+                seen.update(recall.presented_message_ids)
+        elif isinstance(body, ToolResult) and body.outcome == "success":
+            for part in body.parts:
+                if part.kind == "akasha.recall":
+                    marker = RecallReference.model_validate_json(json.dumps(json_value(part.value)))
+                    recall = records.read(marker.retrieval_ref)
+                    if recall is not None:
+                        seen.update(recall.presented_message_ids)
+                elif part.kind == "akasha.fetch":
+                    seen.update(FetchedMessages.model_validate_json(json.dumps(json_value(part.value))).message_ids)
+    return frozenset(seen)

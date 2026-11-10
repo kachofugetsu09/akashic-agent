@@ -1,0 +1,9 @@
+{
+  "name": "@akashic/theme",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Akashic 设计系统：主题令牌、字体、主题运行时与 Material 组件；外壳与插件在构建时引用",
+  "akashic": {
+    "kind": "library"
+  }
+}

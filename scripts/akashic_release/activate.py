@@ -10,7 +10,6 @@ import sys
 from pathlib import Path
 from typing import Callable, Mapping
 
-from scripts.akashic_release.store import runtime_distribution
 from scripts.akashic_release.doctor import read_environment, release_health_timeout, verify_release
 from scripts.akashic_release.manifest import activation_receipt, atomic_write, read_json, write_json
 from scripts.akashic_release.model import ReleasePaths
@@ -47,10 +46,9 @@ def _verify_selected_runtime(
     if not isinstance(status, dict) or status.get("selection_ref") != root_ref:
         raise RuntimeError("live runtime selection 与已发布的完整 Root 不一致")
     # preset 启用的行整行缺席时，"选择里的都 ACTIVE" 也会成立，必须单独核对。
-    # 回滚到 #1973 之前的 Core 时它不报告 preset，只做原有核对。
     preset = status.get("preset")
-    if "preset" in status and (not isinstance(preset, dict) or preset.get("missing") != []):
-        missing = preset.get("missing") if isinstance(preset, dict) else "格式无效"
+    if not isinstance(preset, dict) or preset.get("missing") != []:
+        missing = preset.get("missing") if isinstance(preset, dict) else "未报告"
         raise RuntimeError(f"live runtime 缺少 preset 启用的插件: {missing}")
     plugins = status.get("plugins")
     components = status.get("selection_components")
@@ -87,7 +85,7 @@ def _verify_selected_runtime(
     return {"selection_ref": root_ref,
             "active_selected": ready,
             "degraded_external": degraded,
-            "preset_retired": preset.get("retired", []) if isinstance(preset, dict) else [],
+            "preset_retired": preset.get("retired", []),
             "optional_health": "unverified"}
 
 
@@ -165,8 +163,6 @@ def release_environment(
             "AKASHIC_HOST_TOOLCHAIN_DIGEST": str(host_identity["toolchainDigest"]),
             "AKASHIC_RELEASE_MANIFEST": str(paths.release(commit)),
             "AKASHIC_IMAGE": str(manifest["imageId"]),
-            "AKASHIC_PLUGIN_STORE": str(paths.plugin_store),
-            "AKASHIC_PLUGIN_DISTRIBUTION": runtime_distribution(paths.plugin_store, commit),
             "AKASHIC_HOST_BRIDGE_SOCKET": str(paths.run / "host-bridge.sock"),
             "AKASHIC_HOST_BRIDGE_TOKEN_FILE": str(paths.secrets / "host-bridge.token"),
             "AKASHIC_HOST_BRIDGE_TOKEN": token,
@@ -247,12 +243,6 @@ def _publish(
     for key in ("AKASHIC_CONFIG", "AKASHIC_WORKSPACE", "AKASHIC_PLUGIN_HOME",
                 "AKASHIC_RUNTIME_COMMIT", "AKASHIC_RUNTIME_TREE"):
         command += ["--env", f"{key}={candidate[key]}"]
-    # 发布与正式运行必须从同一个发行版路径提交输入，否则启动会因代码路径不同再改一次 Root。
-    store = candidate.get("AKASHIC_PLUGIN_STORE")
-    if store:
-        command += ["--mount", f"type=bind,src={store},dst={store},readonly",
-                    "--env", f"AKASHIC_PLUGIN_STORE={store}",
-                    "--env", f"AKASHIC_PLUGIN_DISTRIBUTION={candidate['AKASHIC_PLUGIN_DISTRIBUTION']}"]
     command += [candidate["AKASHIC_IMAGE"], "publish", "--plan", "/opt/akashic/deploy-plan.json",
                 "--inputs", "/opt/akashic/deploy-inputs"]
     if preflight:

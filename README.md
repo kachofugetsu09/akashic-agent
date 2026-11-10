@@ -79,7 +79,7 @@ cd akashic-agent
 
 </details>
 
-内置插件与 Web 界面在 [akashic-plugins](https://github.com/kachofugetsu09/akashic-plugins) 仓库，由 `plugins.lock` 锁定，`./start` 和镜像构建会自动取用。源码构建镜像、开发调试与升级细节见[启动与部署说明](./docs/design/product-startup.md)；已有 Host Bridge 部署见[部署操作手册](./docs/design/operator-deployment.md)。
+源码构建镜像、开发调试与升级细节见[启动与部署说明](./docs/design/product-startup.md)；已有 Host Bridge 部署见[部署操作手册](./docs/design/operator-deployment.md)。
 
 ## 文档
 

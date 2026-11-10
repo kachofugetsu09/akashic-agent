@@ -2,7 +2,7 @@
 
 > **Executor instructions**: 严格按步骤施工。每一步必须运行对应 Gate，只有预期结果全部满足后才能进入下一步。任何 Gate 失败时保留当前可运行实现，停止扩展范围并报告证据。完成后更新 `plans/README.md` 状态。
 >
-> **Drift check (run first)**: `git diff --stat d2957df..HEAD -- agent/plugins bus agent/tools agent/core agent/looping proactive_v2 bootstrap frontend/dashboard tests tests_scenarios docker/debug plugins`
+> **Drift check (run first)**: `git diff --stat d2957df..HEAD -- agent/plugins bus agent/tools agent/core agent/looping proactive_v2 bootstrap frontend/plugins/ui/dashboard tests tests_scenarios docker/debug plugins`
 > 若范围内代码已变化，先逐项核对“当前状态”；关键入口不一致时停止并更新计划。
 
 ## Status
@@ -143,7 +143,7 @@
 - `bootstrap/dashboard_api.py`
 - `bootstrap/memory.py`
 - `bootstrap/wiring.py`
-- `frontend/dashboard/src/pluginRuntime.ts`
+- `frontend/plugins/ui/dashboard/src/pluginRuntime.ts`
 - `tests/test_plugin_manager.py`
 - `tests/test_plugin_hot_reload.py`（新增）
 - `tests_scenarios/test_plugin_hot_reload_runtime.py`（新增）

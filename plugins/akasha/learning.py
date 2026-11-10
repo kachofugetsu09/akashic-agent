@@ -1,0 +1,208 @@
+from __future__ import annotations
+
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from datetime import datetime
+from typing import Annotated, Literal, cast
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from agent.plugin_composition import ServiceKey
+from plugins.ledger.contract import Bindings
+from plugins.ledger.contract import MessageCatalog, MessageEmbeddings
+from plugins.ledger.contract import Actor, ContentPart, Input, Message, Output, ToolCall, ToolResult, is_user_input, origin
+from ._boundaries import PostCommitReader, TOOLS, TurnProjection
+from .domain.model import Turn, TurnFeedback
+from .infrastructure.consumption import Applied, Consumption, message_nodes
+from .infrastructure.lexical import Terms, terms as lexical_terms
+from .projection import (
+    Sample, SessionCursor, dialogue_turn, iter_session, restore_sample,
+)
+
+
+class LearningConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    embedding_model: Annotated[str, Field(min_length=1)]
+    dimension: Annotated[int, Field(gt=0)]
+    sources: tuple[Annotated[str, Field(min_length=1)], ...]
+
+
+class Feedback(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    action: Literal["remember", "forget"]
+    target_message_ids: tuple[Annotated[str, Field(min_length=1)], ...] = Field(min_length=1, max_length=20)
+    reason: str = Field(default="", max_length=500)
+
+
+class Learning:
+    """固定学习材料的纯规则；实际消息、向量和学习图由调用者提供。"""
+
+    def __init__(
+        self, projection: TurnProjection, *, owner: str,
+        post_commit_effect: PostCommitReader,
+    ):
+        self.projection = projection
+        self.owner = owner
+        self._post_commit_effect = post_commit_effect
+
+    def text(self, message: Message) -> str:
+        """只连接用户输入与模型回答的可见正文；插件自动写入的输入、控制与工具协议不成为问答文本。"""
+        if isinstance(message.body, Input):
+            if not is_user_input(message):
+                return ""
+        elif not isinstance(message.body, Output) or origin(message).actor is not Actor.MODEL:
+            return ""
+        return "".join(
+            part.value for part in message.body.parts
+            if isinstance(part, ContentPart) and part.kind == "text" and isinstance(part.value, str)
+        )
+
+    def samples(
+        self, catalog: MessageCatalog, config: LearningConfig, *, heads: Mapping[str, int],
+    ) -> tuple[Sample, ...]:
+        """重放与兴趣评分没有续读点，每个 Session 都从头投影固定前缀。"""
+        return self.samples_since(catalog, config, heads=heads, cursors={}, keep=lambda _sample: True)[0]
+
+    def samples_since(
+        self, catalog: MessageCatalog, config: LearningConfig, *, heads: Mapping[str, int],
+        cursors: Mapping[str, SessionCursor], keep: Callable[[Sample], bool],
+    ) -> tuple[tuple[Sample, ...], dict[str, SessionCursor]]:
+        """只投影续读点之后的闭段；新续读点由调用者在成功消费后才采用。"""
+        found: list[Sample] = []
+        advanced: dict[str, SessionCursor] = {}
+        for session, samples, cursor in self.iter_samples_since(
+            catalog, config, heads=heads, cursors=cursors, keep=keep,
+        ):
+            advanced[session] = cursor
+            found.extend(samples)
+        return tuple(sorted(found, key=lambda sample: sample.key)), advanced
+
+    # 逐 Session、分块产出新闭段与续读点；调用者可边读边归约，正文不必整段常驻。
+    def iter_samples_since(
+        self, catalog: MessageCatalog, config: LearningConfig, *, heads: Mapping[str, int],
+        cursors: Mapping[str, SessionCursor], keep: Callable[[Sample], bool],
+    ) -> Iterator[tuple[str, tuple[Sample, ...], SessionCursor]]:
+        for session, head in heads.items():
+            cursor = cursors.get(session)
+            # 1. 没有新消息的 Session 连学习资格也不再读取；资格在接纳时固定，不必解码禁止学习的正文。
+            if cursor is not None and cursor.head == head:
+                yield session, (), cursor
+                continue
+            if catalog.attributes(session).learning != "eligible":
+                yield session, (), SessionCursor(head, {})
+                continue
+            # 2. 来源和历史 effect 仍由原学习规则筛选；keep 只丢弃调用者本来就跳过的样本，不让其正文常驻。
+            #    同一 Session 可能分块产出多次，最后一次的续读点才覆盖到 head。
+            for samples, advanced in iter_session(
+                catalog, self.projection, session, head, cursor=cursor,
+                include=lambda _session, source: source in config.sources,
+            ):
+                yield session, tuple(sample for sample in samples if self.accepts(sample) and keep(sample)), advanced
+
+    def accepts(self, sample: Sample) -> bool:
+        """一条历史成员被禁止沉淀时，整个问答样本不成为学习材料。"""
+        effects = tuple(self._post_commit_effect(message)
+                        for message in (*sample.messages, *sample.observations))
+        return "suppress" not in effects
+
+    def feedback(
+        self, sample: Sample, previous: Sequence[Turn], state: Consumption, bindings: Bindings,
+    ) -> TurnFeedback:
+        """从本样本实际成功的 Akasha 调用读取反馈，按完整成员映射学习节点。"""
+        # 1. 无回执没有目标可映射，恢复不扫描无关的已学习前缀。
+        feedback = self.read_feedback(sample, bindings)
+        if not feedback:
+            return TurnFeedback()
+        # 2. 旧前缀沿原索引身份；新节点包含所有输入，不只首个输入。
+        targets = message_nodes(state.applied[:len(previous)])
+        current = {message.message_id for message in sample.messages if isinstance(message.body, Input)}
+        return resolve_feedback(feedback, targets, current, len(previous))
+
+    def read_feedback(self, sample: Sample, bindings: Bindings) -> tuple[Feedback, ...]:
+        """只有实际 Akasha 调用的成功结果可贡献反馈。"""
+        messages = {message.message_id: message for message in sample.messages}
+        feedback: list[Feedback] = []
+        for observation in sample.observations:
+            body = observation.body
+            if not isinstance(body, ToolResult) or body.outcome != "success":
+                continue
+            parts = [part for part in body.parts if part.kind == "akasha.feedback"]
+            if not parts:
+                continue
+            request = messages[body.call_ref.message_id]
+            if not isinstance(request.body, Output):
+                raise ValueError("反馈出处不是工具调用")
+            call = request.body.parts[body.call_ref.part_index]
+            if not isinstance(call, ToolCall):
+                raise ValueError("反馈出处没有指向 ToolCall")
+            tool = cast(Mapping[str, object], bindings.describe(call.binding_id, TOOLS)["tool"])
+            if tool["owner"] != self.owner:
+                raise ValueError("其他工具不能伪造 Akasha 反馈")
+            for part in parts:
+                value = part.value
+                if not isinstance(value, Mapping):
+                    raise ValueError("Akasha 反馈必须是对象")
+                feedback.append(Feedback.model_validate(dict(cast(Mapping[str, object], value))))
+        return tuple(feedback)
+
+    def make_turn(
+        self, sample: Sample, config: LearningConfig, embeddings: MessageEmbeddings,
+        *, previous: Sequence[Turn], state: Consumption, bindings: Bindings,
+        terms: Callable[[str], Terms] = lexical_terms,
+    ) -> Turn | None:
+        return dialogue_turn(
+            sample, node_id=len(previous),
+            previous=datetime.fromisoformat(previous[-1].committed_at) if previous else None,
+            text=self.text, embeddings=embeddings.bind(self.text),
+            embedding_model=config.embedding_model, dimension=config.dimension,
+            feedback=self.feedback(sample, previous, state, bindings), terms=terms,
+        )
+
+    def load_sample(self, catalog: MessageCatalog, config: LearningConfig, entry: Applied) -> Sample:
+        """在补算派生向量之前核对原消息出处和学习准入。"""
+        if catalog.attributes(entry.session_id).learning != "eligible":
+            raise ValueError("已学习样本属于禁止学习的 Session")
+        sample = restore_sample(catalog, entry)
+        if not self.accepts(sample):
+            raise ValueError("已学习样本包含禁止沉淀的历史成员")
+        if sample.ending.source not in config.sources:
+            raise ValueError("已学习来源不属于原学习绑定")
+        return sample
+
+    def restore(
+        self, sample: Sample, embeddings: MessageEmbeddings,
+        config: LearningConfig, *, previous: Sequence[Turn],
+        state: Consumption, bindings: Bindings, terms: Callable[[str], Terms] = lexical_terms,
+    ) -> Turn:
+        """用已验证的样本还原材料，不写图或重放学习事件。"""
+        turn = self.make_turn(sample, config, embeddings, previous=previous, state=state,
+                              bindings=bindings, terms=terms)
+        if turn is None:
+            raise ValueError("原学习规则不再接纳已经学习的样本")
+        return turn
+
+
+def resolve_feedback(
+    feedback: Sequence[Feedback], targets: Mapping[str, int], current: set[str], node_id: int,
+) -> TurnFeedback:
+    """同一组消息反馈只有一种动作，当前输入只能标记记住。"""
+    remember: set[int] = set()
+    forget: set[int] = set()
+    for item in feedback:
+        for identity in item.target_message_ids:
+            if identity in current:
+                if item.action == "forget":
+                    raise ValueError("不能遗忘当前尚未学习的输入")
+                node = node_id
+            elif identity in targets:
+                node = targets[identity]
+            else:
+                # 反馈写入时已核对目标是已学节点；规则收窄后重放不再学的旧节点（如自动输入），其反馈随之失效。
+                continue
+            (remember if item.action == "remember" else forget).add(node)
+    if remember & forget:
+        raise ValueError("同一样本不能同时记住和遗忘同一节点")
+    return TurnFeedback(tuple(sorted(remember)), tuple(sorted(forget)), 3.0 if remember else 1.0)
+
+
+# 插件私有的耐久规则 key；plugin.py 把它写入 learning_binding，再经 Bindings.open 读取。
+AKASHA_LEARNING = ServiceKey[Learning]("akasha.learning.v1")

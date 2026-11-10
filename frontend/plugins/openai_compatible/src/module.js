@@ -1,0 +1,269 @@
+const DEEPSEEK_ICON = svgData(`<svg height="1em" style="flex:none;line-height:1" viewBox="0 0 24 24" width="1em" xmlns="http://www.w3.org/2000/svg"><title>DeepSeek</title><path d="M23.748 4.482c-.254-.124-.364.113-.512.234-.051.039-.094.09-.137.136-.372.397-.806.657-1.373.626-.829-.046-1.537.214-2.163.848-.133-.782-.575-1.248-1.247-1.548-.352-.156-.708-.311-.955-.65-.172-.241-.219-.51-.305-.774-.055-.16-.11-.323-.293-.35-.2-.031-.278.136-.356.276-.313.572-.434 1.202-.422 1.84.027 1.436.633 2.58 1.838 3.393.137.093.172.187.129.323-.082.28-.18.552-.266.833-.055.179-.137.217-.329.14a5.526 5.526 0 01-1.736-1.18c-.857-.828-1.631-1.742-2.597-2.458a11.365 11.365 0 00-.689-.471c-.985-.957.13-1.743.388-1.836.27-.098.093-.432-.779-.428-.872.004-1.67.295-2.687.684a3.055 3.055 0 01-.465.137 9.597 9.597 0 00-2.883-.102c-1.885.21-3.39 1.102-4.497 2.623C.082 8.606-.231 10.684.152 12.85c.403 2.284 1.569 4.175 3.36 5.653 1.858 1.533 3.997 2.284 6.438 2.14 1.482-.085 3.133-.284 4.994-1.86.47.234.962.327 1.78.397.63.059 1.236-.03 1.705-.128.735-.156.684-.837.419-.961-2.155-1.004-1.682-.595-2.113-.926 1.096-1.296 2.746-2.642 3.392-7.003.05-.347.007-.565 0-.845-.004-.17.035-.237.23-.256a4.173 4.173 0 001.545-.475c1.396-.763 1.96-2.015 2.093-3.517.02-.23-.004-.467-.247-.588zM11.581 18c-2.089-1.642-3.102-2.183-3.52-2.16-.392.024-.321.471-.235.763.09.288.207.486.371.739.114.167.192.416-.113.603-.673.416-1.842-.14-1.897-.167-1.361-.802-2.5-1.86-3.301-3.307-.774-1.393-1.224-2.887-1.298-4.482-.02-.386.093-.522.477-.592a4.696 4.696 0 011.529-.039c2.132.312 3.946 1.265 5.468 2.774.868.86 1.525 1.887 2.202 2.891.72 1.066 1.494 2.082 2.48 2.914.348.292.625.514.891.677-.802.09-2.14.11-3.054-.614zm1-6.44a.306.306 0 01.415-.287.302.302 0 01.2.288.306.306 0 01-.31.307.303.303 0 01-.304-.308zm3.11 1.596c-.2.081-.399.151-.59.16a1.245 1.245 0 01-.798-.254c-.274-.23-.47-.358-.552-.758a1.73 1.73 0 01.016-.588c.07-.327-.008-.537-.239-.727-.187-.156-.426-.199-.688-.199a.559.559 0 01-.254-.078c-.11-.054-.2-.19-.114-.358.028-.054.16-.186.192-.21.356-.202.767-.136 1.146.016.352.144.618.408 1.001.782.391.451.462.576.685.914.176.265.336.537.445.848.067.195-.019.354-.25.452z" fill="#4D6BFE"></path></svg>`);
+import { escapeHtml, htmlNode, requireConnectionProps, toDiscoveredModelInput as modelInput } from "../../../../packages/akashic-plugin-kit/src/connection-form.js";
+
+// 智谱与 Z.ai 图标来自 lobehub/icons（MIT），与 magpie 同源。
+const ZHIPU_ICON = svgData(`<svg height="1em" style="flex:none;line-height:1" viewBox="0 0 24 24" width="1em" xmlns="http://www.w3.org/2000/svg"><title>Zhipu</title><path d="M11.991 23.503a.24.24 0 00-.244.248.24.24 0 00.244.249.24.24 0 00.245-.249.24.24 0 00-.22-.247l-.025-.001zM9.671 5.365a1.697 1.697 0 011.099 2.132l-.071.172-.016.04-.018.054c-.07.16-.104.32-.104.498-.035.71.47 1.279 1.186 1.314h.366c1.309.053 2.338 1.173 2.286 2.523-.052 1.332-1.152 2.38-2.478 2.327h-.174c-.715.018-1.274.64-1.239 1.368 0 .124.018.23.053.337.209.373.54.658.96.8.75.23 1.517-.125 1.9-.782l.018-.035c.402-.64 1.17-.96 1.92-.711.854.284 1.378 1.226 1.099 2.167a1.661 1.661 0 01-2.077 1.102 1.711 1.711 0 01-.907-.711l-.017-.035c-.2-.323-.463-.58-.851-.711l-.056-.018a1.646 1.646 0 00-1.954.746 1.66 1.66 0 01-1.065.764 1.677 1.677 0 01-1.989-1.279c-.209-.906.332-1.83 1.257-2.043a1.51 1.51 0 01.296-.035h.018c.68-.071 1.151-.622 1.116-1.333a1.307 1.307 0 00-.227-.693 2.515 2.515 0 01-.366-1.403 2.39 2.39 0 01.366-1.208c.14-.195.21-.444.227-.693.018-.71-.506-1.261-1.186-1.332l-.07-.018a1.43 1.43 0 01-.299-.07l-.05-.019a1.7 1.7 0 01-1.047-2.114 1.68 1.68 0 012.094-1.101zm-5.575 10.11c.26-.264.639-.367.994-.27.355.096.633.379.728.74.095.362-.007.748-.267 1.013-.402.41-1.053.41-1.455 0a1.062 1.062 0 010-1.482zm14.845-.294c.359-.09.738.024.992.297.254.274.344.665.237 1.025-.107.36-.396.634-.756.718-.551.128-1.1-.22-1.23-.781a1.05 1.05 0 01.757-1.26zm-.064-4.39c.314.32.49.753.49 1.206 0 .452-.176.886-.49 1.206-.315.32-.74.5-1.185.5-.444 0-.87-.18-1.184-.5a1.727 1.727 0 010-2.412 1.654 1.654 0 012.369 0zm-11.243.163c.364.484.447 1.128.218 1.691a1.665 1.665 0 01-2.188.923c-.855-.36-1.26-1.358-.907-2.228a1.68 1.68 0 011.33-1.038c.593-.08 1.183.169 1.547.652zm11.545-4.221c.368 0 .708.2.892.524.184.324.184.724 0 1.048a1.026 1.026 0 01-.892.524c-.568 0-1.03-.47-1.03-1.048 0-.579.462-1.048 1.03-1.048zm-14.358 0c.368 0 .707.2.891.524.184.324.184.724 0 1.048a1.026 1.026 0 01-.891.524c-.569 0-1.03-.47-1.03-1.048 0-.579.461-1.048 1.03-1.048zm10.031-1.475c.925 0 1.675.764 1.675 1.706s-.75 1.705-1.675 1.705-1.674-.763-1.674-1.705c0-.942.75-1.706 1.674-1.706zm-2.626-.684c.362-.082.653-.356.761-.718a1.062 1.062 0 00-.238-1.028 1.017 1.017 0 00-.996-.294c-.547.14-.881.7-.752 1.257.13.558.675.907 1.225.783zm0 16.876c.359-.087.644-.36.75-.72a1.062 1.062 0 00-.237-1.019 1.018 1.018 0 00-.985-.301 1.037 1.037 0 00-.762.717c-.108.361-.017.754.239 1.028.245.263.606.377.953.305l.043-.01zM17.19 3.5a.631.631 0 00.628-.64c0-.355-.279-.64-.628-.64a.631.631 0 00-.628.64c0 .355.28.64.628.64zm-10.38 0a.631.631 0 00.628-.64c0-.355-.28-.64-.628-.64a.631.631 0 00-.628.64c0 .355.279.64.628.64zm-5.182 7.852a.631.631 0 00-.628.64c0 .354.28.639.628.639a.63.63 0 00.627-.606l.001-.034a.62.62 0 00-.628-.64zm5.182 9.13a.631.631 0 00-.628.64c0 .355.279.64.628.64a.631.631 0 00.628-.64c0-.355-.28-.64-.628-.64zm10.38.018a.631.631 0 00-.628.64c0 .355.28.64.628.64a.631.631 0 00.628-.64c0-.355-.279-.64-.628-.64zm5.182-9.148a.631.631 0 00-.628.64c0 .354.279.639.628.639a.631.631 0 00.628-.64c0-.355-.28-.64-.628-.64zm-.384-4.992a.24.24 0 00.244-.249.24.24 0 00-.244-.249.24.24 0 00-.244.249c0 .142.122.249.244.249zM11.991.497a.24.24 0 00.245-.248A.24.24 0 0011.99 0a.24.24 0 00-.244.249c0 .133.108.236.223.247l.021.001zM2.011 6.36a.24.24 0 00.245-.249.24.24 0 00-.244-.249.24.24 0 00-.244.249.24.24 0 00.244.249zm0 11.263a.24.24 0 00-.243.248.24.24 0 00.244.249.24.24 0 00.244-.249.252.252 0 00-.244-.248zm19.995-.018a.24.24 0 00-.245.248.24.24 0 00.245.25.24.24 0 00.244-.25.252.252 0 00-.244-.248z" fill="#3859FF" fill-rule="nonzero"></path></svg>`);
+const ZAI_ICON = svgData(`<svg fill="currentColor" fill-rule="evenodd" height="1em" style="flex:none;line-height:1" viewBox="0 0 24 24" width="1em" xmlns="http://www.w3.org/2000/svg"><title>Z.ai</title><path d="M12.105 2L9.927 4.953H.653L2.83 2h9.276zM23.254 19.048L21.078 22h-9.242l2.174-2.952h9.244zM24 2L9.264 22H0L14.736 2H24z"></path></svg>`);
+// Command Code 图标与 magpie 同源（MIT）。
+const COMMANDCODE_ICON = svgData(`<svg fill="currentColor" fill-rule="evenodd" height="1em" style="flex:none;line-height:1" viewBox="0 0 144 144" width="1em" xmlns="http://www.w3.org/2000/svg"><title>Command Code</title><path fill-rule="evenodd" clip-rule="evenodd" d="M73.1399 5.87207H70.4648C53.6901 5.87207 41.6998 5.88454 32.5877 7.10962C23.6446 8.312 18.3583 10.5847 14.4715 14.4715C10.5847 18.3583 8.312 23.6446 7.10962 32.5877C5.88454 41.6998 5.87207 53.6901 5.87207 70.4648V73.1398C5.87207 89.9145 5.88454 101.905 7.10962 111.017C8.312 119.96 10.5847 125.246 14.4715 129.133C18.3583 133.02 23.6446 135.293 32.5877 136.495C41.6998 137.72 53.6901 137.733 70.4648 137.733H73.1398C89.9145 137.733 101.905 137.72 111.017 136.495C119.96 135.293 125.246 133.02 129.133 129.133C133.02 125.246 135.293 119.96 136.495 111.017C137.72 101.905 137.733 89.9146 137.733 73.1399V70.4648C137.733 53.6901 137.72 41.6998 136.495 32.5877C135.293 23.6446 133.02 18.3583 129.133 14.4715C125.246 10.5847 119.96 8.312 111.017 7.10962C101.905 5.88454 89.9146 5.87207 73.1399 5.87207ZM10.3193 10.3193C0 20.6387 0 37.2474 0 70.4648V73.1398C0 106.357 0 122.966 10.3193 133.285C20.6387 143.605 37.2474 143.605 70.4648 143.605H73.1398C106.357 143.605 122.966 143.605 133.285 133.285C143.605 122.966 143.605 106.357 143.605 73.1399V70.4648C143.605 37.2474 143.605 20.6387 133.285 10.3193C122.966 0 106.357 0 73.1399 0H70.4648C37.2474 0 20.6387 0 10.3193 10.3193Z"/><path d="M98.8049 27.6163C89.3295 27.6163 81.6214 35.3243 81.6214 44.7997V52.1641H61.9832V44.7997C61.9832 35.3243 54.2752 27.6163 44.7997 27.6163C35.3243 27.6163 27.6163 35.3243 27.6163 44.7997C27.6163 54.2752 35.3243 61.9832 44.7997 61.9832H52.1641V81.6214H44.7997C35.3243 81.6214 27.6163 89.3295 27.6163 98.8049C27.6163 108.28 35.3243 115.988 44.7997 115.988C54.2752 115.988 61.9832 108.28 61.9832 98.8049V91.4406H81.6214V98.8049C81.6214 108.28 89.3295 115.988 98.8049 115.988C108.28 115.988 115.988 108.28 115.988 98.8049C115.988 89.3295 108.28 81.6214 98.8049 81.6214H91.4406V61.9832H98.8049C108.28 61.9832 115.988 54.2752 115.988 44.7997C115.988 35.3243 108.28 27.6163 98.8049 27.6163ZM91.4406 52.1641V44.7997C91.4406 40.7248 94.73 37.4354 98.8049 37.4354C102.88 37.4354 106.169 40.7248 106.169 44.7997C106.169 48.8747 102.88 52.1641 98.8049 52.1641H91.4406ZM44.7997 52.1641C40.7248 52.1641 37.4354 48.8747 37.4354 44.7997C37.4354 40.7248 40.7248 37.4354 44.7997 37.4354C48.8747 37.4354 52.1641 40.7248 52.1641 44.7997V52.1641H44.7997ZM61.9832 81.6214V61.9832H81.6214V81.6214H61.9832ZM98.8049 106.169C94.73 106.169 91.4406 102.88 91.4406 98.8049V91.4406H98.8049C102.88 91.4406 106.169 94.73 106.169 98.8049C106.169 102.88 102.88 106.169 98.8049 106.169ZM44.7997 106.169C40.7248 106.169 37.4354 102.88 37.4354 98.8049C37.4354 94.73 40.7248 91.4406 44.7997 91.4406H52.1641V98.8049C52.1641 102.88 48.8747 106.169 44.7997 106.169Z"/></svg>`);
+const CLOSE_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"></path><path d="m6 6 12 12"></path></svg>`;
+const EYE_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"></path><circle cx="12" cy="12" r="3"></circle></svg>`;
+const EYE_OFF_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m2 2 20 20"></path><path d="M6.71 6.71C4.7 8.1 3.24 10.06 2.06 11.65a1 1 0 0 0 0 .7c2.34 5.64 8.94 8.32 14.24 5.36"></path><path d="M10.73 5.08A10.66 10.66 0 0 1 21.94 11.65a1 1 0 0 1 0 .7 10.83 10.83 0 0 1-2.06 3.1"></path><path d="M14.12 14.12A3 3 0 0 1 9.88 9.88"></path></svg>`;
+const SHIELD_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"></path><path d="m9 12 2 2 4-4"></path></svg>`;
+const SPINNER_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="is-spinning" aria-hidden="true"><path d="M21 12a9 9 0 1 1-6.219-8.56"></path></svg>`;
+const ZHIPU_KEYS = "https://open.bigmodel.cn/usercenter/proj-mgmt/apikeys";
+const ZAI_KEYS = "https://z.ai/manage-apikey/apikey-list";
+
+export function activate(ctx) {
+  return ctx.ui.inject("models.connection-types.v1", (mount) => mount.register({
+    id: "openai-compatible",
+    label: "OpenAI Compatible",
+    detail: "API Key 与任意 OpenAI 格式服务",
+    order: 30,
+    embeddingApiKey: true,
+    catalogSync: true,
+    editTemplateId: "custom-api",
+    templates: [
+      {
+        id: "deepseek",
+        label: "DeepSeek",
+        detail: "官方 API",
+        icon: DEEPSEEK_ICON,
+        order: 30,
+        defaults: {
+          name: "DeepSeek",
+          endpoint: "https://api.deepseek.com/v1",
+          provider: "deepseek",
+          thinkingFormat: "deepseek",
+          modelHint: "deepseek-chat",
+        },
+        keysUrl: "https://platform.deepseek.com/api_keys",
+      },
+      // GLM Coding Plan 是包月订阅，和 Codex、OpenCode Go 放在一起；它走独立的 /coding 地址。
+      {
+        id: "zhipu",
+        label: "GLM Coding Plan",
+        tag: "智谱",
+        detail: "智谱 GLM Coding Plan · 可读套餐额度",
+        group: "subscription",
+        icon: ZHIPU_ICON,
+        order: 21,
+        defaults: {
+          name: "智谱 GLM Coding Plan",
+          endpoint: "https://open.bigmodel.cn/api/coding/paas/v4",
+          provider: "zai",
+          thinkingFormat: "deepseek",
+          modelHint: "glm-5.1",
+        },
+        keysUrl: ZHIPU_KEYS,
+      },
+      {
+        id: "zai",
+        label: "GLM Coding Plan",
+        tag: "Z.ai",
+        detail: "Z.ai GLM Coding Plan（海外）· 可读套餐额度",
+        group: "subscription",
+        icon: ZAI_ICON,
+        order: 22,
+        defaults: {
+          name: "Z.ai GLM Coding Plan",
+          endpoint: "https://api.z.ai/api/coding/paas/v4",
+          provider: "zai",
+          thinkingFormat: "deepseek",
+          modelHint: "glm-5.1",
+        },
+        keysUrl: ZAI_KEYS,
+      },
+      // Command Code 包月套餐（Pro、GOAT、Max 等）；Claude 只走 /messages，目录里不列。
+      {
+        id: "commandcode",
+        label: "Command Code",
+        detail: "Command Code 套餐 · 可读额度",
+        group: "subscription",
+        icon: COMMANDCODE_ICON,
+        order: 23,
+        defaults: {
+          name: "Command Code",
+          endpoint: "https://api.commandcode.ai/provider/v1",
+          provider: "commandcode",
+          thinkingFormat: "deepseek",
+          modelHint: "deepseek/deepseek-v4.1-flash",
+        },
+        keysUrl: "https://commandcode.ai/settings/keys",
+      },
+      {
+        id: "zhipu-api",
+        label: "智谱 GLM",
+        detail: "按量付费 API",
+        icon: ZHIPU_ICON,
+        order: 31,
+        defaults: {name: "智谱 GLM", endpoint: "https://open.bigmodel.cn/api/paas/v4", provider: "zai", thinkingFormat: "deepseek", modelHint: "glm-5.1"},
+        keysUrl: ZHIPU_KEYS,
+      },
+      {
+        id: "zai-api",
+        label: "Z.ai",
+        detail: "按量付费 API（海外）",
+        icon: ZAI_ICON,
+        order: 32,
+        defaults: {name: "Z.ai", endpoint: "https://api.z.ai/api/paas/v4", provider: "zai", thinkingFormat: "deepseek", modelHint: "glm-5.1"},
+        keysUrl: ZAI_KEYS,
+      },
+      {
+        id: "custom-api",
+        label: "自定义 API",
+        detail: "连接任意兼容服务",
+        group: "custom",
+        order: 40,
+        defaults: {name: "", endpoint: "", provider: "openai"},
+      },
+    ],
+    render(host, _view, rawProps) {
+      const props = requireProps(rawProps);
+      const existing = props.state.connection;
+      if (!existing) return renderCreate(host, props);
+      host.innerHTML = `<header class="settings-dialog-header"><div class="settings-dialog-heading"><h2 class="settings-dialog-title">${escapeHtml(`编辑 ${existing.name}`)}</h2><p class="settings-dialog-description">更新服务地址或密钥时会向已启用模型发送测试验证；若验证失败将保留原配置。仅修改名称时不调用模型。</p></div>
+        <button type="button" class="settings-icon-button" aria-label="关闭" data-close>${CLOSE_ICON}</button></header>
+        <form class="settings-dialog-form"><div class="settings-dialog-body"><div class="settings-form-grid">
+          <label class="is-wide"><span>连接名称</span><input name="name" aria-label="连接名称" required autocomplete="organization"></label>
+          <label class="is-wide"><span>Base URL</span><input name="endpoint" aria-label="Base URL" type="url" autocomplete="url" placeholder="${existing.endpointHost ? `当前 ${existing.endpointHost.replace(/[^a-z0-9.:-]/giu, "")}，填写新地址才会更换` : "https://api.example.com/v1"}"></label>
+          ${keyField("留空保留现有密钥", false)}
+        </div>
+        <p class="settings-credential-note">${SHIELD_ICON}<span>API Key 保存后不会在页面中明文回显</span></p>
+        <p class="settings-inline-error" data-error role="alert" hidden></p></div>
+        <footer class="settings-dialog-footer"><span class="settings-dialog-footer-note">${SHIELD_ICON}保存前会向所选模型发送一条短消息，验证对话用途</span><div class="settings-dialog-actions"><button type="submit" class="settings-primary-button">保存连接</button></div></footer></form>`;
+      const form = bindForm(host, props);
+      form.elements.name.value = existing.name;
+      form.elements.endpoint.value = existing.endpoint ?? "";
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const data = new FormData(form);
+        const endpoint = String(data.get("endpoint")).trim();
+        const apiKey = String(data.get("apiKey"));
+        submit(form, props.actions.update({
+          name: String(data.get("name")),
+          endpoint: endpoint && endpoint !== (existing.endpoint ?? "") ? endpoint : null,
+          credential: apiKey ? {driver: "api_key", access_token: apiKey} : null,
+          driverConfig: null,
+        }).then(() => props.changed("OpenAI Compatible 连接已更新")), "保存连接");
+      });
+      return () => host.replaceChildren();
+    },
+  }));
+}
+
+// 新建：预设只要密钥，地址与名称来自模板、收在「高级」里；自定义 API 填名称、地址、密钥。
+// 「添加」读取服务的模型目录并全部收进来；服务没有目录时改填一个型号，保存前实际验证。
+function renderCreate(host, props) {
+  const template = props.state.template;
+  const defaults = template?.defaults ?? {};
+  const preset = template && template.id !== "custom-api" ? template : null;
+  const label = preset ? [preset.tag, preset.label].filter(Boolean).join(" ") : "自定义 API";
+  const keys = preset?.keysUrl ? `<a class="settings-key-link" href="${escapeHtml(preset.keysUrl)}" target="_blank" rel="noreferrer">去 ${escapeHtml(preset.tag ?? preset.label)} 拿密钥 ↗</a>` : "";
+  const nameField = `<label class="is-wide"><span>名称</span><input name="name" aria-label="名称" required autocomplete="organization" placeholder="例如：公司网关"></label>`;
+  const endpointField = `<label class="is-wide"><span>地址</span><input name="endpoint" aria-label="地址" required type="url" autocomplete="url" placeholder="https://api.example.com/v1"></label>`;
+  host.innerHTML = `<header class="settings-dialog-header"><div class="settings-dialog-heading"><h2 class="settings-dialog-title">${escapeHtml(`添加 ${label}`)}</h2><p class="settings-dialog-description">${preset ? "填入密钥，添加后这个服务的模型全部可用。" : "填入兼容 OpenAI 的地址与密钥，添加后读到的模型全部可用。"}</p></div>
+    <button type="button" class="settings-icon-button" aria-label="关闭" data-close>${CLOSE_ICON}</button></header>
+    <form class="settings-dialog-form"><div class="settings-dialog-body"><div class="settings-form-grid">
+      ${preset ? "" : nameField + endpointField}
+      ${keyField("sk-…", true)}
+      ${keys ? `<p class="is-wide settings-key-row">${keys}${preset ? `<span>${escapeHtml(hostOf(defaults.endpoint))}</span>` : ""}</p>` : ""}
+    </div>
+    <details class="settings-advanced"><summary>高级</summary><div class="settings-form-grid">
+      ${preset ? nameField + endpointField : ""}
+      <label class="is-wide"><span>Provider ID</span><input name="provider" aria-label="Provider ID" required placeholder="例如：openai"></label>
+      <label class="is-wide"><span>思考参数格式</span><select name="thinkingFormat" aria-label="思考参数格式"><option value="none">标准兼容格式（默认）</option><option value="deepseek">DeepSeek / GLM 格式</option></select></label>
+    </div></details>
+    <div class="settings-discovery-manual" data-manual-box hidden><label><span>型号</span><input name="manualModel" aria-label="型号" placeholder="例如：${escapeHtml(defaults.modelHint ?? "gpt-4o")}"></label><p>服务没有模型目录时，填一个型号；添加前会向它发一条短消息验证。</p></div>
+    <p class="settings-inline-error" data-error role="alert" hidden></p></div>
+    <footer class="settings-dialog-footer"><button type="button" class="settings-text-button" data-manual>读不到模型？手动填型号</button><div class="settings-dialog-actions"><button type="submit" class="settings-primary-button">添加</button></div></footer></form>`;
+  const form = bindForm(host, props);
+  form.elements.name.value = defaults.name ?? "";
+  form.elements.endpoint.value = defaults.endpoint ?? "";
+  form.elements.provider.value = defaults.provider ?? "openai";
+  form.elements.thinkingFormat.value = defaults.thinkingFormat ?? "none";
+  const manualBox = host.querySelector("[data-manual-box]");
+  const manualToggle = host.querySelector("[data-manual]");
+  manualToggle.addEventListener("click", () => {
+    manualBox.hidden = false;
+    manualToggle.hidden = true;
+    form.elements.manualModel.required = true;
+    form.elements.manualModel.focus();
+  });
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    // 1. 名称和地址在「高级」里也必须有效；无效时展开让用户看到。
+    if (!form.checkValidity()) {
+      form.querySelector("details").open = true;
+      form.reportValidity();
+      return;
+    }
+    const data = new FormData(form);
+    const name = String(data.get("name")).trim();
+    const connection = {
+      name,
+      endpoint: String(data.get("endpoint")),
+      credential: {driver: "api_key", access_token: String(data.get("apiKey"))},
+      driverConfig: {format_version: 1, catalog_provider_id: String(data.get("provider")), thinking_format: String(data.get("thinkingFormat")), allow_unverified_manual: true},
+    };
+    // 2. 手填型号走旧的单模型验证；否则读目录、全部收进来。
+    const manual = manualBox.hidden ? "" : String(data.get("manualModel")).trim();
+    const work = manual
+      ? props.actions.createManual({...connection, model: modelInput({model: manual}, true)})
+      : props.actions.createConnection({...connection, catalogMode: "all", modelHint: defaults.modelHint ?? ""});
+    submit(form, work.then(() => props.changed(`${name || "连接"} 已添加`)), "添加");
+  });
+  queueMicrotask(() => form.elements.apiKey.focus());
+  return () => host.replaceChildren();
+}
+
+function keyField(placeholder, required) {
+  return `<label class="settings-secret is-wide"><span>API Key</span><input name="apiKey" aria-label="API Key" type="password" ${required ? "required" : ""} autocomplete="off" placeholder="${placeholder}"><button type="button" data-show-key aria-label="显示 API Key">${EYE_ICON}</button></label>`;
+}
+
+// 表单的共同接线：脏标记、显示密钥、关闭。
+function bindForm(host, props) {
+  const form = host.querySelector("form");
+  const changed = () => props.dirty(true);
+  form.addEventListener("input", changed);
+  form.addEventListener("change", changed);
+  const showKey = host.querySelector("[data-show-key]");
+  showKey.addEventListener("click", () => {
+    const visible = form.elements.apiKey.type === "text";
+    form.elements.apiKey.type = visible ? "password" : "text";
+    showKey.setAttribute("aria-label", visible ? "显示 API Key" : "隐藏 API Key");
+    showKey.innerHTML = visible ? EYE_ICON : EYE_OFF_ICON;
+  });
+  host.querySelector("[data-close]").addEventListener("click", props.close);
+  return form;
+}
+
+function hostOf(endpoint) {
+  try { return new URL(endpoint).hostname; } catch { return ""; }
+}
+
+function svgData(svg) {
+  return `data:image/svg+xml,${encodeURIComponent(svg)}`;
+}
+
+function requireProps(value) {
+  return requireConnectionProps(value, [
+    "discover", "createManual", "update", "sync", "discoverSaved", "addModel", "verifyModel", "createConnection",
+  ]);
+}
+
+function submit(form, work, label) {
+  const button = form.querySelector("[type=submit]");
+  const error = form.querySelector("[data-error]");
+  button.disabled = true;
+  button.replaceChildren(htmlNode(SPINNER_ICON), "保存中");
+  error.hidden = true;
+  error.textContent = "";
+  work.catch((reason) => {
+    error.textContent = reason instanceof Error ? reason.message : String(reason);
+    error.hidden = false;
+  }).finally(() => {
+    button.disabled = false;
+    button.textContent = label;
+  });
+}

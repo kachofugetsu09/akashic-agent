@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "plugins": [
+    {
+      "id": "shell_restore",
+      "repository": "https://github.com/akashic-plugins/shell_restore.git",
+      "requested_ref": "0bbcf41885791b843b1d3f553674b0856c93155b",
+      "resolved_sha": "0bbcf41885791b843b1d3f553674b0856c93155b",
+      "change_source_pr_head": "0bbcf41885791b843b1d3f553674b0856c93155b"
+    },
+    {
+      "id": "shell_safety",
+      "repository": "https://github.com/akashic-plugins/shell_safety.git",
+      "requested_ref": "a3a1ed8aceed03e62530a384343a0769ac10b52e",
+      "resolved_sha": "a3a1ed8aceed03e62530a384343a0769ac10b52e",
+      "change_source_pr_head": "a3a1ed8aceed03e62530a384343a0769ac10b52e"
+    }
+  ]
+}

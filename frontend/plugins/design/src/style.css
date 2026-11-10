@@ -1,0 +1,18 @@
+/* 设计标签外壳：只放编辑器 iframe；编辑器自己的样式随 iframe 页面加载。 */
+.design-tab {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  background: var(--ak-paper-sheet);
+  color: var(--ak-ink-primary);
+}
+
+.design-tab-frame {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  border: 0;
+  background: var(--ak-paper-sheet);
+}

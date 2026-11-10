@@ -1,0 +1,31 @@
+/*
+ * Kami paper stage — solid parchment / deep-dark, no noise bitmaps.
+ * Paper feel comes from warm hex canvas + hairline planes (tw93/Kami),
+ * not feTurbulence overlays (those read as coarse grit on UI chrome).
+ */
+
+.ak-paper-stage,
+.chat-shell,
+.settings-page {
+  background-color: var(--ak-paper-canvas);
+  background-image: none;
+}
+
+/* Nested panes stay on the same solid plane; side rails lift one warm step. */
+.chat-shell .chat-shell-body,
+.chat-shell .chat-main {
+  background-color: transparent;
+  background-image: none;
+}
+
+.product-band {
+  background-color: var(--ak-paper-canvas);
+  background-image: none;
+}
+
+.chat-sidebar,
+.sessions-pane,
+.detail-pane.is-open {
+  background-color: var(--ak-paper-quiet);
+  background-image: none;
+}

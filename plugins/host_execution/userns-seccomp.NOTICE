@@ -1,0 +1,16 @@
+userns-seccomp.json is derived from Moby's Docker 29.7.2 default seccomp
+profile:
+
+https://github.com/moby/moby/blob/docker-v29.7.2/vendor/github.com/moby/profiles/seccomp/default.json
+
+Upstream SHA-256:
+536529b665dd0972c37bfb569f5d4ac8a53592e7b00752bc39ff063ca9864c74
+
+Akashic keeps the default deny policy and makes only these changes:
+
+- clone may create user, PID, and network namespaces, but not mount, UTS,
+  IPC, or cgroup namespaces.
+- unshare has the same namespace mask.
+- chroot is allowed so Chromium can finish its own user-namespace sandbox.
+
+The adjacent userns-seccomp.LICENSE contains the upstream Apache License 2.0.

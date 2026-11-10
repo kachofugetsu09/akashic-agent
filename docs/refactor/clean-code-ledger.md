@@ -8,7 +8,7 @@
 - 重构对象（49 个文件，删除 14 个 8 行样板 `dashboard.py` 文件，消除 `openai_compatible` / `opencode_go` / `codex` / `gemini` 后端与前端的 3～4 次复制粘贴）：
   - 在 `plugins/models/contract.py`（模型能力的唯一 Owner 公共契约）中收敛 `register_connection_type_ui`、`check_credential_scope`、`check_bound_model`、`credential_bearer_token`、`normalize_http_base_url`、`positive_float_config`、`optional_non_negative_int`、`required_non_empty_string`、`response_json_object`、`mark_unsent_error`、`StreamReadError`、`StreamCallbackError`、`raise_http_status`、`http_status_error`、`map_driver_error`、`is_driver_retryable`、`merge_stream_tool_deltas`、`build_stream_tool_calls`、`parse_tool_arguments`、`parse_openai_usage`；
   - `plugins/openai_compatible/driver.py`、`plugins/opencode_go/driver.py`、`plugins/codex/{driver,responses,plugin}.py`、`plugins/gemini/plugin.py` 统一消费 `plugins.models.contract`，仅在插件内保留各自特有的协议差异（如 `opencode_go` 的模型家族 reasoning profile 与本地登录态导入、`openai_compatible` 的 `<think>` 标签流式切分与 Embeddings）；
-  - 在 `frontend/plugins/shared/src/connection-form.js` 收敛 4 个连接类型前端模块（`openai_compatible`、`gemini`、`opencode_go`、`codex`）重复的 `htmlNode`、`escapeHtml`、`requireConnectionProps`、`toDiscoveredModelInput`，并重新构建 4 个插件的独立 `web_module.js`；
+  - 在 `packages/akashic-plugin-kit/src/connection-form.js` 收敛 4 个连接类型前端模块（`openai_compatible`、`gemini`、`opencode_go`、`codex`）重复的 `htmlNode`、`escapeHtml`、`requireConnectionProps`、`toDiscoveredModelInput`，并重新构建 4 个插件的独立 `web_module.js`；
   - 在 `plugins/ui/{contract,dashboard,plugin}.py` 中让 `mount_settings` 与 `UI.register(configuration_key=...)` 原生绑定 `/api/dashboard/<plugin>/config`，直接删除 `akasha`、`compaction`、`markdown_memory`、`reply`、`session_title`、`shell`、`standard_web`、`subagent`、`telegram_channel`、`telegram_sender`、`vision`、`web_fetch_http`、`web_search_exa`、`web_search_searxng` 共 14 个一模一样的 8 行 `dashboard.py` 样板文件。
 - 依据（三次原则 + ADR 0102 + DSH `@deepseek-ai/dsh-llm` / `@deepseek-ai/dsh-settings`）：跨 3 个以上插件重复的协议映射与声明式配置路由下沉至对应领域 Owner 的 `contract.py`，不跨插件直接 import 实现。
 - Gate：`pyright` 全仓与 26 个改动模块均为 `0 errors`；`python3 scripts/plugin_boundary.py check --base origin/main` 通过（R1=0/0 R2=0/0 R3=0/0）；`python3 scripts/check_model_retry.py` 38 个场景与 `subagent_delegation_workflow_scenario.py` 全量通过；关联 pytest 10 passed；`git diff --check` 干净。
@@ -170,7 +170,7 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - Python SLOC：`78,896`
 - TypeScript/TSX SLOC：`8,644`
 - total production SLOC：`87,540`；30% 参考量是净减少 `26,262` SLOC，但安全停止条件优先。
-- source-root 明细：`agent 28,876`、`bootstrap 6,309`、`bus 926`、`core 2,052`、`frontend/chat/src 5,934`、`frontend/dashboard/src 2,471`、`infra 11,394`、`main.py 621`、`memory2 4,884`、`migrations 296`、`plugin_packages 422`、`plugins 17,262`、`proactive_v2 2,777`、`prompts 465`、`sdk/python/src 318`、`session 2,529`、`utils 4`。
+- source-root 明细：`agent 28,876`、`bootstrap 6,309`、`bus 926`、`core 2,052`、`frontend/plugins/akashic_clients/chat/src 5,934`、`frontend/plugins/ui/dashboard/src 2,471`、`infra 11,394`、`main.py 621`、`memory2 4,884`、`migrations 296`、`plugin_packages 422`、`plugins 17,262`、`proactive_v2 2,777`、`prompts 465`、`sdk/python/src 318`、`session 2,529`、`utils 4`。
 
 ### PR0 `chore(refactor): 建立 less-is-more 计量与门禁`
 
@@ -305,12 +305,12 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 ### `PR6` `refactor(chat): remove dead command adapters`
 
 - base：PR5 commit `650ddf0ac0a61ff352d0a0569197684bb567453e`，分支 `refactor/less-is-more-pr6-chat-dead-command-adapters`。
-- allowed_paths：`frontend/chat/src/components/ai-elements/prompt-input.tsx`、`frontend/chat/src/components/ui/command.tsx`（删除）、`docs/refactor/clean-code-ledger.md`；`capability_owner`：chat composer UI；core-only，mobile client 保持现有独立仓库与固定快照。
+- allowed_paths：`frontend/plugins/akashic_clients/chat/src/components/ai-elements/prompt-input.tsx`、`frontend/plugins/akashic_clients/chat/src/components/ui/command.tsx`（删除）、`docs/refactor/clean-code-ledger.md`；`capability_owner`：chat composer UI；core-only，mobile client 保持现有独立仓库与固定快照。
 - 范围：删除 `prompt-input.tsx` 对已无消费者的 `Command` import 和七个 `PromptInputCommand*` 转接包装器，并删除只被该 import 引用的 `ui/command.tsx`（`cmdk`/Dialog/Search 封装）；未修改现有 PromptInput/Attachments/Menu/Body/Footer/Submit/Textarea/Tools、`styles.css`、package dependency、移动端仓库、生成 bundle 或命令协议。
-- 历史与调用链：`frontend/chat/index.html → src/main.tsx → 现有 PromptInput` 是当前 Vite 入口；静态、AST、字符串、动态导出、CSS/HTML 与 mobile repo 搜索确认 `command.tsx` 仅由该 prompt import 到达，`PromptInputCommand*` 仅有定义、零消费者，删除不切断任何当前调用链。`cmdk` 依赖及 composer 的 incidental CSS selector 保留，避免把依赖治理混入本 PR。
+- 历史与调用链：`frontend/plugins/akashic_clients/chat/index.html → src/main.tsx → 现有 PromptInput` 是当前 Vite 入口；静态、AST、字符串、动态导出、CSS/HTML 与 mobile repo 搜索确认 `command.tsx` 仅由该 prompt import 到达，`PromptInputCommand*` 仅有定义、零消费者，删除不切断任何当前调用链。`cmdk` 依赖及 composer 的 incidental CSS selector 保留，避免把依赖治理混入本 PR。
 - 语义与状态核对：`semantic_delta: none`；现有 composer DOM、可访问性属性、键盘/鼠标事件、网络请求、stream/提交顺序、storage、持久化和 write set 均不变；删除只减少不可达定义和 import，不新增 fallback、兼容层或运行时检查。mobile-specific interaction 仍由客户端 owner 持有，本 PR 没有 core runtime/mobile 协议改动。
 - baseline：source-set digest `6586123102dce5eb3f460c0b90d12c82990bf4ea1b323dcf5fc7ee53ae4b4ba6`，文件数 `385`，Python SLOC `78,736`，TypeScript/TSX SLOC `8,644`，total production SLOC `87,380`。
-- candidate：source-set digest `57450e582acc0b3ac1076049a19c0c341e2b8960a2fd68c702256d4ba8c04c78`，文件数 `384`，Python SLOC `78,736`，TypeScript/TSX SLOC `8,451`，`frontend/chat/src` 从 `5,934` 降至 `5,741`，total production SLOC `87,187`。
+- candidate：source-set digest `57450e582acc0b3ac1076049a19c0c341e2b8960a2fd68c702256d4ba8c04c78`，文件数 `384`，Python SLOC `78,736`，TypeScript/TSX SLOC `8,451`，`frontend/plugins/akashic_clients/chat/src` 从 `5,934` 降至 `5,741`，total production SLOC `87,187`。
 - 目标与实际 SLOC 变化：production 净减少 `193` 行；raw diff 为 `223 deletions`（prompt adapter 72 行、command source 151 行），达到并超过本 PR 的净减少目标。未改变可达 composer 运行路径，不宣称额外端到端性能收益。
 - 构建对账：同一 `npm run build:chat -- --outDir` workload，base `367` files / raw `14,163,499` bytes / per-file `gzip -c` sum `3,171,311` bytes / entry `index-Dk9_Leak.js` `587,613` bytes / build digest `01eabe523427335ab7c02e6b6adf6752eac99321f90ebdf99b616129e750957a`；candidate `367` files / raw `14,147,448` bytes / gzip `3,167,344` bytes / entry `index-DV8aJw6_.js` `573,145` bytes / build digest `293c6b1eab1572e4d22598af1fcf69a9d01de021bc69dce37ac0faac305d57d0`。差异来自删除不可达 chat module，未改 CSS 或 dependency；Vite 仅保留既有大 chunk warning。
 - 测试与真实验证：`npm run typecheck` exit 0；`npm run lint` exit 0（本次无新增 lint 输出）；`npm run build:chat -- --outDir /tmp/less-is-more-pr6-chat-build-vnZnam` exit 0（Vite 5160 modules transformed）；legacy import/wrapper/source path 在 ledger 外零残留；`git diff --check`、migration append-only 和 Gate 需按下述 base 在提交前完成。
@@ -324,7 +324,7 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 
 - base：PR6 commit `631fc199c6e8fe2ce7d1b3d4f2b9152efe4ca1fb`，分支 `refactor/less-is-more-pr7-remove-unused-cmdk`。
 - allowed_paths：`package.json`、`docs/refactor/clean-code-ledger.md`；`capability_owner`：core chat dependency manifest；根包为 private 且无 exports，未修改 lockfile、CSS、source、mobile repo 或生成 bundle。
-- 范围：删除根 `package.json` dependencies 中唯一的 `"cmdk": "^1.1.1"` 声明。PR6 后 core source 已无 `cmdk` import、command module 或 `PromptInputCommand` consumer；`frontend/chat/src/styles.css` 的 incidental `[cmdk-root]` selector 保留，因为它不是 package consumer。plugins 无 manifest consumer；mobile stable 是独立仓库，保留其自身 source/lock 与依赖边界。
+- 范围：删除根 `package.json` dependencies 中唯一的 `"cmdk": "^1.1.1"` 声明。PR6 后 core source 已无 `cmdk` import、command module 或 `PromptInputCommand` consumer；`frontend/plugins/akashic_clients/chat/src/styles.css` 的 incidental `[cmdk-root]` selector 保留，因为它不是 package consumer。plugins 无 manifest consumer；mobile stable 是独立仓库，保留其自身 source/lock 与依赖边界。
 - 语义与状态核对：`change_type: dependency cleanup`，`semantic_delta: none`；运行时模块解析、DOM/a11y、事件、网络、storage、stream 顺序、持久化 write set、CSS 和输出 bundle 均保持不变。此次只改变根包 install graph，不新增 fallback 或兼容层；共享 Radix 依赖仍由其他包使用。
 - baseline/candidate：production source-set 与 PR6 完全相同，文件数 `384`，Python SLOC `78,736`，TypeScript/TSX SLOC `8,451`，total production SLOC `87,187`，source-set digest `57450e582acc0b3ac1076049a19c0c341e2b8960a2fd68c702256d4ba8c04c78`；production SLOC 净变化 `0`。Git tracked 中无 package-lock/pnpm-lock/yarn.lock，未宣称精确 clean-install bytes delta。
 - footprint 观察：当前主 repo 已安装 `node_modules/cmdk` 的 `du -sB1` 观察值为 `126,976` bytes、`13` files；该值仅说明本机现有安装 footprint，不等同于无 lock/floating range 下的可复现 clean-install 节省量。
@@ -1142,7 +1142,7 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - Python 测试：`1484 passed`，耗时 22.55 秒
 - Pyright：`0 errors, 3119 warnings`
 - 前端 TypeScript：`npm run typecheck` 通过
-- 前端 ESLint：`0 errors, 3 warnings`，均为 `frontend/dashboard/src/main.tsx` 的既有 React Hook 依赖警告
+- 前端 ESLint：`0 errors, 3 warnings`，均为 `frontend/plugins/ui/dashboard/src/main.tsx` 的既有 React Hook 依赖警告
 - 工作区：除本地 `.codegraph/` 外无未提交代码
 - 关键历史约束：PR #105 全能力热重载、PR #109 事件流唤醒、PR #90 主动发送串行、PR #89 shell 超时取消、PR #75 memory fail-stop
 

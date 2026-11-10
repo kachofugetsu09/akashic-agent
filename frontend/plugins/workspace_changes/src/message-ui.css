@@ -1,0 +1,30 @@
+/* 回复下方的一行改动摘要：与用量尾注同一层级，可点时像链接一样有悬停与焦点。 */
+.changes-tail-host:empty { display: none; }
+
+.changes-tail {
+  margin-top: 4px;
+  color: var(--ak-ink-secondary);
+  font-size: 12px;
+  line-height: 18px;
+  font-variant-numeric: tabular-nums;
+}
+.changes-tail.is-pending,
+.changes-tail.is-muted { color: var(--ak-ink-muted); }
+
+.changes-tail.is-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 12px;
+  text-decoration: underline;
+  text-decoration-color: var(--ak-rule-default);
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+.changes-tail.is-link:hover { color: var(--ak-ink-primary); text-decoration-color: currentColor; }
+.changes-tail.is-link:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 2px; border-radius: 2px; }
+
+@media (pointer: coarse) {
+  .changes-tail.is-link { min-height: 44px; }
+}

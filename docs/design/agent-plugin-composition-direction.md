@@ -64,7 +64,7 @@ Akasha 按原模型空间补算后读取原图；空间变化或模型不可用�
 ## 声明式组合
 
 ```text
-base.toml → headless/minimal 整行覆盖 → workspace/bundle.patch.toml
+base.toml → headless/minimal 整行覆盖 → workspace/bundle.patch.toml 按字段覆盖
                                           │ 发布已验证输入
                                           ▼
                                 plugin-stable.json

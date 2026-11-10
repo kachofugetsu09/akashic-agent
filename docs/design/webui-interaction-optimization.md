@@ -5,7 +5,7 @@
 
 ## 边界
 
-`frontend/chat/src` 是浏览器与 Android Shell 加载的同一对话页面。Session、Message、Turn 和插件状态由服务端原 owner 持有；页面只保留当前导航、输入、滚动和渲染状态。窄屏布局属于同一页面，不另建移动入口或发布产物。
+`frontend/plugins/akashic_clients/chat/src` 是浏览器与 Android Shell 加载的同一对话页面。Session、Message、Turn 和插件状态由服务端原 owner 持有；页面只保留当前导航、输入、滚动和渲染状态。窄屏布局属于同一页面，不另建移动入口或发布产物。
 
 ```text
 ┌──────────────────────────────┐

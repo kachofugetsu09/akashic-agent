@@ -93,9 +93,9 @@ allowed_paths:
   - docker/**
   - plugins/computer/**
   - plugins/conversation_ui/**
-  - frontend/dashboard/src/**
+  - frontend/plugins/ui/dashboard/src/**
   - packages/akashic-web-ui-v1/**
-  - frontend/chat/src/**
+  - frontend/plugins/akashic_clients/chat/src/**
   - tests/**
   - docs/**
   - scripts/**

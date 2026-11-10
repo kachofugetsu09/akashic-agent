@@ -1,0 +1,27 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["node"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noImplicitReturns": true,
+    "baseUrl": ".",
+    "paths": {
+      "@akashic/web-ui-v1": ["packages/akashic-web-ui-v1/index.d.ts"],
+      "@akashic/chat-ui-v1": ["packages/akashic-chat-ui-v1/index.d.ts"],
+      "@akashic/shell-ui-v1": ["packages/akashic-shell-ui-v1/index.d.ts"],
+      "@akashic/conversation-tools-v2": ["packages/akashic-conversation-tools-v2/index.d.ts"],
+      "@/*": ["frontend/plugins/akashic_clients/chat/src/*"]
+    },
+    "noEmit": true,
+    "jsx": "react-jsx"
+  },
+  "exclude": ["frontend/plugins/design/editor/**", "frontend/plugins/ui/dashboard/*.ts", "frontend/plugins/akashic_clients/chat/*.ts"],
+  "include": ["frontend/plugins/**/*.ts", "frontend/plugins/**/*.tsx", "frontend/plugins/ui/dashboard/src/**/*.ts", "frontend/plugins/ui/dashboard/src/**/*.tsx", "frontend/plugins/akashic_clients/chat/src/**/*.ts", "frontend/plugins/akashic_clients/chat/src/**/*.tsx", "frontend/plugins/akashic_clients/chat/harness/**/*.tsx", "packages/akashic-theme/src/**/*.ts", "packages/akashic-plugin-kit/src/**/*.ts", "packages/akashic-plugin-kit/src/**/*.tsx", "plugins/**/*.ts", "plugins/**/*.tsx", "packages/**/*.d.ts", "types/**/*.d.ts"]
+}

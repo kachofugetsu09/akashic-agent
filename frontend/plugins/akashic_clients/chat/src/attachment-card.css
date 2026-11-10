@@ -1,0 +1,367 @@
+/* 附件卡（参考 Claude Desktop MessageAttachments，尺寸取紧凑横条）：输入框托盘与已发送消息共用。
+   文件 64px 高横条：左类型块写扩展名，右侧单行文件名（中间省略、保住末 6 个字符）+"大小 · 行数"；
+   媒体 64px 方形缩略图，点开交给媒体查看器。 */
+.ak-attachment {
+  --attachment-height: 64px;
+  --attachment-tone: var(--ak-ink-muted);
+  position: relative;
+  flex: none;
+  width: 216px;
+  height: var(--attachment-height);
+  border-radius: var(--ak-radius-md);
+  transition: opacity 200ms var(--ak-sys-motion-emphasized), scale 200ms var(--ak-sys-motion-emphasized), translate 200ms var(--ak-sys-motion-emphasized);
+}
+.ak-attachment.is-media { width: var(--attachment-height); }
+.ak-attachment[data-tone="text"] { --attachment-tone: var(--ak-rule-focus); }
+.ak-attachment[data-tone="data"] { --attachment-tone: var(--ak-color-status-success); }
+.ak-attachment[data-tone="pdf"] { --attachment-tone: var(--ak-color-status-error); }
+
+.ak-attachment__surface {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+  overflow: hidden;
+  border: 0;
+  border-radius: inherit;
+  padding: 8px 12px 8px 8px;
+  color: var(--ak-ink-primary);
+  background: var(--ak-paper-quiet);
+  box-shadow: 0 0 0 1px var(--ak-rule-subtle), var(--ak-elevation-raised);
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+  transition: box-shadow var(--ak-sys-duration-short) var(--ak-sys-motion-standard), scale 60ms;
+}
+.ak-attachment__surface:active:not(:disabled) { scale: 0.98; }
+.ak-attachment__surface:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 2px; }
+.ak-attachment__surface:disabled { cursor: default; }
+@media (hover: hover) {
+  .ak-attachment__surface:hover:not(:disabled) { box-shadow: 0 0 0 1px var(--ak-rule-default), var(--ak-elevation-raised); }
+}
+/* 没有预览可开的文件（PDF、压缩包）只是一张信息卡。 */
+.ak-attachment__surface[data-static] { cursor: default; }
+.ak-attachment.is-media .ak-attachment__surface { padding: 0; background: var(--ak-paper-sheet); cursor: zoom-in; }
+
+.ak-attachment__image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0;
+  transition: opacity 200ms var(--ak-sys-motion-standard);
+}
+.ak-attachment__image[data-loaded],
+video.ak-attachment__image { opacity: 1; }
+.ak-attachment__play {
+  position: absolute; inset: auto auto 6px 6px; display: grid; width: 20px; height: 20px; place-items: center;
+  border-radius: var(--ak-radius-full); color: #fff; background: rgb(0 0 0 / 0.55);
+}
+
+.ak-attachment__tile {
+  display: grid;
+  flex: none;
+  width: 40px;
+  height: 48px;
+  place-items: center;
+  overflow: hidden;
+  /* 与卡片同心：md − 间距 8。 */
+  border-radius: calc(var(--ak-radius-md) - 8px);
+  color: color-mix(in oklab, var(--attachment-tone) 62%, var(--ak-ink-primary));
+  background: color-mix(in oklab, var(--attachment-tone) 12%, var(--ak-paper-editing));
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--attachment-tone) 18%, transparent);
+  font-size: 0.625rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+/* 粘贴卡的类型块是一页缩小的原文：一眼认出是哪段内容。 */
+.ak-attachment__paste {
+  align-self: start;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  padding: 5px 4px;
+  color: color-mix(in oklab, var(--ak-ink-secondary) 75%, transparent);
+  font-family: var(--ak-type-technical);
+  font-size: 4px;
+  font-weight: 400;
+  line-height: 5px;
+  letter-spacing: 0;
+  text-transform: none;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.ak-attachment__meta { display: grid; min-width: 0; flex: 1; gap: 2px; }
+.ak-attachment__name {
+  display: flex;
+  min-width: 0;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  line-height: 1.35;
+  white-space: nowrap;
+}
+.ak-attachment__head { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* 结尾一般整段保留；全角字符很宽时也不越出卡片，至少给开头留一个字和省略号。 */
+.ak-attachment__tail { flex: none; max-width: calc(100% - 1.5em); overflow: hidden; white-space: pre; }
+.ak-attachment__desc {
+  overflow: hidden; color: var(--ak-ink-secondary); font-size: 0.75rem; font-variant-numeric: tabular-nums;
+  line-height: 1.35; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* 移除钮：20px 圆，右上角外溢；悬停、键盘聚焦时出现，触屏常显。不压在图片内容上。 */
+.ak-attachment__remove {
+  position: absolute;
+  top: -7px;
+  right: -7px;
+  z-index: 1;
+  display: grid;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  border: 0;
+  border-radius: var(--ak-radius-full);
+  padding: 0;
+  color: var(--ak-ink-secondary);
+  background: var(--ak-paper-raised);
+  box-shadow: 0 0 0 1px var(--ak-rule-default);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+}
+/* 触点放大到 32px，视觉仍是 20px。 */
+.ak-attachment__remove::before { content: ""; position: absolute; inset: -6px; }
+.ak-attachment__remove:focus-visible { opacity: 1; outline: 2px solid var(--ak-rule-focus); outline-offset: 1px; }
+.ak-attachment:focus-within .ak-attachment__remove { opacity: 1; }
+@media (hover: hover) {
+  .ak-attachment:hover .ak-attachment__remove { opacity: 1; }
+  .ak-attachment__remove:hover { color: var(--ak-ink-primary); }
+}
+@media (hover: none) {
+  .ak-attachment__remove { opacity: 1; }
+}
+
+.ak-attachment__edit {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border: 0;
+  border-radius: var(--ak-radius-sm);
+  color: var(--ak-ink-secondary);
+  background: transparent;
+  cursor: pointer;
+}
+.ak-attachment__edit:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 0; }
+@media (hover: hover) {
+  .ak-attachment__edit:hover { color: var(--ak-ink-primary); background: var(--ak-paper-raised); }
+}
+
+/* 上传中：整卡骨架闪烁（Desktop 不显示百分比），文字与图片隐去一半。 */
+.ak-attachment[aria-busy="true"] .ak-attachment__surface > * { opacity: 0.45; }
+.ak-attachment__skeleton {
+  position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+  background: linear-gradient(100deg, transparent 30%, color-mix(in oklab, var(--ak-ink-primary) 7%, transparent) 50%, transparent 70%);
+  background-size: 200% 100%; animation: ak-attachment-shimmer 1.2s linear infinite;
+}
+@keyframes ak-attachment-shimmer { from { background-position: 150% 0; } to { background-position: -50% 0; } }
+
+/* —— 已发送附件条：用户消息在气泡上方右对齐，回复里左对齐；媒体保持原比例，之后另起一行排文件卡 —— */
+.ak-attachment-strip {
+  display: flex;
+  max-width: min(100%, 34rem);
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 6px;
+}
+.user-row > .ak-attachment-strip,
+.timeline-input > .ak-attachment-strip { justify-content: flex-end; margin-inline-start: auto; }
+.agent-content .ak-attachment-strip { margin-block: 10px; }
+.ak-attachment-strip__break { flex: 0 0 100%; height: 0; }
+/* 媒体卡可以收缩到附件条宽度：窄屏上单张 480 宽的图跟着阅读区等比缩小，不越出左右边。 */
+.ak-attachment-strip .ak-attachment.is-media { flex: 0 1 auto; min-width: 0; max-width: 100%; width: auto; height: auto; }
+.ak-attachment-strip .ak-attachment.is-media .ak-attachment__surface { display: block; width: auto; max-width: 100%; height: auto; background: var(--ak-paper-sheet); }
+/* 加载后按原比例：单张最大 480×320，放不下就等比缩小，不裁切；只在加载前先占 120 方块，极端比例的图加载后不再垫空白。 */
+.ak-attachment-strip .ak-attachment__image {
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: min(100%, 480px);
+  max-height: 320px;
+  object-fit: contain;
+}
+.ak-attachment-strip img.ak-attachment__image:not([data-loaded]),
+.ak-attachment-strip video.ak-attachment__image { min-width: 120px; min-height: 120px; }
+.ak-attachment-strip[data-multi] .ak-attachment__image { max-width: min(240px, 40vw); max-height: 160px; }
+.ak-attachment-strip[data-multi] img.ak-attachment__image:not([data-loaded]),
+.ak-attachment-strip[data-multi] video.ak-attachment__image { min-width: 80px; min-height: 80px; }
+
+/* —— 输入卡托盘 —— */
+.composer-tray {
+  display: flex;
+  grid-column: 1 / -1;
+  width: 100%;
+  gap: 10px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  /* 上、右留出外溢移除钮的位置。 */
+  padding: 10px 10px 8px 2px;
+  scrollbar-width: none;
+}
+.composer-tray::-webkit-scrollbar { display: none; }
+.composer-tray[data-fade-end] { mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent); }
+.composer-tray[data-fade-start] { mask-image: linear-gradient(to right, transparent, #000 32px); }
+.composer-tray[data-fade-start][data-fade-end] { mask-image: linear-gradient(to right, transparent, #000 32px, #000 calc(100% - 32px), transparent); }
+@starting-style {
+  .composer-tray .ak-attachment { opacity: 0; scale: 0.92; translate: 0 4px; }
+}
+/* 删除时：被删卡缩小淡出 130ms，其余卡 180ms 补位（Desktop 同款曲线）。 */
+.composer-tray[data-reflow] > [role="listitem"] {
+  view-transition-name: var(--reflow-name);
+  view-transition-class: attachment;
+}
+::view-transition-group(*.attachment) { animation-duration: 180ms; animation-timing-function: cubic-bezier(0.215, 0.61, 0.355, 1); }
+::view-transition-old(*.attachment):only-child { animation: ak-attachment-out 130ms cubic-bezier(0.55, 0.055, 0.675, 0.19) both; }
+@keyframes ak-attachment-out { to { opacity: 0; scale: 0.5; } }
+
+:where([data-chat-width~="480"]) {
+  .composer-tray .ak-attachment.is-file { width: 184px; }
+}
+
+/* —— 拖放遮罩 —— */
+.composer-drop-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  pointer-events: none;
+  background: color-mix(in oklab, var(--ak-paper-canvas) 60%, transparent);
+  backdrop-filter: blur(12px);
+  animation: ak-drop-fade 150ms both;
+}
+.composer-drop-scrim__ring {
+  position: absolute;
+  inset: 14px;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 14px;
+  border-radius: var(--ak-radius-md);
+  color: var(--ak-rule-focus);
+  box-shadow: inset 0 0 0 2px var(--ak-rule-focus), inset 0 0 24px 0 color-mix(in oklab, var(--ak-rule-focus) 20%, transparent);
+  font-size: 1rem;
+  font-weight: 500;
+  animation: ak-drop-fade 200ms 80ms both;
+}
+.composer-drop-scrim__icons { display: flex; gap: 6px; }
+.composer-drop-scrim__icons svg { width: 34px; height: 34px; stroke-width: 1.6; animation: ak-drop-rise 220ms var(--ak-sys-motion-emphasized) both; }
+.composer-drop-scrim__icons svg:nth-child(1) { rotate: -14deg; }
+.composer-drop-scrim__icons svg:nth-child(2) { translate: 0 -12px; animation-delay: 60ms; }
+.composer-drop-scrim__icons svg:nth-child(3) { rotate: 14deg; animation-delay: 120ms; }
+@keyframes ak-drop-fade { from { opacity: 0; } }
+@keyframes ak-drop-rise { from { transform: translateY(12px); opacity: 0; } }
+
+/* —— 文本附件预览 —— */
+/* 带上 role 选择器：对话框的默认工具类（p-6、gap-4）与这里同为一个类，打包顺序在后会盖掉这里。 */
+[role="dialog"].attachment-preview {
+  display: flex;
+  width: min(760px, calc(100vw - 2rem));
+  max-height: min(80dvh, 720px);
+  flex-direction: column;
+  gap: 0;
+  overflow: hidden;
+  padding: 0;
+}
+.attachment-preview__bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border-block-end: 1px solid var(--ak-rule-subtle);
+  padding: 12px 10px 10px 18px;
+}
+.attachment-preview__title { display: grid; min-width: 0; flex: 1; gap: 2px; }
+.attachment-preview__title h2 {
+  overflow: hidden;
+  color: var(--ak-ink-primary);
+  font-size: 0.9375rem;
+  font-weight: 600;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.attachment-preview__title p { color: var(--ak-ink-secondary); font-size: 0.75rem; font-variant-numeric: tabular-nums; }
+.attachment-preview__bar > :is(button, a) {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  flex: none;
+  place-items: center;
+  border: 0;
+  border-radius: var(--ak-radius-sm);
+  color: var(--ak-ink-secondary);
+  background: transparent;
+}
+.attachment-preview__bar > :is(button, a):focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 0; }
+@media (hover: hover) {
+  .attachment-preview__bar > :is(button, a):hover { color: var(--ak-ink-primary); background: var(--ak-paper-raised); }
+}
+.attachment-preview__columns { display: grid; gap: 6px; padding: 14px 18px 0; }
+.attachment-preview__columns ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.attachment-preview__columns li {
+  border-radius: var(--ak-radius-sm);
+  padding: 2px 8px;
+  color: var(--ak-ink-primary);
+  background: var(--ak-paper-quiet);
+  box-shadow: inset 0 0 0 1px var(--ak-rule-subtle);
+  font-family: var(--ak-type-technical);
+  font-size: 0.75rem;
+}
+.attachment-preview__columns p { color: var(--ak-ink-secondary); font-size: 0.75rem; }
+.attachment-preview__body {
+  min-height: 0;
+  flex: 1;
+  margin: 14px 18px 18px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  border-radius: var(--ak-radius-sm);
+  background: var(--ak-paper-quiet);
+  box-shadow: inset 0 0 0 1px var(--ak-rule-subtle);
+}
+.attachment-preview__body:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 2px; }
+.attachment-preview__body pre {
+  margin: 0;
+  padding: 10px 0;
+  color: var(--ak-ink-primary);
+  counter-reset: line;
+  font-family: var(--ak-type-technical);
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+.attachment-preview__body pre > span { display: block; padding-inline-end: 16px; white-space: pre; }
+.attachment-preview__body pre > span::before {
+  display: inline-block;
+  width: 3.25rem;
+  padding-inline-end: 14px;
+  color: var(--ak-ink-muted);
+  content: counter(line);
+  counter-increment: line;
+  text-align: end;
+  user-select: none;
+}
+.attachment-preview__note { margin: 0; padding: 16px; color: var(--ak-ink-secondary); font-size: 0.8125rem; }
+
+@media (prefers-reduced-motion: reduce) {
+  .ak-attachment, .ak-attachment__image { transition-duration: 1ms; }
+  .ak-attachment__skeleton, .composer-drop-scrim, .composer-drop-scrim__ring, .composer-drop-scrim__icons svg { animation: none; }
+}

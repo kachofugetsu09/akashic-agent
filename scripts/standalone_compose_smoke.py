@@ -42,7 +42,7 @@ patch = state / 'workspace/bundle.patch.toml'
 paths = ('startup.json', 'config.toml',
          'workspace/runtime/distribution-install.json',
          'workspace/runtime/plugin-stable.json')
-print(json.dumps({'uid': os.getuid(), 'source_commit': (report.get('source_parts') or {}).get('core', report['source_commit']),
+print(json.dumps({'uid': os.getuid(), 'source_commit': report['source_commit'],
                   'bundle_patch': patch.read_text() if patch.exists() else None,
                   'files': {name: hashlib.sha256((state / name).read_bytes()).hexdigest()
                             for name in paths}}))

@@ -1,6 +1,6 @@
 # 信息密度判定
 
-状态：proposed（2026-11-07 起试行）。规则落在 [frontend/design.md](../../frontend/design.md) §1.1；本文写依据、测量方法和阈值来源。
+状态：proposed（2026-11-07 起试行）。规则落在 [packages/akashic-theme/design.md](../../packages/akashic-theme/design.md) §1.1；本文写依据、测量方法和阈值来源。
 
 ## 1. 要回答的问题
 

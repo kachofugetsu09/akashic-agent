@@ -1,0 +1,363 @@
+.config-field:has(>.compaction-preset-control),
+.config-field:has(>.compaction-scope-tabs) {
+  grid-template-columns: minmax(0, 1fr) minmax(15rem, 18.5rem);
+}
+
+.compaction-preset-control {
+  grid-area: control;
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.compaction-pills {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.config-form .compaction-pill {
+  appearance: none;
+  -webkit-appearance: none;
+  min-height: 28px;
+  padding: 3px 6px;
+  border: 1px solid var(--ak-rule-default, #d9d6c9);
+  border-radius: var(--ak-radius-sm);
+  background: var(--ak-paper-editing, #faf9f5);
+  color: var(--ak-ink-secondary, #55544e);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+
+.config-form .compaction-pill:hover {
+  border-color: var(--ak-ink-secondary, #55544e);
+  color: var(--ak-ink-primary, #1f1e1b);
+}
+
+.config-form .compaction-pill[aria-pressed="true"] {
+  background: var(--ak-color-action-primary, #1b365d);
+  border-color: var(--ak-color-action-primary, #1b365d);
+  color: #ffffff;
+}
+
+.compaction-number-box {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.compaction-number-box input {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 36px;
+  padding: 6px 52px 6px 10px;
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  border: 1px solid var(--ak-rule-default, #d9d6c9);
+  border-radius: var(--ak-radius-sm);
+  background: var(--ak-paper-editing, #faf9f5);
+  color: inherit;
+}
+
+.compaction-number-unit {
+  position: absolute;
+  right: 10px;
+  font-size: 12px;
+  color: var(--ak-ink-muted, #6b6a64);
+  pointer-events: none;
+}
+
+.compaction-scope-tabs {
+  grid-area: control;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  padding: 3px;
+  border: 1px solid var(--ak-rule-default, #d9d6c9);
+  border-radius: var(--ak-radius-sm);
+  background: var(--ak-paper-editing, #faf9f5);
+  gap: 2px;
+}
+
+.config-form .compaction-scope-tab {
+  appearance: none;
+  -webkit-appearance: none;
+  min-height: 30px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: var(--ak-radius-sm);
+  background: transparent;
+  color: var(--ak-ink-secondary, #55544e);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.config-form .compaction-scope-tab[aria-pressed="true"] {
+  background: var(--ak-paper-sheet, #ffffff);
+  color: var(--ak-ink-primary, #1f1e1b);
+  font-weight: 600;
+  box-shadow: var(--ak-elevation-raised);
+}
+
+.compaction-sessions-panel {
+  display: grid;
+  gap: 10px;
+  padding: 14px 16px 16px;
+  background: color-mix(in oklab, var(--ak-paper-editing, #faf9f5) 55%, var(--ak-paper-sheet, #ffffff));
+}
+
+.compaction-sessions-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.compaction-sessions-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.compaction-sessions-title strong {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.compaction-bound-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border-radius: var(--ak-radius-full);
+  font-size: 12px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  background: color-mix(in oklab, var(--ak-color-action-primary, #1b365d) 10%, transparent);
+  color: var(--ak-color-action-primary, #1b365d);
+}
+
+.compaction-bound-count.is-empty {
+  background: color-mix(in oklab, var(--ak-ink-muted, #6b6a64) 12%, transparent);
+  color: var(--ak-ink-muted, #6b6a64);
+}
+
+.compaction-sessions-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.config-form .compaction-mini-btn {
+  min-height: 28px;
+  padding: 4px 10px;
+  border: 1px solid var(--ak-rule-default, #d9d6c9);
+  border-radius: var(--ak-radius-sm);
+  background: var(--ak-paper-sheet, #ffffff);
+  color: var(--ak-ink-secondary, #55544e);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.config-form .compaction-mini-btn:hover {
+  border-color: var(--ak-ink-secondary, #55544e);
+  color: var(--ak-ink-primary, #1f1e1b);
+}
+
+.compaction-sessions-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.compaction-search {
+  flex: 1 1 180px;
+  min-width: 0;
+  min-height: 34px;
+  padding: 6px 10px;
+  border: 1px solid var(--ak-rule-default, #d9d6c9);
+  border-radius: var(--ak-radius-sm);
+  background: var(--ak-paper-sheet, #ffffff);
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+}
+
+.compaction-sort-select {
+  flex: 0 0 auto;
+  min-height: 34px;
+  padding: 6px 10px;
+  border: 1px solid var(--ak-rule-default, #d9d6c9);
+  border-radius: var(--ak-radius-sm);
+  background: var(--ak-paper-sheet, #ffffff);
+  color: var(--ak-ink-secondary, #55544e);
+  font: inherit;
+  font-size: 12.5px;
+}
+
+.compaction-session-list {
+  display: grid;
+  max-height: 296px;
+  overflow-y: auto;
+  border: 1px solid var(--ak-rule-subtle, #e5e3d8);
+  border-radius: var(--ak-radius-md);
+  background: var(--ak-paper-sheet, #ffffff);
+}
+
+.compaction-session-empty {
+  margin: 0;
+  padding: 18px 14px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--ak-ink-muted, #6b6a64);
+}
+
+.compaction-session-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+
+.compaction-session-row + .compaction-session-row {
+  border-top: 1px solid var(--ak-rule-subtle, #e5e3d8);
+}
+
+.compaction-session-row:hover {
+  background: color-mix(in oklab, var(--ak-ink-primary, #1f1e1b) 3%, transparent);
+}
+
+.compaction-session-row.is-selected {
+  background: color-mix(in oklab, var(--ak-color-action-primary, #1b365d) 5%, var(--ak-paper-sheet, #ffffff));
+}
+
+.compaction-session-row input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--ak-color-action-primary, #1b365d);
+  cursor: pointer;
+}
+
+.compaction-session-main {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.compaction-session-line1 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.compaction-session-name {
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--ak-ink-primary, #1f1e1b);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.compaction-tag {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 500;
+  background: color-mix(in oklab, var(--ak-ink-primary, #1f1e1b) 7%, transparent);
+  color: var(--ak-ink-secondary, #55544e);
+}
+
+.compaction-tag.is-recommend {
+  background: color-mix(in oklab, var(--ak-color-status-success, #2f5d3a) 12%, transparent);
+  color: var(--ak-color-status-success, #2f5d3a);
+}
+
+.compaction-session-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--ak-ink-muted, #6b6a64);
+  font-variant-numeric: tabular-nums;
+}
+
+.compaction-meta-dot::before {
+  content: "·";
+  margin-right: 6px;
+  opacity: 0.6;
+}
+
+.compaction-state-pill {
+  font-size: 11.5px;
+  font-weight: 500;
+  padding: 2px 8px;
+  border-radius: var(--ak-radius-full);
+  color: var(--ak-ink-muted, #6b6a64);
+  background: transparent;
+  white-space: nowrap;
+}
+
+.compaction-session-row.is-selected .compaction-state-pill {
+  color: var(--ak-color-action-primary, #1b365d);
+  background: color-mix(in oklab, var(--ak-color-action-primary, #1b365d) 10%, transparent);
+}
+
+.compaction-strategy-note {
+  margin: 0;
+  padding: 10px 16px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ak-ink-secondary, #55544e);
+  background: var(--ak-paper-editing, #faf9f5);
+  font-variant-numeric: tabular-nums;
+}
+
+@container (max-width: 34rem) {
+  .config-field:has(>.compaction-preset-control),
+  .config-field:has(>.compaction-scope-tabs) {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "label" "hint" "control";
+  }
+  .compaction-preset-control,
+  .compaction-scope-tabs {
+    margin-top: 6px;
+  }
+  .compaction-session-row {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+  .compaction-state-pill {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .config-form .compaction-pill,
+  .compaction-session-row {
+    transition: none;
+  }
+}

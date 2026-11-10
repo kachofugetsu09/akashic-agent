@@ -1,0 +1,144 @@
+@import "../../../../../packages/akashic-theme/src/material-tokens.css";
+@import "../../../../../packages/akashic-theme/src/brand-tokens.css";
+@import "../../../../../packages/akashic-theme/src/paper-surface.css";
+@import "../../../../../packages/akashic-theme/src/product-band.css";
+
+@tailwind base;
+
+:root {
+  --ease-out: var(--ak-sys-motion-standard);
+  --t-fast: var(--ak-sys-duration-short);
+  --sans: var(--ak-type-reading);
+  --mono: var(--ak-type-technical);
+}
+
+/* Keep the Dashboard typography available under the Web Host's self-only CSP. */
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("./fonts/JetBrainsMono-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191,
+    U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("./fonts/JetBrainsMono-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191,
+    U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  overflow: hidden;
+  color: var(--ak-ink-primary);
+  background: var(--ak-paper-canvas);
+  font-family: var(--ak-type-reading);
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11", "ss01";
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+/* 选区染色排除内嵌聊天子树：通用 ::selection 命中聊天全部元素后，每个元素都
+   要逐元素解析一次高亮样式，大行数目录下是全文档重算里最大的冗余；聊天根内
+   由聊天自己的 scoped 选区规则接管（frontend/plugins/akashic_clients/chat/src/styles.css）。 */
+:where(:not(.akashic-chat, .akashic-chat *))::selection {
+  color: var(--ak-color-on-action-primary);
+  background: var(--ak-color-action-primary);
+}
+
+:where(button, a, input, textarea, select, [tabindex]):focus-visible {
+  outline: 1px solid var(--ak-color-action-primary);
+  outline-offset: 2px;
+}
+
+.web-host-empty,
+.web-host-entry-error {
+  margin: 32px;
+  color: var(--ak-ink-secondary);
+}
+
+.web-host-entry-error {
+  color: var(--ak-color-status-error);
+}
+
+.web-host-stale {
+  position: fixed;
+  z-index: 100;
+  inset: 12px 12px auto auto;
+  padding: 10px 14px;
+  border: 1px solid var(--ak-rule-default);
+  border-radius: var(--ak-radius-md);
+  color: var(--ak-ink-primary);
+  background: var(--ak-paper-raised);
+}
+
+@media (max-width: 760px) {
+  .web-host-stale {
+    inset: calc(8px + env(safe-area-inset-top, 0px)) 12px auto;
+    text-align: center;
+  }
+}
+
+@media (prefers-contrast: more) {
+  .web-host-stale { border-color: var(--ak-rule-strong); }
+}
+
+/* 桌面宿主统一标题带和工具区几何，插件继续拥有工具内容与生命周期。 */
+.unified-shell .conversation-page.has-tools .conversation-tools-toggle {
+  inset-block-start: 8px;
+  inset-inline-end: 16px;
+  min-block-size: 36px;
+  padding-inline: 12px;
+  border-color: var(--ak-rule-default);
+  background: var(--ak-paper-editing);
+  box-shadow: none;
+  backdrop-filter: none;
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+
+/* 触控输入下开关可点区域不小于 44px（design.md 3.5）。 */
+@media (pointer: coarse) {
+  .unified-shell .conversation-page.has-tools .conversation-tools-toggle {
+    min-block-size: 44px;
+  }
+}
+
+.unified-shell .conversation-tools {
+  box-sizing: border-box;
+  border-inline-start: 1px solid var(--ak-rule-subtle);
+  background: var(--ak-paper-quiet);
+}
+
+.unified-shell .conversation-tools-bar {
+  block-size: 52px;
+  align-items: center;
+  gap: 8px;
+  padding-inline: 12px 8px;
+}
+
+.unified-shell .conversation-tool-panel {
+  /* 工具区是“顶栏 + 1fr”网格，内容行已经扣掉顶栏，这里不再扣。 */
+  block-size: 100%;
+}

@@ -1,0 +1,438 @@
+/* 设计编辑器外壳：文档条在上，画布占满其余空间，绘制工具浮在画布底部；颜色全部取 akashic 主题变量。 */
+*,
+*::before,
+*::after { box-sizing: border-box; }
+
+html,
+body,
+#design-root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  color: var(--ak-ink-primary);
+  background: var(--ak-paper-sheet);
+  font: 13px/1.4 system-ui, -apple-system, "PingFang SC", "Noto Sans CJK SC", sans-serif;
+}
+
+.design-editor {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  outline: none;
+  color: var(--ak-ink-primary);
+  background: var(--ak-paper-sheet);
+}
+
+/* 窄屏放不下时动作按钮换到第二行，不被裁掉；文档名至少留几个字再省略。 */
+.design-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  min-height: 40px;
+  padding-block: 4px;
+  padding-inline: 12px 6px;
+  border-bottom: 1px solid var(--ak-rule-subtle);
+}
+
+.design-bar-gap { flex: 1; }
+
+.design-doc-name,
+.design-doc-select {
+  flex: 0 1 auto;
+  min-width: 5em;
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.design-doc-select {
+  max-width: 24ch;
+  padding: 4px 6px;
+  border: 1px solid var(--ak-rule-default);
+  border-radius: var(--ak-radius-sm);
+  color: inherit;
+  background: var(--ak-paper-canvas);
+}
+
+.design-status {
+  flex: none;
+  padding-inline-start: 8px;
+  color: var(--ak-ink-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.design-status.is-error { color: var(--ak-color-status-error); }
+.design-status.is-alert {
+  border: 0;
+  border-radius: var(--ak-radius-sm);
+  padding: 4px 8px;
+  color: var(--ak-color-status-warning);
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.design-status.is-alert:hover { background: var(--ak-paper-raised); }
+
+.design-icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: var(--ak-radius-sm);
+  color: var(--ak-ink-secondary);
+  background: transparent;
+  cursor: pointer;
+}
+
+.design-icon svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.design-icon:hover:not(:disabled) { color: var(--ak-ink-primary); background: var(--ak-paper-raised); }
+.design-icon:disabled { opacity: 0.4; cursor: default; }
+.design-icon[aria-pressed="true"] { color: var(--ak-paper-sheet); background: var(--ak-ink-primary); }
+
+.design-icon:focus-visible,
+.design-primary:focus-visible,
+.design-status.is-alert:focus-visible {
+  outline: 2px solid var(--ak-rule-focus);
+  outline-offset: 1px;
+}
+
+.design-error {
+  margin: 0;
+  padding: 6px 12px;
+  color: var(--ak-color-status-error);
+  font-size: 12px;
+  border-bottom: 1px solid var(--ak-rule-subtle);
+}
+
+.design-body {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.design-stage {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--ak-paper-canvas);
+}
+
+.design-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* 工具条在窄屏浮动面板之上：面板展开时仍能换工具。 */
+.design-dock {
+  position: absolute;
+  z-index: 4;
+  inset-block-end: 12px;
+  inset-inline-start: 50%;
+  display: flex;
+  gap: 2px;
+  padding: 4px;
+  border: 1px solid var(--ak-rule-default);
+  border-radius: var(--ak-radius-md);
+  background: var(--ak-paper-sheet);
+  box-shadow: var(--ak-elevation-float);
+  transform: translateX(-50%);
+}
+
+.design-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 24px;
+  text-align: center;
+  background: var(--ak-paper-sheet);
+}
+
+.design-empty p {
+  max-width: 34ch;
+  margin: 0;
+  color: var(--ak-ink-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.design-primary {
+  padding: 8px 16px;
+  border: 0;
+  border-radius: var(--ak-radius-sm);
+  color: var(--ak-paper-sheet);
+  background: var(--ak-ink-primary);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+/* 两侧面板：够宽时与画布并排，窄时浮在画布上，不把画布挤没。 */
+.design-panel {
+  flex: none;
+  width: 232px;
+  overflow-y: auto;
+  background: var(--ak-paper-sheet);
+}
+
+.design-panel-start { border-inline-end: 1px solid var(--ak-rule-subtle); }
+.design-panel-end { border-inline-start: 1px solid var(--ak-rule-subtle); }
+
+@media (max-width: 719px) {
+  .design-panel {
+    position: absolute;
+    inset-block: 0;
+    z-index: 2;
+    box-shadow: var(--ak-elevation-float);
+  }
+
+  .design-panel-start { inset-inline-start: 0; }
+  .design-panel-end { inset-inline-end: 0; }
+}
+
+.design-section { padding: 8px; }
+.design-section + .design-section { border-top: 1px solid var(--ak-rule-subtle); }
+
+.design-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 28px;
+  padding-inline: 4px;
+}
+
+.design-section-head h2 {
+  margin: 0;
+  color: var(--ak-ink-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.design-mini {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: var(--ak-radius-sm);
+  color: var(--ak-ink-secondary);
+  background: transparent;
+  cursor: pointer;
+}
+
+.design-mini svg,
+.design-layer-eye svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.design-mini:hover,
+.design-page:hover,
+.design-layer:hover { background: var(--ak-paper-raised); }
+
+.design-page {
+  display: block;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: var(--ak-radius-sm);
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.design-layer {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 28px;
+  padding-inline-end: 4px;
+  border-radius: var(--ak-radius-sm);
+  cursor: default;
+}
+
+.design-page.is-selected,
+.design-layer.is-selected { background: var(--ak-paper-editing); }
+.design-layer.is-hidden .design-layer-name { color: var(--ak-ink-muted); }
+
+.design-layer-toggle {
+  width: 16px;
+  padding: 0;
+  border: 0;
+  color: var(--ak-ink-muted);
+  background: transparent;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.design-layer-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.design-layer-eye {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: var(--ak-radius-xs);
+  color: var(--ak-ink-muted);
+  background: transparent;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.design-layer:hover .design-layer-eye,
+.design-layer.is-hidden .design-layer-eye,
+.design-layer-eye:focus-visible { opacity: 1; }
+
+.design-rename,
+.design-field input {
+  min-width: 0;
+  padding: 4px 6px;
+  border: 1px solid var(--ak-rule-default);
+  border-radius: var(--ak-radius-sm);
+  color: inherit;
+  background: var(--ak-paper-canvas);
+  font: inherit;
+}
+
+.design-rename { flex: 1; }
+.design-field input { width: 100%; }
+
+.design-kind {
+  margin: 4px 4px 8px;
+  overflow: hidden;
+  color: var(--ak-ink-secondary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.design-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  padding-inline: 4px;
+}
+
+.design-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--ak-ink-muted);
+  font-size: 12px;
+}
+
+.design-field-wide { margin: 12px 4px 0; }
+.design-field input[type="color"] { width: 100%; height: 28px; padding: 2px; }
+
+.design-muted {
+  margin: 4px;
+  color: var(--ak-ink-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* 画布与网页预览的切换：预览盖在画布上，画布保持挂载（尺寸与渲染状态不丢）。 */
+.design-views {
+  display: flex;
+  flex: none;
+  gap: 2px;
+  margin-inline-start: 8px;
+  padding: 2px;
+  border-radius: var(--ak-radius-sm);
+  background: var(--ak-paper-raised);
+}
+
+.design-view {
+  padding: 3px 10px;
+  border: 0;
+  border-radius: calc(var(--ak-radius-sm) - 2px);
+  color: var(--ak-ink-secondary);
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.design-view[aria-pressed="true"] {
+  color: var(--ak-ink-primary);
+  background: var(--ak-paper-sheet);
+  box-shadow: var(--ak-elevation-raised);
+}
+
+.design-view:focus-visible {
+  outline: 2px solid var(--ak-rule-focus);
+  outline-offset: 1px;
+}
+
+.design-import {
+  flex: none;
+  margin-inline-start: 8px;
+  padding: 3px 10px;
+  border: 1px solid var(--ak-rule-default);
+  border-radius: var(--ak-radius-sm);
+  color: var(--ak-ink-primary);
+  background: var(--ak-paper-sheet);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.design-import:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.design-preview {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  background: #fff;
+}
+
+.design-preview-frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}

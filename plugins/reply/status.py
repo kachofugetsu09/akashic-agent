@@ -1,0 +1,169 @@
+from __future__ import annotations
+
+import asyncio
+from collections.abc import AsyncGenerator, Callable, Generator
+from contextlib import AbstractContextManager, contextmanager
+from dataclasses import asdict, replace
+from time import monotonic
+
+from plugins.models.contract import ModelAttemptStatus, StreamCallback
+from agent.plugin_composition.tasks import Task
+from plugins.reply.contract import (
+    REPLY_STATUS as REPLY_STATUS,
+    ReplyActivity as ReplyActivity,
+    ReplyPreview as ReplyPreview,
+)
+
+Preview = Callable[[str], AbstractContextManager[StreamCallback]]
+
+
+class ReplyRead:
+    """只读当前回复与预览，不持有取消、写消息或执行模型的能力。"""
+
+    def __init__(self, state: ReplyState):
+        self._state = state
+
+    def snapshot(self, session_id: str) -> tuple[ReplyActivity, ...]:
+        return self._state.snapshot(session_id)
+
+    async def follow_active_sessions(self) -> AsyncGenerator[frozenset[str], None]:
+        """只跟随活动集合；草稿 token 不唤醒侧栏订阅。"""
+        previous: frozenset[str] | None = None
+        while True:
+            changed = self._state.activity_changed
+            current = self._state.active_sessions()
+            if current != previous:
+                previous = current
+                yield current
+            if self._state.closed:
+                return
+            await changed.wait()
+
+    async def follow(self, session_id: str) -> AsyncGenerator[tuple[dict[str, object], ...], None]:
+        """订阅当前快照；慢读者合并通知，重连不重放旧 token。"""
+        previous: tuple[ReplyActivity, ...] | None = None
+        while True:
+            changed = self._state.changed
+            current = self._state.snapshot(session_id)
+            if current != previous or self._state.closed:
+                previous = current
+                yield tuple(asdict(item) for item in current)
+            if self._state.closed:
+                return
+            _ = await changed.wait()
+
+
+class ReplyState:
+    """默认回复组合拥有短命 scope 与草稿；消息提交权仍属于日志 writer。"""
+
+    def __init__(self):
+        self._items: dict[str, ReplyActivity] = {}
+        self.changed = asyncio.Event()
+        self.activity_changed = asyncio.Event()
+        self.closed = False
+        self.read = ReplyRead(self)
+
+    def snapshot(self, session_id: str) -> tuple[ReplyActivity, ...]:
+        return tuple(item for item in self._items.values() if item.session_id == session_id)
+
+    def active_sessions(self) -> frozenset[str]:
+        """正在回复的会话集合；已撤权但尚在排空的活动不算运行中。"""
+        return frozenset(item.session_id for item in self._items.values() if item.active)
+
+    def close(self) -> None:
+        """卸载只能在真实工作排空后结束只读订阅，不抹去仍运行的状态。"""
+        if self._items:
+            raise RuntimeError("回复尚未排空，不能关闭状态读取")
+        self.closed = True
+        self._notify(activity=True)
+
+    def _notify(self, *, activity: bool = False) -> None:
+        changed = self.changed
+        self.changed = asyncio.Event()
+        changed.set()
+        if activity:
+            changed = self.activity_changed
+            self.activity_changed = asyncio.Event()
+            changed.set()
+
+    @contextmanager
+    def open(self, task: Task, session_id: str, source: str) -> Generator[Preview]:
+        """从程序开始到真实排空保存活动；撤权同步撤掉草稿。"""
+        if self.closed:
+            raise RuntimeError("回复状态已关闭")
+        if task.handle in self._items:
+            raise RuntimeError("回复 scope 已登记")
+        self._items[task.handle] = ReplyActivity(session_id, source, task.handle, True)
+
+        def revoked() -> None:
+            item = self._items.get(task.handle)
+            if item is not None:
+                self._items[task.handle] = replace(item, active=False, preview=None)
+                self._notify(activity=True)
+
+        task.on_close(revoked)
+        self._notify(activity=True)
+
+        @contextmanager
+        def preview(message_id: str) -> Generator[StreamCallback]:
+            if not task.active:
+                raise asyncio.CancelledError
+            item = self._items[task.handle]
+            if item.preview is not None:
+                raise RuntimeError("同一回复 scope 不能同时生成两条草稿")
+            self._items[task.handle] = replace(item, preview=ReplyPreview(message_id))
+            self._notify()
+
+            # 本次物理尝试首段增量的单调时钟；重试清空草稿时一起作废。
+            decode_started: float | None = None
+
+            async def delta(value: dict[str, str]) -> None:
+                nonlocal decode_started
+                if not task.active:
+                    raise asyncio.CancelledError
+                current = self._items[task.handle]
+                draft = current.preview
+                if draft is None or draft.message_id != message_id:
+                    raise RuntimeError("预览回调已离开原消息 scope")
+                call_id = value.get("call_record_id", draft.call_record_id)
+                # 新物理尝试撤下旧的瞬态草稿，不能把两次生成拼成一条回复。
+                if (value.get("retry_status")
+                        or (draft.call_record_id is not None and call_id != draft.call_record_id)):
+                    draft = replace(draft, text="", thinking="", first_token_ms=None, output_deltas=0, decode_ms=None)
+                    decode_started = None
+                attempt = draft.attempt
+                if "attempt_status" in value:
+                    attempt = ModelAttemptStatus.decode(value["attempt_status"])
+                first_token_ms = draft.first_token_ms
+                if "first_token_ms" in value:
+                    first_token_ms = float(value["first_token_ms"])
+                # 每个非空增量是一条真实到达的流片段；生成中用它估算速度，结算后由 usage 取代。
+                streamed = bool(value.get("content_delta") or value.get("thinking_delta"))
+                if streamed and decode_started is None:
+                    decode_started = monotonic()
+                output_deltas = draft.output_deltas + (1 if streamed else 0)
+                decode_ms = None if decode_started is None else (monotonic() - decode_started) * 1000
+                self._items[task.handle] = replace(current, preview=replace(
+                    draft, text=draft.text + value.get("content_delta", ""),
+                    thinking=draft.thinking + value.get("thinking_delta", ""),
+                    call_record_id=call_id,
+                    retry_status=value.get("retry_status", draft.retry_status),
+                    attempt=attempt,
+                    first_token_ms=first_token_ms,
+                    output_deltas=output_deltas,
+                    decode_ms=decode_ms,
+                ))
+                self._notify()
+
+            try:
+                yield delta
+            finally:
+                # cancel 已同步撤掉草稿；排空中的 provider 不能重新发布它。
+                self._items[task.handle] = replace(self._items[task.handle], preview=None)
+                self._notify()
+
+        try:
+            yield preview
+        finally:
+            del self._items[task.handle]
+            self._notify(activity=True)

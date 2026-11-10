@@ -130,57 +130,19 @@ python3 scripts/akashic_release/cli.py install \
   --source-checkout /path/to/target-checkout --commit <40位SHA> --yes
 ```
 
-`--commit` 始终是 Core 提交。Core 带 `plugins.lock` 时，发布器与锁定的
-[akashic-plugins](https://github.com/kachofugetsu09/akashic-plugins) 提交合成确定性的源提交
-（[0148](../decisions/0148-plugins-live-in-their-own-repository.md)）；`runtime-sources/`、`releases/`、`bridge-venvs/`
-的目录名和 `active.json` 的 `targetCommit` 都是合成提交，安装结果里的 `coreCommit`、`pluginsCommit` 记录来源。
-用 `git show -s <合成提交>` 也能读出两个来源。只改插件时，先把插件仓库提交锁进 Core，再部署这个 Core 提交。
-
-### 只改内置插件：热更新
-
-发布器先和当前生效的发行版比较。Core（`core.tar` 成员内容与依赖记录）、依赖锁、镜像入口、preset 行、插件集合、
-发布工具（宿主 `akashic-release` 从完整发布的 runtime 检出运行）都不变，变化插件不是 `host_execution`、依赖与迁移目录文件不变时，
-走热更新（没有插件变化时零换代，只换发行版身份）：
-
-1. 在宿主构建目标发行版，沿用当前 wheels，在当前镜像里跑 `scripts/distribution_compat_gate.py`
-   （资产完整、CSS 变量闭包、SDK 导出闭包）。不通过时拒绝发布，不会退回完整发布，因为完整发布也会带上同样的问题。
-2. 放进 `<release-root>/plugin-store`，通过本机控制端点调用 `plugin/adopt-distribution`。实例在宿主任务里换代并立即返回
-   `accepted`，发布器用同一请求轮询终态（换代 Gateway 时连接会断开，期限内重连）。实例只换代内容变化的插件；
-   新版本启动失败时换回原发行版并重新挂上原输入（`rolled_back`），恢复不了时报告 `rollback_failed`。
-   这两种情况以及变化插件的公共合同（`contract.py`）变化，发布器都改走完整发布。
-3. 成功后 `runtime.env` 的 `AKASHIC_PLUGIN_DISTRIBUTION` 指向新发行版，`active.json` 记录 `distributionCommit` 与 `hotUpdate`；
-   镜像、`targetCommit`、Bridge 都不变，重启后选择原样复用。
-
-`--full` 跳过热更新；`--hot-only` 只尝试热更新，不满足条件时不做任何改动（自部署先用它）。
-
-### 只换一个插件：覆盖
-
-插件仓库 `main` 上已有某个插件的新提交，但 Core 的 `plugins.lock` 还没跟上时，可以只把这个插件换上去：
-
-```bash
-akashic-release submit --plugin scheduler@<插件仓库 main 上的完整SHA>   # 自部署；默认沿用当前 Core
-python3 scripts/akashic_release/cli.py install ... --commit <Core SHA> --plugin scheduler@<SHA>
-akashic-release submit --reset-plugin scheduler                         # 回到 plugins.lock 的版本
-```
-
-覆盖写进合成提交和发行版 `source_parts.overrides`，之后的部署和重启沿用；锁定提交包含覆盖提交时自动退役，
-安装结果的 `pluginOverrides` 是仍生效的覆盖，`retiredOverrides` 是这次退役的覆盖。设计与限制见
-[0148](../decisions/0148-plugins-live-in-their-own-repository.md)。
-
-热更新与完整发布之后都在宿主跑界面探针（插件仓库 `scripts/ui_regression_probe.mjs`，等插件重载结束再跑），
-`--baseline` 指向上一次通过的输出目录：
-
-```bash
-node scripts/ui_regression_probe.mjs --url http://127.0.0.1:<port> \
-  --token-file <workspace>/web-auth/secret --out <dir> --baseline <上次通过的 dir> --send
-```
-
-热更新后探针失败时运行 `akashic-release revert-hot`：实例换回 `active.json` 里 `hotUpdate.from` 的发行版，
-`runtime.env` 跟着恢复。完整发布后探针失败，按原流程回滚到上一个 release。
-制品库只由发布器写入，容器只读挂载；`sources/<name>/<content_commit>` 按内容寻址，所以内容未变的插件跨发行版代码路径相同。
-
 必须使用目标版本脚本。已安装的 `akashic-release` 从当前 `runtime.env` 加载当前版本发布器；
 从旧版首次切到此实现时，使用上面的 bootstrap 或目标 checkout，旧 CLI 不认识新选项。
+
+### 本实例相对 preset 改了什么
+
+```sh
+akashic-release preset-diff
+```
+
+只读，列出 workspace `bundle.patch.toml` 相对正在运行的 preset：`changed` 是覆盖了 preset 的字段，
+`added` 是 preset 没有的 row（外置插件或可选插件），`same` 是和 preset 相同、可以删掉的 row，
+`notShipped` 是指向本发行版已不带插件的 row。用户 patch 按字段覆盖 preset，没写的启停和配置跟随 preset
+（ADR-0109）；在设置里把插件切回 preset 的启停时，这一行会被删除。
 
 ## 更新指定外置插件
 

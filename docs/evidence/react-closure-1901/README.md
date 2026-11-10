@@ -2,7 +2,7 @@
 
 Base: `7ae9b99178ba68921e5ec3229fec70c94df221e2`.
 
-The screenshots use a production Vite build of `frontend/chat`, Chromium,
+The screenshots use a production Vite build of `frontend/plugins/akashic_clients/chat`, Chromium,
 real WebChat HTTP/WebSocket routes, installed reply and compaction plugins,
 and an isolated SQLite workspace. The external model is a deterministic
 10,000-token peer. A local ingress adapter connects WebChat to the real

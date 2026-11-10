@@ -1,0 +1,9 @@
+{
+  "name": "@akashic/plugin-kit",
+  "version": "1.0.0",
+  "private": true,
+  "description": "插件前端共用的配置表单、连接表单与元数据存储；构建时打包进各插件的 web_module",
+  "akashic": {
+    "kind": "library"
+  }
+}

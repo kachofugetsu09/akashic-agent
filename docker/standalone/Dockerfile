@@ -4,9 +4,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends git ca-certific
 ARG AKASHIC_REVISION
 WORKDIR /source
 RUN git init && git remote add origin https://github.com/kachofugetsu09/akashic-agent.git \
-    && git fetch --depth=1 origin "${AKASHIC_REVISION}" && git checkout --detach FETCH_HEAD \
-    && if [ -f scripts/compose_source.py ]; then \
-         git checkout --quiet --detach "$(python3 scripts/compose_source.py --repository . --commit HEAD)"; fi
+    && git fetch --depth=1 origin "${AKASHIC_REVISION}" && git checkout --detach FETCH_HEAD
 
 FROM python:3.12-slim-bookworm AS build
 COPY --from=node /usr/local /usr/local

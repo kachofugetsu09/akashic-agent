@@ -1,0 +1,836 @@
+"""Compute causal dense, BM25, time, and context evidence."""
+
+from __future__ import annotations
+
+import bisect
+import math
+from array import array
+from collections import defaultdict
+from collections.abc import Callable
+from dataclasses import dataclass, field
+
+import numpy as np
+from threadpoolctl import threadpool_limits
+
+from .model import ContextState, SeedEvidence, Turn
+
+# BLAS 的规约次序随线程数变化：同一份日志在不同核数的机器上会学出不同的图。
+# 进程内固定单线程，在线学习、查询与任何机器上的重建才是同一个函数（ADR 0138）。
+# 不用临时限制再恢复：查询与多张图的学习在不同线程并发，恢复会改掉别人正在用的线程数。
+_ = threadpool_limits(limits=1, user_api="blas")
+
+
+@dataclass
+class _ScoreMemo:
+    end: int = -1
+    entries: dict[tuple[object, ...], tuple[np.ndarray, np.ndarray]] = field(default_factory=dict)
+
+
+class FeaturePool:
+    """Serve causal evidence from contiguous dense and inverted lexical arrays."""
+
+    def __init__(
+        self,
+        turns: list[Turn],
+        *,
+        appendable: bool = False,
+    ) -> None:
+        if not turns:
+            raise ValueError("memory rebuild requires at least one turn")
+        self.turns = list(turns)
+        self._query_turn: Turn | None = None
+        self._appendable = appendable
+        # 查询视图浅拷贝 __dict__，共享同一个记忆表。
+        self._score_memo = _ScoreMemo()
+        self._size = len(turns)
+        self._capacity = _next_capacity(self._size) if appendable else self._size
+        dimension = _dense_dimension(turns)
+        user_dense, user_mask = _dense_matrix(
+            turns,
+            "user_dense",
+            dimension,
+            self._capacity,
+        )
+        assistant_dense, assistant_mask = _dense_matrix(
+            turns,
+            "assistant_dense",
+            dimension,
+            self._capacity,
+        )
+        self.user_dense = _reserve_rows(user_dense, self._capacity)
+        self.user_mask = _reserve_values(user_mask, self._capacity)
+        self.assistant_dense = _reserve_rows(
+            assistant_dense,
+            self._capacity,
+        )
+        self.assistant_mask = _reserve_values(
+            assistant_mask,
+            self._capacity,
+        )
+        lengths = np.asarray(
+            [_term_total(turn) for turn in turns],
+            dtype=np.float64,
+        )
+        self.lengths = _reserve_values(lengths, self._capacity)
+        prefix_lengths = np.concatenate(
+            (np.zeros(1, dtype=np.float64), np.cumsum(lengths))
+        )
+        self.prefix_lengths = _reserve_values(
+            prefix_lengths,
+            self._capacity + 1,
+        )
+        gaps = np.asarray(
+            [
+                math.nan if turn.inter_gap_seconds is None else turn.inter_gap_seconds
+                for turn in turns
+            ],
+            dtype=np.float64,
+        )
+        self.gaps = _reserve_values(
+            gaps,
+            self._capacity,
+            fill=math.nan,
+        )
+        self.term_order, self.postings = _build_postings(turns)
+
+    def query_surprise(
+        self,
+        query: Turn,
+        end: int,
+        dense_scores: np.ndarray,
+        bm25_scores: np.ndarray,
+    ) -> float:
+        """Measure residual novelty after reconstructing the cue from memory."""
+
+        # 1. Normalize dense prediction by its natural cosine upper bound.
+        residuals: list[float] = []
+        if query.user_dense is not None and np.any(self.user_mask[:end]):
+            dense_prediction = min(
+                1.0,
+                max(0.0, float(np.max(dense_scores))),
+            )
+            residuals.append(1.0 - dense_prediction)
+
+        # 2. Normalize lexical prediction by the query's causal self-score.
+        query_terms = _normalize_pairs(query.user_terms)
+        if query_terms:
+            self_score = self.bm25_document_score(query_terms, query_terms, end)
+            if self_score > 0.0:
+                lexical_prediction = min(
+                    1.0,
+                    max(0.0, float(np.max(bm25_scores)) / self_score),
+                )
+                residuals.append(1.0 - lexical_prediction)
+        if not residuals:
+            return 1.0
+
+        # 3. Root-mean-square residual preserves novelty seen by either channel.
+        return math.sqrt(
+            math.fsum(value * value for value in residuals) / len(residuals)
+        )
+
+    # 历史矩阵与倒排只追加，(end, cue) 的分数及其尾部惊奇度是纯函数。
+    # 同一状态版本上的查询与随后的学习检索常是同一条用户输入，直接共用；返回只读数组。
+    def dense_surprisal(self, cue: np.ndarray | None, end: int) -> tuple[np.ndarray, np.ndarray]:
+        key = ("dense", None if cue is None else (cue.dtype.str, cue.shape, cue.tobytes()))
+        return self._remember(key, end, lambda: self.dense_scores(cue, end))
+
+    def bm25_surprisal(self, query_terms: dict[str, float], end: int) -> tuple[np.ndarray, np.ndarray]:
+        key = ("bm25", tuple(sorted(query_terms.items())))
+        return self._remember(key, end, lambda: self.bm25_scores(query_terms, end))
+
+    def _remember(
+        self,
+        key: tuple[object, ...],
+        end: int,
+        score: Callable[[], np.ndarray],
+    ) -> tuple[np.ndarray, np.ndarray]:
+        memo = self._score_memo
+        if memo.end != end:
+            memo.end = end
+            memo.entries.clear()
+        found = memo.entries.get(key)
+        if found is None:
+            scores = score()
+            surprisal = _tail_surprisal(scores)
+            scores.flags.writeable = False
+            surprisal.flags.writeable = False
+            found = (scores, surprisal)
+            memo.entries[key] = found
+        return found
+
+    def dense_scores(self, cue: np.ndarray | None, end: int) -> np.ndarray:
+        if cue is None or end == 0:
+            return np.zeros(end, dtype=np.float64)
+        user = _dense_product(self.user_dense[:end], cue)
+        assistant = _dense_product(self.assistant_dense[:end], cue)
+        user = np.where(self.user_mask[:end], user, -1.0)
+        assistant = np.where(self.assistant_mask[:end], assistant, -1.0)
+        available = self.user_mask[:end] | self.assistant_mask[:end]
+        scores = np.maximum(user, assistant)
+        return np.where(available, scores, 0.0).astype(np.float64, copy=False)
+
+    def bm25_scores(
+        self,
+        query_terms: dict[str, float],
+        end: int,
+    ) -> np.ndarray:
+        """Score shared postings with vectorized exact BM25."""
+
+        scores = np.zeros(end, dtype=np.float64)
+        if not query_terms or end == 0:
+            return scores
+        average_length = self.prefix_lengths[end] / end
+        ordered_terms = sorted(
+            query_terms,
+            key=lambda term: self.term_order.get(term, math.inf),
+        )
+        for term in ordered_terms:
+            posting = self.postings.get(term)
+            if posting is None:
+                continue
+            positions, frequencies = posting
+            stop = bisect.bisect_left(positions, end)
+            if stop == 0:
+                continue
+            selected = np.frombuffer(positions, dtype=np.int32, count=stop)
+            tf = np.frombuffer(frequencies, dtype=np.float64, count=stop)
+            idf = math.log1p((end - stop + 0.5) / (stop + 0.5))
+            saturation = (
+                tf
+                * 2.2
+                / (tf + 1.2 * (0.25 + 0.75 * self.lengths[selected] / average_length))
+            )
+            scores[selected] += query_terms[term] * idf * saturation
+        return scores
+
+    def time_prior(self, gap: float | None, end: int) -> float:
+        if gap is None or end <= 1:
+            return 0.5
+        observed = self.gaps[1:end]
+        observed = observed[np.isfinite(observed)]
+        return (float(np.count_nonzero(observed >= gap)) + 0.5) / (observed.size + 1.0)
+
+    def continuation_belief(
+        self,
+        query: Turn,
+        context: ContextState,
+        end: int,
+        time_prior: float,
+        query_dense: np.ndarray,
+        query_bm25: np.ndarray,
+    ) -> float:
+        log_evidence = 0.0
+        if query.user_dense is not None and context.dense is not None:
+            observed = float(np.dot(query.user_dense, context.dense))
+            log_evidence += _log_evidence(observed, query_dense)
+        query_terms = _normalize_pairs(query.user_terms)
+        context_terms = dict(context.terms)
+        if query_terms and context_terms:
+            observed = self.bm25_document_score(query_terms, context_terms, end)
+            log_evidence += _log_evidence(observed, query_bm25)
+        odds = math.log(time_prior / (1.0 - time_prior)) + log_evidence
+        return _sigmoid(odds)
+
+    def bm25_document_score(
+        self,
+        query_terms: dict[str, float],
+        document_terms: dict[str, float],
+        end: int,
+    ) -> float:
+        average_length = self.prefix_lengths[end] / end
+        length = math.fsum(document_terms.values())
+        parts: list[float] = []
+        common = sorted(
+            query_terms.keys() & document_terms.keys(),
+            key=lambda term: self.term_order.get(term, math.inf),
+        )
+        for term in common:
+            posting = self.postings.get(term)
+            if posting is None:
+                continue
+            df = bisect.bisect_left(posting[0], end)
+            if df == 0:
+                continue
+            tf = document_terms[term]
+            idf = math.log1p((end - df + 0.5) / (df + 0.5))
+            saturation = tf * 2.2 / (tf + 1.2 * (0.25 + 0.75 * length / average_length))
+            parts.append(query_terms[term] * idf * saturation)
+        return math.fsum(parts)
+
+    def build_context(
+        self,
+        members: tuple[tuple[int, float], ...],
+    ) -> ContextState:
+        """Build a compact completed event context in stable node order."""
+
+        normalized = _normalize_pairs_by_id(members)
+        dense = np.zeros(self.user_dense.shape[1], dtype=np.float64)
+        has_dense = False
+        lexical: dict[str, float] = defaultdict(float)
+        for node_id, weight in normalized:
+            turn = self.turns[node_id]
+            vectors = [vector for vector in (turn.user_dense, turn.assistant_dense)
+                       if vector is not None]
+            if vectors:
+                # 保持原 float32 合成、归一化与存入矩阵时的舍入顺序。
+                combined = sum(vectors, start=np.zeros(dense.size, dtype=np.float32))
+                row = _unit(combined).astype(np.float32, copy=False)
+                dense += weight * row
+                has_dense = True
+            for term, value in _normalized_turn_terms(turn):
+                lexical[term] += weight * value
+        terms = tuple(sorted(lexical.items(), key=lambda item: item[0].encode("utf-8")))
+        return ContextState(normalized, _unit(dense) if has_dense else None, terms)
+
+
+@dataclass(frozen=True)
+class BurstDecision:
+    """Describe one causal boundary decision and its retrieval evidence."""
+
+    evidence: SeedEvidence
+    fields: dict[str, np.ndarray]
+    base_continuation: float
+    context_dependence: float
+    context_mass: float
+    continued: bool
+    visible_nodes: tuple[int, ...]
+    context: ContextState
+
+
+class BurstAwareFeaturePool(FeaturePool):
+    """Infer query evidence against one stream-local active burst."""
+
+    def __init__(
+        self,
+        turns: list[Turn],
+        *,
+        appendable: bool = False,
+    ) -> None:
+        super().__init__(turns, appendable=appendable)
+        if appendable:
+            self._bind_dense_rows(0)
+        dependence = _causal_context_dependence(turns)
+        self.context_dependence = _reserve_values(
+            dependence,
+            self._capacity,
+        )
+        self._ordered_supports = sorted(
+            _term_effective_support(turn.user_terms) for turn in turns
+        )
+
+    def query_view(self, turn: Turn) -> BurstAwareFeaturePool:
+        """Expose one ephemeral cue while sharing immutable history arrays."""
+
+        # 1. Share every strictly historical feature structure.
+        view = object.__new__(BurstAwareFeaturePool)
+        view.__dict__ = self.__dict__.copy()
+        view._query_turn = turn
+        view._appendable = False
+
+        # 2. Materialize only the cue's causal dependence scalar.
+        view._query_context_dependence = self._next_context_dependence(turn)
+        return view
+
+    def append_turn(self, turn: Turn) -> None:
+        """Append one committed turn without rebuilding historical features."""
+
+        if not self._appendable:
+            raise RuntimeError("feature pool is not appendable")
+        if turn.node_id != self._size:
+            raise ValueError("feature pool turn must append at its node ID")
+
+        # 1. Grow dense and causal arrays before exposing the new row.
+        self._ensure_capacity()
+        node_id = self._size
+        self._write_dense_row(node_id, turn)
+        length = float(_term_total(turn))
+        self.lengths[node_id] = length
+        self.prefix_lengths[node_id + 1] = self.prefix_lengths[node_id] + length
+        self.gaps[node_id] = (
+            math.nan if turn.inter_gap_seconds is None else turn.inter_gap_seconds
+        )
+
+        # 2. Extend only postings touched by this turn in stable term order.
+        for term, tf in _combined_terms(turn):
+            if term not in self.term_order:
+                self.term_order[term] = len(self.term_order)
+            posting = self.postings.get(term)
+            if posting is None:
+                posting = (array("i"), array("d"))
+                self.postings[term] = posting
+            posting[0].append(node_id)
+            posting[1].append(float(tf))
+
+        # 3. Commit the same order statistic used by full construction.
+        support = _term_effective_support(turn.user_terms)
+        self.context_dependence[node_id] = self._next_context_dependence(turn)
+        bisect.insort_right(self._ordered_supports, support)
+        self.turns.append(turn)
+        self._size += 1
+
+    def _next_context_dependence(self, turn: Turn) -> float:
+        support = _term_effective_support(turn.user_terms)
+        if not self._ordered_supports or support <= 0.0:
+            return 0.5
+        position = bisect.bisect_left(self._ordered_supports, support)
+        return (len(self._ordered_supports) - position + 0.5) / (
+            len(self._ordered_supports) + 1.0
+        )
+
+    def _ensure_capacity(self) -> None:
+        if self._size < self._capacity:
+            return
+        capacity = _next_capacity(self._size)
+        self.user_dense = _reserve_rows(self.user_dense, capacity)
+        self.user_mask = _reserve_values(self.user_mask, capacity)
+        self.assistant_dense = _reserve_rows(
+            self.assistant_dense,
+            capacity,
+        )
+        self.assistant_mask = _reserve_values(
+            self.assistant_mask,
+            capacity,
+        )
+        self.lengths = _reserve_values(self.lengths, capacity)
+        self.prefix_lengths = _reserve_values(
+            self.prefix_lengths,
+            capacity + 1,
+        )
+        self.gaps = _reserve_values(
+            self.gaps,
+            capacity,
+            fill=math.nan,
+        )
+        self.context_dependence = _reserve_values(
+            self.context_dependence,
+            capacity,
+        )
+        self._capacity = capacity
+        self._bind_dense_rows(0)
+
+    def _write_dense_row(self, node_id: int, turn: Turn) -> None:
+        vectors = [
+            vector
+            for vector in (turn.user_dense, turn.assistant_dense)
+            if vector is not None
+        ]
+        dimension = self.user_dense.shape[1]
+        if dimension == 0 and vectors:
+            dimension = vectors[0].shape[0]
+            self.user_dense = np.zeros(
+                (self._capacity, dimension),
+                dtype=np.float32,
+            )
+            self.assistant_dense = np.zeros(
+                (self._capacity, dimension),
+                dtype=np.float32,
+            )
+        for vector, matrix, mask in (
+            (turn.user_dense, self.user_dense, self.user_mask),
+            (
+                turn.assistant_dense,
+                self.assistant_dense,
+                self.assistant_mask,
+            ),
+        ):
+            if vector is not None:
+                if vector.shape != (dimension,):
+                    raise ValueError("dense vectors must share one dimension")
+                matrix[node_id] = vector
+                mask[node_id] = True
+        _bind_turn_rows(turn, self.user_dense[node_id], self.assistant_dense[node_id])
+
+    # 常驻可追加池以矩阵为向量唯一存储：Turn 改指矩阵行视图，原独立数组随即释放。
+    # 矩阵行只在追加时写一次，视图与原数组逐位相同；扩容后重绑，旧矩阵随之释放。
+    def _bind_dense_rows(self, start: int) -> None:
+        for node_id in range(start, len(self.turns)):
+            _bind_turn_rows(self.turns[node_id], self.user_dense[node_id], self.assistant_dense[node_id])
+
+    def infer_burst_seed(
+        self,
+        index: int,
+        candidate_context: ContextState,
+        visible_nodes: tuple[int, ...],
+        capture_channels: bool,
+    ) -> BurstDecision:
+        """Infer a causal burst boundary and mix cue with active context."""
+
+        # 1. Score the current cue and the complete visible burst separately.
+        query = self._turn_at(index)
+        query_terms = _normalize_pairs(query.user_terms)
+        query_dense, query_dense_field = self.dense_surprisal(query.user_dense, index)
+        query_bm25, query_bm25_field = self.bm25_surprisal(query_terms, index)
+        context_dense_field = self.dense_surprisal(candidate_context.dense, index)[1]
+        context_bm25_field = self.bm25_surprisal(dict(candidate_context.terms), index)[1]
+        fields = {
+            "query_dense": query_dense_field,
+            "query_bm25": query_bm25_field,
+            "context_dense": context_dense_field,
+            "context_bm25": context_bm25_field,
+        }
+
+        # 2. Rescue underspecified cues only when temporal evidence agrees.
+        time_prior = self.time_prior(query.inter_gap_seconds, index)
+        base = self.continuation_belief(
+            query,
+            candidate_context,
+            index,
+            time_prior,
+            query_dense,
+            query_bm25,
+        )
+        dependence = self._context_dependence_at(index)
+        continuation = _burst_continuation(
+            base,
+            time_prior,
+            dependence,
+        )
+        continued = bool(visible_nodes) and continuation >= 0.5
+        active_context = candidate_context if continued else ContextState((), None, ())
+
+        # 3. Fuse normalized cue and context sources without fixed weights.
+        context_mass = _combine_odds(continuation, dependence) if continued else 0.0
+        seed = _mix_sources(fields, context_mass)
+        seed_nodes = None if capture_channels else tuple(node for node, _ in seed)
+        return BurstDecision(
+            evidence=SeedEvidence(
+                seed=seed,
+                channels=_channel_support(fields, seed_nodes),
+                time_prior=time_prior,
+                continuation=continuation,
+                surprise=self.query_surprise(
+                    query,
+                    index,
+                    query_dense,
+                    query_bm25,
+                ),
+            ),
+            fields=fields,
+            base_continuation=base,
+            context_dependence=dependence,
+            context_mass=context_mass,
+            continued=continued,
+            visible_nodes=visible_nodes if continued else (),
+            context=active_context,
+        )
+
+    def _turn_at(self, index: int) -> Turn:
+        if index < len(self.turns):
+            return self.turns[index]
+        if index == len(self.turns) and self._query_turn is not None:
+            return self._query_turn
+        raise IndexError(index)
+
+    def _context_dependence_at(self, index: int) -> float:
+        if index < self._size:
+            return float(self.context_dependence[index])
+        if index == self._size and self._query_turn is not None:
+            return self._query_context_dependence
+        raise IndexError(index)
+
+
+def effective_support(values: np.ndarray) -> float:
+    positive = values[values > 0.0]
+    if positive.size == 0:
+        return 0.0
+    normalized = positive / math.fsum(float(value) for value in positive)
+    entropy = -math.fsum(
+        float(value) * math.log(float(value)) for value in normalized
+    )
+    return math.exp(entropy)
+
+
+def binary_entropy(probability: float) -> float:
+    """Return normalized uncertainty over continue versus new-burst."""
+
+    if probability <= 0.0 or probability >= 1.0:
+        return 0.0
+    return -(
+        probability * math.log(probability)
+        + (1.0 - probability) * math.log(1.0 - probability)
+    ) / math.log(2.0)
+
+
+def _burst_continuation(
+    base: float,
+    time_prior: float,
+    context_dependence: float,
+) -> float:
+    rescue = time_prior * context_dependence
+    return base + (1.0 - base) * rescue
+
+
+def _combine_odds(first: float, second: float) -> float:
+    epsilon = np.finfo(np.float64).eps
+    first = min(1.0 - epsilon, max(epsilon, first))
+    second = min(1.0 - epsilon, max(epsilon, second))
+    log_odds = (
+        math.log(first / (1.0 - first))
+        + math.log(second / (1.0 - second))
+    )
+    if log_odds >= 0.0:
+        return 1.0 / (1.0 + math.exp(-log_odds))
+    exponent = math.exp(log_odds)
+    return exponent / (1.0 + exponent)
+
+
+def _mix_sources(
+    evidence: dict[str, np.ndarray],
+    context_mass: float,
+) -> tuple[tuple[int, float], ...]:
+    direct = _sparsemax(
+        evidence["query_dense"] + evidence["query_bm25"]
+    )
+    context = _sparsemax(
+        evidence["context_dense"] + evidence["context_bm25"]
+    )
+    if not direct:
+        return context
+    if not context:
+        return direct
+    mixed: dict[int, float] = defaultdict(float)
+    for node, value in direct:
+        mixed[node] += (1.0 - context_mass) * value
+    for node, value in context:
+        mixed[node] += context_mass * value
+    return (
+        _normalize_pairs_by_id(tuple(mixed.items()))
+        if mixed
+        else ()
+    )
+
+
+def _causal_context_dependence(turns: list[Turn]) -> np.ndarray:
+    supports = np.asarray(
+        [_term_effective_support(turn.user_terms) for turn in turns],
+        dtype=np.float64,
+    )
+    result = np.full(len(turns), 0.5, dtype=np.float64)
+    ordered: list[float] = []
+    for index, value in enumerate(supports):
+        if ordered and value > 0.0:
+            position = bisect.bisect_left(ordered, value)
+            result[index] = (len(ordered) - position + 0.5) / (
+                len(ordered) + 1.0
+            )
+        bisect.insort_right(ordered, value)
+    return result
+
+
+def _term_effective_support(
+    terms: tuple[tuple[str, int], ...],
+) -> float:
+    normalized = _normalize_pairs(terms)
+    if not normalized:
+        return 0.0
+    entropy = -math.fsum(
+        probability * math.log(probability)
+        for probability in normalized.values()
+    )
+    return math.exp(entropy)
+
+
+def _build_postings(
+    turns: list[Turn],
+) -> tuple[dict[str, int], dict[str, tuple[array, array]]]:
+    """用可追加的数值缓冲区建立倒排表，不保留逐词 NumPy 对象或临时列表。"""
+    postings: dict[str, tuple[array, array]] = {}
+    term_order: dict[str, int] = {}
+    for node_id, turn in enumerate(turns):
+        for term, tf in _combined_terms(turn):
+            posting = postings.get(term)
+            if posting is None:
+                term_order[term] = len(term_order)
+                posting = (array("i"), array("d"))
+                postings[term] = posting
+            posting[0].append(node_id)
+            posting[1].append(float(tf))
+    return term_order, postings
+
+
+def _bind_turn_rows(turn: Turn, user: np.ndarray, assistant: np.ndarray) -> None:
+    # Turn 冻结只约束语义值；换成数值相同的共享视图不改变任何读者看到的向量。
+    if turn.user_dense is not None:
+        object.__setattr__(turn, "user_dense", user)
+    if turn.assistant_dense is not None:
+        object.__setattr__(turn, "assistant_dense", assistant)
+
+
+def _next_capacity(size: int) -> int:
+    return (size // 256 + 1) * 256
+
+
+def _dense_product(matrix: np.ndarray, cue: np.ndarray) -> np.ndarray:
+    """限制混合精度乘法的临时转换量，不改向量或计算精度。"""
+    if matrix.dtype == cue.dtype or len(matrix) <= 256:
+        return matrix @ cue
+    # NumPy 会为 float32 矩阵与 float64 语境分配整份 float64 副本。
+    result = np.empty(len(matrix), dtype=np.result_type(matrix, cue))
+    start = 0
+    while start < len(matrix):
+        # 64 行的 float64 临时块留在 L2 内；逐行规约与原 256 行分块逐位相同（多种形状实测）。
+        stop = min(start + 64, len(matrix))
+        # 合并很短的尾块，避免 BLAS 对单行走不同的 dot 规约路径。
+        if len(matrix) - stop < 8:
+            stop = len(matrix)
+        result[start:stop] = matrix[start:stop] @ cue
+        start = stop
+    return result
+
+
+def _reserve_rows(matrix: np.ndarray, capacity: int) -> np.ndarray:
+    if matrix.shape[0] == capacity:
+        return matrix
+    reserved = np.zeros(
+        (capacity, matrix.shape[1]),
+        dtype=matrix.dtype,
+    )
+    reserved[: matrix.shape[0]] = matrix
+    return reserved
+
+
+def _reserve_values(
+    values: np.ndarray,
+    capacity: int,
+    *,
+    fill: float = 0.0,
+) -> np.ndarray:
+    if values.shape[0] == capacity:
+        return values
+    reserved = np.full(capacity, fill, dtype=values.dtype)
+    reserved[: values.shape[0]] = values
+    return reserved
+
+
+def _dense_matrix(
+    turns: list[Turn],
+    attribute: str,
+    dimension: int,
+    capacity: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    matrix = np.zeros((capacity, dimension), dtype=np.float32)
+    mask = np.zeros(capacity, dtype=bool)
+    for node_id, turn in enumerate(turns):
+        vector = getattr(turn, attribute)
+        if vector is not None:
+            matrix[node_id] = vector
+            mask[node_id] = True
+    return matrix, mask
+
+
+def _dense_dimension(turns: list[Turn]) -> int:
+    dimension = next(
+        (
+            vector.shape[0]
+            for turn in turns
+            for vector in (turn.user_dense, turn.assistant_dense)
+            if vector is not None
+        ),
+        0,
+    )
+    for turn in turns:
+        for vector in (turn.user_dense, turn.assistant_dense):
+            if vector is not None and vector.shape != (dimension,):
+                raise ValueError("dense vectors must share one dimension")
+    return dimension
+
+
+def _combined_terms(turn: Turn) -> tuple[tuple[str, int], ...]:
+    combined: dict[str, int] = defaultdict(int)
+    for term, tf in (*turn.user_terms, *turn.assistant_terms):
+        combined[term] += tf
+    return tuple(sorted(combined.items(), key=lambda item: item[0].encode("utf-8")))
+
+
+def _normalized_turn_terms(turn: Turn) -> tuple[tuple[str, float], ...]:
+    return tuple(_normalize_pairs(dict(_combined_terms(turn))).items())
+
+
+def _term_total(turn: Turn) -> int:
+    return sum(tf for _, tf in turn.user_terms) + sum(
+        tf for _, tf in turn.assistant_terms
+    )
+
+
+def _normalize_pairs(
+    values: tuple[tuple[str, int], ...] | dict[str, int],
+) -> dict[str, float]:
+    items = values.items() if isinstance(values, dict) else values
+    materialized = tuple(items)
+    total = math.fsum(float(value) for _, value in materialized)
+    if total == 0.0:
+        return {}
+    return {key: float(value) / total for key, value in materialized}
+
+
+def _normalize_pairs_by_id(
+    values: tuple[tuple[int, float], ...],
+) -> tuple[tuple[int, float], ...]:
+    ordered = tuple(sorted(values))
+    total = math.fsum(value for _, value in ordered if value > 0.0)
+    if total == 0.0:
+        raise ValueError("context members must contain positive mass")
+    return tuple((node, value / total) for node, value in ordered if value > 0.0)
+
+
+def _tail_surprisal(scores: np.ndarray) -> np.ndarray:
+    if scores.size == 0 or not np.any(scores != 0.0):
+        return np.zeros_like(scores)
+    ordered = np.sort(scores, kind="stable")
+    counts = scores.size - np.searchsorted(ordered, scores, side="left")
+    return -np.log(counts / scores.size)
+
+
+def _log_evidence(observed: float, background: np.ndarray) -> float:
+    probability = (float(np.count_nonzero(background >= observed)) + 1.0) / (
+        background.size + 1.0
+    )
+    return math.log((1.0 - math.log(probability)) / 2.0)
+
+
+def _sparsemax(logits: np.ndarray) -> tuple[tuple[int, float], ...]:
+    if logits.size == 0 or not np.any(logits != 0.0):
+        return ()
+    order = np.argsort(-logits, kind="stable")
+    ordered = logits[order]
+    cumulative = np.cumsum(ordered, dtype=np.float64)
+    condition = 1.0 + np.arange(1, logits.size + 1) * ordered > cumulative
+    support_size = int(np.flatnonzero(condition)[-1]) + 1
+    threshold = (cumulative[support_size - 1] - 1.0) / support_size
+    support = order[:support_size]
+    return tuple(
+        (int(node_id), float(logits[node_id] - threshold))
+        for node_id in np.sort(support)
+        if logits[node_id] > threshold
+    )
+
+
+def _channel_support(
+    evidence: dict[str, np.ndarray],
+    nodes: tuple[int, ...] | None,
+) -> dict[str, frozenset[int]]:
+    if nodes is not None:
+        return {
+            name: frozenset(node for node in nodes if values[node] > 0.0)
+            for name, values in evidence.items()
+        }
+    return {
+        name: frozenset(int(node) for node in np.flatnonzero(values > 0.0))
+        for name, values in evidence.items()
+    }
+
+
+def _sigmoid(value: float) -> float:
+    if value >= 0.0:
+        inverse = math.exp(-value)
+        return 1.0 / (1.0 + inverse)
+    exponential = math.exp(value)
+    return exponential / (1.0 + exponential)
+
+
+def _unit(vector: np.ndarray) -> np.ndarray:
+    norm = float(np.linalg.norm(vector))
+    if not math.isfinite(norm) or norm == 0.0:
+        raise ValueError("dense vector must be finite and non-zero")
+    return vector / norm

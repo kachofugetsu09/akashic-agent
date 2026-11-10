@@ -1,0 +1,365 @@
+"""隔离安装真实回复插件，经本地 HTTP 模型检查长 Turn 压缩和消息保全。"""
+from __future__ import annotations
+
+import asyncio
+from datetime import UTC, datetime, timedelta
+import json
+from pathlib import Path
+import sqlite3
+import shutil
+import sys
+import tempfile
+from typing import Any, cast
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from plugins.channels.contract import CHANNEL_INPUT_V2, ChannelInboundMessage
+from plugins.ledger.contract import BINDINGS
+from plugins.ui.contract import MESSAGE_DISPLAY
+from plugins.ledger.contract import CallRef, ContentPart, Control, Input, Output, ToolCall, ToolResult
+from plugins.compaction.message_summary import HEADINGS
+from plugins.content.plugin import check_text
+from plugins.context.api import check_notice
+from plugins.compaction.contract import COMPACTION_READER, COMPACTION_SUMMARIES
+from plugins.content.contract import CONTENT
+from plugins.context.contract import CONTEXT
+from plugins.turn_projection.contract import TURN_PROJECTION
+from plugins.markdown_memory.plugin import _unapplied_groups
+from plugins.markdown_memory.store import MarkdownProfileStore
+from plugins.tools.contract import ALL_TOOLS, TOOLS
+from tests.test_default_reply import application
+
+
+async def run(folder: Path, case: str, *, second_provider: bool = False) -> dict[str, object]:
+    """只替换外部模型对端；插件安装、回复、投影和持久提交均走真实实现。"""
+    # 1. 本地 HTTP 对端区分摘要与业务调用，不读取凭据或正式 workspace。
+    requests: list[dict] = []
+    handlers: set[asyncio.Task] = set()
+
+    async def serve(reader, writer):
+        task = asyncio.current_task()
+        assert task is not None
+        handlers.add(task)
+        try:
+            header = (await reader.readuntil(b"\r\n\r\n")).decode()
+            length = int(next(row.split(":", 1)[1] for row in header.split("\r\n")
+                              if row.lower().startswith("content-length:")))
+            request = json.loads(await reader.readexactly(length))
+            requests.append(request)
+            summary = "[Source messages]" in str(request["messages"])
+            # long_summary 首次摘要超出剩余空间，只有缩写请求（没有新资料）返回短摘要；
+            # stubborn_summary 始终忽略长度要求；parent_only 只有首个摘要较长。
+            rewrite = str(request["messages"][-1].get("content", "")).endswith("[Source messages]\n[]")
+            earlier = sum("[Source messages]" in str(row["messages"]) for row in requests[:-1])
+            # rewrite_failure 首次摘要过长且缩写请求不可用；stubborn_summary 的长正文写在标题之前。
+            filler = " p" * ({"long_summary": 4000 * (not rewrite), "rewrite_failure": 4000,
+                              "parent_only": 4000 * (earlier == 0)}.get(case, 0))
+            preamble = "p" * 36_000 + "\n" if case == "stubborn_summary" else ""
+            text = ("" if case in {"soft_failure", "hard_failure"} else preamble
+                    + "\n".join(heading + "\nRecorded progress." + filler for heading in HEADINGS[:1]) + "\n"
+                    + "\n".join(heading + "\nRecorded progress." for heading in HEADINGS[1:])) if summary else "work completed"
+            body = json.dumps({"text": text}).encode()
+            # parent_only 的首个业务请求失败，留下一个没有新已结算批次的会话尾部；
+            # provider_rejection 的首个业务请求被 provider 以容量明确拒绝。
+            first = not summary and len(requests) - earlier == 1
+            status = (400 if case in {"parent_only", "provider_rejection"} and first
+                      else 503 if case == "rewrite_failure" and rewrite else 200)
+            writer.write(f"HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nContent-Length: {len(body)}\r\nConnection: close\r\n\r\n".encode() + body)
+            await writer.drain()
+        finally:
+            writer.close()
+            await writer.wait_closed()
+            handlers.discard(task)
+
+    server = await asyncio.start_server(serve, "127.0.0.1", 0)
+    url = f"http://127.0.0.1:{server.sockets[0].getsockname()[1]}/complete"
+
+    def configure(sources: Path) -> None:
+        if second_provider:
+            from scripts.compaction_second_provider_scenario import add_reader
+            add_reader(sources)
+        if case == "idle_compaction":
+            from agent.plugin_composition.config_input import save_config
+            save_config(folder / "workspace/plugin-data/compaction-builtin", {
+                "idle_scope": "selected",
+                "idle_sessions": ["test:room"],
+                "idle_trigger_minutes": 60,
+                "idle_trigger_tokens": 2500,
+            })
+        shutil.copytree(Path(__file__).resolve().parents[1] / "plugins/ui", sources / "ui",
+                        ignore=shutil.ignore_patterns("__pycache__"))
+        entry = sources / "test_provider/plugin.py"
+        source = entry.read_text()
+        start, end = source.index("    class Driver:"), source.index("    descriptor =")
+        source = source[:start] + f'''    class Driver:
+        max_tool_schemas = None
+        def estimate_context_tokens(self, messages, tools):
+            return len(str(messages)) // 4
+        async def complete(self, request):
+            import httpx
+            from plugins.ledger.contract import json_value
+            async with httpx.AsyncClient(trust_env=False) as client:
+                result = await client.post({url!r}, json={{"messages": json_value(request.messages)}})
+                # 与正式驱动同一合同：400 是明确容量拒绝，503 是可恢复传输失败。
+                from plugins.models.contract import ContextLengthError, TransportError
+                if result.status_code == 400:
+                    raise ContextLengthError("fixture rejected", send_evidence="rejected").exception()
+                if result.status_code == 503:
+                    raise TransportError("fixture unavailable").exception()
+                result.raise_for_status()
+                return LLMResponse(result.json()["text"])
+''' + source[end:]
+        entry.write_text(source)
+
+    try:
+        async with application(folder, replying=True, compaction=True,
+                               output_tokens=32_768 if case == "small_window" else 512, keep_recent_tokens=20_000 if case == "short_tail" else 2000,
+                               extra_sources=configure) as (log, host):
+            root = host.live_root
+            assert root is not None
+            # 2. 建立含工具配对的一个长 Turn，再从真实频道入口提交当前输入。
+            tool = root.context.require(ALL_TOOLS)().refs[0]
+            binding = await root.context.require(TOOLS).bind(tool, root.context.require(BINDINGS))
+            def writer(body, ref=None):
+                return log.writer("test:room", author="user" if body is Input else "assistant",
+                                  source="conversation", body_types=(body,), call_ref=ref,
+                                  content={"text": check_text, "context.notice": check_notice}, check_call=lambda call: None)
+            if case in {"split_turn", "huge_batch"}:
+                writer(Input).append("earlier-input", Input((ContentPart("text", "earlier task"),)))
+                writer(Output).append("earlier-final", Output((ContentPart(
+                    "text", "earlier finished" + "o" * 45_000 * (case == "huge_batch")),), "complete"))
+            writer(Input).append("old-input", Input((ContentPart("text", "original task"),)))
+            padding = {"hard_failure": 6500, "provider_rejection": 500, "idle_compaction": 1800}.get(case, 5500)
+            for index in range(1 if case == "huge_batch" else 6):
+                identity = f"old-call-{index}"
+                # huge_batch：巨大参数、多段结果与巨大历史回复各一，摘要资料都须有界。
+                arguments = {"text": "a" * 45_000} if case == "huge_batch" else {"text": "a" * padding}
+                writer(Output).append(identity, Output((ToolCall(binding, arguments),), "continue"))
+                ref = CallRef(identity, 0)
+                parts = (tuple(ContentPart("text", "m" * 2000) for _ in range(23)) if case == "huge_batch"
+                         else (ContentPart("text", f"evidence {index}"),))
+                writer(ToolResult, ref).append(f"old-result-{index}", ToolResult(
+                    call_ref=ref, parts=parts, outcome="success"))
+            if case not in {"open_turn", "huge_batch"}:
+                writer(Output).append("old-final", Output((ContentPart("text", "old task finished"),), "complete"))
+            if case == "idle_compaction":
+                earlier_ts = (datetime.now(UTC) - timedelta(minutes=65)).isoformat()
+                with log._lock:
+                    log._connection.execute("UPDATE messages SET ts=?", (earlier_ts,))
+                    log._connection.commit()
+                    log._message_views.clear()
+            before = tuple(log.reader("test:room").snapshot())
+            with sqlite3.connect(folder / "workspace/sessions.db") as connection:
+                original_rows = connection.execute("SELECT * FROM messages ORDER BY seq").fetchall()
+            accept = root.context.require(CHANNEL_INPUT_V2)
+            accepted = await accept("test:room", "current-input", ChannelInboundMessage(
+                "test", "user", "room", "implement now" + " z" * {"deep_cut": 15_500, "long_summary": 15_500, "stubborn_summary": 15_500,
+                                                       "rewrite_failure": 15_500,
+                                                       "parent_only": 6000}.get(case, 0), datetime.now(UTC), {}))
+            async def finish():
+                async for _ in log.catalog().follow():
+                    rows = log.reader("test:room").snapshot()
+                    if any(row.seq > accepted.seq and (
+                        isinstance(row.body, Output) and row.body.finish == "complete"
+                        or isinstance(row.body, Control) and row.body.action == "failure") for row in rows):
+                        return rows
+            rows = await asyncio.wait_for(finish(), 15)
+            assert rows is not None
+            if case == "parent_only":
+                # 摘要已覆盖全部已结算内容，provider 拒绝后只能重写父摘要本身。
+                with sqlite3.connect(folder / "workspace/sessions.db") as connection:
+                    records = sorted((json.loads(row[0]) for row in connection.execute(
+                        "SELECT value FROM owner_records WHERE owner='plugin:compaction' AND key LIKE 'summary:%'")),
+                        key=lambda record: record["generation"])
+                assert [record["generation"] for record in records] == [1, 2]
+                assert records[1]["source_message_ids"] == records[0]["source_message_ids"]
+                assert records[1]["summary_message_ids"] == [] and records[1]["omitted_message_ids"] == []
+                assert isinstance(rows[-1].body, Output) and rows[-1].body.finish == "complete"
+                with sqlite3.connect(folder / "workspace/sessions.db") as connection:
+                    assert connection.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
+                    assert connection.execute("SELECT * FROM messages ORDER BY seq").fetchall()[:len(original_rows)] == original_rows
+                # 只重写父摘要的一代没有新增资料：应用上一代后不再学习任何消息。
+                store = MarkdownProfileStore(folder / "learning", folder / "learning/receipts.db")
+                lookup = root.context.require(COMPACTION_SUMMARIES)
+                store.write_draft(records[0]["reference"], {"version": 3, "scope": None, "ops": []},
+                                  session_key="test:room", generation=1)
+                store.apply(records[0]["reference"])
+                head = lookup.head("test:room")
+                assert head is not None and head.generation == 2
+                assert not await _unapplied_groups(
+                    head, lookup, log.reader("test:room"), store, ("conversation",),
+                    root.context.require(TURN_PROJECTION), compaction=root.context.require(COMPACTION_READER),
+                    post_commit_effect=root.context.require(CONTENT).legacy_post_commit_effect,
+                    summary_indexes=root.context.require(CONTEXT).summary_indexes,
+                )
+                return {"case": case, "http_requests": len(requests), "summaries": len(records), "result": "passed"}
+            with sqlite3.connect(folder / "workspace/sessions.db") as connection:
+                after_rows = connection.execute("SELECT * FROM messages ORDER BY seq").fetchall()
+                summaries = [json.loads(row[0]) for row in connection.execute(
+                    "SELECT value FROM owner_records WHERE owner='plugin:compaction' AND key LIKE 'summary:%'")]
+                assert connection.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
+            assert after_rows[:len(original_rows)] == original_rows
+            assert rows[:len(before)] == before
+            business = [request for request in requests if "[Source messages]" not in str(request["messages"])]
+            if case == "hard_failure":
+                assert not business and not summaries
+                reason = next(row.body.reason for row in rows if isinstance(row.body, Control) and row.body.action == "failure")
+                assert reason is not None
+                assert "本次请求被阻断" in reason and "窗口 10,000" in reason
+            else:
+                assert len(business) == 1 + (case == "provider_rejection") and "implement now" in str(business[-1])
+                assert "context.notice" not in str(business[0]) and "上下文压缩失败" not in str(business[0])
+                assert isinstance(rows[-1].body, Output) and rows[-1].body.finish == "complete"
+                notices = [part.value for part in rows[-1].body.parts if isinstance(part, ContentPart) and part.kind == "context.notice"]
+                assert all(isinstance(notice, str) for notice in notices)
+                notices = cast(list[str], notices)
+                if case == "soft_failure":
+                    assert not summaries and any("仍满足硬容量" in notice for notice in notices)
+                else:
+                    assert len(summaries) == 1
+                    record = summaries[0]
+                    assert "current-input" not in record["source_message_ids"]
+                    if case not in {"short_tail", "deep_cut", "long_summary", "stubborn_summary", "rewrite_failure",
+                                    "provider_rejection"}:
+                        assert "old-final" not in record["source_message_ids"]
+                    if case in {"stubborn_summary", "rewrite_failure"}:
+                        assert "篇幅所限" in record["content"] and len(record["content"]) < 20_000
+                    if case == "long_summary":
+                        assert len(record["model_call_ids"]) == 2 and len(record["content"]) < 1000
+                    if case == "deep_cut":
+                        # 当前输入本身高于软水位：仍摘要全部已结算内容，而不是阻断。
+                        assert "old-final" in record["source_message_ids"]
+                        assert any("上下文空间不足" in notice for notice in notices)
+                    if case == "open_turn":
+                        assert "original task" in str(business[0])
+                    if case == "short_tail":
+                        assert any("目标 20,000" in notice for notice in notices)
+                    if case == "idle_compaction":
+                        assert record["trigger"] == "idle"
+                        assert record["tokens_before"] < 7400 and record["tokens_after"] < record["tokens_before"]
+                    pending: set[str] = set()
+                    for message in business[0]["messages"]:
+                        if message["role"] == "assistant":
+                            for call in message.get("tool_calls", ()):
+                                assert call["id"] not in pending
+                                pending.add(call["id"])
+                        elif message["role"] == "tool":
+                            pending.remove(message["tool_call_id"])
+                    assert not pending
+                page = log.reader("test:room").read_page(limit=200)
+                display = cast(list[dict[str, Any]], await root.context.require(MESSAGE_DISPLAY)(page, display_only=True))
+                shown = [part["value"]["text"] for row in display if row["body"]["kind"] == "output"
+                         for part in row["body"]["parts"] if part["kind"] == "context.notice"]
+                assert shown == notices
+                if case == "split_turn":
+                    # 3. 真正应用前一代完整 Turn，再由第二次压缩补学上一代延后的尾部。
+                    store = MarkdownProfileStore(folder / "learning", folder / "learning/receipts.db")
+                    lookup = root.context.require(COMPACTION_SUMMARIES)
+                    async def learning():
+                        record = lookup.head("test:room")
+                        assert record is not None
+                        groups = await _unapplied_groups(
+                            record, lookup, log.reader("test:room"), store, ("conversation",),
+                            root.context.require(TURN_PROJECTION), compaction=root.context.require(COMPACTION_READER),
+                            post_commit_effect=root.context.require(CONTENT).legacy_post_commit_effect,
+                            summary_indexes=root.context.require(CONTEXT).summary_indexes,
+                        )
+                        return record, {message.message_id for group in groups or () for message in group}
+                    record, learned = await learning()
+                    assert learned == {"earlier-input", "earlier-final"}
+                    draft = {"version": 3, "scope": None, "ops": []}
+                    store.write_draft(record.reference, draft, session_key="test:room", generation=record.generation)
+                    store.apply(record.reference)
+                    writer(Input).append("next-task", Input((ContentPart("text", "next task"),)))
+                    for index in range(6):
+                        identity = f"next-call-{index}"
+                        writer(Output).append(identity, Output((ToolCall(binding, {"text": "y" * padding}),), "continue"))
+                        ref = CallRef(identity, 0)
+                        writer(ToolResult, ref).append(f"next-result-{index}", ToolResult(
+                            call_ref=ref, parts=(ContentPart("text", f"next {index}"),), outcome="success"))
+                    accepted = await accept("test:room", "next-input", ChannelInboundMessage(
+                        "test", "user", "room", "continue now", datetime.now(UTC), {}))
+                    await asyncio.wait_for(finish(), 15)
+                    next_record, learned = await learning()
+                    assert next_record.generation == record.generation + 1
+                    assert "old-input" in learned and "old-final" in learned
+                    assert not {"earlier-input", "earlier-final"}.intersection(learned)
+                if case == "idle_compaction":
+                    # 已有父摘要（window 开启）后再次经历长空闲，仍能拉取完整历史并生成下一代 idle 摘要。
+                    writer(Input).append("idle-next-task", Input((ContentPart("text", "second burst"),)))
+                    for index in range(6):
+                        identity = f"idle-next-call-{index}"
+                        writer(Output).append(identity, Output((ToolCall(binding, {"text": "y" * padding}),), "continue"))
+                        ref = CallRef(identity, 0)
+                        writer(ToolResult, ref).append(f"idle-next-result-{index}", ToolResult(
+                            call_ref=ref, parts=(ContentPart("text", f"idle {index}"),), outcome="success"))
+                    writer(Output).append("idle-next-final", Output((ContentPart("text", "second burst finished"),), "complete"))
+                    # 同时构造未绑定会话 test:unbound，具有相同长空闲与高 token 历史，验证 selected 模式下不会误触发空闲压缩。
+                    def unbound_writer(body, ref=None):
+                        return log.writer("test:unbound", author="user" if body is Input else "assistant",
+                                          source="conversation", body_types=(body,), call_ref=ref,
+                                          content={"text": check_text, "context.notice": check_notice}, check_call=lambda call: None)
+                    unbound_writer(Input).append("ub-input", Input((ContentPart("text", "unbound task"),)))
+                    for index in range(6):
+                        identity = f"ub-call-{index}"
+                        unbound_writer(Output).append(identity, Output((ToolCall(binding, {"text": "u" * padding}),), "continue"))
+                        ref = CallRef(identity, 0)
+                        unbound_writer(ToolResult, ref).append(f"ub-result-{index}", ToolResult(
+                            call_ref=ref, parts=(ContentPart("text", f"ub {index}"),), outcome="success"))
+                    unbound_writer(Output).append("ub-final", Output((ContentPart("text", "unbound finished"),), "complete"))
+                    earlier_ts = (datetime.now(UTC) - timedelta(minutes=65)).isoformat()
+                    with log._lock:
+                        log._connection.execute(
+                            "UPDATE messages SET ts=? WHERE session_key='test:unbound' OR seq>?",
+                            (earlier_ts, len(original_rows)),
+                        )
+                        log._connection.commit()
+                        log._message_views.clear()
+                    accepted = await accept("test:room", "idle-second-input", ChannelInboundMessage(
+                        "test", "user", "room", "wake again", datetime.now(UTC), {}))
+                    await asyncio.wait_for(finish(), 15)
+                    head = root.context.require(COMPACTION_SUMMARIES).head("test:room")
+                    assert head is not None and head.generation == 2 and getattr(head, "trigger", None) == "idle"
+                    ub_accepted = await accept("test:unbound", "ub-wake-input", ChannelInboundMessage(
+                        "test", "user", "unbound", "wake unbound", datetime.now(UTC), {}))
+                    async def finish_unbound():
+                        async for _ in log.catalog().follow():
+                            ub_rows = log.reader("test:unbound").snapshot()
+                            if any(row.seq > ub_accepted.seq and isinstance(row.body, Output) and row.body.finish == "complete"
+                                   for row in ub_rows):
+                                return ub_rows
+                    await asyncio.wait_for(finish_unbound(), 15)
+                    assert root.context.require(COMPACTION_SUMMARIES).head("test:unbound") is None
+                    from plugins.compaction.plugin import SETTINGS as COMPACTION_SETTINGS
+                    settings_state = await root.context.require(COMPACTION_SETTINGS).read()
+                    session_items = {item["session_id"]: item for item in cast(list[dict[str, Any]], settings_state["sessions"])}
+                    assert session_items["test:room"]["compaction_count"] == 2
+                    assert session_items["test:room"]["last_trigger"] == "idle"
+                    assert session_items["test:room"]["title"] == "original task"
+                    assert session_items["test:unbound"]["compaction_count"] == 0
+            with sqlite3.connect(folder / "workspace/sessions.db") as connection:
+                assert connection.execute("SELECT * FROM messages WHERE session_key='test:room' ORDER BY seq").fetchall()[:len(original_rows)] == original_rows
+                generations = connection.execute("SELECT count(*) FROM owner_records WHERE owner='plugin:compaction' AND key LIKE 'summary:%'").fetchone()[0]
+            if second_provider:
+                from scripts.compaction_second_provider_scenario import replace
+                await replace(host, folder)
+            return {"case": case, "http_requests": len(requests), "summaries": generations,
+                    "original_rows_preserved": len(original_rows), "result": "passed"}
+    finally:
+        server.close()
+        await server.wait_closed()
+        await asyncio.gather(*handlers)
+
+
+async def main() -> None:
+    with tempfile.TemporaryDirectory(prefix="compaction-workflow-") as path:
+        for case in ("split_turn", "open_turn", "short_tail", "deep_cut", "long_summary", "stubborn_summary",
+                     "rewrite_failure", "huge_batch", "parent_only", "small_window", "provider_rejection",
+                     "soft_failure", "hard_failure", "idle_compaction"):
+            folder = Path(path) / case
+            folder.mkdir()
+            print(json.dumps(await run(folder, case), ensure_ascii=False), flush=True)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

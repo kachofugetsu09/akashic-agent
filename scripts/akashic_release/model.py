@@ -33,10 +33,6 @@ class ReleasePaths:
         return self.root / "secrets"
 
     @property
-    def plugin_store(self) -> Path:
-        return self.root / "plugin-store"
-
-    @property
     def state(self) -> Path:
         return self.root / "state"
 
@@ -62,6 +58,5 @@ class ReleasePaths:
             self.run,
             self.secrets,
             self.state,
-            self.plugin_store,
         ):
             path.mkdir(parents=True, exist_ok=True)

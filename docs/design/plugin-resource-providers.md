@@ -181,7 +181,7 @@ Web Shell 只按 `runtime/endpoints.json` 的最长完整路径前缀转发 HTTP
 目录读取使用有界文件任务；查询编码、redirect Location、WebSocket 关闭码都经过真实代理验证。
 
 Dashboard/Chat 的构建产物只进入各自插件 bundle，不再进入 Core tar。
-当前聊天区域实现仍在 frontend/chat；区域 slot 化由独立的前端阶段处理。
+当前聊天区域实现仍在 frontend/plugins/akashic_clients/chat；区域 slot 化由独立的前端阶段处理。
 端点计划和监听器都是可重建状态，本层无权减少消息或插件数据。
 
 ## Gateway 远程命令

@@ -1,0 +1,21 @@
+.codex-provider-dialog [data-challenge] {
+  display: flex;
+  min-height: 2.5rem;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  margin-block-start: 1rem;
+}
+
+.codex-provider-dialog [data-challenge] strong {
+  padding: 0.4rem 0.65rem;
+  border-radius: 0.25rem;
+  background: var(--ak-paper-sheet);
+  font-family: var(--ak-type-technical);
+  letter-spacing: 0.08em;
+}
+
+.codex-provider-dialog [data-start] {
+  border: 1px solid var(--ak-rule-strong);
+  background: var(--ak-paper-sheet);
+}

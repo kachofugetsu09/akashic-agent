@@ -63,6 +63,7 @@ def test_core_only_cli_restarts_after_creating_runtime_data(
         "20261019_04_files_split",
         "20261019_05_working_directory_rename",
         "20261019_06_web_provider_split",
+        "20261111_01_patch_follows_preset",
     }
     assert not (workspace / "sessions.db").exists()
 

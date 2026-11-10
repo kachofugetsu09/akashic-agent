@@ -41,10 +41,7 @@ The standalone Compose image builds a fetched Git commit in a builder stage. It 
 
 For direct checkout development, prepare Python and Node dependencies, build the Web assets, and explicitly install the desired plugin distribution once. The product launcher is not a watcher for dirty business-plugin source.
 
-Built-in plugins, the Web UI and plugin-side scripts live in [akashic-plugins](https://github.com/kachofugetsu09/akashic-plugins); Core pins one of its commits in `plugins.lock` ([ADR 0148](../decisions/0148-plugins-live-in-their-own-repository.md)). Attach it once so both repositories share this working directory with the original monorepo layout; use `scripts/plugins-git` for commits to the plugin repository and `python3 scripts/plugins_workspace.py status` to see both sides.
-
 ```bash
-python3 scripts/plugins_workspace.py attach
 uv venv
 uv pip install -r requirements.txt -e sdk/python
 npm ci
