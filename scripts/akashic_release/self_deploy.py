@@ -253,7 +253,24 @@ def _composed_commit(source: Path, commit: str) -> str:
     return output.strip().splitlines()[-1]
 
 
-def _exec_target(path: Path, request: dict[str, Any]) -> None:
+# 只改内置插件时由目标版本直接热更新，不准备镜像也不停机；目标版本不支持时按完整发布处理。
+def _try_hot(target_cli: Path, source: Path, root: Path, request: dict[str, Any]) -> dict[str, object] | None:
+    result = subprocess.run(
+        [sys.executable, str(target_cli), "install", "--hot-only", "--yes",
+         "--source-checkout", str(source), "--commit", request["targetCommit"], "--root", str(root),
+         "--runtime-env", request["runtimeEnv"], "--mise", request["mise"]],
+        capture_output=True, text=True, check=False,
+    )
+    lines = result.stdout.strip().splitlines()
+    if result.returncode or not lines:
+        return None
+    outcome = json.loads(lines[-1])
+    if outcome.get("status") == "rejected":
+        raise RuntimeError("；".join(outcome.get("reasons", [])) or "制品兼容门未通过")
+    return outcome if outcome.get("status") == "hot-activated" else None
+
+
+def _exec_target(path: Path, request: dict[str, Any]) -> dict[str, object] | None:
     """准备目标产物后用其解释器替换当前 worker，保持同一 job 和 writer。"""
     source = path.with_suffix(".source")
     root = Path(request["root"])
@@ -280,6 +297,9 @@ def _exec_target(path: Path, request: dict[str, Any]) -> None:
     )
     composed = _composed_commit(source, request["targetCommit"])
     target_cli = source / "scripts/akashic_release/cli.py"
+    hot = _try_hot(target_cli, source, root, request)
+    if hot is not None:
+        return hot
     subprocess.run(
         [
             sys.executable,
@@ -344,7 +364,11 @@ def worker(args: argparse.Namespace) -> dict[str, object]:
             raise RuntimeError("原 boot 已被替换，不停止新实例")
         origin = "https://github.com/kachofugetsu09/akashic-agent.git"
         if not args.prepared:
-            _exec_target(path, request)
+            hot = _exec_target(path, request)
+            if hot is not None:
+                record.update(status="active", result=hot)
+                write_json(path, record)
+                return record
         result = install(
             argparse.Namespace(
                 root=root,
@@ -360,6 +384,8 @@ def worker(args: argparse.Namespace) -> dict[str, object]:
                 plan=None,
                 inputs=None,
                 backup=request["backup"],
+                full=False,
+                hot_only=False,
             ),
             self_deploy=record,
         )

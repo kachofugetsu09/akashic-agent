@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import os
 import subprocess
 import tempfile
 from pathlib import Path
@@ -10,7 +12,8 @@ _IMAGE_DISTRIBUTION = "/opt/akashic/distribution"
 
 
 # 把镜像里已准备好 wheels 的发行版原样放进制品库；同一提交已存在时直接返回。
-def store_image_distribution(*, image: str, store: Path, commit: str) -> Path:
+# #1973 之前的镜像没有逐插件 content_commit，不放进制品库，运行时继续用镜像内发行版。
+def store_image_distribution(*, image: str, store: Path, commit: str) -> Path | None:
     target = store / "distributions" / commit
     if target.exists():
         return target
@@ -22,9 +25,24 @@ def store_image_distribution(*, image: str, store: Path, commit: str) -> Path:
             copied = Path(directory) / "distribution"
             _ = subprocess.run(["docker", "cp", f"{container}:{_IMAGE_DISTRIBUTION}", str(copied)],
                                check=True, capture_output=True, text=True)
-            return materialize(copied, store, commit)
+            report = json.loads((copied / "distribution.json").read_text())
+            if any("content_commit" not in row for row in report["plugins"]):
+                return None
+            stored = materialize(copied, store, commit)
+        hand_over_store(store)
+        return stored
     finally:
         _ = subprocess.run(["docker", "rm", "-f", container], check=False, capture_output=True)
+
+
+# 以 root 发布时把制品库交还给 release 根目录的属主：之后普通用户发起的发布和热更新还要写入。
+# 只改属主、不改权限，制品内容保持只读。
+def hand_over_store(store: Path) -> None:
+    if os.geteuid() != 0 or not store.exists():
+        return
+    owner = store.parent.stat()
+    for path in (store, *store.rglob("*")):
+        os.chown(path, owner.st_uid, owner.st_gid, follow_symlinks=False)
 
 
 # runtime.env 指向制品库里的发行版；旧版本没有写入制品库时继续用镜像内发行版。

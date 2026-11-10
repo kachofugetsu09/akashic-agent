@@ -136,6 +136,34 @@ python3 scripts/akashic_release/cli.py install \
 的目录名和 `active.json` 的 `targetCommit` 都是合成提交，安装结果里的 `coreCommit`、`pluginsCommit` 记录来源。
 用 `git show -s <合成提交>` 也能读出两个来源。只改插件时，先把插件仓库提交锁进 Core，再部署这个 Core 提交。
 
+### 只改内置插件：热更新
+
+发布器先和当前生效的发行版比较。Core（`core.tar` 成员内容与依赖记录）、依赖锁、镜像入口、preset 行、插件集合都不变，
+变化插件不是 `host_execution`、依赖与迁移目录文件不变时，走热更新：
+
+1. 在宿主构建目标发行版，沿用当前 wheels，在当前镜像里跑 `scripts/distribution_compat_gate.py`
+   （资产完整、CSS 变量闭包、SDK 导出闭包）。不通过时拒绝发布，不会退回完整发布，因为完整发布也会带上同样的问题。
+2. 放进 `<release-root>/plugin-store`，通过本机控制端点调用 `plugin/adopt-distribution`。实例在宿主任务里换代并立即返回
+   `accepted`，发布器用同一请求轮询终态（换代 Gateway 时连接会断开，期限内重连）。实例只换代内容变化的插件；
+   新版本启动失败时换回原发行版并重新挂上原输入（`rolled_back`），恢复不了时报告 `rollback_failed`。
+   这两种情况以及变化插件的公共合同（`contract.py`）变化，发布器都改走完整发布。
+3. 成功后 `runtime.env` 的 `AKASHIC_PLUGIN_DISTRIBUTION` 指向新发行版，`active.json` 记录 `distributionCommit` 与 `hotUpdate`；
+   镜像、`targetCommit`、Bridge 都不变，重启后选择原样复用。
+
+`--full` 跳过热更新；`--hot-only` 只尝试热更新，不满足条件时不做任何改动（自部署先用它）。
+
+热更新与完整发布之后都在宿主跑界面探针（插件仓库 `scripts/ui_regression_probe.mjs`，等插件重载结束再跑），
+`--baseline` 指向上一次通过的输出目录：
+
+```bash
+node scripts/ui_regression_probe.mjs --url http://127.0.0.1:<port> \
+  --token-file <workspace>/web-auth/secret --out <dir> --baseline <上次通过的 dir> --send
+```
+
+热更新后探针失败时运行 `akashic-release revert-hot`：实例换回 `active.json` 里 `hotUpdate.from` 的发行版，
+`runtime.env` 跟着恢复。完整发布后探针失败，按原流程回滚到上一个 release。
+制品库只由发布器写入，容器只读挂载；`sources/<name>/<content_commit>` 按内容寻址，所以内容未变的插件跨发行版代码路径相同。
+
 必须使用目标版本脚本。已安装的 `akashic-release` 从当前 `runtime.env` 加载当前版本发布器；
 从旧版首次切到此实现时，使用上面的 bootstrap 或目标 checkout，旧 CLI 不认识新选项。
 

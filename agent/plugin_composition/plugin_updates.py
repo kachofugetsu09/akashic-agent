@@ -37,7 +37,7 @@ class PluginInstallPort(ConfigHost, Protocol):
     async def reconcile_disabled_and_drain(self, plugin_id: str) -> None: ...
     async def set_plugin_enabled(self, plugin_id: str, enabled: bool) -> dict[str, object]: ...
     async def wait_idle(self) -> None: ...
-    async def adopt_distribution(self, root: Path) -> dict[str, object]: ...
+    async def adopt_distribution(self, root: Path, update_id: str) -> dict[str, object]: ...
 
 
 class PluginUpdates:
@@ -93,9 +93,9 @@ class PluginUpdates:
         """排空用户已停用的插件；此调用不替用户修改启停决定。"""
         await self._check(ctx).reconcile_disabled_and_drain(plugin_id)
 
-    async def adopt_distribution(self, ctx: Context, root: str) -> dict[str, object]:
+    async def adopt_distribution(self, ctx: Context, root: str, update_id: str) -> dict[str, object]:
         """换上制品库里的另一个发行版；只有内容变化的内置插件换代，失败整体退回。"""
-        return await self._check(ctx).adopt_distribution(Path(root))
+        return await self._check(ctx).adopt_distribution(Path(root), update_id)
 
     async def wait_idle(self, ctx: Context) -> None:
         """等待当前宿主操作退出；不取消操作，也不提交新选择。"""

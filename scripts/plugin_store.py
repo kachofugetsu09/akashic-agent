@@ -33,6 +33,12 @@ def _read_only(root: Path) -> None:
     root.chmod(0o555)
 
 
+# 制品库目录要让运行用户能进入；只改自己拥有的目录，别人创建的保持原样。
+def _traversable(directory: Path) -> None:
+    if directory.stat().st_uid == os.getuid():
+        directory.chmod(0o755)
+
+
 def _writable(root: Path) -> None:
     for path in [root, *root.rglob("*")]:
         if not path.is_symlink():
@@ -55,6 +61,7 @@ def _store_source(source: Path, target: Path, content_commit: str) -> None:
             raise RuntimeError(f"制品库内容目录身份不一致: {target}")
         return
     target.parent.mkdir(parents=True, exist_ok=True)
+    _traversable(target.parent)
     staging = Path(tempfile.mkdtemp(prefix=f".{target.name}.", dir=target.parent))
     try:
         _ = shutil.copytree(source, staging / "tree", symlinks=True)
@@ -89,7 +96,9 @@ def materialize(distribution: Path, store: Path, commit: str) -> Path:
     target = store / "distributions" / commit
     if target.exists():
         return target
-    target.parent.mkdir(parents=True, exist_ok=True)
+    for directory in (store, store / "distributions", store / "sources", store / "blobs"):
+        directory.mkdir(parents=True, exist_ok=True)
+        _traversable(directory)
     staging = Path(tempfile.mkdtemp(prefix=f".{commit}.", dir=target.parent))
     try:
         for row in report["plugins"]:
@@ -106,6 +115,9 @@ def materialize(distribution: Path, store: Path, commit: str) -> Path:
             destination = staging / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
             os.link(_store_blob(store, path), destination)
+        # mkdtemp 是 0700；发布器可能以 root 运行，容器以普通用户读取。
+        for directory in [staging, *(path for path in staging.rglob("*") if path.is_dir() and not path.is_symlink())]:
+            directory.chmod(0o755)
         staging.rename(target)
     finally:
         if staging.exists():
