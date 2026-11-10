@@ -9,6 +9,10 @@ disabled = true
 plugin = "timer@release"
 disabled = true
 
+[rows."scheduler"]
+plugin = "scheduler@release"
+disabled = true
+
 [rows."channels"]
 plugin = "channels@release"
 disabled = true
