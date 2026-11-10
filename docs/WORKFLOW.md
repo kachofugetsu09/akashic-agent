@@ -54,7 +54,7 @@ Computer 镜像只在 main 中的镜像源码变化或手动触发时发布。
 | 前端类型 | `npm run typecheck` |
 | 文档 | 相对链接、规则一致性、代表任务阅读路径、`git diff --check` |
 
-前端视觉验证按 [frontend/design.md](../frontend/design.md)；实际设备隔离按 TST-008。已有测试与 CI 不因本流程自动删除或降低断言；它们的结果与功能、部署、真实设备证据分开报告。没有实际运行的层次写明未验证。
+前端视觉验证按 [packages/akashic-theme/design.md](../packages/akashic-theme/design.md)；实际设备隔离按 TST-008。已有测试与 CI 不因本流程自动删除或降低断言；它们的结果与功能、部署、真实设备证据分开报告。没有实际运行的层次写明未验证。
 
 源码和文档以 Git 为恢复点，保留未提交工作，不额外打包备份。正式数据按 BAK-001 判断本次实际写入及可重建性，只在必要范围内备份；部署详见 [操作手册](design/operator-deployment.md)。
 

@@ -322,7 +322,7 @@ Web 与现有使用同一 Web 壳的客户端共享入口；本次不添加原�
 | `qq_sender/configure.py`（已删除） 的 main | 是否启用独立发送、可选 token、OneBot WS endpoint | 迁到 QQ sender 的自有表单/API |
 | `prompt/configure.py`（已删除） | setup 子进程中创建缺失人格文件；实际没有用户问答 | 删除单独 setup 脚本入口，initialize_veda_if_missing 由 prompt 初始化接住，已有文件字节保持不变 |
 | [models/web_module.js](../../plugins/models/web_module.js) 的 renderCatalog | 以 connections.length 判断首跑，切换标题、样式与区块 | 收掉独立首跑展示分支；同一连接表单供独立设置页和 onboarding 使用，保留正常空目录展示 |
-| [desktop-chat-view.tsx](../../frontend/chat/src/desktop-chat-view.tsx) 的 DesktopEmptyState | 将 needs_setup/starting 解释为未连模型/模型已保存，并硬编码 /#models | 改为真实不可用原因和 owner 贡献的配置动作；保留空状态、禁止无模型发送和启动状态 |
+| [desktop-chat-view.tsx](../../frontend/plugins/akashic_clients/chat/src/desktop-chat-view.tsx) 的 DesktopEmptyState | 将 needs_setup/starting 解释为未连模型/模型已保存，并硬编码 /#models | 改为真实不可用原因和 owner 贡献的配置动作；保留空状态、禁止无模型发送和启动状态 |
 | [README.md](../../README.md) 的两次 setup 教程、main.py setup 帮助、[prompt/README.md](../../plugins/prompt/README.md) | 安装默认插件后再次跑 CLI 问答、描述 configure.py 初始化 | 替代入口验收后一起改为非交互初始化与 Web 配置，不提前把当前教程写成已实现 |
 
 上述四个旧渠道 configure.py 原先含 `--upgrade`：转换旧 TOML，涉及凭据的还会将明文转为
