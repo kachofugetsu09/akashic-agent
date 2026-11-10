@@ -136,6 +136,21 @@ python3 scripts/akashic_release/cli.py install \
 的目录名和 `active.json` 的 `targetCommit` 都是合成提交，安装结果里的 `coreCommit`、`pluginsCommit` 记录来源。
 用 `git show -s <合成提交>` 也能读出两个来源。只改插件时，先把插件仓库提交锁进 Core，再部署这个 Core 提交。
 
+### 只改内置插件：热更新
+
+发布器先和当前生效的发行版比较。Core（`core.tar` 成员内容与依赖记录）、依赖锁、镜像入口、preset 行、插件集合都不变，
+变化插件不是 `host_execution`、依赖与迁移目录文件不变时，走热更新：
+
+1. 在宿主构建目标发行版，沿用当前 wheels，在当前镜像里跑 `scripts/distribution_compat_gate.py`
+   （资产完整、CSS 变量闭包、SDK 导出闭包）。不通过时拒绝发布，不会退回完整发布，因为完整发布也会带上同样的问题。
+2. 放进 `<release-root>/plugin-store`，通过本机控制端点调用 `plugin/adopt-distribution`。实例只换代内容变化的插件；
+   合同结构变化或换代失败时整体退回原发行版，发布器改走完整发布。
+3. 成功后 `runtime.env` 的 `AKASHIC_PLUGIN_DISTRIBUTION` 指向新发行版，`active.json` 记录 `distributionCommit` 与 `hotUpdate`；
+   镜像、`targetCommit`、Bridge 都不变，重启后选择原样复用。
+
+`--full` 跳过热更新；`--hot-only` 只尝试热更新，不满足条件时不做任何改动（自部署先用它）。
+制品库只由发布器写入，容器只读挂载；`sources/<name>/<content_commit>` 按内容寻址，所以内容未变的插件跨发行版代码路径相同。
+
 必须使用目标版本脚本。已安装的 `akashic-release` 从当前 `runtime.env` 加载当前版本发布器；
 从旧版首次切到此实现时，使用上面的 bootstrap 或目标 checkout，旧 CLI 不认识新选项。
 

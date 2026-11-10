@@ -23,6 +23,7 @@ from scripts.akashic_release.source import commit_subject, resolve_target
 from scripts.akashic_release.source import verify_bootstrap_checkout
 from scripts.akashic_release.systemd import verify_external_service_contract
 from scripts.akashic_release.warm import StateCacheWarmer
+from scripts.akashic_release.hot import GateRejected, hot_install
 from scripts.compose_source import compose_source
 
 _DEFAULT_ORIGIN = "https://github.com/kachofugetsu09/akashic-agent.git"
@@ -74,6 +75,22 @@ def install(args: argparse.Namespace, *, self_deploy: dict[str, object] | None =
 
     with release_lock(paths.run / "release.lock"):
         paths.create_layout()
+        # 只改内置插件时先试热更新：不重建镜像、不重启实例；不满足条件就走完整发布。
+        reasons: list[str] = []
+        if not args.no_activate and args.plan is None and not args.full:
+            try:
+                hot = hot_install(paths=paths, checkout=checkout, commit=commit,
+                                  runtime_env=args.runtime_env, reasons=reasons)
+            except GateRejected as error:
+                if args.hot_only:
+                    return {"status": "rejected", "commit": commit, "reasons": [str(error)]}
+                raise
+            if hot is not None:
+                return {**hot, "coreCommit": core_commit, "pluginsCommit": source.plugins_commit}
+        if args.hot_only:
+            return {"status": "needs-full", "commit": commit, "reasons": reasons}
+        if reasons:
+            print("完整发布：" + "；".join(reasons), file=sys.stderr)
         verify_host_prerequisites(mise=args.mise, run=_run)
         verify_external_service_contract(run=_run, unit_root=args.unit_root)
         # 页缓存跨进程保留：只准备产物的一轮也预热，自部署 worker 停机前即可命中。
@@ -156,6 +173,8 @@ def _parser() -> argparse.ArgumentParser:
     install_parser.add_argument("--plan", type=Path, help="显式外置插件目标；省略时更新 Core/Bridge 与内置 preset，并先执行必要内置迁移")
     install_parser.add_argument("--inputs", type=Path, help="清单引用的 bundle/wheels 目录")
     install_parser.add_argument("--backup", action="store_true", help="停止期备份 state 和 runtime.env；默认不备份")
+    install_parser.add_argument("--full", action="store_true", help="跳过热更新，总是重建镜像并重启")
+    install_parser.add_argument("--hot-only", action="store_true", help="只尝试热更新；不满足条件时不做任何改动")
     install_parser.set_defaults(handler=install)
 
     doctor_parser = subparsers.add_parser("doctor")
