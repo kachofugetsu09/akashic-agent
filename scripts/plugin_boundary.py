@@ -683,7 +683,10 @@ def ui_snapshot(base: str | None) -> dict[str, str]:
     files = base_sources(base)
     commit = subprocess.run(["git", "rev-parse", "--verify", f"{base}^{{commit}}"],
                             cwd=REPO_ROOT, capture_output=True, text=True, check=True).stdout.strip()
-    archive = subprocess.run(["git", "archive", commit, UI_POLICY, "frontend"],
+    # 基准里没有 frontend/（例如拆仓期间只有 Core 的提交）就没有前端点名可比，只取存在的路径。
+    present = subprocess.run(["git", "ls-tree", "--name-only", commit, "--", UI_POLICY, "frontend"],
+                             cwd=REPO_ROOT, capture_output=True, text=True, check=True).stdout.split()
+    archive = subprocess.run(["git", "archive", commit, *present],
                              cwd=REPO_ROOT, capture_output=True, check=True).stdout
     with tarfile.open(fileobj=io.BytesIO(archive)) as snapshot:
         for member in snapshot:
