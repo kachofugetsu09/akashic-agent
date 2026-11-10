@@ -114,4 +114,4 @@ lme_error_log_*.txt
 /.akashic-start/
 
 # 设计编辑器的构建产物（open-pencil、CanvasKit WASM、字体）由 build:web-plugins 生成，不入库
-plugins/design/static/
+/plugins/*/static/
