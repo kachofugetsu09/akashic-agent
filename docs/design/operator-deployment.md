@@ -138,8 +138,9 @@ python3 scripts/akashic_release/cli.py install \
 
 ### 只改内置插件：热更新
 
-发布器先和当前生效的发行版比较。Core（`core.tar` 成员内容与依赖记录）、依赖锁、镜像入口、preset 行、插件集合都不变，
-变化插件不是 `host_execution`、依赖与迁移目录文件不变时，走热更新：
+发布器先和当前生效的发行版比较。Core（`core.tar` 成员内容与依赖记录）、依赖锁、镜像入口、preset 行、插件集合、
+发布工具（宿主 `akashic-release` 从完整发布的 runtime 检出运行）都不变，变化插件不是 `host_execution`、依赖与迁移目录文件不变时，
+走热更新（没有插件变化时零换代，只换发行版身份）：
 
 1. 在宿主构建目标发行版，沿用当前 wheels，在当前镜像里跑 `scripts/distribution_compat_gate.py`
    （资产完整、CSS 变量闭包、SDK 导出闭包）。不通过时拒绝发布，不会退回完整发布，因为完整发布也会带上同样的问题。

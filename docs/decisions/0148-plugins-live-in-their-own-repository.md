@@ -46,8 +46,8 @@
 - 覆盖不接受分支或 PR 提交：分支提交被 squash 或删除后旧版本无法重建，也无法判断远端是否已经包含它。
 - 覆盖的插件仍和锁定提交里的共享代码（`packages/`、`frontend/chat` 等）一起构建；覆盖版本依赖新的共享代码或新的 Core 合同时，
   构建或兼容门会拒绝，此时要先升 lock 或 Core。
-- 锁定提交只追上了覆盖、没有带来其他插件变化时，热更新判定是"没有插件变化"，走一次完整发布（多重启一次）。
-  发布器无法在不比较两次合成整棵树的情况下区分这种情况与只改发布工具的 Core 提交，后者必须完整发布。
+- 宿主上的 `akashic-release` 从完整发布的 runtime 检出运行，所以发布工具（`scripts/akashic_release/`、`compose_source.py`、
+  `plugin_store.py`）变化一律走完整发布；其余条件都满足、又没有插件变化时（例如锁定提交刚好追上覆盖）零换代，不重启。
 - `docker/computer` 与它的镜像发布工作流留在 Core：镜像按 digest 引用，搬走需要在 GHCR 包设置里给新仓库授权。
 - 插件仓库 PR 暂不跑 harness-performance 对比。
 - 热更新（只改插件、Core 与依赖不变）由发布器自动选择，见 `docs/design/operator-deployment.md`。界面探针不在发布器内自动运行：
