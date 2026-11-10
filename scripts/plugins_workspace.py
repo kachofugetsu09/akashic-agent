@@ -17,7 +17,7 @@ _SOURCE_ROOT = Path(__file__).resolve().parents[1]
 if str(_SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(_SOURCE_ROOT))
 
-from scripts.compose_source import LOCK_PATH, read_plugins_lock
+from scripts.compose_source import LOCK_PATH, PLUGINS_REPO_LOCAL, read_plugins_lock
 
 _BEGIN = "# >>> akashic-plugins (managed by scripts/plugins_workspace.py)"
 _END = "# <<< akashic-plugins"
@@ -97,6 +97,14 @@ def attach(root: Path, source: str | None) -> str:
         _ = _git(root, "clone", "--quiet", "--bare", source or lock.repository, str(git_dir))
         _ = _plugins_git(root, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
         _ = _plugins_git(root, "config", "status.showUntrackedFiles", "no")
+        # 插件仓库自己的 README、LICENSE、workflow 等与 Core 同名，不检出到共用目录。
+        _ = _plugins_git(root, "config", "core.sparseCheckout", "true")
+        _ = _plugins_git(root, "config", "core.sparseCheckoutCone", "false")
+        # 这些路径在共用目录里是 Core 的文件；不设置时 git 会因文件存在而取消跳过。
+        _ = _plugins_git(root, "config", "sparse.expectFilesOutsideOfPatterns", "true")
+        (git_dir / "info").mkdir(exist_ok=True)
+        hidden = [f"!/{path}" for path in PLUGINS_REPO_LOCAL]
+        (git_dir / "info/sparse-checkout").write_text("\n".join(["/*", *hidden]) + "\n")
     return sync(root)
 
 

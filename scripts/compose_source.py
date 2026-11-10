@@ -19,7 +19,7 @@ LOCK_PATH = "plugins.lock"
 COMPOSED_REF_PREFIX = "refs/akashic/composed/"
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 # 插件仓自身的仓库元数据不进入合成树，Core 一侧同名文件保持权威。
-_PLUGINS_REPO_LOCAL = (".github/", ".gitignore", ".gitattributes", "README.md", "LICENSE", "core.lock")
+PLUGINS_REPO_LOCAL = (".github/", ".gitignore", ".gitattributes", "README.md", "LICENSE")
 _IDENTITY = {
     "GIT_AUTHOR_NAME": "Akashic compose",
     "GIT_AUTHOR_EMAIL": "compose@akashic.invalid",
@@ -100,7 +100,7 @@ def _union_tree(repository: Path, core_commit: str, plugins_commit: str) -> str:
     core_paths = {path for _, path in _tree_entries(repository, core_commit)}
     plugin_entries = [
         (meta, path) for meta, path in _tree_entries(repository, plugins_commit)
-        if not path.startswith(_PLUGINS_REPO_LOCAL)
+        if not path.startswith(PLUGINS_REPO_LOCAL)
     ]
     overlap = sorted(core_paths.intersection(path for _, path in plugin_entries))
     if overlap:
