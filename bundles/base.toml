@@ -10,6 +10,9 @@ plugin = "userinformation@release"
 [rows."timer"]
 plugin = "timer@release"
 
+[rows."scheduler"]
+plugin = "scheduler@release"
+
 [rows."channels"]
 plugin = "channels@release"
 
