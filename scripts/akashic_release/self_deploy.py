@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -337,8 +338,21 @@ def _exec_target(path: Path, request: dict[str, Any]) -> dict[str, object] | Non
     )
 
 
+# 拆仓前的 worker 准备完后会用只有 Core 的检出进入 --prepared；插件代码只在合成后的 runtime 检出里，
+# 读写任务记录之前换到那里重新执行。
+def _enter_runtime_checkout(path: Path) -> None:
+    request = read_json(path)["request"]
+    source = path.with_suffix(".source")
+    composed = _composed_commit(source, request["targetCommit"])
+    runtime_cli = ReleasePaths(Path(request["root"])).source(composed) / "scripts/akashic_release/cli.py"
+    os.execv(sys.executable, [sys.executable, str(runtime_cli), "self-deploy-worker",
+                              "--request", str(path), "--prepared"])
+
+
 def worker(args: argparse.Namespace) -> dict[str, object]:
     """保留任务错误，调用既有发布器；不合并 PR、不发送新模型消息。"""
+    if args.prepared and importlib.util.find_spec("plugins") is None:
+        _enter_runtime_checkout(args.request.resolve(strict=True))
     from scripts.akashic_release.cli import install
     from plugins.gateway.runtime_stop import StopParams
 
