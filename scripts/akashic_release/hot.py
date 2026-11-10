@@ -158,7 +158,12 @@ def hot_install(*, paths: ReleasePaths, checkout: Path, commit: str, runtime_env
         _reuse_wheels(active, target)
         _gate(checkout, environment["AKASHIC_IMAGE"], target, plan)
         stored = materialize(target, paths.plugin_store, commit)
-    result = asyncio.run(_adopt(environment, stored))
+    try:
+        result = asyncio.run(_adopt(environment, stored))
+    except Exception as error:
+        # 旧实例没有这个方法、实例未就绪等：实例要么没收到请求，要么已自行整体退回；完整发布会重新提交全部选择。
+        reasons.append(f"实例不能热更新: {type(error).__name__}: {error}")
+        return None
     if result.get("state") != "active":
         reasons.append(f"实例拒绝热更新: {json.dumps(result, ensure_ascii=False)[:2000]}")
         return None
