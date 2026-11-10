@@ -23,6 +23,7 @@ from scripts.akashic_release.source import commit_subject, resolve_target
 from scripts.akashic_release.source import verify_bootstrap_checkout
 from scripts.akashic_release.systemd import verify_external_service_contract
 from scripts.akashic_release.warm import StateCacheWarmer
+from scripts.compose_source import compose_source
 
 _DEFAULT_ORIGIN = "https://github.com/kachofugetsu09/akashic-agent.git"
 _DEFAULT_ROOT = Path("/srv/data/services/akashic")
@@ -50,15 +51,21 @@ def _confirm(commit: str, subject: str, current: str | None, *, yes: bool) -> No
 def install(args: argparse.Namespace, *, self_deploy: dict[str, object] | None = None) -> dict[str, object]:
     paths = ReleasePaths(args.root.resolve())
     checkout = args.source_checkout.resolve(strict=True)
-    commit = resolve_target(args.origin, args.commit, run=_run)
-    verify_bootstrap_checkout(checkout, commit, args.origin, run=_run)
+    core_commit = resolve_target(args.origin, args.commit, run=_run)
+    verify_bootstrap_checkout(checkout, core_commit, args.origin, run=_run)
+    # 拆分后的 Core 提交带 plugins.lock：合成出确定性的源提交，后续全部以它为发布身份。
+    source = compose_source(checkout, core_commit)
+    commit = source.commit
     active_path = paths.activation / "active.json"
     current = (
         str(read_json(active_path).get("targetCommit"))
         if active_path.exists()
         else None
     )
-    _confirm(commit, commit_subject(checkout, run=_run), current, yes=args.yes)
+    subject = commit_subject(checkout, run=_run)
+    if source.plugins_commit is not None:
+        subject = f"{subject} (core {core_commit[:12]} + plugins {source.plugins_commit[:12]})"
+    _confirm(commit, subject, current, yes=args.yes)
 
     if args.inputs is not None and args.plan is None:
         raise ValueError("--inputs 需要 --plan")
@@ -104,6 +111,8 @@ def install(args: argparse.Namespace, *, self_deploy: dict[str, object] | None =
     return {
         "status": status,
         "commit": commit,
+        "coreCommit": core_commit,
+        "pluginsCommit": source.plugins_commit,
         "imageId": manifest["imageId"],
         "backupRequested": args.backup,
         "degradedExternal": (runtime_check.get("degraded_external", {})
