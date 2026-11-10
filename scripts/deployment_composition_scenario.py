@@ -256,7 +256,34 @@ asyncio.run(run())
         assert snapshot(work.parent) == before
 
 
-def content_identity_stage(root, args):
+def preset_guarantee_stage(root):
+    """preset 启用了发行版没有提供的插件时，首装整体拒绝，不留下半份选择。"""
+    state = root / "preset-guarantee"
+    work, home, config = state / "workspace", state / "plugin-home", state / "config.toml"
+    receipt = work / "runtime/distribution-install.json"
+    repo = root / "preset-guarantee-repo"
+    repo.mkdir()
+    git(repo, "init", "-q")
+    plugin(repo, "present")
+    broken = distribution(repo, root / "preset-guarantee-dist", ["present"], ["present", "ghost"])
+    previous_home = os.environ["AKASHIC_PLUGIN_HOME"]
+    os.environ["AKASHIC_PLUGIN_HOME"] = str(home)
+    try:
+        subprocess.run([sys.executable, str(ROOT / "main.py"), "init", "--config", str(config),
+                        "--workspace", str(work)], check=True, stdout=subprocess.DEVNULL)
+        try:
+            ensure_bundle(broken, broken / "bundles/base.toml", workspace=work, plugins_home=home,
+                          config_path=config, receipt_path=receipt)
+        except RuntimeError as error:
+            assert "ghost@release" in str(error), error
+        else:
+            raise AssertionError("preset 缺少插件时首装没有拒绝")
+        assert PluginSelection(work).read() is None
+    finally:
+        os.environ["AKASHIC_PLUGIN_HOME"] = previous_home
+
+
+async def content_identity_stage(root, args):
     """镜像内发行版路径固定时：只换 Core 不重建内置输入，只改一个插件只换它的输入。"""
     state = root / "content-identity"
     work, home, config = state / "workspace", state / "plugin-home", state / "config.toml"
@@ -295,6 +322,9 @@ def content_identity_stage(root, args):
 
         first = publish("first")
         assert len(first) == 3, first
+        m = await manager(work, home, fixed)
+        assert m.plugin_status()["preset"] == {"bundle": "base", "missing": [], "retired": []}
+        await m.terminate_all()
         # 1. 只有 Core 侧文件变化：插件内容提交不变，已选输入原样复用。
         assert publish("core only") == first
         # 2. 只改 changing：只有它得到新输入。
@@ -735,9 +765,10 @@ step(upgrade)
     assert runner.run().migrations == ("scenario_core_upgrade",)
     assert runner.run().state == "current"
     assert not (work / "runtime/plugin-archives").exists()
-    content_identity_stage(root, args)
+    await content_identity_stage(root, args)
+    preset_guarantee_stage(root)
     print(
-        "PASS update/removal/optional/default/disabled/config/external/byte-preservation/restart/enable/environment/uninstall/preflight/publish/failure/core-yoyo/builtin-yoyo/external-exclusion/migration-retry/content-identity",
+        "PASS update/removal/optional/default/disabled/config/external/byte-preservation/restart/enable/environment/uninstall/preflight/publish/failure/core-yoyo/builtin-yoyo/external-exclusion/migration-retry/content-identity/preset-guarantee",
         flush=True,
     )
     (root / "result.json").write_text(
@@ -749,7 +780,7 @@ step(upgrade)
                 "with_wheels": args.with_wheels,
                 "seed_core": str(args.seed_core.resolve()) if args.seed_core else None,
                 "cross_version_preflight": bool(args.seed_core),
-                "scenarios": 25,
+                "scenarios": 26,
             },
             indent=2,
         )

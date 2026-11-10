@@ -45,6 +45,11 @@ def _verify_selected_runtime(
     status = json.loads(result.stdout)
     if not isinstance(status, dict) or status.get("selection_ref") != root_ref:
         raise RuntimeError("live runtime selection 与已发布的完整 Root 不一致")
+    # preset 启用的行整行缺席时，"选择里的都 ACTIVE" 也会成立，必须单独核对。
+    preset = status.get("preset")
+    if not isinstance(preset, dict) or preset.get("missing") != []:
+        missing = preset.get("missing") if isinstance(preset, dict) else "未报告"
+        raise RuntimeError(f"live runtime 缺少 preset 启用的插件: {missing}")
     plugins = status.get("plugins")
     components = status.get("selection_components")
     if (not isinstance(plugins, list) or not isinstance(components, list)
@@ -80,6 +85,7 @@ def _verify_selected_runtime(
     return {"selection_ref": root_ref,
             "active_selected": ready,
             "degraded_external": degraded,
+            "preset_retired": preset.get("retired", []),
             "optional_health": "unverified"}
 
 

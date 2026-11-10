@@ -82,7 +82,7 @@ from agent.plugins.manifest import (
     validate_workspace_plugin_data_path,
     workspace_plugin_data_dir,
 )
-from agent.plugins.bundles import plugin_choices, set_plugin_choice
+from agent.plugins.bundles import plugin_choices, preset_plugin_ids, set_plugin_choice
 from agent.plugins.distribution_sources import DistributionSources
 from agent.plugins.python_environment import PythonEnvironments
 from agent.plugins.reload_journal import (
@@ -2078,6 +2078,30 @@ class PluginManager:
             "plugins": plugins,
             "source_failures": source_failures,
             "operation": operation_view,
+            "preset": self._preset_status(manifest, selected_refs),
+        }
+
+    # preset 声明且启用的行必须在选择中；patch 里启用但发行版已不提供的内置行只汇报为退役。
+    def _preset_status(
+        self, choices: Mapping[str, bool], selected_refs: Mapping[str, str],
+    ) -> dict[str, object] | None:
+        root = self._distribution.root
+        if root is None:
+            return None
+        provided = {f"{source.plugin_name}@{source.marketplace}" for source in self._distribution.sources}
+        marketplaces = {source.marketplace for source in self._distribution.sources}
+        selected_names = {plugin_id.rpartition("@")[0] for plugin_id in selected_refs}
+        return {
+            "bundle": os.environ.get("AKASHIC_PLUGIN_BUNDLE", "base"),
+            "missing": sorted(
+                plugin_id for plugin_id in preset_plugin_ids(root)
+                if choices.get(plugin_id, False) and plugin_id not in selected_refs
+                and plugin_id.rpartition("@")[0] not in selected_names
+            ),
+            "retired": sorted(
+                plugin_id for plugin_id, enabled in choices.items()
+                if enabled and plugin_id.rpartition("@")[2] in marketplaces and plugin_id not in provided
+            ),
         }
 
 
