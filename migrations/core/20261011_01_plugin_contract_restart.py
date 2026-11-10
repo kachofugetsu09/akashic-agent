@@ -1,6 +1,7 @@
 """为安装回执增加明确的合同重启事实表，不改写旧字段或业务数据。"""
 from __future__ import annotations
 
+from contextlib import closing
 import sqlite3
 from uuid import uuid4
 
@@ -17,7 +18,7 @@ def upgrade(connection: sqlite3.Connection) -> None:
     path = current_migration_context().workspace / "runtime/plugin-reloads.sqlite3"
     if not path.exists():
         return
-    with sqlite3.connect(path) as source:
+    with closing(sqlite3.connect(path)) as source, source:
         shape = plugin_update_schema_state(source)
         if shape != "new":
             raise RuntimeError("合同重启迁移需要已知 input_ref schema")
@@ -26,7 +27,7 @@ def upgrade(connection: sqlite3.Connection) -> None:
             return
         # 1. SQLite 原生备份包含 WAL；保留命名恢复点，不自动降级。
         backup = path.with_name(f"{path.name}.before-contract-restart.{uuid4().hex}.bak")
-        with sqlite3.connect(backup) as target:
+        with closing(sqlite3.connect(backup)) as target, target:
             source.backup(target)
             if target.execute("PRAGMA integrity_check").fetchone() != ("ok",):
                 raise RuntimeError("合同重启备份完整性检查失败")

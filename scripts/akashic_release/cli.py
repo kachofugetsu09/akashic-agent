@@ -125,6 +125,27 @@ def resume(args: argparse.Namespace) -> dict[str, object]:
     return {"status": status, "attempt": str(args.attempt)}
 
 
+# 只读：当前实例的用户 patch 相对正在运行的 preset 改了什么，以及哪些 row 已经和 preset 相同。
+# preset 就是运行检出里的 bundles/；发行版市场的 row 指向检出里已没有的插件时列为 notShipped（退役或改名留下的），
+# 同 DSH 的 patch 未匹配警告。
+def preset_diff(args: argparse.Namespace) -> dict[str, object]:
+    from agent.plugins.bundles import preset_differences
+    from scripts.akashic_release.doctor import read_environment
+
+    checkout = Path(read_environment(args.runtime_env)["AKASHIC_RUNTIME_CHECKOUT"])
+    groups: dict[str, list[dict[str, object]]] = {"changed": [], "added": [], "same": []}
+    for item in preset_differences(ReleasePaths(args.root).state / "workspace", checkout):
+        groups[item.kind].append({
+            "plugin": item.plugin, "fields": list(item.fields),
+            "preset": None if item.preset is None else {"disabled": item.preset.disabled, "config": dict(item.preset.config)},
+            "user": {"disabled": item.user.disabled, "config": dict(item.user.config)},
+        })
+    missing = [item["plugin"] for item in groups["added"]
+               if str(item["plugin"]).endswith("@release")
+               and not (checkout / "plugins" / str(item["plugin"]).split("@")[0]).is_dir()]
+    return {"status": "ok", "preset": str(checkout / "bundles"), **groups, "notShipped": missing}
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="akashic-release")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -177,6 +198,10 @@ def _parser() -> argparse.ArgumentParser:
     submit_parser.add_argument("--backup", action="store_true")
     submit_parser.add_argument("--session", help="部署失败时注入并唤醒的会话；默认是发起调用的会话")
     submit_parser.set_defaults(handler=submit)
+    diff_parser = subparsers.add_parser("preset-diff", help="只读：列出本实例相对 preset 的启停与配置覆盖")
+    diff_parser.add_argument("--root", type=Path, default=_DEFAULT_ROOT)
+    diff_parser.add_argument("--runtime-env", type=Path, default=_DEFAULT_ENV)
+    diff_parser.set_defaults(handler=preset_diff)
     status_parser = subparsers.add_parser("status", help="查询宿主部署任务，不启动模型回合")
     status_parser.add_argument("request_id")
     status_parser.add_argument("--root", type=Path, default=_DEFAULT_ROOT)

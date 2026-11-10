@@ -1,6 +1,7 @@
 """为插件自身配置应用增加宿主回执；不修改业务配置。"""
 from __future__ import annotations
 
+from contextlib import closing
 import sqlite3
 from uuid import uuid4
 
@@ -16,13 +17,13 @@ def upgrade(connection: sqlite3.Connection) -> None:
     path = current_migration_context().workspace / "runtime" / "plugin-reloads.sqlite3"
     if not path.exists():
         return
-    with sqlite3.connect(path) as source:
+    with closing(sqlite3.connect(path)) as source, source:
         exists = source.execute("SELECT 1 FROM sqlite_master WHERE name='config_updates'").fetchone()
         if exists:
             check_schema(source)
             return
         backup = path.with_name(f"{path.name}.before-config-updates.{uuid4().hex}.bak")
-        with sqlite3.connect(backup) as target:
+        with closing(sqlite3.connect(backup)) as target, target:
             source.backup(target)
             if target.execute("PRAGMA integrity_check").fetchone() != ("ok",):
                 raise RuntimeError("配置回执迁移备份检查失败")

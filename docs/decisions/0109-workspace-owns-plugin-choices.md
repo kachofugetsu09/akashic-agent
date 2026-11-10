@@ -26,10 +26,16 @@
 证明，不另建一份列表。共享 cache 的物理安装/卸载仍受现有发布锁约束；本决定没有把
 共享代码改成 workspace 私有副本。
 
-启停操作保留 row 的 config；回退新增选择时恢复 row 缺席。row ID 支持完整插件身份，
+启停操作只写 row 的 `disabled`；改完和 preset 相同时删掉这一行，回到跟随 preset。回退新增选择时恢复 row 缺席。row ID 支持完整插件身份，
 使外置插件不需要另造编码名。明确更换 row 的 provider 不触发自动依赖求解。
 
-**配置选择：** 合并时仍整行替换 config，但它是新插件数据目录的初始配置。已有
+**配置选择：** base、mode 整行替换；用户 patch 按字段覆盖（2026-11-11 修订，同 DSH 的 `cordis.patch.yml`）：
+没写的 `disabled`、`config` 继续跟随 preset，写了的 config 整份替换、不深合并；换了 provider 的 row 不继承旧 config。
+patch row 的 id 与 preset 不同但插件相同时，也算覆盖那一条 preset row（用户先启用可选插件、preset 后来才收录它）。
+早期迁移和旧版启停把 preset 的值原样抄进 patch，迁移 `20261111_01_patch_follows_preset` 删掉其中与目标 preset
+相同的字段和只剩 plugin 的 row，先留 `runtime/bundle.patch.before-follow-preset.toml`；组合结果不变。
+宿主只读命令 `akashic-release preset-diff` 列出本实例相对 preset 的 changed/added/same row，以及指向本发行版已不带插件的 row（`notShipped`）。
+bundle 的 config 是新插件数据目录的初始配置。已有
 `config.input.json` 由原来的插件配置事务和 revision 独占，不被 bundle 在重启时覆盖。
 这保留了用户已保存配置及失败恢复的合同；若要让 bundle 持续拥有全部配置，应另做
 配置 owner 迁移，不能保留两份同时可写的权威配置。
