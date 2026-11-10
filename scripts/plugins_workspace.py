@@ -9,6 +9,7 @@ git 目录里，用 `scripts/plugins-git` 操作；Core 的 git 通过 info/excl
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -58,21 +59,55 @@ def _exclude_patterns(core_files: set[str], plugin_files: list[str]) -> list[str
     return sorted(patterns)
 
 
-def _write_block(exclude: Path, patterns: list[str]) -> None:
-    exclude.parent.mkdir(parents=True, exist_ok=True)
-    lines = exclude.read_text().splitlines() if exclude.exists() else []
+def _config_values(root: Path, *args: str) -> list[str]:
+    result = subprocess.run(["git", "-C", str(root), "config", *args], capture_output=True, text=True, check=False)
+    return result.stdout.splitlines() if result.returncode == 0 else []
+
+
+# 开启 worktreeConfig 前，把只属于主检出的 core.worktree/core.bare 迁到主检出的 config.worktree，
+# 否则它们会开始作用于所有 linked worktree（见 git-worktree 的 CONFIGURATION FILE 一节）。
+def _enable_worktree_config(root: Path, common: Path) -> None:
+    shared = ["--file", str(common / "config")]
+    if _config_values(root, *shared, "--get", "extensions.worktreeConfig") == ["true"]:
+        return
+    for key in ("core.worktree", "core.bare"):
+        values = _config_values(root, *shared, "--get", key)
+        if values:
+            _ = _git(root, "config", "--file", str(common / "config.worktree"), key, values[-1])
+            _ = _git(root, "config", *shared, "--unset", key)
+    _ = _git(root, "config", *shared, "extensions.worktreeConfig", "true")
+
+
+# 当前实际生效的忽略文件（不含本工具生成的那个）；没有配置时用 Git 的默认位置。
+def _inherited_excludes(root: Path, generated: Path) -> list[str]:
+    configured = [value for value in _config_values(root, "--get-all", "core.excludesFile")
+                  if Path(value).expanduser() != generated]
+    if configured:
+        path = Path(configured[-1]).expanduser()
+    else:
+        path = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "git/ignore"
+    if not path.is_file():
+        return []
+    lines = path.read_text().splitlines()
     if _BEGIN in lines:
-        lines = lines[:lines.index(_BEGIN)] + lines[lines.index(_END) + 1:]
-    exclude.write_text("\n".join([*lines, _BEGIN, *patterns, _END]) + "\n")
+        lines = lines[:lines.index(_BEGIN)]
+    return lines
 
 
-# Core 忽略插件文件。插件侧不显示未跟踪文件：Core 的 .gitignore 否定规则优先于
-# info/exclude，没法在插件侧屏蔽；新文件改由 status 命令统一列出。
+# 1. 规则写进本检出 git 目录里的单独文件，保留原本生效的忽略规则；
+# 2. 用 worktree 级 core.excludesFile 指向它：linked worktree 不读自己的 info/exclude，
+#    写公共 info/exclude 又会影响同一仓库里仍是 monorepo 布局的其它检出。
 def _write_excludes(root: Path) -> None:
     core_files = _git(root, "ls-files").splitlines()
     plugin_files = _plugins_git(root, "ls-files").splitlines()
-    core_git = Path(_git(root, "rev-parse", "--absolute-git-dir"))
-    _write_block(core_git / "info/exclude", _exclude_patterns(set(core_files), plugin_files))
+    git_dir = Path(_git(root, "rev-parse", "--absolute-git-dir"))
+    common = Path(_git(root, "rev-parse", "--path-format=absolute", "--git-common-dir"))
+    exclude = git_dir / "akashic-plugins.exclude"
+    inherited = _inherited_excludes(root, exclude)
+    patterns = _exclude_patterns(set(core_files), plugin_files)
+    exclude.write_text("\n".join([*inherited, _BEGIN, *patterns, _END]) + "\n")
+    _enable_worktree_config(root, common)
+    _ = _git(root, "config", "--worktree", "core.excludesFile", str(exclude))
 
 
 # 两侧的修改，加上两侧都没跟踪、也没被 .gitignore 忽略的新文件。

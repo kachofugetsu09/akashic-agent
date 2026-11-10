@@ -357,7 +357,13 @@ def _commit_package(package: Path, message: str) -> str:
         "gc.auto=0",
         "-c",
         "maintenance.auto=false",
+        # 身份只由内容决定：固定提交编码，不跑操作者的提交钩子。
+        "-c",
+        "i18n.commitEncoding=UTF-8",
+        "-c",
+        "core.hooksPath=/dev/null",
         "commit",
+        "--no-verify",
         "--allow-empty",
         "-m",
         message,
