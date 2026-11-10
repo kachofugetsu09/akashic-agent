@@ -39,7 +39,7 @@ async def run():
     first_names = ["alpha", "disabled"]
     for name in first_names:
         plugin(repo, name)
-    first = distribution(repo, root / "first", first_names, first_names)
+    first = distribution(repo, root / "first", first_names, first_names, legacy=True)
     state = root / "state"
     state.mkdir()
     work, home, config = state / "workspace", state / "plugin-home", state / "config.toml"
@@ -58,7 +58,8 @@ async def run():
         plugin(repo, name, "2")
     (repo / "plugins/alpha").rename(repo / "plugins/alpha_legacy")
     (repo / "plugins/retired").rename(repo / "plugins/retired_source")
-    historical = distribution(repo, root / "historical", ["alpha_legacy", "retired_source", "disabled"], names)
+    historical = distribution(repo, root / "historical", ["alpha_legacy", "retired_source", "disabled"], names,
+                              legacy=True)
     install_legacy_cache(historical, historical / "bundles/base.toml", workspace=work,
                     plugins_home=home, config_path=config)
     selection = PluginSelection(work)
@@ -181,7 +182,8 @@ async def run():
     # 4. 模拟下一镜像覆盖同一路径：旧选择只声明归属，新选择必须固定新发行版。
     plugin(repo, "alpha", "4")
     next_distribution = distribution(repo, root / "next-image", ["alpha", "disabled"], ["alpha", "disabled"])
-    next_commit = json.loads((next_distribution / "distribution.json").read_text())["source_commit"]
+    next_commit = next(row["content_commit"] for row in json.loads((next_distribution / "distribution.json").read_text())["plugins"]
+                       if row["name"] == "alpha")
     shutil.rmtree(target)
     shutil.copytree(next_distribution, target)
     try:
