@@ -22,6 +22,9 @@ esac
 
 test -r "$CONFIG"
 test -r /opt/akashic/runtime-info.json
+# 发布器把镜像外制品库里的发行版写进 runtime.env；缺省仍是镜像内发行版。
+DISTRIBUTION="${AKASHIC_PLUGIN_DISTRIBUTION:-/opt/akashic/distribution}"
+export AKASHIC_PLUGIN_DISTRIBUTION="$DISTRIBUTION"
 
 /opt/venv/bin/python /opt/akashic/source/scripts/distribution_runtime.py check \
     --runtime-info /opt/akashic/runtime-info.json \
@@ -31,8 +34,8 @@ test -r /opt/akashic/runtime-info.json
 if [[ "${1:-}" == "publish" ]]; then
     shift
     exec /opt/venv/bin/python /opt/akashic/source/scripts/install_plugin_distribution.py \
-        --distribution /opt/akashic/distribution \
-        --bundle /opt/akashic/distribution/bundles/"${AKASHIC_PLUGIN_BUNDLE:-base}".toml \
+        --distribution "$DISTRIBUTION" \
+        --bundle "$DISTRIBUTION"/bundles/"${AKASHIC_PLUGIN_BUNDLE:-base}".toml \
         --workspace "$WORKSPACE" --plugins-home "$PLUGIN_HOME" --config "$CONFIG" \
         --publish "$@"
 fi
@@ -40,8 +43,8 @@ fi
 mkdir -p "$WORKSPACE" "$PLUGIN_HOME"
 
 /opt/venv/bin/python /opt/akashic/source/scripts/install_plugin_distribution.py \
-    --distribution /opt/akashic/distribution \
-    --bundle /opt/akashic/distribution/bundles/"${AKASHIC_PLUGIN_BUNDLE:-base}".toml \
+    --distribution "$DISTRIBUTION" \
+    --bundle "$DISTRIBUTION"/bundles/"${AKASHIC_PLUGIN_BUNDLE:-base}".toml \
     --workspace "$WORKSPACE" \
     --plugins-home "$PLUGIN_HOME" \
     --config "$CONFIG" \

@@ -15,6 +15,7 @@ from scripts.akashic_release.ownership import (
 )
 from scripts.akashic_release.bridge import verify_bridge
 from scripts.akashic_release.image import prepare_core_image
+from scripts.akashic_release.store import store_image_distribution
 from scripts.akashic_release.manifest import read_json, write_json
 from scripts.akashic_release.model import ReleasePaths
 from scripts.verify_host_runtime_deployment import verify_deployment_image
@@ -79,6 +80,8 @@ def prepare_generation(
             bridge_python=bridge_python,
             toolchain_digest=str(host_identity.get("toolchainDigest")),
         )
+        with measure("release.store"):
+            _ = store_image_distribution(image=str(manifest["imageId"]), store=paths.plugin_store, commit=commit)
         return manifest
     if source.exists() or bridge_venv.exists() or bridge_venv.is_symlink():
         raise RuntimeError("发现未发布的同 commit generation，需先人工审计")
@@ -131,6 +134,9 @@ def prepare_generation(
                 "releaseRoot": str(paths.root),
             }
         )
+        # 镜像外的内置插件制品库：后续只改插件时据此热更新，不必重建镜像。
+        with measure("release.store"):
+            _ = store_image_distribution(image=str(manifest["imageId"]), store=paths.plugin_store, commit=commit)
         write_json(manifest_path, manifest)
         release_to_owner(manifest_path, uid=owner_uid, gid=owner_gid)
         return manifest

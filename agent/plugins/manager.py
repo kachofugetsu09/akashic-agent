@@ -83,7 +83,7 @@ from agent.plugins.manifest import (
     workspace_plugin_data_dir,
 )
 from agent.plugins.bundles import plugin_choices, preset_plugin_ids, set_plugin_choice
-from agent.plugins.distribution_sources import DistributionSources
+from agent.plugins.distribution_sources import DistributionSources, distribution_sources
 from agent.plugins.python_environment import PythonEnvironments
 from agent.plugins.reload_journal import (
     RecoveryActionName,
@@ -1137,6 +1137,50 @@ class PluginManager:
     ) -> list[dict[str, object]]:
         """应用指定的变化输入；显式全量请求仍检查当前已选来源。"""
         return await self._run_operation(lambda: self._reconcile_changed(plugin_ids))
+
+    async def adopt_distribution(self, root: Path) -> dict[str, object]:
+        """换上制品库里的另一个发行版，只换代内容变化的内置插件。"""
+        return await self._run_operation(lambda: self._adopt_distribution(root))
+
+    # 1. 新发行版必须来自制品库且插件集合不变；2. 只调和内容变化的插件；
+    # 3. 任一插件需要重启或没有进入 active，整体退回原发行版，不留半套。
+    async def _adopt_distribution(self, root: Path) -> dict[str, object]:
+        store = os.environ.get("AKASHIC_PLUGIN_STORE")
+        resolved = root.resolve(strict=True)
+        if not store or not resolved.is_relative_to(Path(store).resolve() / "distributions"):
+            raise PermissionError("只能换上制品库 distributions/ 下的发行版")
+        previous = self._distribution
+        if previous.root is None:
+            raise RuntimeError("当前实例没有发行版，不能热更新内置插件")
+        target = await run_file_io(lambda: distribution_sources(
+            self._workspace, self.installed_plugins_home, resolved))
+        before = {source.plugin_name: source for source in previous.sources}
+        after = {source.plugin_name: source for source in target.sources}
+        if set(before) != set(after):
+            raise RuntimeError("发行版插件集合变化，需要完整发布")
+        changed = frozenset(
+            f"{name}@{source.marketplace}" for name, source in after.items()
+            if source.distribution_source != before[name].distribution_source
+        )
+        self._use_distribution(target)
+        try:
+            results = await self._reconcile_changed(changed)
+        except BaseException:
+            self._use_distribution(previous)
+            _ = await self._reconcile_changed(changed)
+            raise
+        # 用户停用的插件不在选择里，换发行版后仍保持停用。
+        if all(result.get("publication_state") in {"active", "unselected_source"} for result in results):
+            return {"state": "active", "changed": sorted(changed), "results": results}
+        self._use_distribution(previous)
+        reverted = await self._reconcile_changed(changed)
+        return {"state": "rolled_back", "changed": sorted(changed), "results": results,
+                "reverted": reverted}
+
+    def _use_distribution(self, sources: DistributionSources) -> None:
+        self._distribution = sources
+        # 安装、bundle 与迁移读取同一个进程变量；换代后保持一致，重启前也不会读到旧发行版。
+        os.environ["AKASHIC_PLUGIN_DISTRIBUTION"] = str(sources.root)
 
 
     def read_config_input(self, plugin_id: str) -> dict[str, object]:
