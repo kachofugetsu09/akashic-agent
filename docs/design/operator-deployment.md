@@ -182,6 +182,17 @@ node scripts/ui_regression_probe.mjs --url http://127.0.0.1:<port> \
 必须使用目标版本脚本。已安装的 `akashic-release` 从当前 `runtime.env` 加载当前版本发布器；
 从旧版首次切到此实现时，使用上面的 bootstrap 或目标 checkout，旧 CLI 不认识新选项。
 
+### 本实例相对 preset 改了什么
+
+```sh
+akashic-release preset-diff
+```
+
+只读，列出 workspace `bundle.patch.toml` 相对正在运行的 preset：`changed` 是覆盖了 preset 的字段，
+`added` 是 preset 没有的 row（外置插件或可选插件），`same` 是和 preset 相同、可以删掉的 row，
+`notShipped` 是指向本发行版已不带插件的 row。用户 patch 按字段覆盖 preset，没写的启停和配置跟随 preset
+（ADR-0109）；在设置里把插件切回 preset 的启停时，这一行会被删除。
+
 ## 更新指定外置插件
 
 先读取实际基线：

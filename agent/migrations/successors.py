@@ -1,11 +1,14 @@
-"""插件拆分或改名后，把用户对前任插件的显式选择（启用或停用）交给继任 row；只补缺，不覆盖已有选择。"""
+"""workspace patch 的组合迁移：插件拆分或改名后把用户选择交给继任 row；清掉和 preset 相同、只是抄来的字段。"""
 from __future__ import annotations
 
+import os
 from typing import Any, cast
 
 import tomlkit
 
 from agent.migrations.context import current_migration_context
+from agent.plugins.bundles import BundleRow, preset_row_for, preset_rows
+from core.common.frozen_json import freeze_json
 from infra.persistence.json_store import atomic_write_text
 
 
@@ -77,3 +80,32 @@ def rename_row(predecessor: str, successor: str, label: str) -> None:
             rows[successor] = row
             taken = True
     _write_patch(before, patch, label)
+
+
+# 早期迁移和旧版启停会把 preset 的 disabled/config 原样抄进 patch，挡住 preset 以后的更新。
+# 1. 只看覆盖某条 preset row、且插件相同的 row；2. 删掉和 preset 相同的 disabled、config；
+# 3. 只剩 plugin 的 row 整行删除；4. 先留恢复点再写入。和 preset 不同的字段是用户的选择，原样保留。
+def follow_preset(label: str) -> None:
+    bundles = current_migration_context().bundle_directory
+    read = _read_patch()
+    if bundles is None or read is None:
+        return
+    before, patch, rows = read
+    preset = {row.id: row for row in preset_rows(bundles, mode=os.environ.get("AKASHIC_PLUGIN_BUNDLE", "base"))}
+    changed = False
+    for identity in list(rows):
+        row = rows[identity]
+        base = preset_row_for(preset, BundleRow(identity, str(row.get("plugin")), {}))
+        if base is None or row.get("plugin") != base.plugin:
+            continue
+        if "disabled" in row and row["disabled"] == base.disabled:
+            del row["disabled"]
+            changed = True
+        if "config" in row and freeze_json(row["config"].unwrap()) == base.config:
+            del row["config"]
+            changed = True
+        if set(row) == {"plugin"}:
+            del rows[identity]
+            changed = True
+    if changed:
+        _write_patch(before, patch, label)

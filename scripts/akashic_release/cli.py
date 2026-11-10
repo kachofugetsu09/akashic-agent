@@ -175,6 +175,28 @@ def resume(args: argparse.Namespace) -> dict[str, object]:
     return {"status": status, "attempt": str(args.attempt)}
 
 
+# 只读：当前实例的用户 patch 相对正在运行的 preset 改了什么，以及哪些 row 已经和 preset 相同。
+def preset_diff(args: argparse.Namespace) -> dict[str, object]:
+    from agent.plugins.bundles import preset_differences
+    from scripts.akashic_release.doctor import read_environment
+
+    distribution = read_environment(args.runtime_env).get("AKASHIC_PLUGIN_DISTRIBUTION")
+    if not distribution:
+        raise RuntimeError("runtime.env 没有 AKASHIC_PLUGIN_DISTRIBUTION，当前实例没有 preset")
+    groups: dict[str, list[dict[str, object]]] = {"changed": [], "added": [], "same": []}
+    for item in preset_differences(ReleasePaths(args.root).state / "workspace", Path(distribution)):
+        groups[item.kind].append({
+            "plugin": item.plugin, "fields": list(item.fields),
+            "preset": None if item.preset is None else {"disabled": item.preset.disabled, "config": dict(item.preset.config)},
+            "user": {"disabled": item.user.disabled, "config": dict(item.user.config)},
+        })
+    # 发行版市场的 row 指向本发行版已不带的插件：多半是退役或改名留下的，同 DSH 的 patch 未匹配警告。
+    shipped = {row["name"] for row in json.loads((Path(distribution) / "distribution.json").read_text())["plugins"]}
+    missing = [item["plugin"] for item in groups["added"]
+               if str(item["plugin"]).endswith("@release") and str(item["plugin"]).split("@")[0] not in shipped]
+    return {"status": "ok", "distribution": distribution, **groups, "notShipped": missing}
+
+
 def revert(args: argparse.Namespace) -> dict[str, object]:
     paths = ReleasePaths(args.root.resolve(strict=True))
     with release_lock(paths.run / "release.lock"):
@@ -248,6 +270,10 @@ def _parser() -> argparse.ArgumentParser:
     submit_parser.add_argument("--backup", action="store_true")
     submit_parser.add_argument("--session", help="部署失败时注入并唤醒的会话；默认是发起调用的会话")
     submit_parser.set_defaults(handler=submit)
+    diff_parser = subparsers.add_parser("preset-diff", help="只读：列出本实例相对 preset 的启停与配置覆盖")
+    diff_parser.add_argument("--root", type=Path, default=_DEFAULT_ROOT)
+    diff_parser.add_argument("--runtime-env", type=Path, default=_DEFAULT_ENV)
+    diff_parser.set_defaults(handler=preset_diff)
     status_parser = subparsers.add_parser("status", help="查询宿主部署任务，不启动模型回合")
     status_parser.add_argument("request_id")
     status_parser.add_argument("--root", type=Path, default=_DEFAULT_ROOT)

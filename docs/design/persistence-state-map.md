@@ -17,7 +17,7 @@
 
 | 对象与 owner | 正常增加/更新 | 失效、减少与恢复证据 |
 |---|---|---|
-| `bundle.patch.toml` / 当前 workspace 的安装与启停操作 | 增加完整插件 ID 的选择 row；更新 enabled 意图时保留 config | 卸载保留 disabled row，防止 base 再启用；安装失败只恢复本次旧选择。没有插件数据删除权 |
+| `bundle.patch.toml` / 当前 workspace 的安装与启停操作 | 增加完整插件 ID 的选择 row；启停只写 disabled，与 preset 相同时删行；没写的字段跟随 preset | 卸载保留 disabled row，防止 base 再启用；安装失败只恢复本次旧选择。没有插件数据删除权 |
 | `plugin-stable.json` / 宿主 selection | 原子发布完整已验证输入；运行时只读取已提交选择 | 新选择替代旧指针，历史 journal/恢复事实按原合同保留；换内存指针不假装外部资源已回滚 |
 | `config.input.json` / 插件配置事务 | 既有 revision 管理用户更新；bundle config 只初始化新目录 | 普通启动不覆盖现有配置，不因 row 改变而减少它 |
 | 旧 `manifest.toml` 与 `disabled_builtin` / 一次性 Yoyo | `20261011_02_bundle_choices` 先保存完整恢复计划，再写 patch、退休 Core 字段 | 旧全局清单保留但不再被正常路径读取；Core 原文保存在同目录 `.before-bundle-choices.toml`，每个 workspace 保留 `runtime/before-bundle-choices.json`。共享 config/cache 与失败重试场景核对原消息和旁支字节 |
