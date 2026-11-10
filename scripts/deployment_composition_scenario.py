@@ -235,6 +235,33 @@ asyncio.run(run())
         assert snapshot(work.parent) == before
 
 
+def preset_guarantee_stage(root):
+    """preset 启用了发行版没有提供的插件时，首装整体拒绝，不留下半份选择。"""
+    state = root / "preset-guarantee"
+    work, home, config = state / "workspace", state / "plugin-home", state / "config.toml"
+    receipt = work / "runtime/distribution-install.json"
+    repo = root / "preset-guarantee-repo"
+    repo.mkdir()
+    git(repo, "init", "-q")
+    plugin(repo, "present")
+    broken = distribution(repo, root / "preset-guarantee-dist", ["present"], ["present", "ghost"])
+    previous_home = os.environ["AKASHIC_PLUGIN_HOME"]
+    os.environ["AKASHIC_PLUGIN_HOME"] = str(home)
+    try:
+        subprocess.run([sys.executable, str(ROOT / "main.py"), "init", "--config", str(config),
+                        "--workspace", str(work)], check=True, stdout=subprocess.DEVNULL)
+        try:
+            ensure_bundle(broken, broken / "bundles/base.toml", workspace=work, plugins_home=home,
+                          config_path=config, receipt_path=receipt)
+        except RuntimeError as error:
+            assert "ghost@release" in str(error), error
+        else:
+            raise AssertionError("preset 缺少插件时首装没有拒绝")
+        assert PluginSelection(work).read() is None
+    finally:
+        os.environ["AKASHIC_PLUGIN_HOME"] = previous_home
+
+
 async def run(args):
     if args.output is None:
         root = Path(tempfile.mkdtemp(prefix="akashic-builtin-transitions-"))
@@ -664,8 +691,9 @@ step(upgrade)
     assert runner.run().migrations == ("scenario_core_upgrade",)
     assert runner.run().state == "current"
     assert not (work / "runtime/plugin-archives").exists()
+    preset_guarantee_stage(root)
     print(
-        "PASS update/removal/optional/default/disabled/config/external/byte-preservation/restart/enable/environment/uninstall/preflight/publish/failure/core-yoyo/builtin-yoyo/external-exclusion/migration-retry",
+        "PASS update/removal/optional/default/disabled/config/external/byte-preservation/restart/enable/environment/uninstall/preflight/publish/failure/core-yoyo/builtin-yoyo/external-exclusion/migration-retry/preset-guarantee",
         flush=True,
     )
     (root / "result.json").write_text(
@@ -677,7 +705,7 @@ step(upgrade)
                 "with_wheels": args.with_wheels,
                 "seed_core": str(args.seed_core.resolve()) if args.seed_core else None,
                 "cross_version_preflight": bool(args.seed_core),
-                "scenarios": 24,
+                "scenarios": 25,
             },
             indent=2,
         )

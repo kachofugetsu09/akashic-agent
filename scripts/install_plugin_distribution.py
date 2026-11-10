@@ -24,7 +24,7 @@ _SOURCE_ROOT = Path(__file__).resolve().parents[1]
 if str(_SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(_SOURCE_ROOT))
 
-from agent.plugins.bundles import composition_rows, plugin_choices
+from agent.plugins.bundles import composition_rows, plugin_choices, preset_plugin_ids
 from agent.plugins.install import install_git_plugin
 from agent.migrations.release_backup import backup_release_state
 from agent.migrations.runner import MigrationRunner
@@ -804,6 +804,21 @@ def _distribution_candidate(
     return available, candidate
 
 
+# preset 启用的行必须真正进入候选组合，首装和发布都不能静默少装；同名外置覆盖是用户的显式替换。
+def _require_preset_rows(
+    *, candidate: Mapping[str, ResolvedPluginSource], workspace: Path, distribution: Path,
+) -> None:
+    choices = plugin_choices(workspace, distribution)
+    names = {source.plugin_name for source in candidate.values()}
+    missing = sorted(
+        plugin_id for plugin_id in preset_plugin_ids(distribution)
+        if choices.get(plugin_id, False) and plugin_id not in candidate
+        and plugin_id.rpartition("@")[0] not in names
+    )
+    if missing:
+        raise RuntimeError("preset 启用的插件没有进入选择，停止发布: " + ", ".join(missing))
+
+
 def _prepare_distribution_inputs(
     *, available: DistributionSources, candidate: dict[str, ResolvedPluginSource],
     selected: dict[str, tuple[str, Mapping[str, object], Path]],
@@ -976,6 +991,7 @@ def publish_distribution(
                     name, marketplace = plugin_id.rsplit("@", 1)
                     candidate[plugin_id] = ResolvedPluginSource(code, "installed", marketplace, name,
                                                                load_static_plugin_manifest(code))
+                _require_preset_rows(candidate=candidate, workspace=workspace, distribution=distribution)
                 runner = MigrationRunner(repo_root=_SOURCE_ROOT, config_path=config_path,
                                      plugins_home=plugins_home, bundle_directory=distribution / "bundles",
                                          workspace=workspace, fixed_sources=migration_sources)
@@ -1014,6 +1030,7 @@ def publish_distribution(
                     name, marketplace = plugin_id.rsplit("@", 1)
                     candidate[plugin_id] = ResolvedPluginSource(code, "installed", marketplace, name,
                                                                load_static_plugin_manifest(code))
+                _require_preset_rows(candidate=candidate, workspace=workspace, distribution=distribution)
                 prepared_selected = dict(selected)
                 for target in targets:
                     plugin_id = target["plugin_id"]
@@ -1114,6 +1131,7 @@ def ensure_bundle(
                 available, candidate = _distribution_candidate(
                     distribution=distribution, workspace=workspace, plugins_home=plugins_home, selected=selected,
                 )
+                _require_preset_rows(candidate=candidate, workspace=workspace, distribution=distribution)
             try:
                 check_pending_publication(workspace)
             except PendingPublicationError:

@@ -37,6 +37,7 @@ status = json.loads(subprocess.check_output([
 ], text=True))
 assert any(plugin['plugin_id'] == 'gateway@release' and plugin['state'] == 'active'
            for plugin in status['plugins']), '本地控制入口没有加载 Gateway'
+assert status['preset']['missing'] == [], ('首装缺少 preset 启用的插件', status['preset'])
 patch = state / 'workspace/bundle.patch.toml'
 paths = ('startup.json', 'config.toml',
          'workspace/runtime/distribution-install.json',
