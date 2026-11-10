@@ -1,4 +1,4 @@
-/** 静态检查前端源码 CSS 的外观合同与依赖方向，规则见 frontend/design.md §2.2。不认识任何具体插件，只按目录约定判断 owner。 */
+/** 静态检查前端源码 CSS 的外观合同与依赖方向，规则见 packages/akashic-theme/design.md §2.2。不认识任何具体插件，只按目录约定判断 owner。 */
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -21,8 +21,12 @@ function trackedFiles(patterns) {
   return output.split("\n").filter(Boolean);
 }
 
+// 外壳与聊天应用归 ui、akashic_clients 两个 UI 宿主插件所有，样式规则仍按宿主看。
+const HOST_PLUGINS = new Set(["ui", "akashic_clients"]);
+
 function ownerOf(file) {
-  return (file.match(/^frontend\/plugins\/([^/]+)\//) ?? file.match(/^plugins\/([^/]+)\/web\//))?.[1] ?? HOST;
+  const owner = (file.match(/^frontend\/plugins\/([^/]+)\//) ?? file.match(/^plugins\/([^/]+)\/web\//))?.[1];
+  return owner === undefined || HOST_PLUGINS.has(owner) ? HOST : owner;
 }
 
 function kebab(role) {
@@ -31,14 +35,14 @@ function kebab(role) {
 
 // theme-runtime 按目录角色在运行时生成的颜色变量：名字从目录和别名表推出，不靠前缀放行。
 function runtimeTokens() {
-  const catalog = JSON.parse(readFileSync(resolve(repoRoot, "frontend/theme/src/theme-catalog.json"), "utf8"));
+  const catalog = JSON.parse(readFileSync(resolve(repoRoot, "packages/akashic-theme/src/theme-catalog.json"), "utf8"));
   const theme = catalog.themes[0];
   const names = [
     ...Object.keys(theme.material).map((role) => `--md-sys-color-${kebab(role)}`),
     ...Object.keys(theme.domain).map((role) => `--ak-sys-color-${kebab(role)}`),
     ...Object.keys(theme.chart).map((role) => `--ak-chart-${role}`),
   ];
-  const runtime = readFileSync(resolve(repoRoot, "frontend/theme/src/theme-runtime.ts"), "utf8");
+  const runtime = readFileSync(resolve(repoRoot, "packages/akashic-theme/src/theme-runtime.ts"), "utf8");
   const aliases = runtime.slice(runtime.indexOf("LEGACY_COLOR_ALIASES"), runtime.indexOf("satisfies Record"));
   for (const match of aliases.matchAll(/^\s*(\w+): \[/gm)) names.push(`--ak-color-${kebab(match[1])}`);
   return names.flatMap((name) => [name, `${name}-rgb`]);
@@ -138,7 +142,7 @@ function main() {
     if (PUBLIC_TOKEN.test(name) && !owners.has(HOST)) problems.push(`${[...owners].join("、")} 占用了公开命名空间 ${name}，插件私有变量请用自己的前缀`);
   }
   if (problems.length) {
-    console.error(`${problems.join("\n")}\n\n共 ${problems.length} 处。确需例外时在声明前写 /* token-exempt: 理由 */，规则见 frontend/design.md §2.2。`);
+    console.error(`${problems.join("\n")}\n\n共 ${problems.length} 处。确需例外时在声明前写 /* token-exempt: 理由 */，规则见 packages/akashic-theme/design.md §2.2。`);
     process.exit(1);
   }
   console.log(`外观合同检查通过：${styles.length} 个样式表，${references.length} 处变量引用。`);

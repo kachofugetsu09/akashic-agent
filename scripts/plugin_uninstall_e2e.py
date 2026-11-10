@@ -554,7 +554,7 @@ def main() -> None:
                                for name in ['plugins/host_execution/bridge/server.py', 'agent/plugins/manager.py', 'agent/plugins/input_preparation.py', 'agent/plugins/watcher.py',
                                             'plugins/ui/plugin.py', 'plugins/akashic_clients/plugin.py',
                                             'plugins/akashic_clients/capabilities.py', 'plugins/akashic_clients/channel.py',
-                                            'frontend/dashboard/src/webHost.ts', 'frontend/dashboard/src/main.tsx']}
+                                            'frontend/plugins/ui/dashboard/src/webHost.ts', 'frontend/plugins/ui/dashboard/src/main.tsx']}
     (root / 'result.json').write_text(json.dumps({'status': 'passed', **result}, indent=2))
     print(json.dumps(result), flush=True)
 

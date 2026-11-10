@@ -4,9 +4,16 @@
   "private": false,
   "description": "Type-only contract for model Provider Web entries",
   "types": "index.d.ts",
-  "files": ["index.d.ts", "contract.json"],
+  "files": [
+    "index.d.ts",
+    "contract.json"
+  ],
   "peerDependencies": {
     "@akashic/web-ui-v1": "^1.0.0"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "akashic": {
+    "kind": "contract",
+    "provider": "models"
+  }
 }

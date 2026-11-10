@@ -178,12 +178,8 @@ def _build_web_assets(
 ) -> tuple[Path | None, Path | None, dict[str, object]]:
     """在一次性完整源码目录构建 Web，不向调用方 checkout 写入产物。"""
 
-    required = (
-        "package.json",
-        "package-lock.json",
-        "frontend/chat/vite.config.ts",
-        "frontend/dashboard/vite.config.ts",
-    )
+    # 外壳和聊天应用归 ui、akashic_clients 所有，npm run build 自己把产物放进所属插件；这里不点名插件。
+    required = ("package.json", "package-lock.json")
     missing = [path for path in required if _git_file(repository, commit, path) is None]
     if missing:
         return None, None, {"enabled": False, "missing_source_paths": missing}
@@ -206,18 +202,8 @@ def _build_web_assets(
         ),
     }
     _run_web_command(["npm", "ci", "--ignore-scripts"], cwd=source, env=env)
-    _run_web_command(["npm", "run", "build:dashboard"], cwd=source, env=env)
-    _run_web_command(["npm", "run", "build:chat"], cwd=source, env=env)
-    _run_web_command(["npm", "run", "build:web-plugins"], cwd=source, env=env)
+    _run_web_command(["npm", "run", "build"], cwd=source, env=env)
     asset_root = source / "static"
-    required_outputs = (asset_root / "dashboard", asset_root / "chat")
-    if any(not path.is_dir() for path in required_outputs):
-        raise RuntimeError(
-            "Web 资产构建没有产生 static/dashboard 与 static/chat: "
-            + ", ".join(str(path) for path in required_outputs)
-        )
-    if any(not any(path.iterdir()) for path in required_outputs):
-        raise RuntimeError("Web 资产构建产生了空的静态目录")
 
     def version(command: list[str]) -> str:
         return subprocess.run(
@@ -230,29 +216,14 @@ def _build_web_assets(
             text=True,
         ).stdout.strip()
 
-    shutil.copytree(asset_root / "dashboard", source / "plugins/ui/static/dashboard")
-    shutil.copytree(asset_root / "chat", source / "plugins/akashic_clients/static/chat")
     return asset_root, source / "plugins", {
         "enabled": True,
         "source_commit": commit,
-        "source_paths": [
-            "frontend/chat",
-            "frontend/dashboard",
-            "frontend/plugins",
-            "frontend/theme",
-            "packages",
-            "plugins",
-            "scripts/build-web-plugins.mjs",
-        ],
-        "build_commands": [
-            "npm ci --ignore-scripts",
-            "npm run build:dashboard",
-            "npm run build:chat",
-            "npm run build:web-plugins",
-        ],
+        "source_paths": ["frontend", "packages", "plugins", "scripts", "package.json", "package-lock.json"],
+        "build_commands": ["npm ci --ignore-scripts", "npm run build"],
         "node_version": version(["node", "--version"]),
         "npm_version": version(["npm", "--version"]),
-        "file_count": sum(1 for path in asset_root.rglob("*") if path.is_file()),
+        "file_count": sum(1 for path in asset_root.rglob("*") if path.is_file()) if asset_root.is_dir() else 0,
     }
 
 

@@ -17,7 +17,7 @@ const output = resolve(values.output);
 await mkdir(output, { recursive: true, mode: 0o700 });
 const bundle = resolve(output, "bundle");
 const built = spawnSync(process.execPath, [resolve(root, "node_modules/vite/bin/vite.js"),
-  "build", "--config", "frontend/chat/vite.harness.config.ts", "--outDir", bundle, "--emptyOutDir"],
+  "build", "--config", "frontend/plugins/akashic_clients/chat/vite.harness.config.ts", "--outDir", bundle, "--emptyOutDir"],
 { cwd: root, encoding: "utf8" });
 assert.equal(built.status, 0, built.stderr);
 const fixture = await startDesktopFixtureServer(bundle, { historyCount: 2 });

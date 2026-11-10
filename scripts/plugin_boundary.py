@@ -775,6 +775,37 @@ def ui_host_findings(files: dict[str, str], policy: dict[str, list[str]] | None 
     return findings
 
 
+# 目录已整体搬走的前端根没有可扫描的文件，从策略里删掉它不算放宽。
+def _scanned_roots(roots: list[str], files: dict[str, str]) -> set[str]:
+    return {root for root in roots if any(rel.startswith(f"{root}/") for rel in files)}
+
+
+# R13：前端源码按 DSH 的方式归属——应用和模块都在 frontend/plugins/<插件>/ 下，
+# 共享的只能是 packages/ 里声明了 akashic.kind 的包（合同包另须写明提供它的插件）。
+def check_shared_layout() -> list[str]:
+    listed = subprocess.run(
+        ["git", "ls-files", "--cached", "--others", "--exclude-standard", "--", "frontend", "packages"],
+        cwd=REPO_ROOT, capture_output=True, text=True, check=True,
+    ).stdout.splitlines()
+    plugins = {path.name for path in (REPO_ROOT / "plugins").iterdir() if path.is_dir()}
+    errors: list[str] = []
+    for owner in sorted({path.split("/")[1] for path in listed if path.startswith("frontend/")}):
+        if owner != "plugins":
+            errors.append(f"R13: frontend/ 下只允许 plugins/<插件名>/: frontend/{owner}")
+    for owner in sorted({path.split("/")[2] for path in listed if path.startswith("frontend/plugins/")}):
+        if owner not in plugins:
+            errors.append(f"R13: 前端目录没有对应的插件: frontend/plugins/{owner}")
+    for package in sorted({path.split("/")[1] for path in listed if path.startswith("packages/")}):
+        manifest = REPO_ROOT / "packages" / package / "package.json"
+        meta = json.loads(manifest.read_text(encoding="utf-8")).get("akashic") if manifest.is_file() else None
+        kind = meta.get("kind") if isinstance(meta, dict) else None
+        if kind not in ("contract", "library"):
+            errors.append(f"R13: packages/{package}/package.json 必须声明 akashic.kind 为 contract 或 library")
+        elif kind == "contract" and isinstance(meta, dict) and meta.get("provider") not in plugins:
+            errors.append(f"R13: 合同包 packages/{package} 的 akashic.provider 不是现有插件")
+    return errors
+
+
 # 基线只许减少：相对 base 不能新增点名，也不能放宽宿主策略来绕过。
 def check_ui_hosts(base: str | None, baseline: set[str]) -> tuple[list[str], int]:
     current = ui_snapshot(None)
@@ -790,7 +821,7 @@ def check_ui_hosts(base: str | None, baseline: set[str]) -> tuple[list[str], int
         for key, widened in (("infrastructure", set(now["infrastructure"]) - set(policy["infrastructure"])),
                              ("host_routes", set(now["host_routes"]) - set(policy["host_routes"])),
                              ("plugins", set(policy["plugins"]) - set(now["plugins"])),
-                             ("frontend", set(policy["frontend"]) - set(now["frontend"]))):
+                             ("frontend", _scanned_roots(policy["frontend"], current) - set(now["frontend"]))):
             errors.extend(f"R12: 相对 {base} 放宽 ui_hosts.{key}: {item}" for item in sorted(widened))
     return errors, len(findings)
 
@@ -834,6 +865,7 @@ def run_check(base: str | None = None) -> int:
     ui_known = set(baseline.get("R12", []))
     ui_errors, ui_count = check_ui_hosts(base, ui_known)
     errors.extend(ui_errors)
+    errors.extend(check_shared_layout())
 
     if errors:
         print("插件边界门未通过：", file=sys.stderr)
@@ -848,7 +880,7 @@ def run_check(base: str | None = None) -> int:
         f"R2={counts['R2']}/{len(baseline.get('R2', []))} "
         f"R3={counts['R3']}/{len(baseline.get('R3', []))} "
         f"R7=0 R8=0 R9={len(core_domain_findings(current_sources))}/{len(baseline.get('R9', []))} "
-        f"R10=9 R11=0 R12={ui_count}/{len(ui_known)}（静态约束；不替代运行验收）"
+        f"R10=9 R11=0 R12={ui_count}/{len(ui_known)} R13=0（静态约束；不替代运行验收）"
     )
     return 0
 

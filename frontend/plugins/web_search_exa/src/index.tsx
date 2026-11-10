@@ -1,5 +1,5 @@
 import type { WebHostContextV1 } from "@akashic/web-ui-v1";
-import { registerForm, Field, Select, type Choice } from "../../shared/src/configuration";
+import { registerForm, Field, Select, type Choice } from "../../../../packages/akashic-plugin-kit/src/configuration";
 
 const SEARCH_TYPES: Choice[] = [{value: "auto", label: "均衡"}, {value: "fast", label: "快速"}, {value: "deep", label: "深度"}];
 const LIVECRAWL: Choice[] = [{value: "fallback", label: "缓存优先"}, {value: "preferred", label: "优先实时"}];

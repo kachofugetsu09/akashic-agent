@@ -4,9 +4,15 @@
   "private": false,
   "description": "Public contract and runtime atoms for Akashic chat plugin UI slots",
   "types": "index.d.ts",
-  "files": ["index.d.ts"],
+  "files": [
+    "index.d.ts"
+  ],
   "peerDependencies": {
     "react": "^19.0.0"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "akashic": {
+    "kind": "contract",
+    "provider": "akashic_clients"
+  }
 }

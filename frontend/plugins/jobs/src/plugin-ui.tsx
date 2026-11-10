@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { ChevronDown, Square } from "lucide-react";
 import { render, type PluginUiContext, type PluginUiDefinition } from "@akashic/chat-ui-v1";
-import { ICONS, useValue, valueStore, type ValueStore } from "../../shared/src/meta-store";
+import { ICONS, useValue, valueStore, type ValueStore } from "../../../../packages/akashic-plugin-kit/src/meta-store";
 import "./plugin-ui.css";
 
 export type JobStatus = "running" | "stopping" | "completed" | "failed" | "timeout" | "killed";

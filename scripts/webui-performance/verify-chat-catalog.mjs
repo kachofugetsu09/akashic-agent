@@ -20,7 +20,7 @@ const asset = resolve(state, "plugins/projects/plugin_ui.js");
 const saved = readFileSync(asset);
 writeFileSync(resolve(output, "project_ui.before-reload.js"), saved, { flag: "wx" });
 process.env.AKASHIC_API_ORIGIN = values.url;
-const server = await createServer({ configFile: resolve("frontend/chat/vite.harness.config.ts"),
+const server = await createServer({ configFile: resolve("frontend/plugins/akashic_clients/chat/vite.harness.config.ts"),
   server: { host: "127.0.0.1", port: 0, hmr: false }, logLevel: "error" });
 await server.listen();
 const browser = await chromium.launch({ executablePath: values.browser, headless: true });
@@ -43,9 +43,9 @@ try {
   });
   await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/assets/?session=akashic%3Astartup-benchmark`);
   await page.locator('[data-message-id="startup-099"] .message-row').waitFor();
-  // 夹具 root 是 frontend/chat/harness,聊天源码在 root 之外,经 vite 的 @fs 前缀取
+  // 夹具 root 是 frontend/plugins/akashic_clients/chat/harness,聊天源码在 root 之外,经 vite 的 @fs 前缀取
   // (#1515 删独立聊天页后 /assets/src/... 落到 SPA fallback,动态导入拿到 HTML)。
-  const runtimeModule = `/assets/@fs${resolve("frontend/chat/src/plugin-ui-runtime.tsx")}`;
+  const runtimeModule = `/assets/@fs${resolve("frontend/plugins/akashic_clients/chat/src/plugin-ui-runtime.tsx")}`;
   const refresh = () => page.evaluate(async (moduleUrl) => {
     const ui = await import(moduleUrl);
     await ui.loadWebPluginCatalog();

@@ -33,7 +33,7 @@ let browser;
 let ownsBrowser = false;
 
 try {
-  const desktopOutput = buildTarget("frontend/chat/vite.harness.config.ts", resolve(buildRoot, "desktop"));
+  const desktopOutput = buildTarget("frontend/plugins/akashic_clients/chat/vite.harness.config.ts", resolve(buildRoot, "desktop"));
   const { dashboardOutput, chatAppOutput } = buildProductionShell();
   const desktopServer = await startDesktopFixtureServer(desktopOutput, {
     dashboardRoot: dashboardOutput,

@@ -1,5 +1,5 @@
 import type { WebHostContextV1 } from "@akashic/web-ui-v1";
-import { registerForm, Field, Check, ModelField } from "../../shared/src/configuration";
+import { registerForm, Field, Check, ModelField } from "../../../../packages/akashic-plugin-kit/src/configuration";
 
 // MEMORY.md / SELF.md 的篇幅、按话题浮现与定期整理；留空即用默认值。
 export function activate(ctx: WebHostContextV1) {

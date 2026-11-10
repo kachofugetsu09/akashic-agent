@@ -1,5 +1,5 @@
 import type { WebHostContextV1 } from "@akashic/web-ui-v1";
-import { registerForm, Field, Select, type Choice } from "../../shared/src/configuration";
+import { registerForm, Field, Select, type Choice } from "../../../../packages/akashic-plugin-kit/src/configuration";
 
 // 自动：只启用了一个提供方时直接用它；启用多个时需要在这里选。
 function automatic(options: Choice[]): string {

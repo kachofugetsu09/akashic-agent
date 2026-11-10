@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import { createPortal } from "react-dom";
 import type { WebHostContextV1, WebResource, WebUiDisposer } from "@akashic/web-ui-v1";
 import type { RenderSettingsRoute, ShellSettingsRenderProps } from "@akashic/shell-ui-v1";
-import { Confirm, request, type EmbedProps, type Status } from "../../shared/src/configuration";
+import { Confirm, request, type EmbedProps, type Status } from "../../../../packages/akashic-plugin-kit/src/configuration";
 import { akashicBrandIcon } from "../../shell_ui/src/brand";
 import "./style.css";
 

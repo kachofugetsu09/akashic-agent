@@ -1,5 +1,5 @@
 import type { WebHostContextV1 } from "@akashic/web-ui-v1";
-import { registerForm, Field } from "../../shared/src/configuration";
+import { registerForm, Field } from "../../../../packages/akashic-plugin-kit/src/configuration";
 
 export function activate(ctx: WebHostContextV1) {
   return registerForm(ctx, {id: "telegram_channel", title: "Telegram 消息接入", description: "接收 Telegram 对话消息并在原对话中自动回复。", family: "telegram", familyLabel: "Telegram",

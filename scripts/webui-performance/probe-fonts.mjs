@@ -1,5 +1,5 @@
 // 字体请求取证：列出一次冷启动里全部 woff2 请求的路径、来源与缓存命中。
-// 用途:验证阅读字体只经 /dashboard/assets 取一份(见 frontend/chat/vite.config.ts 的 shareShellFonts)。
+// 用途:验证阅读字体只经 /dashboard/assets 取一份(见 frontend/plugins/akashic_clients/chat/vite.config.ts 的 shareShellFonts)。
 // 用法: node scripts/webui-performance/probe-fonts.mjs --url http://127.0.0.1:PORT/ --browser /usr/bin/chromium
 import { parseArgs } from "node:util";
 import { chromium } from "playwright-core";

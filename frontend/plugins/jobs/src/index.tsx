@@ -1,5 +1,5 @@
 import type { WebHostContextV1 } from "@akashic/web-ui-v1";
-import { registerForm, Field, Select } from "../../shared/src/configuration";
+import { registerForm, Field, Select } from "../../../../packages/akashic-plugin-kit/src/configuration";
 
 // 后台命令、子任务结束后怎样回到原会话；留空即用默认值。
 export function activate(ctx: WebHostContextV1) {

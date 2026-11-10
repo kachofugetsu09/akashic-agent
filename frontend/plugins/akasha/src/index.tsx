@@ -1,4 +1,4 @@
-import { registerForm, Field } from "../../shared/src/configuration";
+import { registerForm, Field } from "../../../../packages/akashic-plugin-kit/src/configuration";
 import type { WebHostContextV1, WebUiDisposer } from "@akashic/web-ui-v1";
 
 // Akasha 的 Web 入口只有设置分节；每轮召回展示由 message_ui.js 经插件界面插槽提供。

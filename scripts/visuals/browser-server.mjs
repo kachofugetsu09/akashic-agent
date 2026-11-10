@@ -13,7 +13,7 @@ const port = Number(process.argv[3] ?? 4330);
 const output = await mkdtemp(join(tmpdir(), "akashic-visuals-browser-"));
 await build({ configFile: false, root: repo, plugins: [react()],
   worker: { format: "es" },
-  resolve: { alias: { "@": resolve("frontend/chat/src"), mermaid: resolve("frontend/chat/src/mermaid-stub.ts") } },
+  resolve: { alias: { "@": resolve("frontend/plugins/akashic_clients/chat/src"), mermaid: resolve("frontend/plugins/akashic_clients/chat/src/mermaid-stub.ts") } },
   build: { outDir: output, emptyOutDir: false, target: "es2022",
     rollupOptions: { input: resolve("scripts/visuals/browser-entry.tsx"), output: { entryFileNames: "app.js", assetFileNames: "[name][extname]" } } } });
 const catalog = await readFile(join(evidence, "catalog.json"));

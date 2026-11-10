@@ -37,16 +37,16 @@ from plugins.models.settings import AddConnection, AddModel
 from plugins.models.contract import ModelCapabilities, CapabilitySources
 
 PAGE = """<!doctype html><meta charset="utf-8"><title>模型登录验收</title>
-<link rel="stylesheet" href="/frontend/theme/src/material-tokens.css">
-<link rel="stylesheet" href="/frontend/theme/src/brand-tokens.css">
-<link rel="stylesheet" href="/frontend/theme/src/paper-surface.css">
+<link rel="stylesheet" href="/packages/akashic-theme/src/material-tokens.css">
+<link rel="stylesheet" href="/packages/akashic-theme/src/brand-tokens.css">
+<link rel="stylesheet" href="/packages/akashic-theme/src/paper-surface.css">
 <link rel="stylesheet" href="/frontend/plugins/models/src/style.css">
-<link rel="stylesheet" href="/fixture/plugins/models/src/module.css">
+<link rel="stylesheet" href="/fixture/frontend/plugins/models/src/module.css">
 <style>body{background:var(--ak-paper-canvas);color:var(--ak-ink-primary);margin:0;font-family:var(--ak-type-reading)} *{box-sizing:border-box} [hidden]{display:none!important}</style>
 <main id="host"></main><script type="module">
-import {activate as models} from '/fixture/plugins/models/src/module.js';
-import {WebDataRegistry} from '/fixture/dashboard/src/webData.js';
-import {initializeTheme} from '/fixture/theme/src/theme-runtime.js';
+import {activate as models} from '/fixture/frontend/plugins/models/src/module.js';
+import {WebDataRegistry} from '/fixture/frontend/plugins/ui/dashboard/src/webData.js';
+import {initializeTheme} from '/fixture/packages/akashic-theme/src/theme-runtime.js';
 initializeTheme();
 const registry = new WebDataRegistry();
 import {activate as codex} from '/frontend/plugins/codex/src/module.js';
@@ -83,9 +83,9 @@ def create_app(port: int, frontend: Path, *, connection_edit: bool = False) -> F
             subprocess.run([
                 str(ROOT / "node_modules/.bin/esbuild"),
                 str(frontend / "plugins/models/src/module.js"),
-                str(frontend / "dashboard/src/webData.ts"),
-                str(frontend / "theme/src/theme-runtime.ts"),
-                "--bundle", "--format=esm", "--outdir=" + str(assets), "--outbase=" + str(frontend),
+                str(frontend / "plugins/ui/dashboard/src/webData.ts"),
+                str(frontend.parent / "packages/akashic-theme/src/theme-runtime.ts"),
+                "--bundle", "--format=esm", "--outdir=" + str(assets), "--outbase=" + str(frontend.parent),
             ], check=True, capture_output=True)
             app.mount("/fixture", StaticFiles(directory=assets))
             root = CompositionRoot("auth-ui-fixture")
@@ -126,6 +126,7 @@ def create_app(port: int, frontend: Path, *, connection_edit: bool = False) -> F
 
     app = FastAPI(lifespan=lifespan)
     app.mount("/frontend", StaticFiles(directory=frontend), name="frontend")
+    app.mount("/packages", StaticFiles(directory=frontend.parent / "packages"), name="packages")
 
     @app.middleware("http")
     async def record_commands(request: Request, call_next):

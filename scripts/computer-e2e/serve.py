@@ -70,7 +70,7 @@ def shell_module():
 
 @app.get("/product-band.css")
 def product_band():
-    return FileResponse(ROOT / "frontend/theme/src/product-band.css")
+    return FileResponse(ROOT / "packages/akashic-theme/src/product-band.css")
 
 
 @app.get("/theme.js")

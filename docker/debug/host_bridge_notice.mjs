@@ -25,7 +25,7 @@ const server = createServer(async (request, response) => {
 try {
   await build({
     stdin: {
-      contents: 'import {createRoot} from "react-dom/client"; import {HostBridgeNotice} from "./frontend/chat/src/host-bridge-notice"; createRoot(document.getElementById("root")).render(<HostBridgeNotice/>);',
+      contents: 'import {createRoot} from "react-dom/client"; import {HostBridgeNotice} from "./frontend/plugins/akashic_clients/chat/src/host-bridge-notice"; createRoot(document.getElementById("root")).render(<HostBridgeNotice/>);',
       resolveDir: process.cwd(), loader: "tsx",
     },
     bundle: true, jsx: "automatic", outfile: resolve(output, "app.js"),

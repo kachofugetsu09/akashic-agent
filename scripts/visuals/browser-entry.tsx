@@ -2,14 +2,14 @@
 import React, { useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { StickToBottom } from "use-stick-to-bottom";
-import { DesktopTimelineMessages } from "../../frontend/chat/src/desktop-conversation";
-import { loadWebPluginCatalog, receivePluginUiCatalog } from "../../frontend/chat/src/plugin-ui-runtime";
-import { ReplyActivityView } from "../../frontend/chat/src/message-view";
-import { readTimelineMessage, timelineReplyGroups, timelineToolResults, type ReplyActivity } from "../../frontend/chat/src/message-timeline";
-import { cycleTheme, initializeTheme } from "../../frontend/theme/src/theme-runtime";
-import { TooltipProvider } from "../../frontend/chat/src/components/ui/tooltip";
-import "../../frontend/chat/src/styles.css";
-import "../../frontend/chat/src/message-view.css";
+import { DesktopTimelineMessages } from "../../frontend/plugins/akashic_clients/chat/src/desktop-conversation";
+import { loadWebPluginCatalog, receivePluginUiCatalog } from "../../frontend/plugins/akashic_clients/chat/src/plugin-ui-runtime";
+import { ReplyActivityView } from "../../frontend/plugins/akashic_clients/chat/src/message-view";
+import { readTimelineMessage, timelineReplyGroups, timelineToolResults, type ReplyActivity } from "../../frontend/plugins/akashic_clients/chat/src/message-timeline";
+import { cycleTheme, initializeTheme } from "../../packages/akashic-theme/src/theme-runtime";
+import { TooltipProvider } from "../../frontend/plugins/akashic_clients/chat/src/components/ui/tooltip";
+import "../../frontend/plugins/akashic_clients/chat/src/styles.css";
+import "../../frontend/plugins/akashic_clients/chat/src/message-view.css";
 
 initializeTheme();
 const basic = new URL(location.href).searchParams.has("basic");

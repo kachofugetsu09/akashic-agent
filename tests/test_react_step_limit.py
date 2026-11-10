@@ -158,8 +158,8 @@ async def test_user_abandon_refuses_already_closed_prefix(tmp_path: Path) -> Non
 
 # 前端按字符串前缀认出「重试不会生效、只有放弃能解开」。这个契约跨了语言边界，
 # Python 侧测试只能证明自己以常量开头，所以这里直接读前端的常量定义核对。
-_TIMELINE_SOURCE = Path(__file__).parents[1] / "frontend/chat/src/message-timeline.ts"
-_CONVERSATION_SOURCE = Path(__file__).parents[1] / "frontend/chat/src/desktop-conversation.tsx"
+_TIMELINE_SOURCE = Path(__file__).parents[1] / "frontend/plugins/akashic_clients/chat/src/message-timeline.ts"
+_CONVERSATION_SOURCE = Path(__file__).parents[1] / "frontend/plugins/akashic_clients/chat/src/desktop-conversation.tsx"
 
 
 def _typescript_string_constant(path: Path, name: str) -> str:

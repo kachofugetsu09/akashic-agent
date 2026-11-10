@@ -25,7 +25,7 @@ const repo = values.source ? resolve(values.source) : resolve(dirname(fileURLToP
 const root = mkdtempSync(resolve(tmpdir(), "akashic-stream-bench-"));
 console.info("artifact: " + root);
 const build = spawnSync(process.execPath, [resolve(repo, "node_modules/vite/bin/vite.js"),
-  "build", "--config", "frontend/chat/vite.harness.config.ts", "--outDir", root + "/dist"],
+  "build", "--config", "frontend/plugins/akashic_clients/chat/vite.harness.config.ts", "--outDir", root + "/dist"],
   { cwd: repo, encoding: "utf8" });
 writeFileSync(root + "/build.log", build.stdout + build.stderr);
 if (build.status !== 0) throw new Error("前端构建失败：" + root + "/build.log");

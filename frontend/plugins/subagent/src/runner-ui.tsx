@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { render, type HeaderMetaItem, type PluginUiContext, type PluginUiDefinition } from "@akashic/chat-ui-v1";
-import { ICONS, useValue, valueStore, type ValueStore } from "../../shared/src/meta-store";
+import { ICONS, useValue, valueStore, type ValueStore } from "../../../../packages/akashic-plugin-kit/src/meta-store";
 import "./runner-ui.css";
 
 type Run = { id: string; label: string; runner: string; status: string; result: string;

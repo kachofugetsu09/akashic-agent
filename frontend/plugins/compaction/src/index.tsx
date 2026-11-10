@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { registerForm, ModelField, type FormProps, type Status } from "../../shared/src/configuration";
+import { registerForm, ModelField, type FormProps, type Status } from "../../../../packages/akashic-plugin-kit/src/configuration";
 import type { WebHostContextV1, WebUiDisposer } from "@akashic/web-ui-v1";
 import "./style.css";
 

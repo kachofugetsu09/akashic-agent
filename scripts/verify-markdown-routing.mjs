@@ -10,10 +10,10 @@ const evidence=resolve(process.env.EVIDENCE_DIR||'.pytest_artifacts/markdown-rou
 const source=JSON.stringify;
 await writeFile(root+'/entry.tsx',`
 import React from 'react';import{createRoot}from'react-dom/client';
-import{StaticMessageResponse}from ${source(repo+'/frontend/chat/src/static-message-response.tsx')};
-import{ReadingInlineCode,ReadingLink}from ${source(repo+'/frontend/chat/src/markdown-reading-nodes.tsx')};
-import{connectHost}from ${source(repo+'/frontend/chat/src/chat-host.ts')};
-import{setWorkbenchSession,setWorkbenchIntents,FILE_INTENT,DOCUMENT_INTENT}from ${source(repo+'/frontend/chat/src/shell-workbench.ts')};
+import{StaticMessageResponse}from ${source(repo+'/frontend/plugins/akashic_clients/chat/src/static-message-response.tsx')};
+import{ReadingInlineCode,ReadingLink}from ${source(repo+'/frontend/plugins/akashic_clients/chat/src/markdown-reading-nodes.tsx')};
+import{connectHost}from ${source(repo+'/frontend/plugins/akashic_clients/chat/src/chat-host.ts')};
+import{setWorkbenchSession,setWorkbenchIntents,FILE_INTENT,DOCUMENT_INTENT}from ${source(repo+'/frontend/plugins/akashic_clients/chat/src/shell-workbench.ts')};
 import{activate}from ${source(repo+'/frontend/plugins/markdown_reader/src/index.tsx')};
 window.calls=[];window.reads=[];
 const ctx={http:{request:async value=>{const u=new URL(value,location.href);reads.push(u.pathname+u.search);return {ok:true,json:async()=>u.pathname.endsWith('/files')?{status:'available',path:'/repo',root:'/repo',items:[]}:{status:'available',path:u.searchParams.get('path'),text:'# Opened document\\n'+u.searchParams.get('path')}}}},ui:{inject:(_,fn)=>fn({register:entry=>window.entry=entry})}};

@@ -16,7 +16,7 @@ _DASHBOARD_ACCESS_PREFIXES = ("/api/dashboard", "/assets")
 # 与聊天制品同一缓存合同(plugins/akashic_clients/static.py):Vite 产物文件名内嵌
 # 内容哈希,命中后永久缓存;稳定 URL(sdk、入口 HTML)不设显式头部,保持既有行为。
 _HASHED_ASSET = re.compile(r"/assets/[^/]*-[\w-]{8}\.[\w]+$")
-# 导入映射给 SDK 垫片带上内容版本（frontend/dashboard/vite.config.ts）；带版本的地址内容不变。
+# 导入映射给 SDK 垫片带上内容版本（frontend/plugins/ui/dashboard/vite.config.ts）；带版本的地址内容不变。
 _SDK_SHIM = re.compile(r"^/dashboard/assets/sdk/[\w-]+\.js$")
 
 

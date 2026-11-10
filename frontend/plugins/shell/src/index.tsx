@@ -1,5 +1,5 @@
 import type { WebHostContextV1 } from "@akashic/web-ui-v1";
-import { registerForm, Field } from "../../shared/src/configuration";
+import { registerForm, Field } from "../../../../packages/akashic-plugin-kit/src/configuration";
 
 // shell 工具在模型不指定时的超时与输出上限；留空即用默认值。
 export function activate(ctx: WebHostContextV1) {

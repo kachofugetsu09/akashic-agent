@@ -34,16 +34,16 @@ writeFileSync(
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { Search, MessageSquarePlus, Terminal, Folder, Reply, X } from "lucide-react";
-import { DesktopSidebar } from ${JSON.stringify(resolve(repo, "frontend/chat/src/desktop-sidebar.tsx"))};
-import { MarqueeText } from ${JSON.stringify(resolve(repo, "frontend/chat/src/marquee-text.tsx"))};
-import { exposeChatRuntime } from ${JSON.stringify(resolve(repo, "frontend/chat/src/chat-ui-runtime.tsx"))};
-import { connectHost } from ${JSON.stringify(resolve(repo, "frontend/chat/src/chat-host.ts"))};
-import { startWebHost } from ${JSON.stringify(resolve(repo, "frontend/dashboard/src/webHost.ts"))};
-import { setShellRailActions } from ${JSON.stringify(resolve(repo, "frontend/chat/src/shell-rail-actions.ts"))};
-import { TooltipProvider } from ${JSON.stringify(resolve(repo, "frontend/chat/src/components/ui/tooltip.tsx"))};
-import { initializeTheme, setTheme } from ${JSON.stringify(resolve(repo, "frontend/theme/src/theme-runtime.ts"))};
-import ${JSON.stringify(resolve(repo, "frontend/chat/src/styles.css"))};
-import ${JSON.stringify(resolve(repo, "frontend/chat/src/header-meta.css"))};
+import { DesktopSidebar } from ${JSON.stringify(resolve(repo, "frontend/plugins/akashic_clients/chat/src/desktop-sidebar.tsx"))};
+import { MarqueeText } from ${JSON.stringify(resolve(repo, "frontend/plugins/akashic_clients/chat/src/marquee-text.tsx"))};
+import { exposeChatRuntime } from ${JSON.stringify(resolve(repo, "frontend/plugins/akashic_clients/chat/src/chat-ui-runtime.tsx"))};
+import { connectHost } from ${JSON.stringify(resolve(repo, "frontend/plugins/akashic_clients/chat/src/chat-host.ts"))};
+import { startWebHost } from ${JSON.stringify(resolve(repo, "frontend/plugins/ui/dashboard/src/webHost.ts"))};
+import { setShellRailActions } from ${JSON.stringify(resolve(repo, "frontend/plugins/akashic_clients/chat/src/shell-rail-actions.ts"))};
+import { TooltipProvider } from ${JSON.stringify(resolve(repo, "frontend/plugins/akashic_clients/chat/src/components/ui/tooltip.tsx"))};
+import { initializeTheme, setTheme } from ${JSON.stringify(resolve(repo, "packages/akashic-theme/src/theme-runtime.ts"))};
+import ${JSON.stringify(resolve(repo, "frontend/plugins/akashic_clients/chat/src/styles.css"))};
+import ${JSON.stringify(resolve(repo, "frontend/plugins/akashic_clients/chat/src/header-meta.css"))};
 import { activate as activatePrivacyWeb } from ${JSON.stringify(resolve(repo, "frontend/plugins/privacy_mask/src/index.tsx"))};
 import privacySlotDefinition from ${JSON.stringify(resolve(repo, "frontend/plugins/privacy_mask/src/plugin-ui.tsx"))};
 
@@ -282,7 +282,7 @@ startWebHost(document.getElementById("root")!).then((session) => {
 writeFileSync(
   work + "/chat-ui-shim.ts",
   `
-import { exposeChatRuntime } from ${JSON.stringify(resolve(repo, "frontend/chat/src/chat-ui-runtime.tsx"))};
+import { exposeChatRuntime } from ${JSON.stringify(resolve(repo, "frontend/plugins/akashic_clients/chat/src/chat-ui-runtime.tsx"))};
 exposeChatRuntime();
 const C = (window as any).__akashicRuntime.ChatUi;
 export const { render, Notice, HeaderMarker, HeaderMarkerActions, MarqueeText, ChoiceMenu, copyText, ToolText, ToolData, formatDuration } = C;
@@ -290,13 +290,13 @@ export const { render, Notice, HeaderMarker, HeaderMarkerActions, MarqueeText, C
 );
 
 await build({
-  configFile: resolve(repo, "frontend/chat/vite.harness.config.ts"),
+  configFile: resolve(repo, "frontend/plugins/akashic_clients/chat/vite.harness.config.ts"),
   root: work,
   logLevel: "warn",
-  css: { postcss: resolve(repo, "frontend/chat") },
+  css: { postcss: resolve(repo, "frontend/plugins/akashic_clients/chat") },
   resolve: {
     alias: {
-      "@": resolve(repo, "frontend/chat/src"),
+      "@": resolve(repo, "frontend/plugins/akashic_clients/chat/src"),
       "@akashic/chat-ui-v1": work + "/chat-ui-shim.ts",
     },
   },

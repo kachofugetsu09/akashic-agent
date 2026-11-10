@@ -1,4 +1,4 @@
-import { registerForm, Field, ModelField } from "../../shared/src/configuration";
+import { registerForm, Field, ModelField } from "../../../../packages/akashic-plugin-kit/src/configuration";
 import type { WebHostContextV1, WebUiDisposer } from "@akashic/web-ui-v1";
 
 // Wake 的 Web 入口只有设置分节：选择主动消息的接收对话与时区。

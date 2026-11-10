@@ -1,5 +1,5 @@
 import type { WebHostContextV1 } from "@akashic/web-ui-v1";
-import { registerForm, Field } from "../../shared/src/configuration";
+import { registerForm, Field } from "../../../../packages/akashic-plugin-kit/src/configuration";
 
 // 预检截图用的浏览器；留空即用 Playwright 自带的 Chromium。
 export function activate(ctx: WebHostContextV1) {

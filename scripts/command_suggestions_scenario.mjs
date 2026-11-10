@@ -24,8 +24,8 @@ globalThis.fetch = async (url, options) => {
 };
 writeFileSync(join(temp,'entry.tsx'), `
 import React, {useRef,useState} from 'react';
-import {useComposerSuggest} from '${repo}/frontend/chat/src/composer-suggest.tsx';
-export {receivePluginUiCatalog} from '${repo}/frontend/chat/src/plugin-ui-runtime.tsx';
+import {useComposerSuggest} from '${repo}/frontend/plugins/akashic_clients/chat/src/composer-suggest.tsx';
+export {receivePluginUiCatalog} from '${repo}/frontend/plugins/akashic_clients/chat/src/plugin-ui-runtime.tsx';
 export function Harness() {
  const [value,setValue]=useState(''); const ref=useRef<HTMLTextAreaElement>(null);
  const suggest=useComposerSuggest({value,scope:'test',textareaRef:ref,setValue});
@@ -33,7 +33,7 @@ export function Harness() {
  onFocus={suggest.sync} onKeyDown={suggest.onKeyDown} {...suggest.inputProps}/>{suggest.menu}</>;
 }`);
 await build({entryPoints:[join(temp,'entry.tsx')],bundle:true,platform:'node',format:'esm',packages:'external',
- alias:{'@':repo+'/frontend/chat/src'},define:{'import.meta.env.DEV':'false'},outfile:join(temp,'entry.mjs')});
+ alias:{'@':repo+'/frontend/plugins/akashic_clients/chat/src'},define:{'import.meta.env.DEV':'false'},outfile:join(temp,'entry.mjs')});
 copyFileSync(process.argv[3], join(temp,'commands.mjs'));
 const React = await import('react');
 const {createRoot} = await import('react-dom/client');

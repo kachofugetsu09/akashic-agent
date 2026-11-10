@@ -19,7 +19,7 @@ from fontTools.ttLib import TTFont
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-OUTPUT_DIRECTORY = REPOSITORY_ROOT / "frontend/theme/src/fonts"
+OUTPUT_DIRECTORY = REPOSITORY_ROOT / "packages/akashic-theme/src/fonts"
 CSS_NAME = "reading-serif.css"
 SOURCE_SHA256 = "050080d9255a86808f2945bffac582b31ef32bc36411ce29563b4961670c66f9"
 FONTTOOLS_VERSION = "4.66.1"

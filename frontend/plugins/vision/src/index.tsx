@@ -1,5 +1,5 @@
 import type { WebHostContextV1 } from "@akashic/web-ui-v1";
-import { registerForm, ModelField } from "../../shared/src/configuration";
+import { registerForm, ModelField } from "../../../../packages/akashic-plugin-kit/src/configuration";
 
 // 看图工具只有一项设置：由哪个能看图的模型读图。
 export function activate(ctx: WebHostContextV1) {

@@ -10,7 +10,7 @@ export default tseslint.config(
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
-    files: ["frontend/dashboard/src/**/*.{ts,tsx}", "frontend/chat/src/**/*.{ts,tsx}", "plugins/**/*.ts", "types/**/*.d.ts"],
+    files: ["frontend/plugins/ui/dashboard/src/**/*.{ts,tsx}", "frontend/plugins/akashic_clients/chat/src/**/*.{ts,tsx}", "plugins/**/*.ts", "types/**/*.d.ts"],
     languageOptions: {
       ecmaVersion: 2021,
       globals: globals.browser,
@@ -30,7 +30,7 @@ export default tseslint.config(
     },
   },
   {
-    files: ["frontend/chat/src/components/ai-elements/**/*.{ts,tsx}"],
+    files: ["frontend/plugins/akashic_clients/chat/src/components/ai-elements/**/*.{ts,tsx}"],
     rules: {
       "react-hooks/refs": "off",
       "react-hooks/static-components": "off",

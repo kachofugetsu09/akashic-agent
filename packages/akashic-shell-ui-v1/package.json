@@ -4,9 +4,18 @@
   "private": false,
   "description": "Type-only contract for Shell rail action and settings entries",
   "types": "index.d.ts",
-  "files": ["index.d.ts", "contract.json", "settings.contract.json", "settings-plugins.contract.json"],
+  "files": [
+    "index.d.ts",
+    "contract.json",
+    "settings.contract.json",
+    "settings-plugins.contract.json"
+  ],
   "peerDependencies": {
     "@akashic/web-ui-v1": "^1.0.0"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "akashic": {
+    "kind": "contract",
+    "provider": "akashic_clients"
+  }
 }

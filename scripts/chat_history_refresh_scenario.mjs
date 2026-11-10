@@ -19,9 +19,9 @@ let dom;
 try {
   await symlink(resolve(repo, "node_modules"), resolve(temporary, "node_modules"));
   await build({
-    stdin: { contents: `export { useDesktopChatController } from ${JSON.stringify(resolve(repo, "frontend/chat/src/use-desktop-chat-controller.ts"))};`, resolveDir: repo, loader: "tsx" },
+    stdin: { contents: `export { useDesktopChatController } from ${JSON.stringify(resolve(repo, "frontend/plugins/akashic_clients/chat/src/use-desktop-chat-controller.ts"))};`, resolveDir: repo, loader: "tsx" },
     bundle: true, platform: "node", format: "esm", packages: "external",
-    alias: { "@": resolve(repo, "frontend/chat/src") }, loader: { ".css": "empty" },
+    alias: { "@": resolve(repo, "frontend/plugins/akashic_clients/chat/src") }, loader: { ".css": "empty" },
     define: { "import.meta.env.DEV": "false" }, outfile: resolve(temporary, "controller.mjs"),
   });
   dom = new JSDOM('<!doctype html><div id="root"></div>', { url: "http://history-refresh.local/chat", pretendToBeVisual: true });

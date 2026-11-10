@@ -1,5 +1,5 @@
 import type { WebHostContextV1 } from "@akashic/web-ui-v1";
-import { registerForm, Field } from "../../shared/src/configuration";
+import { registerForm, Field } from "../../../../packages/akashic-plugin-kit/src/configuration";
 
 export function activate(ctx: WebHostContextV1) {
   return registerForm(ctx, {id: "web_search_searxng", title: "SearXNG 网页搜索", family: "web", familyLabel: "Web",

@@ -19,10 +19,10 @@ symlinkSync(join(repo, "node_modules"), join(temp, "node_modules"), "dir");
 registerHooks({ load(url, context, next) {
   return url.endsWith(".css") ? { format: "module", source: "export default {};", shortCircuit: true } : next(url, context);
 } });
-const entry = `export { DesktopTimelineMessages } from ${JSON.stringify(repo + "/frontend/chat/src/desktop-conversation.tsx")}; export { ChatMessageView, ReplyActivityView } from ${JSON.stringify(repo + "/frontend/chat/src/message-view.tsx")}; export * as timeline from ${JSON.stringify(repo + "/frontend/chat/src/message-timeline.ts")};`;
+const entry = `export { DesktopTimelineMessages } from ${JSON.stringify(repo + "/frontend/plugins/akashic_clients/chat/src/desktop-conversation.tsx")}; export { ChatMessageView, ReplyActivityView } from ${JSON.stringify(repo + "/frontend/plugins/akashic_clients/chat/src/message-view.tsx")}; export * as timeline from ${JSON.stringify(repo + "/frontend/plugins/akashic_clients/chat/src/message-timeline.ts")};`;
 writeFileSync(join(temp, "entry.tsx"), entry);
 await build({ entryPoints: [join(temp, "entry.tsx")], bundle: true, platform: "node", format: "esm", packages: "external",
-  alias: { "@": repo + "/frontend/chat/src", mermaid: repo + "/frontend/chat/src/mermaid-stub.ts" }, loader: { ".css": "empty" },
+  alias: { "@": repo + "/frontend/plugins/akashic_clients/chat/src", mermaid: repo + "/frontend/plugins/akashic_clients/chat/src/mermaid-stub.ts" }, loader: { ".css": "empty" },
   define: { "import.meta.env.DEV": "false" }, outfile: join(temp, "components.mjs") });
 const dom = new JSDOM('<html><body><div id="root"></div></body></html>', { url: "http://fixture.test/", pretendToBeVisual: true });
 const { window } = dom;

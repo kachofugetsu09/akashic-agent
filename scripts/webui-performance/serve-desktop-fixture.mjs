@@ -24,7 +24,7 @@ try {
     vite,
     "build",
     "--config",
-    "frontend/chat/vite.harness.config.ts",
+    "frontend/plugins/akashic_clients/chat/vite.harness.config.ts",
     "--outDir",
     output,
     "--emptyOutDir",

@@ -143,7 +143,7 @@ await bundle({
 await writeFile(resolve(pluginsRoot, "visuals/frame.html"), visualFrame);
 await copyFile(resolve(repoRoot, "frontend/plugins/visuals/src/bootstrap.html"), resolve(pluginsRoot, "visuals/bootstrap.html"));
 
-const themeBuild = await bundle({ entryPoints: [resolve(repoRoot, "frontend/theme/src/theme-runtime.ts")],
+const themeBuild = await bundle({ entryPoints: [resolve(repoRoot, "packages/akashic-theme/src/theme-runtime.ts")],
   bundle: true, format: "esm", platform: "node", write: false });
 const themeModule = await import(`data:text/javascript;base64,${Buffer.from(themeBuild.outputFiles[0].contents).toString("base64")}`);
 await writeFile(resolve(pluginsRoot, "visuals/preview-theme.css"), themeModule.themeCss());
@@ -232,7 +232,7 @@ await writeFile(resolve(designAssets, "tools.json"), JSON.stringify(CORE_TOOLS.f
   .map((tool) => ({ name: tool.name, description: tool.name === "render" ? `${tool.description}\n\n${JSX_REFERENCE}` : tool.description,
     parameters: toJsonSchema(tool.input, { errorMode: "ignore" }) }))));
 // iframe 拿不到外壳页面的主题变量：与可视化预览一样内联主题 CSS 与品牌变量，按 data-theme 切换明暗。
-const designTheme = themeModule.themeCss() + await readFile(resolve(repoRoot, "frontend/theme/src/brand-tokens.css"), "utf8");
+const designTheme = themeModule.themeCss() + await readFile(resolve(repoRoot, "packages/akashic-theme/src/brand-tokens.css"), "utf8");
 const designStyles = designOutputs.filter(([path]) => path.endsWith(".css")).map(([path]) => designName(path));
 await writeFile(resolve(designAssets, "editor.html"), `<!doctype html>
 <html lang="zh-CN" data-theme="light">

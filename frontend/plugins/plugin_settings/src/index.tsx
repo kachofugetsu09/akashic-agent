@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
 import type { WebHostContextV1, WebResource } from "@akashic/web-ui-v1";
-import { Configuration, request, Field, Check, ModelField, type EmbedProps, type FormProps, type Status } from "../../shared/src/configuration";
+import { Configuration, request, Field, Check, ModelField, type EmbedProps, type FormProps, type Status } from "../../../../packages/akashic-plugin-kit/src/configuration";
 
 interface DeclaredField { name: string; label: string; kind: "text" | "lines" | "number" | "toggle" | "model" | "secret"; hint: string; }
 interface DeclaredForm { id: string; title: string; description: string; fields: DeclaredField[]; }
