@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 from typing import Callable, Mapping
 
+from scripts.akashic_release.store import runtime_distribution
 from scripts.akashic_release.doctor import read_environment, release_health_timeout, verify_release
 from scripts.akashic_release.manifest import activation_receipt, atomic_write, read_json, write_json
 from scripts.akashic_release.model import ReleasePaths
@@ -163,6 +164,8 @@ def release_environment(
             "AKASHIC_HOST_TOOLCHAIN_DIGEST": str(host_identity["toolchainDigest"]),
             "AKASHIC_RELEASE_MANIFEST": str(paths.release(commit)),
             "AKASHIC_IMAGE": str(manifest["imageId"]),
+            "AKASHIC_PLUGIN_STORE": str(paths.plugin_store),
+            "AKASHIC_PLUGIN_DISTRIBUTION": runtime_distribution(paths.plugin_store, commit),
             "AKASHIC_HOST_BRIDGE_SOCKET": str(paths.run / "host-bridge.sock"),
             "AKASHIC_HOST_BRIDGE_TOKEN_FILE": str(paths.secrets / "host-bridge.token"),
             "AKASHIC_HOST_BRIDGE_TOKEN": token,

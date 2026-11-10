@@ -28,6 +28,8 @@ services:
       AKASHIC_LOG_LEVEL: "${AKASHIC_LOG_LEVEL:-INFO}"
       AKASHIC_SERVICE_NAME: "akashic-core"
       AKASHIC_RELEASE_MANIFEST: /run/akashic-release.json
+      AKASHIC_PLUGIN_STORE: "${AKASHIC_PLUGIN_STORE:?AKASHIC_PLUGIN_STORE is required}"
+      AKASHIC_PLUGIN_DISTRIBUTION: "${AKASHIC_PLUGIN_DISTRIBUTION:-/opt/akashic/distribution}"
       AKASHIC_PLUGIN_HOME: "${AKASHIC_EXPERIMENT_ROOT:?AKASHIC_EXPERIMENT_ROOT is required}/plugin-home"
       AKASHIC_WORKLOAD_SOCKET: "${AKASHIC_WORKLOAD_RUNTIME_DIR:-${AKASHIC_EXPERIMENT_ROOT}/workload-runtime}/controller.sock"
       AKASHIC_READINESS_TIMEOUT_S: "${AKASHIC_READINESS_TIMEOUT_S:-120}"
@@ -62,6 +64,11 @@ services:
       - type: bind
         source: "${AKASHIC_RELEASE_MANIFEST:?AKASHIC_RELEASE_MANIFEST is required}"
         target: /run/akashic-release.json
+        read_only: true
+      # 镜像外的内置插件制品库；发布器写入，运行时只读。
+      - type: bind
+        source: "${AKASHIC_PLUGIN_STORE:?AKASHIC_PLUGIN_STORE is required}"
+        target: "${AKASHIC_PLUGIN_STORE:?AKASHIC_PLUGIN_STORE is required}"
         read_only: true
     tmpfs:
       - /tmp:rw,nosuid,nodev,noexec,size=256m,mode=1777

@@ -16,6 +16,7 @@ os.chdir(ROOT)
 from scripts.build_plugin_distribution import _bundle_plugin
 from agent.plugins.static_manifest import load_static_plugin_manifest
 from scripts.distribution_runtime import prepare_wheels
+from scripts.plugin_store import materialize
 from plugins.ledger.log import MessageLog
 from plugins.ledger.contract import Input
 from scripts.install_plugin_distribution import (
@@ -333,6 +334,87 @@ async def content_identity_stage(root, args):
         assert {plugin_id for plugin_id in first if changed[plugin_id] != first[plugin_id]} == {"changing@release"}
     finally:
         os.environ["AKASHIC_PLUGIN_HOME"] = previous_home
+
+
+async def store_hot_update_stage(root, args):
+    """制品库发行版：Core 换代不换插件输入；运行中只热更新内容变化的插件；合同变化整体退回。"""
+    state = root / "store-hot-update"
+    work, home, config = state / "workspace", state / "plugin-home", state / "config.toml"
+    receipt = work / "runtime/distribution-install.json"
+    store, repo = root / "plugin-store", root / "store-hot-update-repo"
+    repo.mkdir()
+    git(repo, "init", "-q")
+    names = ["steady", "quiet", "changing"]
+    for name in names:
+        plugin(repo, name)
+    contract = repo / "plugins/changing/contract.py"
+    contract.write_text("class Port:\n    value: int\n")
+    previous = {key: os.environ.get(key) for key in ("AKASHIC_PLUGIN_HOME", "AKASHIC_PLUGIN_STORE")}
+    os.environ.update(AKASHIC_PLUGIN_HOME=str(home), AKASHIC_PLUGIN_STORE=str(store))
+
+    def build(marker):
+        (repo / "core-marker.txt").write_text(marker + "\n")
+        out = root / f"store-build-{marker}"
+        distribution(repo, out, names, names)
+        if args.with_wheels:
+            prepare_wheels(out)
+        return materialize(out, store, json.loads((out / "distribution.json").read_text())["source_commit"])
+
+    def builtin_refs():
+        return {plugin_id: ref for plugin_id, (ref, descriptor) in selected(work).items()
+                if descriptor["source_type"] == "builtin"}
+
+    def generations(m):
+        return {plugin_id: generation.generation_id for plugin_id, generation in m._active_generations.items()}
+
+    try:
+        subprocess.run([sys.executable, str(ROOT / "main.py"), "init", "--config", str(config),
+                        "--workspace", str(work)], check=True, stdout=subprocess.DEVNULL)
+        first = build("first")
+        ensure_bundle(first, first / "bundles/base.toml", workspace=work, plugins_home=home,
+                      config_path=config, receipt_path=receipt)
+        refs = builtin_refs()
+        assert all(str(store / "sources") in selected(work)[plugin_id][1]["code"] for plugin_id in refs), refs
+        # 1. 发行版目录换了，插件内容没变：代码路径与输入完全复用。
+        second = build("second")
+        plan = root / "store-hot-update-plan.json"
+        plan.write_text(json.dumps({"schema_version": 1, "targets": [],
+                                    "expected_root_ref": PluginSelection(work).read()}))
+        publish_distribution(distribution=second, workspace=work, plugins_home=home,
+                             config_path=config, plan=plan, inputs=root)
+        ensure_bundle(second, second / "bundles/base.toml", workspace=work, plugins_home=home,
+                      config_path=config, receipt_path=receipt)
+        assert builtin_refs() == refs
+        # 2. 运行中只改 changing：只有它换代，其余 generation 不动。
+        os.environ["AKASHIC_PLUGIN_DISTRIBUTION"] = str(second)
+        m = await manager(work, home, second)
+        before = generations(m)
+        plugin(repo, "changing", "2")
+        third = build("third")
+        result = await m.adopt_distribution(third)
+        assert result["state"] == "active" and result["changed"] == ["changing@release"], result
+        after = generations(m)
+        assert {pid for pid in before if before[pid] != after[pid]} == {"changing@release"}, (before, after)
+        live = builtin_refs()
+        # 3. 合同结构变化不能热更新：整体退回，选择与 generation 都不变。
+        plugin(repo, "changing", "3")
+        contract.write_text("class Port:\n    value: int\n    extra: str\n")
+        fourth = build("fourth")
+        rolled = await m.adopt_distribution(fourth)
+        assert rolled["state"] == "rolled_back", rolled
+        assert builtin_refs() == live and generations(m) == after
+        await m.terminate_all()
+        # 4. 热更新后重启：启动入口用同一个发行版核对，选择原样复用。
+        ensure_bundle(third, third / "bundles/base.toml", workspace=work, plugins_home=home,
+                      config_path=config, receipt_path=receipt)
+        assert builtin_refs() == live
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        os.environ.pop("AKASHIC_PLUGIN_DISTRIBUTION", None)
 
 
 async def run(args):
@@ -766,9 +848,10 @@ step(upgrade)
     assert runner.run().state == "current"
     assert not (work / "runtime/plugin-archives").exists()
     await content_identity_stage(root, args)
+    await store_hot_update_stage(root, args)
     preset_guarantee_stage(root)
     print(
-        "PASS update/removal/optional/default/disabled/config/external/byte-preservation/restart/enable/environment/uninstall/preflight/publish/failure/core-yoyo/builtin-yoyo/external-exclusion/migration-retry/content-identity/preset-guarantee",
+        "PASS update/removal/optional/default/disabled/config/external/byte-preservation/restart/enable/environment/uninstall/preflight/publish/failure/core-yoyo/builtin-yoyo/external-exclusion/migration-retry/content-identity/store-hot-update/preset-guarantee",
         flush=True,
     )
     (root / "result.json").write_text(
