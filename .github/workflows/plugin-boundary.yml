@@ -15,8 +15,9 @@ on:
 permissions:
   contents: read
 
+# 固定前缀：被插件仓库调用时 github.workflow 是调用方名称，两个工作流会落进同一组互相取消。
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: plugin-boundary-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
