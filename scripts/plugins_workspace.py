@@ -78,10 +78,14 @@ def _enable_worktree_config(root: Path, common: Path) -> None:
     _ = _git(root, "config", *shared, "extensions.worktreeConfig", "true")
 
 
-# 当前实际生效的忽略文件（不含本工具生成的那个）；没有配置时用 Git 的默认位置。
+# 当前实际生效的忽略规则：已经指向生成文件时沿用其中继承的那一段（原来的 worktree 级配置已被覆盖）；
+# 否则读生效的那个文件，没有配置时用 Git 的默认位置。
 def _inherited_excludes(root: Path, generated: Path) -> list[str]:
-    configured = [value for value in _config_values(root, "--get-all", "core.excludesFile")
-                  if Path(value).expanduser() != generated]
+    values = _config_values(root, "--get-all", "core.excludesFile")
+    if values and Path(values[-1]).expanduser() == generated and generated.is_file():
+        lines = generated.read_text().splitlines()
+        return lines[:lines.index(_BEGIN)] if _BEGIN in lines else []
+    configured = [value for value in values if Path(value).expanduser() != generated]
     if configured:
         path = Path(configured[-1]).expanduser()
     else:

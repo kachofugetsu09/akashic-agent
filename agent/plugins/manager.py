@@ -140,6 +140,7 @@ def _reject_retired_owner_recovery(action: ReloadRecoveryAction) -> None:
 
 # 用户停用的插件不在选择里，换发行版后仍保持停用，也算换上。
 _ADOPTED_STATES = frozenset({"active", "unselected_source"})
+_ADOPTION_HISTORY = 16
 
 
 def _adoption_state(task: asyncio.Task[object]) -> dict[str, object]:
@@ -173,8 +174,8 @@ class PluginManager:
     ) -> None:
         self._dirs = plugin_dirs
         self._distribution = distribution
-        # 最近一次热更新：发行版路径与执行它的宿主任务，供发布器轮询终态。
-        self._adoption: tuple[str, asyncio.Task[object]] | None = None
+        # 最近几次热更新：update_id → (发行版路径, 执行它的宿主任务)，供发布器轮询终态。
+        self._adoptions: dict[str, tuple[str, asyncio.Task[object]]] = {}
         self._workspace = workspace
         self._selection = PluginSelection(workspace)
         self._python_environments = PythonEnvironments(workspace)
@@ -1157,13 +1158,20 @@ class PluginManager:
 
     # 换上制品库里的另一个发行版，只换代内容变化的内置插件。宿主任务执行、立即返回：
     # 请求方可能正是要换代的插件（Gateway 或它的 provider），在请求里等待会等到自己被排空。
-    # 同一发行版再次调用只读取这次热更新的状态。
-    async def adopt_distribution(self, root: Path) -> dict[str, object]:
+    # 调用方为每次热更新生成 update_id；同一 id 再次调用只读取状态，迟到的查询不会重新换代。
+    async def adopt_distribution(self, root: Path, update_id: str) -> dict[str, object]:
+        if not update_id or len(update_id) > 128:
+            raise ValueError("热更新 update_id 无效")
         key = str(root.resolve(strict=True))
-        if self._adoption is not None and self._adoption[0] == key:
-            return _adoption_state(self._adoption[1])
+        known = self._adoptions.get(update_id)
+        if known is not None:
+            if known[0] != key:
+                raise ValueError("update_id 已用于另一个发行版")
+            return _adoption_state(known[1])
         operation = self._start_operation(lambda: self._adopt_distribution(Path(key)), background=True)
-        self._adoption = (key, operation.task)
+        self._adoptions[update_id] = (key, operation.task)
+        for stale in list(self._adoptions)[:-_ADOPTION_HISTORY]:
+            del self._adoptions[stale]
         return {"state": "accepted"}
 
     # 1. 新发行版必须来自制品库且插件集合不变；2. 只调和内容变化的插件；

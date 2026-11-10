@@ -374,11 +374,12 @@ async def store_hot_update_stage(root, args):
         return {plugin_id: generation.generation_id for plugin_id, generation in m._active_generations.items()}
 
     async def adopt(m, distribution):
-        # 实例接受后在宿主任务里换代；同一发行版再次调用读取终态。
-        result = await m.adopt_distribution(distribution)
+        # 实例接受后在宿主任务里换代；同一 update_id 再次调用读取终态。
+        update_id = os.urandom(8).hex()
+        result = await m.adopt_distribution(distribution, update_id)
         while result["state"] in {"accepted", "running"}:
             await asyncio.sleep(0.05)
-            result = await m.adopt_distribution(distribution)
+            result = await m.adopt_distribution(distribution, update_id)
         return result
 
     try:
@@ -410,6 +411,11 @@ async def store_hot_update_stage(root, args):
         after = generations(m)
         assert {pid for pid in before if before[pid] != after[pid]} == {"changing@release"}, (before, after)
         live = builtin_refs()
+        late = await m.adopt_distribution(third, "same-again")
+        assert late["state"] == "accepted"
+        while (await m.adopt_distribution(third, "same-again"))["state"] in {"accepted", "running"}:
+            await asyncio.sleep(0.05)
+        assert builtin_refs() == live and generations(m) == after, "同一发行版再次热更新不应换代"
         # 3. 合同结构变化不能热更新：整体退回，选择与 generation 都不变。
         plugin(repo, "changing", "3")
         contract.write_text("class Port:\n    value: int\n    extra: str\n")

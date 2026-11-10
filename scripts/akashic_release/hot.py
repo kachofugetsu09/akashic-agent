@@ -11,15 +11,18 @@ import asyncio
 from dataclasses import dataclass
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
 import tarfile
 import tempfile
+import uuid
 
 from scripts.akashic_release.doctor import read_environment
-from scripts.akashic_release.manifest import atomic_write, read_json, write_json
+from scripts.akashic_release.manifest import atomic_write, read_json
 from scripts.akashic_release.model import ReleasePaths
+from scripts.akashic_release.store import hand_over_store
 from scripts.plugin_store import materialize
 
 # 这些文件决定镜像内容；任何一个变化都必须重建镜像。core.tar 另按成员内容比较。
@@ -131,7 +134,7 @@ def _gate(checkout: Path, image: str, distribution: Path, plan: HotPlan) -> None
 _ADOPT_DEADLINE_SECONDS = 900.0
 
 
-async def _request_adopt(workspace: Path, root: Path) -> dict[str, object]:
+async def _request_adopt(workspace: Path, root: Path, update_id: str) -> dict[str, object]:
     # 只走本机 unix 端点：不需要 token，也不必导入另一个版本的网关插件代码。
     from akashic_sdk import AsyncAkashic
     from agent.plugin_composition import load_endpoint_plan
@@ -141,26 +144,25 @@ async def _request_adopt(workspace: Path, root: Path) -> dict[str, object]:
     if len(endpoints) != 1:
         raise ConnectionError(f"热更新需要唯一的本机控制端点，当前有 {len(endpoints)} 个")
     async with await AsyncAkashic.connect(endpoints[0].address) as client:
-        result = await client.request("plugin/adopt-distribution", {"root": str(root)})
+        result = await client.request("plugin/adopt-distribution", {"root": str(root), "update_id": update_id})
     if not isinstance(result, dict):
         raise RuntimeError("实例没有返回热更新结果")
     return {str(key): value for key, value in result.items()}
 
 
-# 实例接受后在宿主任务里换代，这里轮询到终态；换代 Gateway 时连接会断开，期限内重连。
+# 实例接受后在宿主任务里换代，这里用同一 update_id 轮询到终态；换代 Gateway 时连接会断开，期限内重连。
+# 总期限包住连接、应答与重试：端点不断开也不应答时不能无限占着发布锁。超时说明结果未知，由调用方走完整发布。
 async def _adopt(environment: dict[str, str], root: Path) -> dict[str, object]:
     workspace = Path(environment["AKASHIC_WORKSPACE"])
-    result = await _request_adopt(workspace, root)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + _ADOPT_DEADLINE_SECONDS
-    while result.get("state") in {"accepted", "running"}:
-        if loop.time() > deadline:
-            raise TimeoutError("实例在期限内没有完成热更新")
-        await asyncio.sleep(1)
-        try:
-            result = await _request_adopt(workspace, root)
-        except (ConnectionError, OSError):
-            continue
+    update_id = uuid.uuid4().hex
+    async with asyncio.timeout(_ADOPT_DEADLINE_SECONDS):
+        result = await _request_adopt(workspace, root, update_id)
+        while result.get("state") in {"accepted", "running"}:
+            await asyncio.sleep(1)
+            try:
+                result = await asyncio.wait_for(_request_adopt(workspace, root, update_id), 30)
+            except (ConnectionError, OSError, TimeoutError):
+                continue
     return result
 
 
@@ -189,6 +191,7 @@ def hot_install(*, paths: ReleasePaths, checkout: Path, commit: str, runtime_env
         _reuse_wheels(active, target)
         _gate(checkout, environment["AKASHIC_IMAGE"], target, plan)
         stored = materialize(target, paths.plugin_store, commit)
+    hand_over_store(paths.plugin_store)
     try:
         result = asyncio.run(_adopt(environment, stored))
     except Exception as error:
@@ -208,7 +211,15 @@ def _point_runtime_env(runtime_env: Path, distribution: Path) -> None:
     lines = [line for line in runtime_env.read_text().splitlines()
              if not line.startswith("AKASHIC_PLUGIN_DISTRIBUTION=")]
     lines.append(f"AKASHIC_PLUGIN_DISTRIBUTION={distribution}")
-    atomic_write(runtime_env, "\n".join(lines) + "\n", mode=runtime_env.stat().st_mode & 0o777)
+    _replace_keeping_owner(runtime_env, "\n".join(lines) + "\n")
+
+
+# 原子替换会换成新 inode；以 root 运行时恢复原属主，否则运行用户读不到自己的环境与回执。
+def _replace_keeping_owner(path: Path, content: str) -> None:
+    before = path.stat() if path.exists() else None
+    atomic_write(path, content, mode=before.st_mode & 0o777 if before is not None else 0o600)
+    if before is not None and os.geteuid() == 0:
+        os.chown(path, before.st_uid, before.st_gid)
 
 
 # 重启后沿用新发行版；回执记下镜像版本不变、发行版换成目标提交。
@@ -220,7 +231,7 @@ def _record(paths: ReleasePaths, runtime_env: Path, environment: dict[str, str],
     active["distributionCommit"] = commit
     active["hotUpdate"] = {"from": str(plan.active_distribution), "to": str(stored),
                            "changed": list(plan.changed), "image": environment["AKASHIC_IMAGE"]}
-    write_json(active_path, active)
+    _replace_keeping_owner(active_path, json.dumps(active, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
 
 
 # 撤回最近一次热更新（例如界面探针判失败）：实例换回上一个发行版，runtime.env 与回执随之恢复。
@@ -237,5 +248,5 @@ def revert_hot(*, paths: ReleasePaths, runtime_env: Path) -> dict[str, object]:
     _point_runtime_env(runtime_env, previous)
     active["distributionCommit"] = previous.name
     active["revertedHotUpdate"] = active.pop("hotUpdate")
-    write_json(active_path, active)
+    _replace_keeping_owner(active_path, json.dumps(active, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
     return {"status": "hot-reverted", "distribution": str(previous), "adopt": result}

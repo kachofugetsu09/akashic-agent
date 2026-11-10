@@ -87,7 +87,7 @@ def _verify_selected_runtime(
     return {"selection_ref": root_ref,
             "active_selected": ready,
             "degraded_external": degraded,
-            "preset_retired": preset.get("retired", []),
+            "preset_retired": preset.get("retired", []) if isinstance(preset, dict) else [],
             "optional_health": "unverified"}
 
 
