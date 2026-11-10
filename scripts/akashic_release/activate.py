@@ -152,6 +152,9 @@ def release_environment(
     token = ensure_bridge_token(paths)
     bridge_python = paths.bridge_venv(commit) / "bin/python"
     values = dict(current)
+    # 拆仓期间（ADR 0148 撤回）写入的制品库路径：宿主桥接会按它加载旧发行版里的插件，发行版只认镜像内的。
+    for key in ("AKASHIC_PLUGIN_DISTRIBUTION", "AKASHIC_PLUGIN_STORE"):
+        values.pop(key, None)
     values.update(
         {
             "AKASHIC_BRIDGE_PYTHON": str(bridge_python),

@@ -20,7 +20,7 @@
 保留的其间修复：设置路由与 akasha 指纹不依赖代码目录名、通道停止时通知流正常结束、
 首装与发布不再静默少装 preset（#1975）。
 
-**已知限制：** 只改插件也要完整发布并重启一次。生产 `runtime.env` 里留有制品库时期的
-`AKASHIC_PLUGIN_DISTRIBUTION`、`AKASHIC_PLUGIN_STORE`；compose 不传它们，容器用镜像内的
-`/opt/akashic/distribution`。`/srv/data/services/akashic/plugin-store` 不再使用，确认回不去后可删除。
-akashic-plugins 仓库归档为只读，不删除。
+**已知限制：** 只改插件也要完整发布并重启一次。激活时从 `runtime.env` 去掉制品库时期的
+`AKASHIC_PLUGIN_DISTRIBUTION`、`AKASHIC_PLUGIN_STORE`（宿主桥接读 `runtime.env`，留着会加载旧发行版的插件），
+容器用镜像内的 `/opt/akashic/distribution`。`/srv/data/services/akashic/plugin-store` 不再使用，确认回不去后可删除。
+akashic-plugins 仓库不再接收改动，是否归档另定。
