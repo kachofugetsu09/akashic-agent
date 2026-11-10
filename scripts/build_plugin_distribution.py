@@ -172,16 +172,6 @@ def _run_web_command(
             )
 
 
-# 插件仓库 4c83437d 及以前的 build 不放置外壳产物，这里按旧约定补放；锁定提交越过它后删除。
-def _place_legacy_shell_assets(source: Path) -> None:
-    for owner, app in (("ui", "dashboard"), ("akashic_clients", "chat")):
-        target, built = source / "plugins" / owner / "static" / app, source / "static" / app
-        if not target.is_dir():
-            if not built.is_dir() or not any(built.iterdir()):
-                raise RuntimeError(f"Web 资产构建没有产生 {owner} 的 static/{app}")
-            shutil.copytree(built, target)
-
-
 def _build_web_assets(
     repository: Path,
     commit: str,
@@ -215,7 +205,6 @@ def _build_web_assets(
     _run_web_command(["npm", "ci", "--ignore-scripts"], cwd=source, env=env)
     _run_web_command(["npm", "run", "build"], cwd=source, env=env)
     asset_root = source / "static"
-    _place_legacy_shell_assets(source)
 
     def version(command: list[str]) -> str:
         return subprocess.run(
