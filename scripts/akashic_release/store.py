@@ -5,8 +5,10 @@ import os
 import subprocess
 import tarfile
 import tempfile
+from dataclasses import dataclass, field
 from pathlib import Path
 
+from scripts.akashic_release.doctor import read_environment
 from scripts.plugin_store import materialize
 
 _IMAGE_DISTRIBUTION = "/opt/akashic/distribution"
@@ -63,3 +65,19 @@ def hand_over_store(store: Path) -> None:
 def runtime_distribution(store: Path, commit: str) -> str:
     target = store / "distributions" / commit
     return str(target) if target.is_dir() else _IMAGE_DISTRIBUTION
+
+
+@dataclass(frozen=True)
+class ActiveSource:
+    core_commit: str | None = None
+    overrides: dict[str, str] = field(default_factory=dict)
+
+
+# 当前实例的来源记录在运行中发行版的 source_parts 里：Core 提交与插件覆盖；还没用制品库时为空。
+def active_source(runtime_env: Path) -> ActiveSource:
+    distribution = read_environment(runtime_env).get("AKASHIC_PLUGIN_DISTRIBUTION") if runtime_env.is_file() else None
+    report_path = Path(distribution) / "distribution.json" if distribution else None
+    if report_path is None or not report_path.is_file():
+        return ActiveSource()
+    parts = json.loads(report_path.read_text()).get("source_parts") or {}
+    return ActiveSource(parts.get("core"), dict(parts.get("overrides") or {}))

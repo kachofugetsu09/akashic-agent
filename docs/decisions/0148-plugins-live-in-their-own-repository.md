@@ -24,6 +24,13 @@
    所以"单提交"发布模型不变。
 5. **检查只维护在 Core。** `ci.yml`、`plugin-boundary.yml` 可被插件仓库以 `workflow_call` 调用，用 Core main 加插件 PR 提交合成后跑同一套检查。
 6. **开发共用一个工作目录。** `scripts/plugins_workspace.py attach` 把插件仓库检出到 Core 的工作目录，`scripts/plugins-git` 操作插件仓库。
+7. **实例可以单独覆盖一个插件。** 参照 DSH 的"profile 里装的版本优先于安装目录自带的版本"：`plugins.lock` 是实例默认用的版本，
+   实例用 `--plugin <name>@<插件仓库 main 上的提交>` 把一个插件钉到更新的版本。合成时只替换这个插件拥有的
+   `plugins/<name>/` 与 `frontend/plugins/<name>/`，覆盖写进合成提交说明和发行版 `source_parts.overrides`。
+   插件身份（`<name>@release`）、数据目录、配置都不变，所以照常走热更新判定与兼容门。
+   覆盖只记录在运行中的发行版里：之后的部署、重启、`revert-hot` 都跟着发行版走，没有第二份状态。
+   覆盖只接受插件仓库 `main` 上的提交，和锁定提交总在同一条历史上；部署时锁定提交已包含覆盖提交就自动退役，
+   结果里的 `retiredOverrides` 列出退役项。远端全部合进去以后，实例就回到纯 lock 状态，和新装实例逐字节一致。
 
 ## 理由
 
@@ -34,7 +41,13 @@
 
 ## 已知限制
 
-- 插件改动上线仍需要 Core 提交一次 `plugins.lock`；插件仓库不会自动开 Core PR（避免给仓库加跨仓写权限的 secret）。
+- 新装实例用的插件版本仍需要 Core 提交一次 `plugins.lock`；插件仓库不会自动开 Core PR（避免给仓库加跨仓写权限的 secret）。
+  单个实例可以先用覆盖上线，lock 之后再跟上。
+- 覆盖不接受分支或 PR 提交：分支提交被 squash 或删除后旧版本无法重建，也无法判断远端是否已经包含它。
+- 覆盖的插件仍和锁定提交里的共享代码（`packages/`、`frontend/chat` 等）一起构建；覆盖版本依赖新的共享代码或新的 Core 合同时，
+  构建或兼容门会拒绝，此时要先升 lock 或 Core。
+- 锁定提交只追上了覆盖、没有带来其他插件变化时，热更新判定是"没有插件变化"，走一次完整发布（多重启一次）。
+  发布器无法在不比较两次合成整棵树的情况下区分这种情况与只改发布工具的 Core 提交，后者必须完整发布。
 - `docker/computer` 与它的镜像发布工作流留在 Core：镜像按 digest 引用，搬走需要在 GHCR 包设置里给新仓库授权。
 - 插件仓库 PR 暂不跑 harness-performance 对比。
 - 热更新（只改插件、Core 与依赖不变）由发布器自动选择，见 `docs/design/operator-deployment.md`。界面探针不在发布器内自动运行：

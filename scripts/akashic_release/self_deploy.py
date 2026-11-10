@@ -37,7 +37,15 @@ def submit(args: argparse.Namespace) -> dict[str, object]:
     """持久接纳原调用，并确认独立 worker 的 exec；不等待更新。"""
     from plugins.gateway.runtime_stop import StopParams
 
-    if re.fullmatch(r"[0-9a-f]{40}", args.commit) is None:
+    from scripts.akashic_release.store import active_source
+    from scripts.compose_source import parse_override
+
+    for value in args.plugin:
+        _ = parse_override(value)
+    # 只换插件时默认沿用当前 Core，部署只动被覆盖的插件。
+    if args.commit is None and (args.plugin or args.reset_plugin):
+        args.commit = active_source(args.runtime_env.resolve(strict=True)).core_commit
+    if args.commit is None or re.fullmatch(r"[0-9a-f]{40}", args.commit) is None:
         raise ValueError("--commit 必须是完整 40 位 SHA")
     context = json.loads(os.environ.get("AKASHIC_CALL_CONTEXT", "{}"))
     identity = hashlib.sha256(json.dumps(context, sort_keys=True).encode()).hexdigest()[
@@ -66,6 +74,8 @@ def submit(args: argparse.Namespace) -> dict[str, object]:
         "mise": str(args.mise.resolve()),
         "unit": unit,
         "notifySession": session,
+        **({"plugin": list(args.plugin)} if args.plugin else {}),
+        **({"resetPlugin": list(args.reset_plugin)} if args.reset_plugin else {}),
     }
     with release_lock(path.with_suffix(".lock")):
         if path.exists():
@@ -242,6 +252,12 @@ def verify_closed(ack: dict[str, object], current: dict[str, str]) -> None:
             raise RuntimeError(f"旧服务未正常停止: {unit}: {state}")
 
 
+# 请求里的插件覆盖原样交给目标发布器；当前发行版记录的覆盖由目标发布器自己沿用。
+def _plugin_arguments(request: dict[str, Any]) -> list[str]:
+    return [*(f"--plugin={value}" for value in request.get("plugin", [])),
+            *(f"--reset-plugin={value}" for value in request.get("resetPlugin", []))]
+
+
 # 目标 Core 自己决定发布身份：带 plugins.lock 时 runtime checkout 与 Bridge 都按合成提交命名。
 def _composed_commit(source: Path, commit: str) -> str:
     tool = source / "scripts/compose_source.py"
@@ -259,7 +275,7 @@ def _try_hot(target_cli: Path, source: Path, root: Path, request: dict[str, Any]
     result = subprocess.run(
         [sys.executable, str(target_cli), "install", "--hot-only", "--yes",
          "--source-checkout", str(source), "--commit", request["targetCommit"], "--root", str(root),
-         "--runtime-env", request["runtimeEnv"], "--mise", request["mise"]],
+         "--runtime-env", request["runtimeEnv"], "--mise", request["mise"], *_plugin_arguments(request)],
         capture_output=True, text=True, check=False,
     )
     lines = result.stdout.strip().splitlines()
@@ -296,12 +312,12 @@ def _exec_target(path: Path, request: dict[str, Any]) -> dict[str, object] | Non
         cwd=source,
         check=True,
     )
-    composed = _composed_commit(source, request["targetCommit"])
     target_cli = source / "scripts/akashic_release/cli.py"
     hot = _try_hot(target_cli, source, root, request)
     if hot is not None:
         return hot
-    subprocess.run(
+    # 发布身份以目标发布器的结果为准：插件覆盖也进入合成提交。
+    prepared = subprocess.run(
         [
             sys.executable,
             str(target_cli),
@@ -318,9 +334,13 @@ def _exec_target(path: Path, request: dict[str, Any]) -> dict[str, object] | Non
             request["runtimeEnv"],
             "--mise",
             request["mise"],
+            *_plugin_arguments(request),
         ],
         check=True,
+        stdout=subprocess.PIPE,
+        text=True,
     )
+    composed = str(json.loads(prepared.stdout.strip().splitlines()[-1])["commit"])
     paths = ReleasePaths(root)
     python = paths.bridge_venv(composed) / "bin/python"
     # 合成后的 runtime checkout 才含插件代码，worker 从这里导入 gateway 等模块。
@@ -400,6 +420,8 @@ def worker(args: argparse.Namespace) -> dict[str, object]:
                 backup=request["backup"],
                 full=False,
                 hot_only=False,
+                plugin=request.get("plugin", []),
+                reset_plugin=request.get("resetPlugin", []),
             ),
             self_deploy=record,
         )

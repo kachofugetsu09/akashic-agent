@@ -152,6 +152,20 @@ python3 scripts/akashic_release/cli.py install \
 
 `--full` 跳过热更新；`--hot-only` 只尝试热更新，不满足条件时不做任何改动（自部署先用它）。
 
+### 只换一个插件：覆盖
+
+插件仓库 `main` 上已有某个插件的新提交，但 Core 的 `plugins.lock` 还没跟上时，可以只把这个插件换上去：
+
+```bash
+akashic-release submit --plugin scheduler@<插件仓库 main 上的完整SHA>   # 自部署；默认沿用当前 Core
+python3 scripts/akashic_release/cli.py install ... --commit <Core SHA> --plugin scheduler@<SHA>
+akashic-release submit --reset-plugin scheduler                         # 回到 plugins.lock 的版本
+```
+
+覆盖写进合成提交和发行版 `source_parts.overrides`，之后的部署和重启沿用；锁定提交包含覆盖提交时自动退役，
+安装结果的 `pluginOverrides` 是仍生效的覆盖，`retiredOverrides` 是这次退役的覆盖。设计与限制见
+[0148](../decisions/0148-plugins-live-in-their-own-repository.md)。
+
 热更新与完整发布之后都在宿主跑界面探针（插件仓库 `scripts/ui_regression_probe.mjs`，等插件重载结束再跑），
 `--baseline` 指向上一次通过的输出目录：
 
