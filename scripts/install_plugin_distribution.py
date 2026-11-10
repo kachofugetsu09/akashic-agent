@@ -193,7 +193,7 @@ def _stage_deployment_targets(
         if _git("-C", str(code), "rev-parse", "HEAD") != commit:
             raise ValueError(f"external target commit 不一致: {plugin_id}")
         if target.get("bundled") and _provenance(code) != {
-            "commit": report["source_commit"], "path": row["source_path"],
+            "commit": row["content_commit"], "path": row["source_path"],
         }:
             raise ValueError(f"bundle provenance 与 distribution 不符: {plugin_id}")
         # 已安装目标版本可继续准备输入；第三种 cache 状态必须显式修复。
@@ -336,6 +336,9 @@ def _verify_distribution(distribution: Path) -> dict[str, Any]:
             raise ValueError(f"plugins[{index}] source_revision 非法")
         if raw.get("source_commit") != commit:
             raise ValueError(f"plugins[{index}] source_commit 与 distribution 不一致")
+        content_commit = raw.get("content_commit")
+        if not isinstance(content_commit, str) or _REVISION.fullmatch(content_commit) is None:
+            raise ValueError(f"plugins[{index}] content_commit 非法")
         bundle = _distribution_file(root, raw.get("file"), f"plugins[{index}] bundle")
         _check_sha256(bundle, raw.get("sha256"), f"plugins[{index}] bundle")
         names.add(name)
@@ -886,7 +889,7 @@ def _check_distribution_sources(distribution: Path, report: dict[str, Any]) -> N
     for row in report["plugins"]:
         with measure("distribution.source", plugin=row["name"]):
             source = distribution / "sources" / row["name"]
-            if _provenance(source) != {"commit": report["source_commit"], "path": row["source_path"]}:
+            if _provenance(source) != {"commit": row["content_commit"], "path": row["source_path"]}:
                 raise ValueError(f"distribution source provenance mismatch: {row['name']}")
             with tempfile.TemporaryDirectory(prefix="akashic-source-check-") as temporary:
                 root = Path(temporary) / "source"

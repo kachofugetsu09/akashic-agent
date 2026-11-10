@@ -272,7 +272,7 @@ def distribution_plugin_sources(distribution: Path) -> tuple[ResolvedPluginSourc
             plugin_root=root, source_type="builtin", marketplace=marketplace,
             plugin_name=name, static_manifest=identity,
             wheel_tree_sha256=digest.read_text().strip() if digest.exists() else "",
-            distribution_source=report["source_commit"],
+            distribution_source=row["content_commit"],
         ))
     return tuple(sources)
 

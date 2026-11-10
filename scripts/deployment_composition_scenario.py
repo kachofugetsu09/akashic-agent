@@ -6,7 +6,7 @@ retained with full evidence. --with-wheels also resolves one public test package
 """
 
 import argparse
-import asyncio, hashlib, json, os, shutil, sqlite3, subprocess, sys, tempfile
+import asyncio, hashlib, io, json, os, shutil, sqlite3, subprocess, sys, tarfile, tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT))
 os.chdir(ROOT)
 
 from scripts.build_plugin_distribution import _bundle_plugin
+from agent.plugins.static_manifest import load_static_plugin_manifest
 from scripts.distribution_runtime import prepare_wheels
 from plugins.ledger.log import MessageLog
 from plugins.ledger.contract import Input
@@ -93,11 +94,31 @@ def migration(repo, name, migration_id, body):
     (plugin_root / "migration.catalog.toml").write_text(catalog)
 
 
-def distribution(repo, out, names, defaults):
+def legacy_bundle_plugin(repo, sha, root, out):
+    """复现旧构建器的制品：来源标签与 bundle 提交都随 monorepo 提交变化。"""
+    with tempfile.TemporaryDirectory(prefix="scenario-legacy-") as directory:
+        package = Path(directory)
+        archive = subprocess.check_output(["git", "-C", str(repo), "archive", "--format=tar", f"{sha}:{root}"])
+        with tarfile.open(fileobj=io.BytesIO(archive)) as stream:
+            stream.extractall(package, filter="data")
+        name = load_static_plugin_manifest(package).name
+        (package / ".akashic-source.json").write_text(json.dumps({"commit": sha, "path": root}, sort_keys=True) + "\n")
+        git(package, "init", "-q", "--initial-branch=source")
+        commit(package)
+        revision = git(package, "rev-parse", "HEAD")
+        bundle = out / f"{name}.bundle"
+        git(package, "bundle", "create", str(bundle.resolve()), "HEAD", "source")
+        shutil.copytree(package, out / "sources" / name, ignore=shutil.ignore_patterns(".git"))
+    return {"name": name, "source_commit": sha, "content_commit": sha, "source_path": root,
+            "file": bundle.name, "source_revision": revision,
+            "sha256": hashlib.sha256(bundle.read_bytes()).hexdigest()}
+
+
+def distribution(repo, out, names, defaults, *, legacy=False):
     sha = commit(repo)
     out.mkdir()
-    stamp = git(repo, "show", "-s", "--format=%cI", sha)
-    rows = [_bundle_plugin(repo, sha, stamp, "plugins/" + n, out, set()) for n in names]
+    rows = [(legacy_bundle_plugin(repo, sha, "plugins/" + n, out) if legacy
+             else _bundle_plugin(repo, sha, "plugins/" + n, out, set())) for n in names]
     (out / "core.tar").write_bytes(b"isolated fixture core identity")
     bundle = ['schema_version = 1', '[rows]']
     for name in defaults:
@@ -235,6 +256,55 @@ asyncio.run(run())
         assert snapshot(work.parent) == before
 
 
+def content_identity_stage(root, args):
+    """镜像内发行版路径固定时：只换 Core 不重建内置输入，只改一个插件只换它的输入。"""
+    state = root / "content-identity"
+    work, home, config = state / "workspace", state / "plugin-home", state / "config.toml"
+    receipt = work / "runtime/distribution-install.json"
+    fixed = root / "content-identity-dist"
+    repo = root / "content-identity-repo"
+    repo.mkdir()
+    git(repo, "init", "-q")
+    names = ["steady", "quiet", "changing"]
+    for name in names:
+        plugin(repo, name)
+    previous_home = os.environ["AKASHIC_PLUGIN_HOME"]
+    os.environ["AKASHIC_PLUGIN_HOME"] = str(home)
+    try:
+        subprocess.run([sys.executable, str(ROOT / "main.py"), "init", "--config", str(config),
+                        "--workspace", str(work)], check=True, stdout=subprocess.DEVNULL)
+
+        # 与生产一致：首装走启动入口；换镜像先由发布器提交选择，再由启动入口核对。
+        def publish(marker):
+            (repo / "content-identity.txt").write_text(marker + "\n")
+            if fixed.exists():
+                shutil.rmtree(fixed)
+            distribution(repo, fixed, names, names)
+            if args.with_wheels:
+                prepare_wheels(fixed)
+            if receipt.exists():
+                plan = root / "content-identity-plan.json"
+                plan.write_text(json.dumps({"schema_version": 1, "targets": [],
+                                            "expected_root_ref": PluginSelection(work).read()}))
+                publish_distribution(distribution=fixed, workspace=work, plugins_home=home,
+                                     config_path=config, plan=plan, inputs=root)
+            ensure_bundle(fixed, fixed / "bundles/base.toml", workspace=work, plugins_home=home,
+                          config_path=config, receipt_path=receipt)
+            return {plugin_id: ref for plugin_id, (ref, descriptor) in selected(work).items()
+                    if descriptor["source_type"] == "builtin"}
+
+        first = publish("first")
+        assert len(first) == 3, first
+        # 1. 只有 Core 侧文件变化：插件内容提交不变，已选输入原样复用。
+        assert publish("core only") == first
+        # 2. 只改 changing：只有它得到新输入。
+        plugin(repo, "changing", "2")
+        changed = publish("plugin changed")
+        assert {plugin_id for plugin_id in first if changed[plugin_id] != first[plugin_id]} == {"changing@release"}
+    finally:
+        os.environ["AKASHIC_PLUGIN_HOME"] = previous_home
+
+
 async def run(args):
     if args.output is None:
         root = Path(tempfile.mkdtemp(prefix="akashic-builtin-transitions-"))
@@ -253,7 +323,7 @@ async def run(args):
     oldnames = ["alpha", "gone", "disabled", "optional"]
     for n in oldnames:
         plugin(repo, n)
-    old = distribution(repo, root / "old", oldnames, oldnames)
+    old = distribution(repo, root / "old", oldnames, oldnames, legacy=True)
     state = root / "state"
     state.mkdir()
     work = state / "workspace"
@@ -392,7 +462,8 @@ async def run(args):
         assert snapshot(home / "cache")[key] == value, key
     assert (
         now["alpha@release"][1]["distribution_source"]
-        == json.loads((new / "distribution.json").read_text())["source_commit"]
+        == next(row["content_commit"] for row in json.loads((new / "distribution.json").read_text())["plugins"]
+                if row["name"] == "alpha")
     )
     stable = PluginSelection(work).read()
     ensure_bundle(
@@ -664,8 +735,9 @@ step(upgrade)
     assert runner.run().migrations == ("scenario_core_upgrade",)
     assert runner.run().state == "current"
     assert not (work / "runtime/plugin-archives").exists()
+    content_identity_stage(root, args)
     print(
-        "PASS update/removal/optional/default/disabled/config/external/byte-preservation/restart/enable/environment/uninstall/preflight/publish/failure/core-yoyo/builtin-yoyo/external-exclusion/migration-retry",
+        "PASS update/removal/optional/default/disabled/config/external/byte-preservation/restart/enable/environment/uninstall/preflight/publish/failure/core-yoyo/builtin-yoyo/external-exclusion/migration-retry/content-identity",
         flush=True,
     )
     (root / "result.json").write_text(
@@ -677,7 +749,7 @@ step(upgrade)
                 "with_wheels": args.with_wheels,
                 "seed_core": str(args.seed_core.resolve()) if args.seed_core else None,
                 "cross_version_preflight": bool(args.seed_core),
-                "scenarios": 24,
+                "scenarios": 25,
             },
             indent=2,
         )

@@ -334,10 +334,40 @@ def _copy_runtime_wiring(
     return copied
 
 
+# 固定作者与时间，使同一份内容在任意源提交下得到同一个 Git 提交。
+_BUNDLE_AUTHOR_ENV = {
+    "GIT_AUTHOR_NAME": "Akashic build",
+    "GIT_AUTHOR_EMAIL": "build@akashic.invalid",
+    "GIT_COMMITTER_NAME": "Akashic build",
+    "GIT_COMMITTER_EMAIL": "build@akashic.invalid",
+    "GIT_AUTHOR_DATE": "2000-01-01T00:00:00+00:00",
+    "GIT_COMMITTER_DATE": "2000-01-01T00:00:00+00:00",
+}
+
+
+# 提交制品目录的完整内容并返回提交号；临时仓库关闭自动 gc，避免清理时后台仍写对象库。
+def _commit_package(package: Path, message: str) -> str:
+    git(package, "add", "--all")
+    git(
+        package,
+        "-c",
+        "commit.gpgSign=false",
+        "-c",
+        "gc.auto=0",
+        "-c",
+        "maintenance.auto=false",
+        "commit",
+        "--allow-empty",
+        "-m",
+        message,
+        env={**os.environ, **_BUNDLE_AUTHOR_ENV},
+    )
+    return git(package, "rev-parse", "HEAD").decode().strip()
+
+
 def _bundle_plugin(
     repository: Path,
     commit: str,
-    stamp: str,
     root: str,
     output: Path,
     names: set[str],
@@ -365,35 +395,14 @@ def _bundle_plugin(
         provenance = package / ".akashic-source.json"
         if provenance.exists():
             raise ValueError(f"插件源码已经占用构建来源文件: {root}")
+        # 内容提交只由插件制品内容决定；无关提交不改变来源身份，部署可复用旧输入。
+        git(package, "init", "--initial-branch=source")
+        content = _commit_package(package, f"Akashic plugin {manifest.name} content")
         provenance.write_text(
-            json.dumps({"commit": commit, "path": root}, sort_keys=True) + "\n",
+            json.dumps({"commit": content, "path": root}, sort_keys=True) + "\n",
             encoding="utf-8",
         )
-        git(package, "init", "--initial-branch=source")
-        git(package, "add", "--all")
-        env = {
-            **os.environ,
-            "GIT_AUTHOR_NAME": "Akashic build",
-            "GIT_AUTHOR_EMAIL": "build@akashic.invalid",
-            "GIT_COMMITTER_NAME": "Akashic build",
-            "GIT_COMMITTER_EMAIL": "build@akashic.invalid",
-            "GIT_AUTHOR_DATE": stamp,
-            "GIT_COMMITTER_DATE": stamp,
-        }
-        # 临时仓库随 with 块删除；关闭自动 gc/maintenance，避免后台进程在清理时仍写对象库。
-        git(
-            package,
-            "-c",
-            "commit.gpgSign=false",
-            "-c",
-            "gc.auto=0",
-            "-c",
-            "maintenance.auto=false",
-            "commit",
-            "-m",
-            f"Build {root} from {commit}",
-            env=env,
-        )
+        _commit_package(package, f"Akashic plugin {manifest.name} source label")
         identity = git(package, "rev-parse", "HEAD").decode().strip()
         bundle = output / f"{manifest.name}.bundle"
         git(package, "bundle", "create", str(bundle.resolve()), "HEAD", "source")
@@ -404,6 +413,7 @@ def _bundle_plugin(
         return {
             "name": manifest.name,
             "source_commit": commit,
+            "content_commit": content,
             "source_path": root,
             "file": bundle.name,
             "source_revision": identity,
@@ -423,7 +433,6 @@ def build(repository: Path, revision: str, output: Path) -> dict[str, object]:
         revision + "^{commit}",
     ).decode().strip()
     tree = git(repository, "rev-parse", f"{commit}^{{tree}}").decode().strip()
-    stamp = git(repository, "show", "-s", "--format=%cI", commit).decode().strip()
     commit_epoch = int(git(repository, "show", "-s", "--format=%ct", commit).decode())
     files = git(repository, "ls-tree", "-r", "--name-only", commit).decode().splitlines()
     roots = sorted(
@@ -463,7 +472,6 @@ def build(repository: Path, revision: str, output: Path) -> dict[str, object]:
             _bundle_plugin(
                 repository,
                 commit,
-                stamp,
                 root,
                 output,
                 names,
