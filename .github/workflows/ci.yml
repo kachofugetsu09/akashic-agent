@@ -3,12 +3,22 @@ name: CI
 on:
   workflow_dispatch:
   pull_request:
+  # 插件仓库的 PR 调用同一套检查：Core 取 main，插件取 PR 提交。
+  workflow_call:
+    inputs:
+      plugins_commit:
+        type: string
+        required: true
+      plugins_base:
+        type: string
+        default: ""
 
 permissions:
   contents: read
 
+# 固定前缀：被插件仓库调用时 github.workflow 是调用方名称，两个工作流会落进同一组互相取消。
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -19,7 +29,16 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
         with:
+          repository: ${{ inputs.plugins_commit && 'kachofugetsu09/akashic-agent' || github.repository }}
+          ref: ${{ inputs.plugins_commit && 'main' || '' }}
           fetch-depth: 0
+
+      - name: Compose with plugins
+        env:
+          BASE: origin/main
+          PLUGINS_COMMIT: ${{ inputs.plugins_commit }}
+          PLUGINS_BASE: ${{ inputs.plugins_base }}
+        run: sh scripts/ci_compose.sh
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -55,7 +74,7 @@ jobs:
           .venv/bin/pyright --level error
           .venv/bin/pyright --project pyrightconfig.tests.json --level error
           .venv/bin/python scripts/generate_control_schema.py --check
-          python scripts/check_yoyo_migrations.py --base origin/main
+          python scripts/check_yoyo_migrations.py --base "$COMPOSED_BASE"
 
       - name: Check Python SDK
         run: |
@@ -99,6 +118,14 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.plugins_commit && 'kachofugetsu09/akashic-agent' || github.repository }}
+          ref: ${{ inputs.plugins_commit && 'main' || '' }}
+
+      - name: Compose with plugins
+        env:
+          PLUGINS_COMMIT: ${{ inputs.plugins_commit }}
+        run: sh scripts/ci_compose.sh
 
       - name: Set up Node.js
         uses: actions/setup-node@v4

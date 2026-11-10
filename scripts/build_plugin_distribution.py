@@ -24,6 +24,7 @@ if str(_SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(_SOURCE_ROOT))
 
 from agent.plugins.static_manifest import load_static_plugin_manifest
+from scripts.compose_source import compose_source, composed_parts, read_plugins_lock
 from utils.timing import measure
 
 
@@ -432,6 +433,9 @@ def build(repository: Path, revision: str, output: Path) -> dict[str, object]:
         "--end-of-options",
         revision + "^{commit}",
     ).decode().strip()
+    # 拆分后的 Core 提交先与锁定的插件合成；已经是合成提交时原样构建。
+    if composed_parts(repository, commit) is None and read_plugins_lock(repository, commit) is not None:
+        commit = compose_source(repository, commit).commit
     tree = git(repository, "rev-parse", f"{commit}^{{tree}}").decode().strip()
     commit_epoch = int(git(repository, "show", "-s", "--format=%ct", commit).decode())
     files = git(repository, "ls-tree", "-r", "--name-only", commit).decode().splitlines()
@@ -484,9 +488,12 @@ def build(repository: Path, revision: str, output: Path) -> dict[str, object]:
     (output / "requirements.lock").write_bytes(
         git(repository, "show", f"{commit}:docker/host-runtime/requirements.lock")
     )
+    parts = composed_parts(repository, commit)
     report: dict[str, object] = {
         "schema_version": 3,
         "source_commit": commit,
+        # 合成提交记录它由哪个 Core 提交与插件提交组成；未拆分的提交为 null。
+        "source_parts": None if parts is None else {"core": parts[0], "plugins": parts[1]},
         "source_tree": tree,
         "core": {
             "file": "core.tar",

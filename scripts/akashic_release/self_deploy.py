@@ -15,6 +15,7 @@ import time
 
 from scripts.akashic_release.doctor import read_environment
 from scripts.akashic_release.manifest import read_json, write_json, release_lock
+from scripts.akashic_release.model import ReleasePaths
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "sdk/python/src"))
@@ -240,6 +241,18 @@ def verify_closed(ack: dict[str, object], current: dict[str, str]) -> None:
             raise RuntimeError(f"旧服务未正常停止: {unit}: {state}")
 
 
+# 目标 Core 自己决定发布身份：带 plugins.lock 时 runtime checkout 与 Bridge 都按合成提交命名。
+def _composed_commit(source: Path, commit: str) -> str:
+    tool = source / "scripts/compose_source.py"
+    if not tool.exists():
+        return commit
+    output = subprocess.run(
+        [sys.executable, str(tool), "--repository", str(source), "--commit", commit],
+        check=True, capture_output=True, text=True,
+    ).stdout
+    return output.strip().splitlines()[-1]
+
+
 def _exec_target(path: Path, request: dict[str, Any]) -> None:
     """准备目标产物后用其解释器替换当前 worker，保持同一 job 和 writer。"""
     source = path.with_suffix(".source")
@@ -265,6 +278,7 @@ def _exec_target(path: Path, request: dict[str, Any]) -> None:
         cwd=source,
         check=True,
     )
+    composed = _composed_commit(source, request["targetCommit"])
     target_cli = source / "scripts/akashic_release/cli.py"
     subprocess.run(
         [
@@ -286,12 +300,15 @@ def _exec_target(path: Path, request: dict[str, Any]) -> None:
         ],
         check=True,
     )
-    python = root / "bridge-venvs" / request["targetCommit"] / "bin/python"
+    paths = ReleasePaths(root)
+    python = paths.bridge_venv(composed) / "bin/python"
+    # 合成后的 runtime checkout 才含插件代码，worker 从这里导入 gateway 等模块。
+    runtime_cli = paths.source(composed) / "scripts/akashic_release/cli.py"
     os.execv(
         str(python),
         [
             str(python),
-            str(target_cli),
+            str(runtime_cli),
             "self-deploy-worker",
             "--request",
             str(path),
