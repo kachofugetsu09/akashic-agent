@@ -18,7 +18,7 @@
 - 用户 patch 按字段覆盖 preset（ADR-0109 修订），没改过 preset 的实例跟随新 preset 的启停。
 
 保留的其间修复：设置路由与 akasha 指纹不依赖代码目录名、通道停止时通知流正常结束、
-首装与发布不再静默少装 preset（#1975）、三个旧迁移关闭 journal 连接。
+首装与发布不再静默少装 preset（#1975）。
 
 **已知限制：** 只改插件也要完整发布并重启一次。生产 `runtime.env` 里留有制品库时期的
 `AKASHIC_PLUGIN_DISTRIBUTION`、`AKASHIC_PLUGIN_STORE`；compose 不传它们，容器用镜像内的

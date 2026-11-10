@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 import re
-from contextlib import closing
 import sqlite3
 from uuid import uuid4
 
@@ -20,7 +19,7 @@ def upgrade(connection: sqlite3.Connection) -> None:
     path = workspace / "runtime/plugin-reloads.sqlite3"
     if not path.exists():
         return
-    with closing(sqlite3.connect(path)) as source, source:
+    with sqlite3.connect(path) as source:
         source.row_factory = sqlite3.Row
         columns = tuple(row[1] for row in source.execute("PRAGMA table_info(config_updates)"))
         if not columns:
@@ -32,7 +31,7 @@ def upgrade(connection: sqlite3.Connection) -> None:
             raise RuntimeError("旧配置回执结构未知，停止升级")
         # 1. 备份实际账本；旧输入只在本次显式迁移读取，不参与正常运行。
         backup = path.with_name(f"{path.name}.before-config-receipts.{uuid4().hex}.bak")
-        with closing(sqlite3.connect(backup)) as target, target:
+        with sqlite3.connect(backup) as target:
             source.backup(target)
             if target.execute("PRAGMA integrity_check").fetchone() != ("ok",):
                 raise RuntimeError("配置回执备份完整性检查失败")
