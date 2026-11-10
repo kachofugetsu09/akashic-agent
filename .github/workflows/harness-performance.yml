@@ -50,6 +50,11 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Compose with locked plugins
+        run: |
+          echo "CORE_HEAD=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          sh scripts/ci_compose.sh
+
       - name: Check out harness-perf-benchmark
         uses: actions/checkout@v4
         with:
@@ -88,8 +93,10 @@ jobs:
           BASE_REF: ${{ github.event.pull_request.base.ref || inputs.base }}
         run: |
           git fetch --no-tags origin "$BASE_REF"
-          base=$(git merge-base FETCH_HEAD HEAD)
-          git worktree add --detach "$RUNNER_TEMP/akashic-base" "$base"
+          base=$(git merge-base FETCH_HEAD "$CORE_HEAD")
+          # 拆仓后的基线同样合成插件；拆分前的提交原样使用。
+          git worktree add --detach "$RUNNER_TEMP/akashic-base" \
+            "$(python3 scripts/compose_source.py --repository . --commit "$base")"
           echo "sha=$base" >> "$GITHUB_OUTPUT"
 
       - name: Compare harness performance

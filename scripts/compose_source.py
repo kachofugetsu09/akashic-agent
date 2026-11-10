@@ -135,7 +135,8 @@ def compose_source(
     # 时间取 Core 提交的提交时间：仍由输入唯一决定，同时让构建产物的 mtime 有意义。
     date = _git(repository, "show", "-s", "--format=%cI", core_commit)
     env = {**os.environ, **_IDENTITY, "GIT_AUTHOR_DATE": date, "GIT_COMMITTER_DATE": date}
-    composed = _git(repository, "commit-tree", tree, env=env, stdin=message)
+    # 固定提交编码：操作者的 i18n.commitEncoding 会写进提交对象，改变合成提交号。
+    composed = _git(repository, "-c", "i18n.commitEncoding=UTF-8", "commit-tree", tree, env=env, stdin=message)
     # 引用让本地 file:// 取用与 gc 都能看到合成提交。
     _ = _git(repository, "update-ref", COMPOSED_REF_PREFIX + composed, composed)
     return ComposedSource(composed, core_commit, target)

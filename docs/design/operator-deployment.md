@@ -130,6 +130,12 @@ python3 scripts/akashic_release/cli.py install \
   --source-checkout /path/to/target-checkout --commit <40位SHA> --yes
 ```
 
+`--commit` 始终是 Core 提交。Core 带 `plugins.lock` 时，发布器与锁定的
+[akashic-plugins](https://github.com/kachofugetsu09/akashic-plugins) 提交合成确定性的源提交
+（[0148](../decisions/0148-plugins-live-in-their-own-repository.md)）；`runtime-sources/`、`releases/`、`bridge-venvs/`
+的目录名和 `active.json` 的 `targetCommit` 都是合成提交，安装结果里的 `coreCommit`、`pluginsCommit` 记录来源。
+用 `git show -s <合成提交>` 也能读出两个来源。只改插件时，先把插件仓库提交锁进 Core，再部署这个 Core 提交。
+
 必须使用目标版本脚本。已安装的 `akashic-release` 从当前 `runtime.env` 加载当前版本发布器；
 从旧版首次切到此实现时，使用上面的 bootstrap 或目标 checkout，旧 CLI 不认识新选项。
 
