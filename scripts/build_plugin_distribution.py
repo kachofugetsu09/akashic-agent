@@ -172,6 +172,16 @@ def _run_web_command(
             )
 
 
+# 插件仓库 4c83437d 及以前的 build 不放置外壳产物，这里按旧约定补放；锁定提交越过它后删除。
+def _place_legacy_shell_assets(source: Path) -> None:
+    for owner, app in (("ui", "dashboard"), ("akashic_clients", "chat")):
+        target, built = source / "plugins" / owner / "static" / app, source / "static" / app
+        if not target.is_dir():
+            if not built.is_dir() or not any(built.iterdir()):
+                raise RuntimeError(f"Web 资产构建没有产生 {owner} 的 static/{app}")
+            shutil.copytree(built, target)
+
+
 def _build_web_assets(
     repository: Path,
     commit: str,
@@ -179,12 +189,7 @@ def _build_web_assets(
 ) -> tuple[Path | None, Path | None, dict[str, object]]:
     """在一次性完整源码目录构建 Web，不向调用方 checkout 写入产物。"""
 
-    required = (
-        "package.json",
-        "package-lock.json",
-        "frontend/chat/vite.config.ts",
-        "frontend/dashboard/vite.config.ts",
-    )
+    required = ("package.json", "package-lock.json")
     missing = [path for path in required if _git_file(repository, commit, path) is None]
     if missing:
         return None, None, {"enabled": False, "missing_source_paths": missing}
@@ -206,19 +211,11 @@ def _build_web_assets(
             / "npm"
         ),
     }
+    # 插件仓库的 npm run build 负责把产物放进所属插件目录；Core 不点名哪个插件拥有哪个应用。
     _run_web_command(["npm", "ci", "--ignore-scripts"], cwd=source, env=env)
-    _run_web_command(["npm", "run", "build:dashboard"], cwd=source, env=env)
-    _run_web_command(["npm", "run", "build:chat"], cwd=source, env=env)
-    _run_web_command(["npm", "run", "build:web-plugins"], cwd=source, env=env)
+    _run_web_command(["npm", "run", "build"], cwd=source, env=env)
     asset_root = source / "static"
-    required_outputs = (asset_root / "dashboard", asset_root / "chat")
-    if any(not path.is_dir() for path in required_outputs):
-        raise RuntimeError(
-            "Web 资产构建没有产生 static/dashboard 与 static/chat: "
-            + ", ".join(str(path) for path in required_outputs)
-        )
-    if any(not any(path.iterdir()) for path in required_outputs):
-        raise RuntimeError("Web 资产构建产生了空的静态目录")
+    _place_legacy_shell_assets(source)
 
     def version(command: list[str]) -> str:
         return subprocess.run(
@@ -231,29 +228,14 @@ def _build_web_assets(
             text=True,
         ).stdout.strip()
 
-    shutil.copytree(asset_root / "dashboard", source / "plugins/ui/static/dashboard")
-    shutil.copytree(asset_root / "chat", source / "plugins/akashic_clients/static/chat")
     return asset_root, source / "plugins", {
         "enabled": True,
         "source_commit": commit,
-        "source_paths": [
-            "frontend/chat",
-            "frontend/dashboard",
-            "frontend/plugins",
-            "frontend/theme",
-            "packages",
-            "plugins",
-            "scripts/build-web-plugins.mjs",
-        ],
-        "build_commands": [
-            "npm ci --ignore-scripts",
-            "npm run build:dashboard",
-            "npm run build:chat",
-            "npm run build:web-plugins",
-        ],
+        "source_paths": ["frontend", "packages", "plugins", "scripts", "package.json", "package-lock.json"],
+        "build_commands": ["npm ci --ignore-scripts", "npm run build"],
         "node_version": version(["node", "--version"]),
         "npm_version": version(["npm", "--version"]),
-        "file_count": sum(1 for path in asset_root.rglob("*") if path.is_file()),
+        "file_count": sum(1 for path in asset_root.rglob("*") if path.is_file()) if asset_root.is_dir() else 0,
     }
 
 
