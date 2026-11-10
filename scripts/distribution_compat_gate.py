@@ -75,7 +75,9 @@ class BundleRecords:
         _ = subprocess.run(["git", "init", "-q", "--bare", str(self._repo)], check=True)
 
     def _git(self, *args: str, stdin: bytes | None = None) -> subprocess.CompletedProcess[bytes]:
-        return subprocess.run(["git", "-C", str(self._repo), *args], input=stdin, capture_output=True, check=False)
+        # 临时仓库关闭自动 gc/maintenance：连续 fetch 几十个 bundle 会触发后台整理，与清理临时目录竞争。
+        return subprocess.run(["git", "-c", "gc.auto=0", "-c", "maintenance.auto=false", "-C", str(self._repo), *args],
+                              input=stdin, capture_output=True, check=False)
 
     def fetch(self, row: dict[str, str], report: Report) -> bool:
         # 1. bundle 自身摘要必须等于发行记录 2. 头提交必须是记录的 source_revision
