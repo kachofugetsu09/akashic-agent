@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictInt
 
 from plugins.ledger.contract import ContentPart, Input, Message, MessageReader, Output, with_truncated_head
 
-from .services import MessageCatalogPort, MessagePagePort, SessionEntryPort
+from .services import ChannelClosed, MessageCatalogPort, MessagePagePort, SessionEntryPort
 
 POLL_INTERVAL_SECONDS = 2.0
 HEARTBEAT_SECONDS = 15.0
@@ -131,8 +131,11 @@ async def notification_events(
     clock = asyncio.get_running_loop().time
     last_beat = clock()
     while True:
-        # 2. 先比目录水位，没有会话前进时整目录扫描不会产出任何事件，直接跳过。
-        heads = await feed.heads()
+        # 2. 先比目录水位，没有会话前进时整目录扫描不会产出任何事件，直接跳过；通道停止接纳时正常结束，客户端重连。
+        try:
+            heads = await feed.heads()
+        except ChannelClosed:
+            return
         if any(head > cursor.get(session_id, -1) for session_id, head in heads.items()):
             async for event in _replay(feed, cursor, _reads(feed, reads)):
                 yield event

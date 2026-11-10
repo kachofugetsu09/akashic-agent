@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import replace
 import asyncio
 import hashlib
+import importlib.util
 import os
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -53,18 +54,24 @@ _PROJECTION_PACKAGES = ("akasha", "turn_projection", "ledger", "content")
 
 # 投影与准入实现的源码指纹：规则相同但实现变了时，旧续读点可能越过新实现会接纳的闭段。
 # 读不全源码时返回空串，本进程既不复用也不保存落盘续读点，退回从头投影。
+# 包目录按导入系统定位，不按本文件的上级目录推断其他插件的位置。
 @cache
 def _projection_code() -> str:
-    plugins = Path(__file__).resolve().parents[2]
     digest = hashlib.sha256()
     try:
         for package in _PROJECTION_PACKAGES:
-            for path in sorted((plugins / package).rglob("*.py")):
-                if "__pycache__" in path.parts:
-                    continue
-                digest.update(path.relative_to(plugins).as_posix().encode())
+            spec = importlib.util.find_spec(f"plugins.{package}")
+            locations = None if spec is None else spec.submodule_search_locations
+            if not locations:
+                return ""
+            root = Path(next(iter(locations))).resolve()
+            files = sorted(path for path in root.rglob("*.py") if "__pycache__" not in path.relative_to(root).parts)
+            if not files:
+                return ""
+            for path in files:
+                digest.update(f"{package}/{path.relative_to(root).as_posix()}".encode())
                 digest.update(path.read_bytes())
-    except OSError:
+    except (OSError, ImportError, ValueError):
         return ""
     return digest.hexdigest()
 

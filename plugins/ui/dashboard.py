@@ -90,10 +90,12 @@ class DashboardResources:
         if self.loader is None:
             assert self.configuration_key is not None
             config_key = self.configuration_key
-            prefix = self.configuration_prefix or f"/api/dashboard/{runtime.plugin_dir.name}/config"
+            # 路由按插件名，不依赖代码目录名。
+            name = runtime.plugin_id.partition("@")[0]
+            prefix = self.configuration_prefix or f"/api/dashboard/{name}/config"
             dependencies: tuple[ServiceKey[Any], ...] = (UI, config_key)
             module_dir = runtime.plugin_dir.resolve(strict=True)
-            module_name = f"plugins.{runtime.plugin_dir.name}.settings_dashboard"
+            module_name = f"plugins.{name}.settings_dashboard"
             enabled: Any = None
 
             def _default_register(target_app: FastAPI, target_ctx: DashboardContext) -> object:

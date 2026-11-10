@@ -49,7 +49,7 @@ from .services import (
     ReplyStatusPort,
     SessionAdminPort,
 )
-from .services import ArtifactReadLeasePort, PluginUiProvider, WebUiProvider
+from .services import ArtifactReadLeasePort, ChannelClosed, PluginUiProvider, WebUiProvider
 from plugins.ui.contract import MessageDisplayReader, PluginUiEmit
 from .scoped_capabilities import (
     ScopedMessageDisplay,
@@ -294,7 +294,7 @@ class _GenerationAkashicAdapter:
         """Open one exact binding scope for a short client operation."""
 
         if self._stopping or self._stopped:
-            raise RuntimeError("akashic channel 已关闭请求接纳")
+            raise ChannelClosed("akashic channel 已关闭请求接纳")
         opener = self._context.open_scope
         if opener is None:
             raise RuntimeError("akashic channel 缺少 host request scope")
