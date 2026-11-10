@@ -70,7 +70,6 @@ FAILED 一律失败。恢复在停机后通过 bundle 发布入口进行，不�
 | tools@release | 37 | 0 | 通过 |
 | turn_projection@release | 40 | 0 | 通过 |
 | ui@release | 20 | 0 | 通过 |
-| wake@release | 48 | 0 | 通过 |
 | workloads@release | 48 | 0 | 通过 |
 
 复现前先完成 `build_plugin_distribution.py` 与 `distribution_runtime.prepare_wheels`，再将制品目录传给场景脚本。该验收不声称没有配置的外部模型、Telegram 或容器服务已连通。

@@ -992,9 +992,9 @@ sensor、session、context 和 store 故障不得伪装成“无事件”。deci
 
 `proactive.db` 与 `wake_proactive.db` 中影响 delivery dedupe、cooldown、pending ack、reservoir consumption、hazard timer、cursor、journal 和下一轮选择的内容属于运行连续性。启用对应功能时，备份和恢复必须保留这些状态；日志表与连续性表可以制定不同 retention，但不得把整库按诊断日志清空。
 
-### PRO-003 Wake 用主动历史保持连续性而不预设重复惩罚
+### PRO-003 主动判断用最近对话保持连续性而不预设重复惩罚
 
-Wake 判断内容时必须把最近被动对话与已经送达的主动消息作为两个明确区分的运行时区块；主动消息保留实际发送时间，不能伪装成用户陈述或本轮候选。模型把主动历史作为理解近期连续性的背景，并保持对用户及其关注事项的开放好奇；话题聊过、结论相同、事件反复发生或发送次数较多，都不能单独推导出用户疲劳、不感兴趣或禁止再次分享。当前事件是否值得主动告诉用户仍由模型结合正文证据、长期偏好、真实用户反馈、最近上下文和时机自主判断，不增加按主题、URL、相似度或次数硬编码的 share/skip 规则。
+值班员和被叫醒的主 Agent 看到的最近对话每次从消息账本现查，不保存副本；用户原话、对话回复与不经用户发起的主动消息必须能区分，主动消息保留实际发送时间并标明之后用户有没有接话。这些只作为判断的背景：话题聊过、结论相同、事件反复发生或发送次数较多，都不能单独推导出用户疲劳或禁止再次分享。是否值得现在告诉用户由模型结合正文、长期记忆、真实用户反馈、最近上下文和时机自主判断，不增加按主题、URL、相似度或次数硬编码的规则（ADR 0149）。
 
 ### PRO-004 EventMail 统一不可变信封而不统一三类生命周期
 
@@ -1004,27 +1004,13 @@ Content、Alert 和 Context 进入同一个普通 EventMail 插件，但使用�
 信号，Context 只表达可 supersede 或过期的当前事实；三类不得共享万能 publish 入口或通用
 status 状态机。可更新的查询投影必须能从信封和 transition 确定性重建。
 
-### PRO-005 Wake 每次实际触发都留下独立 attempt
+### PRO-005 值班的每次判断都留下可读记录
 
-每次 Wake Timer 实际触发先追加 attempt，再读取冻结的 EventMail watermark。没有 due、Content
-不足、admission 拒绝、模型 skip、defer、触发后关闭、执行失败或发送失败都必须以明确终态和具体诊断收口；
-未进入 scoped Turn 不等于没有记录。Wake attempt 是执行事实，不作为第四种 EventMail，也不
-拥有 Content、Alert、Context 或 delivery 的领域状态。进程停机期间未实际触发的理论时间槽
-不由 Wake 伪造；如需补记，由 scheduler 的独立 durable missed-tick 合同拥有。
+值班员对每条事件的去向（wake、inbox、log）和理由、所用模型、模型失败，以及每次叫醒主 Agent 的结果，都追加到工作区 `watch/log/` 的当日文件。模型链全部失败时事件留在原处、游标不前进，不得把失败记成"没有事件"。值班记录是执行事实，不拥有 EventMail 或 delivery 的领域状态；进程停机期间未运行的间隔不补记。
 
-### PRO-006 Wake Content 使用一次评分的确定性衰减池
+### PRO-006 值班不使用评分池，叫醒次数有上限
 
-EventMail 中到期的 pending 或 deferred Content 共同组成 Wake Content 池。Wake 至少每五分钟实际
-触发一次池维护，并为每次触发记录 active、due、expired、scored、new、new mass、衰减后的
-pool mass、固定 threshold、below-floor 数量和 driver；没有 Content 或证据不足也必须留下终态。
-每个稳定的 source/item/revision 在首次到期时只计算并持久化一次初始质量：先合成 preprocess 与
-会话语义的兴趣概率，再沿用 `-ln(1-interest)` 的旧 Wake 质量尺度，并固化发布时间可信度和静态
-eligibility。以后不重新读取会话语义，只让这个初始质量按发布时间或首次观察时间以 36 小时半衰期
-衰减。低于 admission floor 的 revision 不再贡献 pool mass。仍参与的 revision 质量直接相加，
-pool mass 超过固定 threshold 时才进入 Wake Turn，不使用随机
-抽签或 refractory。拒绝或证据不足只消费本次新到达检查，不得把 Content 从 EventMail 移走；
-没有新到达时维护只记录、衰减与淘汰，不重复启动 Turn。Content 驻留至少 24 小时且低于 floor 后，
-由 Wake 通过 EventMail 的窄 transition 能力逻辑标记 expired；权威信封和 transition 不物理删除。
+事件的去向由值班模型对照主 Agent 写的嘱托、用户记忆和最近对话判断，不计算兴趣分、质量或阈值。叫醒主 Agent 只有两种理由：命中嘱托，或值班员判断这件事等不起。每天叫醒次数有配置的上限，超出的事件进入待看列表而不是丢弃。嘱托每行带到期日，一次性嘱托触发后归档，到期未续的归档；待看列表里超过保留期的条目自动清除。
 
 ### BAK-001 备份必须能验证和恢复
 
@@ -1137,9 +1123,9 @@ Schedule 在整个 workspace 维度默认最多同时存在 10 个 active job。
 
 Shell retained log 由进程 owner 管理；Subagent 的同步与后台形式共用 Subagent 准入 owner，不能通过同步形式绕过容量限制。MessageBus 不拥有 Shell/Subagent 的准入，也不设置独立的全局 backpressure 或容量拒绝，只负责 channel lane 顺序。容量拒绝只影响当前操作；terminal cleanup 失败保留 execution owner 和诊断，不能把已提交 turn 改成失败。控制 admission 只统计 queued/running Task 的数量、实际字节和 live runtime objects，不统计历史 Message 或 programmatic source。
 
-### SEC-011 Subagent 与 Wake 的内部消息可恢复
+### SEC-011 Subagent 与值班唤醒的内部消息可恢复
 
-Subagent 与 Wake 每次独立工作保留完整输入、输出、工具调用、工具结果和恢复回执。内部 Session 默认不列入聊天目录，不自动投递内部正文，不进入记忆学习；最终回传或通知仍按来源原有业务路径处理。消息和业务恢复材料没有自动删除协议，代码升级不得回填猜测的历史消息或自动重跑旧执行记录。用户取消只撤销新决策，已开始的工具和发送必须如实结算。 Subagent 是主 Agent 调用的工具：同步调用返回结果，异步调用先返回接纳回执，完成后由主 Agent 读取结果并回复用户。内部结果不冒充新的用户输入，异步回执不冒充任务结果。
+Subagent 与值班唤醒的后台回合每次独立工作保留完整输入、输出、工具调用、工具结果和恢复回执。内部 Session 默认不列入聊天目录，不自动投递内部正文，不进入记忆学习；最终回传或通知仍按来源原有业务路径处理。消息和业务恢复材料没有自动删除协议，代码升级不得回填猜测的历史消息或自动重跑旧执行记录。用户取消只撤销新决策，已开始的工具和发送必须如实结算。 Subagent 是主 Agent 调用的工具：同步调用返回结果，异步调用先返回接纳回执，完成后由主 Agent 读取结果并回复用户。内部结果不冒充新的用户输入，异步回执不冒充任务结果。
 
 ### SEC-008 Control replay 是临时投影
 
