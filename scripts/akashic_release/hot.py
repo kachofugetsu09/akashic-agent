@@ -171,16 +171,38 @@ def hot_install(*, paths: ReleasePaths, checkout: Path, commit: str, runtime_env
     return {"status": "hot-activated", "commit": commit, "changed": list(plan.changed), "adopt": result}
 
 
+def _point_runtime_env(runtime_env: Path, distribution: Path) -> None:
+    lines = [line for line in runtime_env.read_text().splitlines()
+             if not line.startswith("AKASHIC_PLUGIN_DISTRIBUTION=")]
+    lines.append(f"AKASHIC_PLUGIN_DISTRIBUTION={distribution}")
+    runtime_env.write_text("\n".join(lines) + "\n")
+
+
 # 重启后沿用新发行版；回执记下镜像版本不变、发行版换成目标提交。
 def _record(paths: ReleasePaths, runtime_env: Path, environment: dict[str, str], stored: Path,
             commit: str, plan: HotPlan) -> None:
-    lines = [line for line in runtime_env.read_text().splitlines()
-             if not line.startswith("AKASHIC_PLUGIN_DISTRIBUTION=")]
-    lines.append(f"AKASHIC_PLUGIN_DISTRIBUTION={stored}")
-    runtime_env.write_text("\n".join(lines) + "\n")
+    _point_runtime_env(runtime_env, stored)
     active_path = paths.activation / "active.json"
     active = read_json(active_path) if active_path.exists() else {}
     active["distributionCommit"] = commit
     active["hotUpdate"] = {"from": str(plan.active_distribution), "to": str(stored),
                            "changed": list(plan.changed), "image": environment["AKASHIC_IMAGE"]}
     write_json(active_path, active)
+
+
+# 撤回最近一次热更新（例如界面探针判失败）：实例换回上一个发行版，runtime.env 与回执随之恢复。
+def revert_hot(*, paths: ReleasePaths, runtime_env: Path) -> dict[str, object]:
+    active_path = paths.activation / "active.json"
+    active = read_json(active_path)
+    hot = active.get("hotUpdate")
+    if not isinstance(hot, dict):
+        raise RuntimeError("最近一次发布不是热更新，没有可撤回的发行版")
+    previous = Path(str(hot["from"]))
+    result = asyncio.run(_adopt(read_environment(runtime_env), previous))
+    if result.get("state") != "active":
+        raise RuntimeError(f"实例没有换回上一个发行版: {json.dumps(result, ensure_ascii=False)[:2000]}")
+    _point_runtime_env(runtime_env, previous)
+    active["distributionCommit"] = previous.name
+    active["revertedHotUpdate"] = active.pop("hotUpdate")
+    write_json(active_path, active)
+    return {"status": "hot-reverted", "distribution": str(previous), "adopt": result}

@@ -23,7 +23,7 @@ from scripts.akashic_release.source import commit_subject, resolve_target
 from scripts.akashic_release.source import verify_bootstrap_checkout
 from scripts.akashic_release.systemd import verify_external_service_contract
 from scripts.akashic_release.warm import StateCacheWarmer
-from scripts.akashic_release.hot import GateRejected, hot_install
+from scripts.akashic_release.hot import GateRejected, hot_install, revert_hot
 from scripts.compose_source import compose_source
 
 _DEFAULT_ORIGIN = "https://github.com/kachofugetsu09/akashic-agent.git"
@@ -151,6 +151,12 @@ def resume(args: argparse.Namespace) -> dict[str, object]:
     return {"status": status, "attempt": str(args.attempt)}
 
 
+def revert(args: argparse.Namespace) -> dict[str, object]:
+    paths = ReleasePaths(args.root.resolve(strict=True))
+    with release_lock(paths.run / "release.lock"):
+        return revert_hot(paths=paths, runtime_env=args.runtime_env)
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="akashic-release")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -189,6 +195,11 @@ def _parser() -> argparse.ArgumentParser:
     resume_parser.add_argument("--unit-root", type=Path, default=Path("/etc/systemd/system"))
     resume_parser.add_argument("--cli-path", type=Path, default=Path.home() / ".local/bin/akashic-release")
     resume_parser.set_defaults(handler=resume)
+
+    revert_parser = subparsers.add_parser("revert-hot", help="撤回最近一次热更新，换回上一个发行版")
+    revert_parser.add_argument("--root", type=Path, default=_DEFAULT_ROOT)
+    revert_parser.add_argument("--runtime-env", type=Path, default=_DEFAULT_ENV)
+    revert_parser.set_defaults(handler=revert)
 
     migrate_parser = subparsers.add_parser("migrate")
     migrate_parser.add_argument("--snapshot-manifest", type=Path, required=True)

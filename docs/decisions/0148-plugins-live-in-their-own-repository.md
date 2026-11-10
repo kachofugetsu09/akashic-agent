@@ -37,7 +37,9 @@
 - 插件改动上线仍需要 Core 提交一次 `plugins.lock`；插件仓库不会自动开 Core PR（避免给仓库加跨仓写权限的 secret）。
 - `docker/computer` 与它的镜像发布工作流留在 Core：镜像按 digest 引用，搬走需要在 GHCR 包设置里给新仓库授权。
 - 插件仓库 PR 暂不跑 harness-performance 对比。
-- 只改插件、无需重启的部署目前仍走完整发布；按改动分级热更新是 #1973 的后续步骤。
+- 热更新（只改插件、Core 与依赖不变）由发布器自动选择，见 `docs/design/operator-deployment.md`。界面探针不在发布器内自动运行：
+  它需要浏览器，且要等插件重载结束；部署后由操作者或 Agent 运行，失败时 `akashic-release revert-hot`。
+- 发行版行没有运行时字段，兼容门的运行时契约检查目前不生效；热更新要求同一镜像，影响有限。
 
 ## 影响与回滚
 

@@ -149,6 +149,17 @@ python3 scripts/akashic_release/cli.py install \
    镜像、`targetCommit`、Bridge 都不变，重启后选择原样复用。
 
 `--full` 跳过热更新；`--hot-only` 只尝试热更新，不满足条件时不做任何改动（自部署先用它）。
+
+热更新与完整发布之后都在宿主跑界面探针（插件仓库 `scripts/ui_regression_probe.mjs`，等插件重载结束再跑），
+`--baseline` 指向上一次通过的输出目录：
+
+```bash
+node scripts/ui_regression_probe.mjs --url http://127.0.0.1:<port> \
+  --token-file <workspace>/web-auth/secret --out <dir> --baseline <上次通过的 dir> --send
+```
+
+热更新后探针失败时运行 `akashic-release revert-hot`：实例换回 `active.json` 里 `hotUpdate.from` 的发行版，
+`runtime.env` 跟着恢复。完整发布后探针失败，按原流程回滚到上一个 release。
 制品库只由发布器写入，容器只读挂载；`sources/<name>/<content_commit>` 按内容寻址，所以内容未变的插件跨发行版代码路径相同。
 
 必须使用目标版本脚本。已安装的 `akashic-release` 从当前 `runtime.env` 加载当前版本发布器；
