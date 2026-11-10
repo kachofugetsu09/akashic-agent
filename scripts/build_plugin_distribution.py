@@ -24,7 +24,7 @@ if str(_SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(_SOURCE_ROOT))
 
 from agent.plugins.static_manifest import load_static_plugin_manifest
-from scripts.compose_source import compose_source, composed_parts, read_plugins_lock
+from scripts.compose_source import compose_source, composed_overrides, composed_parts, read_plugins_lock
 from utils.timing import measure
 
 
@@ -499,7 +499,8 @@ def build(repository: Path, revision: str, output: Path) -> dict[str, object]:
         "schema_version": 3,
         "source_commit": commit,
         # 合成提交记录它由哪个 Core 提交与插件提交组成；未拆分的提交为 null。
-        "source_parts": None if parts is None else {"core": parts[0], "plugins": parts[1]},
+        "source_parts": None if parts is None else {"core": parts[0], "plugins": parts[1],
+                                                    "overrides": composed_overrides(repository, commit)},
         "source_tree": tree,
         "core": {
             "file": "core.tar",

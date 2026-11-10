@@ -24,7 +24,8 @@ from scripts.akashic_release.source import verify_bootstrap_checkout
 from scripts.akashic_release.systemd import verify_external_service_contract
 from scripts.akashic_release.warm import StateCacheWarmer
 from scripts.akashic_release.hot import GateRejected, hot_install, revert_hot
-from scripts.compose_source import compose_source
+from scripts.akashic_release.store import active_source
+from scripts.compose_source import compose_source, parse_override, settle_overrides
 
 _DEFAULT_ORIGIN = "https://github.com/kachofugetsu09/akashic-agent.git"
 _DEFAULT_ROOT = Path("/srv/data/services/akashic")
@@ -57,14 +58,28 @@ def _link_core_bridge(paths: ReleasePaths, core_commit: str, commit: str) -> Non
         link.symlink_to(commit)
 
 
+# 插件覆盖 = 当前发行版记录的覆盖加上本次 --plugin / --reset-plugin；锁定提交已包含的自动退役。
+def _settle_overrides(args: argparse.Namespace, checkout: Path, core_commit: str) -> tuple[dict[str, str], dict[str, str]]:
+    requested = active_source(args.runtime_env).overrides
+    for value in args.plugin:
+        name, commit = parse_override(value)
+        requested[name] = commit
+    for name in args.reset_plugin:
+        _ = requested.pop(name, None)
+    return settle_overrides(checkout, core_commit, requested)
+
+
 def install(args: argparse.Namespace, *, self_deploy: dict[str, object] | None = None) -> dict[str, object]:
     paths = ReleasePaths(args.root.resolve())
     checkout = args.source_checkout.resolve(strict=True)
     core_commit = resolve_target(args.origin, args.commit, run=_run)
     verify_bootstrap_checkout(checkout, core_commit, args.origin, run=_run)
     # 拆分后的 Core 提交带 plugins.lock：合成出确定性的源提交，后续全部以它为发布身份。
-    source = compose_source(checkout, core_commit)
+    overrides, retired = _settle_overrides(args, checkout, core_commit)
+    source = compose_source(checkout, core_commit, overrides=overrides)
     commit = source.commit
+    origin_info = {"coreCommit": core_commit, "pluginsCommit": source.plugins_commit,
+                   "pluginOverrides": overrides, "retiredOverrides": retired}
     active_path = paths.activation / "active.json"
     current = (
         str(read_json(active_path).get("targetCommit"))
@@ -73,7 +88,8 @@ def install(args: argparse.Namespace, *, self_deploy: dict[str, object] | None =
     )
     subject = commit_subject(checkout, run=_run)
     if source.plugins_commit is not None:
-        subject = f"{subject} (core {core_commit[:12]} + plugins {source.plugins_commit[:12]})"
+        pinned = "".join(f" + {name}@{value[:12]}" for name, value in sorted(overrides.items()))
+        subject = f"{subject} (core {core_commit[:12]} + plugins {source.plugins_commit[:12]}{pinned})"
     _confirm(commit, subject, current, yes=args.yes)
 
     if args.inputs is not None and args.plan is None:
@@ -94,7 +110,7 @@ def install(args: argparse.Namespace, *, self_deploy: dict[str, object] | None =
                     return {"status": "rejected", "commit": commit, "reasons": [str(error)]}
                 raise
             if hot is not None:
-                return {**hot, "coreCommit": core_commit, "pluginsCommit": source.plugins_commit}
+                return {**hot, **origin_info}
         if args.hot_only:
             return {"status": "needs-full", "commit": commit, "reasons": reasons}
         if reasons:
@@ -137,8 +153,7 @@ def install(args: argparse.Namespace, *, self_deploy: dict[str, object] | None =
     return {
         "status": status,
         "commit": commit,
-        "coreCommit": core_commit,
-        "pluginsCommit": source.plugins_commit,
+        **origin_info,
         "imageId": manifest["imageId"],
         "backupRequested": args.backup,
         "degradedExternal": (runtime_check.get("degraded_external", {})
@@ -190,6 +205,10 @@ def _parser() -> argparse.ArgumentParser:
     install_parser.add_argument("--backup", action="store_true", help="停止期备份 state 和 runtime.env；默认不备份")
     install_parser.add_argument("--full", action="store_true", help="跳过热更新，总是重建镜像并重启")
     install_parser.add_argument("--hot-only", action="store_true", help="只尝试热更新；不满足条件时不做任何改动")
+    install_parser.add_argument("--plugin", action="append", default=[], metavar="NAME@SHA",
+                                help="把一个内置插件换成插件仓库 main 上这个提交的版本；之后的部署沿用，直到锁定提交包含它")
+    install_parser.add_argument("--reset-plugin", action="append", default=[], metavar="NAME",
+                                help="撤掉一个插件覆盖，回到 plugins.lock 的版本")
     install_parser.set_defaults(handler=install)
 
     doctor_parser = subparsers.add_parser("doctor")
@@ -217,7 +236,11 @@ def _parser() -> argparse.ArgumentParser:
     )
     from scripts.akashic_release.self_deploy import submit, status, worker
     submit_parser = subparsers.add_parser("submit", help="在本次 Shell 回合正常结束并送达后部署")
-    submit_parser.add_argument("--commit", required=True)
+    submit_parser.add_argument("--commit", help="Core 提交；只传 --plugin/--reset-plugin 时默认是当前 Core")
+    submit_parser.add_argument("--plugin", action="append", default=[], metavar="NAME@SHA",
+                               help="把一个内置插件换成插件仓库 main 上这个提交的版本；可重复")
+    submit_parser.add_argument("--reset-plugin", action="append", default=[], metavar="NAME",
+                               help="撤掉一个插件覆盖，回到 plugins.lock 的版本；可重复")
     submit_parser.add_argument("--root", type=Path, default=_DEFAULT_ROOT)
     submit_parser.add_argument("--runtime-env", type=Path, default=_DEFAULT_ENV)
     submit_parser.add_argument("--mise", type=Path, default=_DEFAULT_MISE)

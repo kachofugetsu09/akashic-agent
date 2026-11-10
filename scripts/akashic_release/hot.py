@@ -95,9 +95,8 @@ def classify(active: Path, target: Path) -> HotPlan | str:
     after = {row["name"]: row for row in json.loads((target / "distribution.json").read_text())["plugins"]}
     if set(before) != set(after):
         return "插件集合变化"
+    # 没有插件变化（例如锁定提交刚好追上覆盖）时零换代：只换发行版身份，不重启。
     changed = sorted(name for name in after if after[name]["content_commit"] != before[name]["content_commit"])
-    if not changed:
-        return "没有插件变化"
     for name in changed:
         if name in _HOST_PLUGINS:
             return f"Host Bridge 插件变化: {name}"
@@ -119,7 +118,22 @@ def _reuse_wheels(active: Path, target: Path) -> None:
         _ = shutil.copytree(active / "wheels", target / "wheels", symlinks=True, dirs_exist_ok=True)
 
 
+# 宿主上的 akashic-release 从完整发布的 runtime 检出运行：发布工具变化只有完整发布才会生效。
+_RELEASE_TOOLS = ("scripts/akashic_release", "scripts/compose_source.py", "scripts/plugin_store.py")
+
+
+def _release_tools(repository: Path, revision: str) -> tuple[str, ...]:
+    result = subprocess.run(
+        ["git", "-c", "safe.directory=*", "-C", str(repository), "rev-parse",
+         *(f"{revision}:{path}" for path in _RELEASE_TOOLS)],
+        capture_output=True, text=True, check=False,
+    )
+    return tuple(result.stdout.split()) if result.returncode == 0 else ()
+
+
 def _gate(checkout: Path, image: str, distribution: Path, plan: HotPlan) -> None:
+    if not plan.changed and not plan.gate_all:
+        return
     command = ["docker", "run", "--rm", "--network=none", "--entrypoint", "/opt/venv/bin/python",
                "-v", f"{distribution}:{distribution}:ro",
                "-v", f"{checkout / 'scripts/distribution_compat_gate.py'}:/gate.py:ro",
@@ -176,6 +190,11 @@ def hot_install(*, paths: ReleasePaths, checkout: Path, commit: str, runtime_env
     active = Path(environment.get("AKASHIC_PLUGIN_DISTRIBUTION", ""))
     if not active.is_relative_to(paths.plugin_store / "distributions") or not active.is_dir():
         reasons.append("当前实例还没有使用制品库")
+        return None
+    runtime_checkout = Path(environment.get("AKASHIC_RUNTIME_CHECKOUT", ""))
+    current_tools = _release_tools(runtime_checkout, "HEAD") if runtime_checkout.is_dir() else ()
+    if not current_tools or current_tools != _release_tools(checkout, commit):
+        reasons.append("发布工具变化：宿主上的 akashic-release 只在完整发布时更新")
         return None
     from scripts.build_plugin_distribution import build
 
