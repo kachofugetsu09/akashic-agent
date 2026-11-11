@@ -111,7 +111,7 @@ class TerminalInstance implements PaneHost {
     this.searchTrigger = button("terminal-tool terminal-search-trigger", "搜索终端输出", "", () => this.openSearch());
     this.searchTrigger.innerHTML = SEARCH_SVG;
     this.restartTrigger = button("terminal-tool terminal-restart-trigger", "重新开始终端", "重新开始", () => {
-      if (this.pane) void this.restart(this.pane);
+      this.pane?.requestRestart();
     });
     this.restartTrigger.hidden = true;
     this.actions.hidden = true;
@@ -234,6 +234,8 @@ class TerminalInstance implements PaneHost {
   changed(pane: Pane): void {
     const state = pane.facts.exited ? "exited" : pane.reconnecting ? "reconnecting" : null;
     this.restartTrigger.hidden = !pane.facts.exited;
+    this.restartTrigger.disabled = pane.isRestarting;
+    this.restartTrigger.textContent = pane.isRestarting ? "正在重开…" : "重新开始";
     this.view.setTitle(pane.label);
     this.view.setIndicator(state ? { detail: STATE_DETAILS[state] } : null);
   }
@@ -253,11 +255,13 @@ class TerminalInstance implements PaneHost {
     this.show("这个终端已经关闭。", () => this.sync(), "新开终端");
   }
 
-  // 退出后按 Enter：等旧 PTY 关完（腾出名额）再在原处开一个新的，与认领串行；标签已关或已换掉时，新开的随即关掉。
+  // 退出后按 Enter 或点“重新开始”：等旧 PTY 关完（腾出名额）再在原处开一个新的，与认领串行；标签已关或已换掉时，新开的随即关掉。
   async restart(pane: Pane): Promise<void> {
+    const exitedId = pane.facts.id;
     try {
       await serial(this.session, async () => {
-        await this.release(pane.facts.id);
+        if (this.disposed || pane !== this.pane || !pane.facts.exited || pane.facts.id !== exitedId) return;
+        await this.release(exitedId);
         const facts = await this.open({ cols: pane.term.cols, rows: pane.term.rows });
         if (this.disposed || pane !== this.pane || !pane.replace(facts)) return void this.release(facts.id);
         writeClaims(this.session, { ...readClaims(this.session), [this.instance]: facts.id });

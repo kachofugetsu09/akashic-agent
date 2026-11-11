@@ -249,9 +249,13 @@ def _terminal_env() -> dict[str, str]:
 
 
 def _resolve_directory(cwd: Path | None) -> Path:
-    for candidate in (cwd, Path.home(), Path.cwd(), Path("/")):
-        if candidate is not None and candidate.is_dir():
-            return candidate
+    for probe in (lambda: cwd, Path.home, Path.cwd, lambda: Path("/")):
+        try:
+            candidate = probe()
+            if candidate is not None and candidate.is_dir():
+                return candidate
+        except (OSError, RuntimeError):
+            continue
     return Path("/")
 
 

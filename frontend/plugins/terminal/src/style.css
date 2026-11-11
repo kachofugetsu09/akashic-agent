@@ -30,7 +30,8 @@
 
 .terminal-tool { padding: 6px 8px; white-space: nowrap; }
 
-.terminal-tool:hover { color: var(--ak-ink-primary); background: var(--ak-paper-raised); }
+.terminal-tool:hover:not(:disabled) { color: var(--ak-ink-primary); background: var(--ak-paper-raised); }
+.terminal-tool:disabled { opacity: 0.5; cursor: progress; }
 
 .terminal-tool:focus-visible,
 .terminal-search-input:focus-visible {

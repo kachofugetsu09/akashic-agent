@@ -125,12 +125,24 @@ export class Pane {
     return true;
   }
 
+  get isRestarting(): boolean {
+    return this.restarting;
+  }
+
+  requestRestart(): void {
+    if (this.disposed || !this.facts.exited || this.restarting) return;
+    this.restarting = true;
+    this.host.changed?.(this);
+    void this.host.restart(this).finally(() => {
+      this.restarting = false;
+      if (!this.disposed) this.host.changed?.(this);
+    });
+  }
+
   private input(data: string): void {
     if (this.replaying) return;
     if (this.facts.exited) {
-      if (!data.includes("\r") || this.restarting) return;
-      this.restarting = true;
-      void this.host.restart(this).finally(() => { this.restarting = false; });
+      if (data.includes("\r")) this.requestRestart();
       return;
     }
     // 切点落在代理对中间时后移一位，不发出孤立代理项。
