@@ -108,10 +108,22 @@ def create_app(auth: OwnerAuth, page: Path) -> FastAPI:
                 {"code": "password_change_required", "message": "需要先设置自己的密码"}, 403)
         return Response(status_code=204)
 
+    def render_login_html(initial: str) -> str:
+        rendered = html.replace('data-initial="login"', f'data-initial="{initial}"', 1)
+        if initial == "login":
+            return rendered.replace('<form id="login" hidden>', '<form id="login">', 1)
+        if initial == "change":
+            return rendered.replace('<form id="change" hidden>', '<form id="change">', 1)
+        return rendered
+
     @app.get("/_auth/login")
-    async def login_page() -> HTMLResponse:
-        return HTMLResponse(html, headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
-                                           "Content-Security-Policy": _PAGE_POLICY})
+    async def login_page(request: Request) -> HTMLResponse:
+        who = await identity(request)
+        must_change = who is not None and await run_file_io(auth.must_change)
+        initial = "signed_in" if (who is not None and not must_change) else ("change" if who is not None else "login")
+        return HTMLResponse(render_login_html(initial),
+                            headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
+                                     "Content-Security-Policy": _PAGE_POLICY})
 
     @app.get("/_auth/state")
     async def state(request: Request) -> JSONResponse:
