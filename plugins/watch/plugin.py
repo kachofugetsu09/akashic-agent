@@ -4,19 +4,23 @@ import asyncio
 
 from agent.plugin_composition import RUNTIME_STARTED, RUNTIME_STOPPING, Context, stop_spawned
 from agent.plugin_composition.plugin_config import PLUGIN_CONFIG
+from plugins.assets.contract import INSTALLED_ASSETS
+from plugins.context.contract import MATERIALS_V4
+from plugins.ledger.contract import Message
 from plugins.ledger.contract import MESSAGE_CATALOG
 from plugins.models.contract import CHAT_MODELS, MODEL_CATALOG
 from plugins.plugin_settings.contract import SETTINGS_FORMS, declare_settings
+from plugins.programmatic.contract import PROGRAMMATIC
 
 from .contract import WATCH_EVENTS
-from .runtime import Runtime
+from .runtime import Runtime, count_items, count_notes
 from .settings import FORM, Config
 
 api_version = 3
 name = "watch"
 version = "1.0.0"
-desc = "值班：便宜的模型看着事件流，给每条事件一个去向并留下记录"
-inject = (PLUGIN_CONFIG, CHAT_MODELS, MODEL_CATALOG, MESSAGE_CATALOG)
+desc = "值班：便宜的模型看着事件流，只在该叫的时候叫醒主 Agent；主 Agent 在后台醒来后自己决定做什么、说不说话"
+inject = (PLUGIN_CONFIG, CHAT_MODELS, MODEL_CATALOG, MESSAGE_CATALOG, PROGRAMMATIC)
 workspace_roots = ("watch",)
 
 
@@ -25,8 +29,25 @@ async def apply(ctx: Context) -> None:
     config = Config.model_validate(ctx.config)
     runtime = Runtime(ctx, config)
     _ = await ctx.provide(WATCH_EVENTS, runtime)
-    _ = await ctx.inject((SETTINGS_FORMS, PLUGIN_CONFIG),
+    _ = await ctx.inject((SETTINGS_FORMS, PLUGIN_CONFIG, MODEL_CATALOG),
                          lambda child: declare_settings(child, Config, FORM), name="settings")
+    # 机制说明是普通技能，主 Agent 需要时用 load_skill 读取。
+    _ = await ctx.inject((INSTALLED_ASSETS,), lambda child: child.require(INSTALLED_ASSETS).register(child, "skills", "skills"),
+                         name="skills")
+
+    # 用户来主对话聊天时，只给主 Agent 一行指针：有多少便签和待看，要不要读由它决定。
+    async def pointer(snapshot: tuple[Message, ...], _source: str) -> dict[str, object]:
+        if not snapshot or snapshot[-1].session_id != config.target:
+            return {}
+        notes, inbox = count_notes(runtime.root / "notes.md"), count_items(runtime.root / "inbox.md")
+        if not notes and not inbox:
+            return {}
+        return {"reminders": ({"name": "watch", "priority": 300, "replay": False, "text": (
+            f"你在后台值班时留下了 {notes} 行便签（watch/notes.md），待看列表里有 {inbox} 条事件（watch/inbox.md）。"
+            "和眼下的话题有关、或者正是合适的时机，可以读一下并自然地带出来；说过的从便签里删掉。无关就不用提。")},)}
+
+    _ = await ctx.inject((MATERIALS_V4,), lambda child: child.require(MATERIALS_V4).register(
+        child, name="watch", kind="context", prepare=pointer), name="pointer")
     watcher: asyncio.Task[None] | None = None
 
     async def start(_event: object) -> None:
