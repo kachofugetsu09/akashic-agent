@@ -23,6 +23,8 @@ class Event:
     url: str
     # 这条是该来源的当前状态：照常是一条事件，同时顶替这个来源的上一条状态。
     state: bool = False
+    # 来源自己的稳定标识；同一来源同一个 key 只记一次。
+    key: str = ""
 
     @property
     def number(self) -> int:
@@ -41,9 +43,10 @@ def line(event: Event, limit: int = 220) -> str:
 
 
 # 把来源给的松散数据收成事件字段：认得常见别名，认不出的字段整体当作正文。
-def normalize(number: int, source: str, raw: Mapping[str, object] | str, now: datetime, state: bool = False) -> Event:
+def normalize(number: int, source: str, raw: Mapping[str, object] | str, now: datetime, state: bool = False, key: str = "") -> Event:
     if isinstance(raw, str):
         raw = {"text": raw}
+    given = raw.get("key")
     title = raw.get("title")
     text = next((raw[key] for key in _TEXT_KEYS if isinstance(raw.get(key), str) and raw[key]), None)
     url = raw.get("url") or raw.get("link")
@@ -55,12 +58,12 @@ def normalize(number: int, source: str, raw: Mapping[str, object] | str, now: da
     if title and text.startswith(title.rstrip("…")):
         title = ""
     return Event(f"e{number}", source[:80], _instant(at, now), title[:500], text[:20000], url[:2000] if isinstance(url, str) else "",
-                 state or raw.get("state") is True)
+                 state or raw.get("state") is True, (key or (given if isinstance(given, str) else ""))[:300])
 
 
 # 没有标题和正文的结构化数据：简单的字段先写成 "名: 值"，时间戳和嵌套的部分排在后面，一行摘要里先看到要紧的。
 def _flatten(raw: Mapping[str, object]) -> str:
-    plain = {key: value for key, value in raw.items() if isinstance(value, (str, int, float)) and value != "" and key not in _TIME_KEYS and (key, value) != ("state", True)}
+    plain = {key: value for key, value in raw.items() if isinstance(value, (str, int, float)) and value != "" and key not in _TIME_KEYS and key != "key" and (key, value) != ("state", True)}
     stamps = {key for key, value in plain.items() if isinstance(value, str) and _STAMP.match(value)}
     nested = {key: value for key, value in raw.items() if isinstance(value, (dict, list)) and value}
     parts = [f"{key}: {value}" for key, value in plain.items() if key not in stamps] + [f"{key}: {plain[key]}" for key in plain if key in stamps]
@@ -96,6 +99,12 @@ class EventLog:
         if not self._dir.exists():
             return 0
         return max((event.number for path in self._dir.glob("*.jsonl") for event in _read(path)), default=0)
+
+    # 保留期内每个 (来源, key) 对应的事件编号；启动时读一次，用来认出重复交来的事件。
+    def keys(self) -> dict[tuple[str, str], str]:
+        if not self._dir.exists():
+            return {}
+        return {(event.source, event.key): event.id for path in sorted(self._dir.glob("*.jsonl")) for event in _read(path) if event.key}
 
     # 读出编号大于 after 的事件；范围和事件的保留期一致，积压几天的未判事件也不会被跳过。
     def since(self, after: int, now: datetime, days: int = 14) -> list[Event]:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 
 from agent.plugin_composition import RUNTIME_STARTED, RUNTIME_STOPPING, Context, stop_spawned
 from agent.plugin_composition.plugin_config import PLUGIN_CONFIG
@@ -11,6 +12,7 @@ from plugins.ledger.contract import MESSAGE_CATALOG
 from plugins.models.contract import CHAT_MODELS, MODEL_CATALOG
 from plugins.plugin_settings.contract import SETTINGS_FORMS, declare_settings
 from plugins.programmatic.contract import PROGRAMMATIC
+from plugins.userinformation.contract import USER_INFORMATION
 
 from .contract import WATCH_EVENTS
 from .runtime import Runtime, count_items, count_notes
@@ -18,10 +20,29 @@ from .settings import FORM, Config
 
 api_version = 3
 name = "watch"
-version = "1.0.0"
+version = "1.1.0"
 desc = "值班：便宜的模型看着事件流，只在该叫的时候叫醒主 Agent；主 Agent 在后台醒来后自己决定做什么、说不说话"
 inject = (PLUGIN_CONFIG, CHAT_MODELS, MODEL_CATALOG, MESSAGE_CATALOG, PROGRAMMATIC)
 workspace_roots = ("watch",)
+
+
+class Current:
+    """用户信息入口的提供方：各来源最近一条状态事件。"""
+
+    def __init__(self, runtime: Runtime) -> None:
+        self._runtime = runtime
+
+    async def describe(self) -> Mapping[str, object]:
+        return {"queries": {"current": {
+            "description": "各来源最近一次报告的用户状态（位置、睡眠、在线等）和报告时间；没有某个来源不等于否定。",
+            "parameters": {"type": "object", "properties": {}, "additionalProperties": False}}}}
+
+    async def query(self, query: str, arguments: Mapping[str, object]) -> Mapping[str, object]:
+        if query != "current" or arguments:
+            return {"status": "invalid_query", "error": "Use current without arguments"}
+        items = [{"source": event.source, "since": event.at, "state": " — ".join(part for part in (event.title, event.text) if part)[:1000]}
+                 for event in await self._runtime.states()]
+        return {"items": items, "semantics": "Latest state each source reported, with the time it started. Not a live measurement."}
 
 
 async def apply(ctx: Context) -> None:
@@ -48,6 +69,9 @@ async def apply(ctx: Context) -> None:
 
     _ = await ctx.inject((MATERIALS_V4,), lambda child: child.require(MATERIALS_V4).register(
         child, name="watch", kind="context", prepare=pointer), name="pointer")
+    # 主 Agent 平时聊天想知道"用户现在怎么样"时，经统一的用户信息入口读到同一份状态。
+    _ = await ctx.inject((USER_INFORMATION,), lambda child: child.require(USER_INFORMATION).register(child, Current(runtime)),
+                         name="information")
     watcher: asyncio.Task[None] | None = None
 
     async def start(_event: object) -> None:

@@ -20,7 +20,7 @@ Wake 把"什么吵醒了 Agent"和"醒来能做什么"绑在一起：内容候�
 
 新增内置插件 `watch`，Wake 不再运行（预设里关闭，随后删除）。
 
-1. **事件只有一种形状**：`id、source、at、title、text、url、state`，按到达日写进工作区 `watch/events/`。入口有三个，落在同一处：
+1. **事件只有一种形状**：`id、source、at、title、text、url、state、key`（`key` 是来源自己的稳定标识，同一来源同一个 key 只记一次），按到达日写进工作区 `watch/events/`。入口有三个，落在同一处：
    - `eventmail.stream.v1`：按信封序号增量读取现有来源交给 EventMail 的内容与告警，这些来源不用改。
    - `watch.events.v1`：插件直接交一件事。
    - `watch/sources/名字.jsonl`：任何程序追加一行就是一条事件；删掉文件就是移除来源。

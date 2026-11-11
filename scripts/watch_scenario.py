@@ -95,6 +95,7 @@ async def boot(distribution: Path, base: Path):
 
 async def run(distribution: Path, base: Path) -> None:
     from akashic_sdk import AsyncAkashic
+    from plugins.userinformation.contract import USER_INFORMATION_READ
     from plugins.eventmail.contract import EVENTMAIL_ALERT_SOURCE, EVENTMAIL_CONTENT_SOURCE, EVENTMAIL_CONTEXT_SOURCE
     from plugins.gateway.contract import RpcMethod
     from plugins.plugin_settings.contract import SETTINGS_FORMS
@@ -221,6 +222,19 @@ async def run(distribution: Path, base: Path) -> None:
         current = await runtime._user_state(datetime.now(runtime.zone))
         assert "睡着了" in current and "state: sleeping" not in current and "到了家" in current and "到了公司" not in current and "在线" in current, current
         assert first != second and runtime.state.judged == before + 4
+
+        # 9. 带 key 的事件同一来源只记一次：插件重交、文件来源重复写都不产生新事件；重启后仍然认得
+        before = EventLog(watch).last_number()
+        once = await runtime.emit("scenario-plugin", title="带标识的一条", key="item-1")
+        assert await runtime.emit("scenario-plugin", title="带标识的一条（重交）", key="item-1") == once
+        assert await runtime.emit("scenario-other", title="别的来源可以用同一个标识", key="item-1") != once
+        line = json.dumps({"title": "文件来源带标识", "key": "f-1"}, ensure_ascii=False) + "\n"
+        source.write_text(source.read_text() + line + line)
+        await tick()
+        assert EventLog(watch).last_number() == before + 3
+        assert EventLog(watch).keys()[("scenario-plugin", "item-1")] == once
+        states = await context.require(USER_INFORMATION_READ).query("watch@release", "current", {})
+        assert any(item["source"] == "scenario-place" and "到了家" in item["state"] for item in states["result"]["items"]), states
         await client.close()
         print("watch scenario ok")
     finally:
