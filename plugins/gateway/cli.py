@@ -16,6 +16,7 @@ from agent.plugin_composition import load_endpoint_plan
 from plugins.programmatic.contract import parse_scope_pairs
 from core.common.file_io import run_file_io
 from .endpoint import is_tcp_endpoint
+from .protocol.errors import UPDATE_NOT_FOUND
 from .token import read_secret
 
 
@@ -233,7 +234,12 @@ async def management(arguments: tuple[str, ...], *, workspace: Path, config_path
         print("Gateway 无可连接端点。用 plugin-doctor 查看实际 ID，运行 "
               "plugin-enable gateway@<marketplace> 后重启实例。", file=sys.stderr)
         return 1
-    except (ValueError, RuntimeError, RemoteError) as error:
+    except RemoteError as error:
+        print(str(error), file=sys.stderr)
+        if command == "plugin-status" and options.identity is not None and error.code == UPDATE_NOT_FOUND:
+            print("如需查看全部已安装插件的当前状态，请直接运行不带参数的 plugin-status。", file=sys.stderr)
+        return 1
+    except (ValueError, RuntimeError) as error:
         print(str(error), file=sys.stderr)
         return 1
     print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))

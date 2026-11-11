@@ -25,6 +25,14 @@ class PluginManagementError(ControlError):
     pass
 
 
+class UpdateNotFoundError(ControlError):
+    """表示查询的插件更新 ID 在当前 workspace 记录中不存在。"""
+
+    def __init__(self, update_id: str) -> None:
+        super().__init__(f"插件更新记录不存在: {update_id}")
+        self.update_id = update_id
+
+
 class ControlAdmissionError(ControlError):
     """表示 queued/running turn 超出控制面准入容量。"""
 
