@@ -71,6 +71,18 @@ export interface WebHostSession {
   close(): void;
 }
 
+export class WebHostUnauthorizedError extends Error {
+  constructor() {
+    super("登录状态已失效，请重新登录。");
+    this.name = "WebHostUnauthorizedError";
+  }
+}
+
+export function loginRedirectUrl(): string {
+  const current = `${window.location.pathname}${window.location.search}${window.location.hash}` || "/";
+  return `/_auth/login?next=${encodeURIComponent(current)}`;
+}
+
 class BrowserCatalogSession implements WebHostSession {
   readonly errors = new Map<string, Error>();
   private readonly mounts = new Map<string, MountNode>();
@@ -99,6 +111,7 @@ class BrowserCatalogSession implements WebHostSession {
       headers: { Accept: "application/json" },
       cache: "no-store",
     });
+    if (response.status === 401) throw new WebHostUnauthorizedError();
     if (!response.ok) throw new Error(`界面状态暂时不可用（${response.status}）`);
     const state = await response.json() as unknown;
     if (!isRecord(state)
@@ -163,24 +176,38 @@ class BrowserCatalogSession implements WebHostSession {
     const entry = root ? this.sortedEntries(root)[0] : undefined;
     host.replaceChildren();
     if (!entry) {
+      const wrap = document.createElement("main");
+      wrap.className = "web-host-fallback";
+      const card = document.createElement("div");
+      card.className = "web-host-fallback-card";
       const empty = document.createElement("p");
       empty.className = this.errors.size ? "web-host-entry-error" : "web-host-empty";
       if (this.errors.size) empty.setAttribute("role", "alert");
       empty.textContent = this.errors.size
         ? `Web 界面加载失败：${[...this.errors.keys()].join("、")}`
         : "没有插件提供 Web 界面。";
-      host.appendChild(empty);
+      card.appendChild(empty);
+      wrap.appendChild(card);
+      host.appendChild(wrap);
       return () => host.replaceChildren();
     }
     const dispose = this.renderEntry(entry, host);
-    const notice = document.createElement("p");
+    const notice = document.createElement("div");
     if (this.errors.size) {
-      notice.className = "web-host-entry-error";
+      notice.className = "web-host-partial-error";
       notice.setAttribute("role", "alert");
-      notice.textContent = `部分插件界面加载失败：${[...this.errors]
+      const text = document.createElement("p");
+      text.className = "web-host-partial-error-text";
+      text.textContent = `部分插件界面加载失败：${[...this.errors]
         .map(([id, error]) => `${id}：${error.message}`).join("；")}`;
-      // 根插件拥有 host 的内容；错误提示不插入它的渲染树。
-      document.body.prepend(notice);
+      const dismiss = document.createElement("button");
+      dismiss.type = "button";
+      dismiss.className = "web-host-stale-action";
+      dismiss.textContent = "知道了";
+      dismiss.onclick = () => notice.remove();
+      notice.append(text, dismiss);
+      // 根插件拥有 host 的内容；错误提示用浮动层，不占据 body 文档流挤走 100dvh 壳层。
+      document.body.appendChild(notice);
     }
     const close = once(() => { notice.remove(); dispose(); });
     this.renderEffects.push(close);
@@ -645,6 +672,7 @@ export async function startWebHost(host: HTMLElement): Promise<WebHostSession> {
       runtimeReady,
       prefetched ?? fetch("/api/chat/web-ui/bootstrap", {headers: {Accept: "application/json"}, cache: "no-cache"}),
     ]);
+    if (response.status === 401) throw new WebHostUnauthorizedError();
     if (!response.ok) throw new Error(`界面目录暂时不可用（${response.status}）`);
     const next = new BrowserCatalogSession(parseBootstrap(await response.json()));
     try {
@@ -674,15 +702,23 @@ export async function startWebHost(host: HTMLElement): Promise<WebHostSession> {
   notice.setAttribute("role", "status");
   const message = document.createElement("span");
   const retry = document.createElement("button");
-  retry.type = "button"; retry.textContent = "重新核对";
+  retry.type = "button";
+  retry.className = "web-host-stale-action";
+  retry.textContent = "重新核对";
+  let unauthorized = false;
   notice.append(message, retry);
-  const show = (text: string): void => { message.textContent = text; if (!notice.isConnected) document.body.prepend(notice); };
+  const show = (text: string, signIn = false): void => {
+    unauthorized = signIn;
+    message.textContent = text;
+    retry.textContent = signIn ? "重新登录" : "重新核对";
+    if (!notice.isConnected) document.body.prepend(notice);
+  };
   const check = async (): Promise<void> => {
     if (closed || checking) return;
     checking = true;
     try {
       const state = await session.checkCurrent();
-      if (state === "current") { if (sawChange) { window.clearInterval(timer); notice.remove(); } return; }
+      if (state === "current") { if (sawChange || unauthorized) { unauthorized = false; window.clearInterval(timer); notice.remove(); } return; }
       sawChange = true;
       const next = await open();
       if (closed) { next.close(); return; }
@@ -700,7 +736,15 @@ export async function startWebHost(host: HTMLElement): Promise<WebHostSession> {
       // 仅在正式目录稳定后更换宿主；保留路由与非敏感回执，不重载浏览器。
       if (window.dispatchEvent(new CustomEvent("akashic:before-navigate", {cancelable: true, detail: {go, reason: "catalog"}}))) go();
       if (!applied) { available = false; next.close(); show("界面已更新，当前页面暂时阻止切换。请等待原操作结果或处理页面提示，再重新核对。"); }
-    } catch (error) { if (!closed) show(error instanceof Error ? error.message : String(error)); }
+    } catch (error) {
+      if (closed) return;
+      if (error instanceof WebHostUnauthorizedError) {
+        window.clearInterval(timer);
+        show(error.message, true);
+      } else {
+        show(error instanceof Error ? error.message : String(error));
+      }
+    }
     finally { checking = false; }
   };
   const submitted = (): void => {
@@ -712,7 +756,14 @@ export async function startWebHost(host: HTMLElement): Promise<WebHostSession> {
     }, 500);
   };
   const focus = (): void => { void check(); };
-  retry.onclick = () => { submitted(); sawChange = true; };
+  retry.onclick = () => {
+    if (unauthorized) {
+      window.location.assign(loginRedirectUrl());
+      return;
+    }
+    submitted();
+    sawChange = true;
+  };
   window.addEventListener("akashic:configuration-submitted", submitted);
   window.addEventListener("focus", focus);
   document.addEventListener("visibilitychange", focus);
