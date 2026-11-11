@@ -233,6 +233,10 @@ disabled = true
 plugin = "wake@release"
 disabled = true
 
+[rows."watch"]
+plugin = "watch@release"
+disabled = true
+
 [rows."codex"]
 plugin = "codex@release"
 disabled = true

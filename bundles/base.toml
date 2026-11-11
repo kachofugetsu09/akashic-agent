@@ -195,6 +195,9 @@ plugin = "akasha@release"
 [rows."wake"]
 plugin = "wake@release"
 
+[rows."watch"]
+plugin = "watch@release"
+
 [rows."codex"]
 plugin = "codex@release"
 
