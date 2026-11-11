@@ -55,6 +55,7 @@ class Runtime:
         saved = load_json(self._state_path, {}, domain="watch")
         self.state = State(**{key: value for key, value in saved.items() if key in State.__slots__})
         self.state.next_id = max(self.state.next_id, self.log.last_number() + 1)
+        self._keys = self.log.keys()
 
     async def follow(self) -> None:
         while True:
@@ -69,14 +70,15 @@ class Runtime:
 
     # 事件入口：其他插件经 WATCH_EVENTS 交事件，和文件来源落在同一处。
     async def emit(self, source: str, *, title: str = "", text: str = "", url: str = "", at: datetime | None = None,
-                   state: bool = False) -> str:
+                   state: bool = False, key: str = "") -> str:
         if not source.strip() or not (title.strip() or text.strip()):
             raise ValueError("事件需要来源名，以及标题或正文之一")
-        raw = {"title": title, "text": text, "url": url, "at": at.isoformat() if at else ""}
+        raw = {"title": title, "text": text, "url": url, "at": at.isoformat() if at else "", "key": key}
         now = datetime.now(self.zone)
         added = await self._append([(source.strip(), raw, state)], now)
-        # 和当前状态一模一样的重复上报不产生新事件，返回原来那条的编号
-        return added[0].id if added else self.state.current[source.strip()[:80]]
+        # 交过的 key、和当前状态一模一样的重复上报都不产生新事件，返回原来那条的编号
+        name = source.strip()[:80]
+        return added[0].id if added else self._keys.get((name, key[:300])) or self.state.current[name]
 
     # 事件落盘和读取游标在同一次保存里前进：中途崩溃最多重读一批，不会丢。
     async def _append(self, rows: Sequence[tuple[str, Mapping[str, object] | str, bool]], now: datetime, *,
@@ -87,6 +89,8 @@ class Runtime:
             for source, raw, state in rows:
                 event = normalize(self.state.next_id + len(events), source, raw, now, state)
                 previous = latest.get(event.source)
+                if event.key and ((event.source, event.key) in self._keys or any(other.key == event.key and other.source == event.source for other in events)):
+                    continue
                 # 状态没变的重复上报不算新事件
                 if event.state and previous is not None and (previous.title, previous.text) == (event.title, event.text):
                     continue
@@ -94,6 +98,7 @@ class Runtime:
                 if event.state:
                     latest[event.source] = event
             await run_file_io(lambda: self.log.append(events, now))
+            self._keys.update({(event.source, event.key): event.id for event in events if event.key})
             self.state.next_id += len(events)
             self.state.current = {source: event.id for source, event in latest.items()}
             if offsets is not None:
@@ -216,6 +221,12 @@ class Runtime:
             return []
         reader = self.ctx.require(MESSAGE_CATALOG).reader(self.config.target)
         return await run_file_io(lambda: recent.read_turns(reader, now))
+
+    # 各来源当前的状态事件，给用户信息入口用。
+    async def states(self) -> list[Event]:
+        now = datetime.now(self.zone)
+        latest = await run_file_io(lambda: self._current(now))
+        return [latest[source] for source in sorted(latest)]
 
     # 当前状态不另外去查：就是各来源交来的最近一条状态事件。
     async def _user_state(self, now: datetime) -> str:
