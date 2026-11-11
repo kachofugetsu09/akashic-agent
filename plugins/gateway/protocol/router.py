@@ -16,6 +16,7 @@ from ..errors import (
     ThreadBusyError,
     ThreadNotFoundError,
     TurnNotFoundError,
+    UpdateNotFoundError,
 )
 from .errors import (
     INTERNAL_ERROR,
@@ -29,6 +30,7 @@ from .errors import (
     THREAD_NOT_FOUND,
     TURN_NOT_FOUND,
     PLUGIN_OPERATION_FAILED,
+    UPDATE_NOT_FOUND,
     JsonRpcError,
 )
 from .models import METHOD_PARAMS, InitializeParams, StrictModel, MessageSendParams
@@ -154,6 +156,18 @@ class ConnectionRouter:
         except PluginManagementError as exc:
             await self._send(
                 JsonRpcError(PLUGIN_OPERATION_FAILED, str(exc)).envelope(request_id)
+            )
+        except UpdateNotFoundError as exc:
+            await self._send(
+                JsonRpcError(
+                    UPDATE_NOT_FOUND,
+                    str(exc),
+                    {
+                        "update_id": exc.update_id,
+                        "retryable": False,
+                        "terminal": True,
+                    },
+                ).envelope(request_id)
             )
         except ValueError as exc:
             await self._send(

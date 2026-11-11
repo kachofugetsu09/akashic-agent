@@ -13,14 +13,14 @@ from plugins.ledger.contract import CHANNEL_ATTACHMENT_READ
 from .contract import CONTROL_FRAMES
 from agent.plugin_composition.host import HOST_INFO
 from plugins.ledger.contract import MESSAGE_CATALOG
-from agent.plugin_composition.plugin_updates import PLUGIN_UPDATES
+from agent.plugin_composition.plugin_updates import PLUGIN_UPDATES, UpdateStatus
 from plugins.ledger.contract import CallRef
 from plugins.ui.contract import MESSAGE_DISPLAY, message_rows
 from agent.plugin_composition.tasks import RESTART_GATE
 from plugins.ui.contract import MessagePage
 from plugins.ledger.contract import Message
 from .contract import RpcMethod
-from .errors import RuntimeClosedError
+from .errors import RuntimeClosedError, UpdateNotFoundError
 from .protocol.errors import JsonRpcError, SERVER_OVERLOADED
 from .runtime_stop import CancelStopParams, StopParams, prepare_stop
 from .service import ControlService
@@ -40,10 +40,15 @@ def build_control_service(ctx: Context, *, workspace_token: str | None) -> Contr
         with ctx.borrow(RpcMethod.key(name)) as method:
             yield method
 
+    def _serialize_update(status: UpdateStatus) -> dict[str, object]:
+        payload = asdict(status)
+        payload["terminal"] = status.state != "accepted"
+        return payload
+
     @ctx.entrypoint
     async def install(source: str, marketplace: str, ref: str, sparse: list[str],
                       update_id: str) -> dict[str, object]:
-        return asdict(await updates.install(ctx, update_id, source=source,
+        return _serialize_update(await updates.install(ctx, update_id, source=source,
             marketplace=marketplace, ref=ref, sparse=tuple(sparse)))
 
     @ctx.entrypoint
@@ -60,8 +65,8 @@ def build_control_service(ctx: Context, *, workspace_token: str | None) -> Contr
     def update(identity: str) -> dict[str, object]:
         status = updates.read(ctx, identity)
         if status is None:
-            raise KeyError(identity)
-        return asdict(status)
+            raise UpdateNotFoundError(identity)
+        return _serialize_update(status)
 
     async def message_display(page: MessagePage, *, display_only: bool) -> list[dict[str, object]]:
         with ctx.borrow(MESSAGE_DISPLAY) as display:
