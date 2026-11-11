@@ -70,16 +70,23 @@ docker compose exec akashic python main.py web-login</pre>
 </form>
 <script>
 function safeNext(candidate) {
-  if (!candidate || typeof candidate !== "string") return "/";
-  if (!candidate.startsWith("/") || candidate.startsWith("//")) return "/";
-  if (/[\u0000-\u001f\u007f\\]/.test(candidate)) return "/";
+  const fallback = new URL("/", location.origin).href;
+  if (!candidate || typeof candidate !== "string") return fallback;
+  if (!candidate.startsWith("/") || candidate.startsWith("//")) return fallback;
+  if (/[\u0000-\u001f\u007f\\]/.test(candidate)) return fallback;
   try {
     const parsed = new URL(candidate, location.origin);
-    if (parsed.origin !== location.origin) return "/";
-    if (parsed.pathname === "/_auth" || parsed.pathname.startsWith("/_auth/")) return "/";
-    return `${parsed.pathname}${parsed.search}${parsed.hash}` || "/";
+    if (parsed.origin !== location.origin) return fallback;
+    const decoded = decodeURIComponent(parsed.pathname);
+    if (parsed.pathname.startsWith("//") || decoded.startsWith("//")) return fallback;
+    if (parsed.pathname === "/_auth" || parsed.pathname.startsWith("/_auth/")
+      || decoded === "/_auth" || decoded.startsWith("/_auth/")) return fallback;
+    const relative = `${parsed.pathname}${parsed.search}${parsed.hash}` || "/";
+    const rechecked = new URL(relative, location.origin);
+    if (rechecked.origin !== location.origin || rechecked.pathname.startsWith("//")) return fallback;
+    return rechecked.href;
   } catch {
-    return "/";
+    return fallback;
   }
 }
 
