@@ -177,6 +177,21 @@ function Shell({ pages, railActions, settings, settingsPlugins, http, inventory 
   useLayoutEffect(() => {
     const track = bandTrack.current;
     if (!track) return;
+    const nav = track.parentElement;
+    let lastNavWidth = nav?.clientWidth ?? 0;
+    const ensureActiveVisible = (smooth: boolean) => {
+      const current = track.querySelector<HTMLElement>('[aria-current="page"]');
+      if (!current || !nav || nav.scrollWidth <= nav.clientWidth) return;
+      const left = current.offsetLeft;
+      const right = left + current.offsetWidth;
+      const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      const behavior: ScrollBehavior = smooth && !reduced ? "smooth" : "auto";
+      if (left < nav.scrollLeft) {
+        nav.scrollTo({ left: Math.max(0, left - 12), behavior });
+      } else if (right > nav.scrollLeft + nav.clientWidth) {
+        nav.scrollTo({ left: right - nav.clientWidth + 12, behavior });
+      }
+    };
     const measure = () => {
       const current = track.querySelector<HTMLElement>('[aria-current="page"]');
       if (current) {
@@ -185,22 +200,16 @@ function Shell({ pages, railActions, settings, settingsPlugins, http, inventory 
       } else {
         track.style.setProperty("--band-indicator-w", "0px");
       }
+      if (nav && nav.clientWidth !== lastNavWidth) {
+        lastNavWidth = nav.clientWidth;
+        ensureActiveVisible(false);
+      }
       requestAnimationFrame(() => { track.dataset.ready = "true"; });
     };
     measure();
-    const current = track.querySelector<HTMLElement>('[aria-current="page"]');
-    const nav = track.parentElement;
-    if (current && nav && nav.scrollWidth > nav.clientWidth) {
-      const left = current.offsetLeft;
-      const right = left + current.offsetWidth;
-      const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-      if (left < nav.scrollLeft) {
-        nav.scrollTo({ left: Math.max(0, left - 12), behavior: reduced ? "auto" : "smooth" });
-      } else if (right > nav.scrollLeft + nav.clientWidth) {
-        nav.scrollTo({ left: right - nav.clientWidth + 12, behavior: reduced ? "auto" : "smooth" });
-      }
-    }
+    ensureActiveVisible(true);
     const observer = new ResizeObserver(measure);
+    if (nav) observer.observe(nav);
     observer.observe(track);
     track.querySelectorAll<HTMLElement>("[data-band-item]").forEach((item) => observer.observe(item));
     return () => observer.disconnect();
