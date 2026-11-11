@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import gzip
 import hashlib
+import html as html_lib
 import json
 import logging
 import stat
@@ -38,6 +39,10 @@ _WS_RECHECK_SECONDS = 5.0
 # 一次循环停顿无论多长只让在途复检失败一次；要连续失败跨过宽限才断开，未经确认的转发最长约
 # 宽限 + 复检间隔 + 守卫超时（约 45 秒），不会无限放行。
 _WS_GUARD_GRACE_SECONDS = 30.0
+# 客户端池空闲连接过期时间显著短于服务端 uvicorn timeout_keep_alive(30s) 与 5s 复检周期，避免半关闭竞态。
+_POOL_KEEPALIVE_EXPIRY_SECONDS = 4.0
+_GUARD_RETRY_DELAY_SECONDS = 0.05
+_GUARD_LOG_WINDOW_SECONDS = 60.0
 _GUARD_RESPONSE_HEADERS = {"content-type", "location", "cache-control", "retry-after", "www-authenticate"}
 
 _REQUEST_HEADERS_EXCLUDED = {
@@ -120,7 +125,8 @@ class _HttpClients:
                 entry = _HttpClient(httpx.AsyncClient(
                     # 只限制闲置连接；长流不能占满一个新增的全局并发配额。
                     transport=httpx.AsyncHTTPTransport(uds=endpoint.address,
-                        limits=httpx.Limits(max_connections=None, max_keepalive_connections=20)),
+                        limits=httpx.Limits(max_connections=None, max_keepalive_connections=20,
+                                            keepalive_expiry=_POOL_KEEPALIVE_EXPIRY_SECONDS)),
                     base_url="http://akashic-runtime", timeout=httpx.Timeout(30.0, read=None),
                     cookies=CookieJar(policy=DefaultCookiePolicy(allowed_domains=())),
                 ))
@@ -296,22 +302,103 @@ class _IngressGuard:
         return False if GUARD_PROTOCOL in requires else None
 
 
+class _GuardErrorLog:
+    """按错误分类与时间窗聚合守卫故障日志：窗口内保留首次堆栈，后续重复仅记次数。"""
+
+    def __init__(self, window_seconds: float = _GUARD_LOG_WINDOW_SECONDS) -> None:
+        self._window = window_seconds
+        self._buckets: dict[str, tuple[float, int]] = {}
+
+    def record(self, code: str, error: Exception | None, *, uri: str, status_code: int | None = None) -> None:
+        now = time.monotonic()
+        existing = self._buckets.get(code)
+        if existing is not None:
+            started, suppressed = existing
+            if now - started < self._window:
+                self._buckets[code] = (started, suppressed + 1)
+                return
+            if suppressed > 0:
+                logger.warning(
+                    "Web Shell 入口守卫同类故障已聚合 code=%s suppressed=%d window_s=%.1f",
+                    code, suppressed, now - started,
+                )
+        self._buckets[code] = (now, 0)
+        if error is not None:
+            logger.error(
+                "Web Shell 入口守卫不可用 code=%s error_type=%s uri=%s",
+                code, type(error).__name__, uri, exc_info=error,
+            )
+        else:
+            logger.error(
+                "Web Shell 入口守卫返回服务端错误 code=%s status=%s uri=%s",
+                code, status_code, uri,
+            )
+
+    def flush(self) -> None:
+        now = time.monotonic()
+        for code, (started, suppressed) in tuple(self._buckets.items()):
+            if suppressed > 0:
+                logger.warning(
+                    "Web Shell 入口守卫同类故障已聚合 code=%s suppressed=%d window_s=%.1f",
+                    code, suppressed, now - started,
+                )
+        self._buckets.clear()
+
+
+def _classify_guard_error(error: httpx.HTTPError) -> tuple[str, str]:
+    if isinstance(error, httpx.ConnectError):
+        return "guard_unreachable", "入口守卫不可达"
+    if isinstance(error, (httpx.RemoteProtocolError, httpx.ReadError, httpx.WriteError)):
+        return "guard_protocol_error", "入口守卫连接异常关闭"
+    if isinstance(error, httpx.TimeoutException):
+        return "guard_timeout", "入口守卫响应超时"
+    return "guard_unavailable", "入口守卫不可用"
+
+
+_RETRYABLE_GUARD_ERRORS = (
+    httpx.ConnectError,
+    httpx.RemoteProtocolError,
+    httpx.ReadError,
+    httpx.WriteError,
+)
+
+
 async def _guard_verdict(clients: _HttpClients, guard: Endpoint, headers: Mapping[str, str], *,
-                         method: str, uri: str, upgrade: str, peer: str) -> Response | None:
+                         method: str, uri: str, upgrade: str, peer: str,
+                         errors: _GuardErrorLog) -> Response | None:
     """把原请求的方法、路径与头交给守卫；2xx 放行，其余响应原样作为拒绝结果。"""
     forwarded = {name: value for name, value in headers.items()
                  if name.lower() not in _REQUEST_HEADERS_EXCLUDED and name.lower() not in _SHELL_HEADERS}
     # 代理不转 Host；原值以 x-akashic-host 交给守卫做同源判断。
     forwarded.update({"x-akashic-method": method, "x-akashic-uri": uri, "x-akashic-upgrade": upgrade,
                       "x-akashic-peer": peer, "x-akashic-host": headers.get("host", "")})
-    try:
-        async with clients.open(guard) as client:
-            verdict = await client.get("/_guard/check", headers=forwarded, timeout=10)
-    except httpx.HTTPError as error:
-        logger.error("Web Shell 入口守卫不可用", exc_info=error)
-        return _runtime_unavailable(code="guard_unavailable", message="入口守卫不可用")
+    last_error: httpx.HTTPError | None = None
+    verdict: httpx.Response | None = None
+    for attempt in range(2):
+        try:
+            async with clients.open(guard) as client:
+                verdict = await client.get("/_guard/check", headers=forwarded, timeout=10)
+            last_error = None
+            break
+        except httpx.HTTPError as error:
+            last_error = error
+            if attempt == 0 and isinstance(error, _RETRYABLE_GUARD_ERRORS):
+                await asyncio.sleep(_GUARD_RETRY_DELAY_SECONDS)
+                continue
+            break
+    if last_error is not None:
+        code, message = _classify_guard_error(last_error)
+        errors.record(code, last_error, uri=uri)
+        return _runtime_unavailable(
+            html="text/html" in headers.get("accept", ""),
+            code=code,
+            message=message,
+        )
+    assert verdict is not None
     if 200 <= verdict.status_code < 300:
         return None
+    if verdict.status_code >= 500:
+        errors.record("guard_http_5xx", None, uri=uri, status_code=verdict.status_code)
     return Response(verdict.content[:65536], status_code=verdict.status_code,
                     headers={name: value for name, value in verdict.headers.items()
                              if name.lower() in _GUARD_RESPONSE_HEADERS})
@@ -324,12 +411,14 @@ def create_web_shell_app(workspace: Path, *, wait_for_ready: bool = False,
     stopping = streams_stopping or asyncio.Event()
     clients = _HttpClients()
     ingress = _IngressGuard(workspace, wait_for_ready=wait_for_ready)
+    guard_errors = _GuardErrorLog()
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         try:
             yield
         finally:
+            guard_errors.flush()
             await clients.aclose()
 
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
@@ -346,7 +435,8 @@ def create_web_shell_app(workspace: Path, *, wait_for_ready: bool = False,
                                         code="guard_unavailable", message="入口守卫尚未就绪")
         if isinstance(guard, Endpoint):
             verdict = await _guard_verdict(clients, guard, headers, method=method,
-                                           uri=raw + ("?" + query if query else ""), upgrade=upgrade, peer=peer)
+                                           uri=raw + ("?" + query if query else ""), upgrade=upgrade, peer=peer,
+                                           errors=guard_errors)
             if verdict is not None:
                 return verdict
         return _matching_endpoint(endpoints, unquote(raw))
@@ -812,12 +902,56 @@ def _is_socket(path: Path) -> bool:
         return False
 
 
+_UNAVAILABLE_HTML_STYLE = (
+    ":root{--paper:#f5f4ed;--ink:#141413;--ink-2:#504e49;--ink-3:#6b6a64;"
+    "--rule:rgb(20 20 19/.18);--accent:#1b365d;--accent-ink:#faf9f5;}"
+    "@media(prefers-color-scheme:dark){:root{--paper:#181816;--ink:#ecebe4;--ink-2:#bab8af;"
+    "--ink-3:#929088;--rule:rgb(236 235 228/.22);--accent:#96b4e2;--accent-ink:#12161e;color-scheme:dark;}}"
+    "*{box-sizing:border-box}"
+    "body{margin:0;min-height:100dvh;display:grid;place-items:center;"
+    "padding:24px max(16px,env(safe-area-inset-right,0px)) 24px max(16px,env(safe-area-inset-left,0px));"
+    "background:var(--paper);color:var(--ink);"
+    'font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Noto Sans SC",sans-serif;}'
+    "main{width:min(100%,380px);display:grid;gap:12px;}"
+    ".brand{font-weight:700;font-size:14px;display:flex;gap:8px;align-items:center;color:var(--ink);}"
+    ".brand i{width:16px;height:16px;border-radius:4px;background:var(--ink);}"
+    "h1{margin:2px 0 0;font-size:22px;line-height:1.3;}"
+    "p{margin:0;color:var(--ink-2);font-size:14px;}"
+    "code{justify-self:start;padding:2px 8px;border:1px solid var(--rule);border-radius:6px;"
+    "color:var(--ink-3);font:12px/1.5 ui-monospace,Menlo,monospace;}"
+    "button{margin-top:4px;min-height:44px;padding:0 18px;justify-self:start;border:0;border-radius:8px;"
+    "background:var(--accent);color:var(--accent-ink);font:inherit;font-weight:600;cursor:pointer;}"
+    "button:disabled{opacity:.5;cursor:progress;}"
+)
+
+
 def _runtime_unavailable(*, html: bool = False, code: str = "runtime_unavailable",
                          message: str = "Runtime 尚未就绪") -> Response:
     if html:
-        return HTMLResponse("<!doctype html><meta charset=utf-8><title>Akashic</title>"
-                            f"<main><h1>{message}</h1><p>服务恢复后刷新此页面。</p></main>",
-                            status_code=503, headers={"Retry-After": "1", "Cache-Control": "no-store"})
+        safe_msg = html_lib.escape(message)
+        safe_code = html_lib.escape(code)
+        page = (
+            "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">"
+            "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1, viewport-fit=cover\">"
+            f"<title>{safe_msg} · Akashic</title><style>{_UNAVAILABLE_HTML_STYLE}</style></head>"
+            "<body><main role=\"alert\">"
+            "<div class=\"brand\"><i></i>Akashic</div>"
+            f"<h1>{safe_msg}</h1>"
+            "<p>服务正在准备或恢复连接，请稍候重新加载此页面。</p>"
+            f"<code data-error-code=\"{safe_code}\">{safe_code}</code>"
+            "<button type=\"button\" onclick=\"this.disabled=true;this.textContent='正在重新加载…';location.reload()\">"
+            "重新加载</button></main></body></html>"
+        )
+        return HTMLResponse(
+            page,
+            status_code=503,
+            headers={
+                "Retry-After": "1",
+                "Cache-Control": "no-store",
+                "X-Content-Type-Options": "nosniff",
+                "Content-Security-Policy": _WEB_CONTENT_SECURITY_POLICY,
+            },
+        )
     return JSONResponse(status_code=503,
                         content={"code": code, "message": message},
                         headers={"Retry-After": "1"})

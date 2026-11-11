@@ -69,7 +69,7 @@ async def start_dashboard_server(ctx: Context, app: FastAPI) -> None:
     # 1. Unix 路径保持原 workspace 节点；代码与构建资产只读。
     path = socket_alias_path(ctx.runtime.workspace / "runtime", "dashboard.sock")
     server = DashboardServer(uvicorn.Config(app, log_level="info", lifespan="off",
-                                           timeout_graceful_shutdown=10))
+                                           timeout_keep_alive=30, timeout_graceful_shutdown=10))
     _install_dashboard_access_log_filter()
     health = await ctx.health("dashboard")
     health.degrade("starting")
