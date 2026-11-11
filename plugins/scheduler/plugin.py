@@ -82,7 +82,9 @@ SETTING_FIELDS = ("max_steps", "max_output_tokens", "max_active_jobs")
 
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    max_steps: int = Field(default=40, gt=0)
+    # 0 = 不限制总步数，和 ReAct 的 max_steps>0 才生效保持一致；
+    # 入口不再硬编码上限，实际值只由设置决定。
+    max_steps: int = Field(default=0, ge=0)
     max_output_tokens: int | None = Field(default=None, gt=0)
     max_active_jobs: int = Field(default=SCHEDULE_MAX_ACTIVE_JOBS, ge=1, le=200)
 
