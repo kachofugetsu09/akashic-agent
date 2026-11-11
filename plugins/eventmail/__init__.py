@@ -1,1 +1,0 @@
-"""Durable Content inbox plugin."""

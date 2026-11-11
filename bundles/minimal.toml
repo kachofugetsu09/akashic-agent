@@ -189,10 +189,6 @@ disabled = true
 plugin = "akashic_clients@release"
 disabled = true
 
-[rows."eventmail"]
-plugin = "eventmail@release"
-disabled = true
-
 [rows."delivery"]
 plugin = "delivery@release"
 disabled = true

@@ -162,9 +162,6 @@ plugin = "jobs@release"
 plugin = "akashic_clients@release"
 config = { "enabled" = true, "web" = { "enabled" = true, "socket_path" = "" } }
 
-[rows."eventmail"]
-plugin = "eventmail@release"
-
 [rows."delivery"]
 plugin = "delivery@release"
 
