@@ -6,6 +6,7 @@
 
 | ID | 状态 | 主题 | 关联条款 |
 |---|---|---|---|
+| [0149](0149-watch-replaces-wake.md) | proposed / implemented for review | 值班（watch）取代 Wake：便宜模型看流，主 Agent 自己决定做什么 | PRO-003、PRO-005、PRO-006、SEC-011 |
 | [0148](0148-plugins-stay-in-core.md) | accepted / implemented for review | 内置插件留在 Core 仓库：撤回 #1973 拆仓与热更新，正交性靠仓库内边界（前端归属、R13） | PLG-001 |
 | [0147](0147-appearance-dependencies-are-machine-checked.md) | accepted / implemented for review | 外观依赖由静态检查守护：圆角与投影取 token，变量只能解析到自己或宿主 | WEBUI-007、PLG-001 |
 | [0146](0146-drift-is-retired.md) | accepted / implemented for review | 移除漫游（Drift）；主动消息口径由来源插件自己声明 | PRO-002、PLG-006、TST-001 |
