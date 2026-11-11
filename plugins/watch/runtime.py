@@ -1,29 +1,37 @@
-"""值班主循环（第一步）：把三种入口的事件收成同一种形状，按天落盘。"""
+"""值班主循环：收事件、攒批给值班员判断、落记录。"""
 from __future__ import annotations
 
 import asyncio
 import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from agent.plugin_composition import Context
 from core.common.file_io import run_file_io
 from infra.persistence.json_store import atomic_save_json, load_json
 from plugins.eventmail.contract import EVENTMAIL_STREAM
+from plugins.ledger.contract import MESSAGE_CATALOG
+from plugins.models.contract import CHAT_MODELS, MODEL_CATALOG, ModelError, ModelRequest
 
-from .events import Event, EventLog, normalize, read_sources
+from . import recent
+from .events import Event, EventLog, clip, normalize, read_sources
 from .settings import Config
+from .watcher import Call, Files, ModelFailure, Outcome, Reply, Verdict, judge
 
 logger = logging.getLogger(__name__)
+CHUNK, MAX_CHUNKS = 40, 5
 
 
 @dataclass(slots=True)
 class State:
     next_id: int = 1
+    judged: int = 0
     mail_seq: int | None = None
     offsets: dict[str, int] = field(default_factory=dict)
+    # 来源名 → 它最近一条状态事件的编号
     current: dict[str, str] = field(default_factory=dict)
 
 
@@ -34,6 +42,7 @@ class Runtime:
         self.root = ctx.workspace_root("watch")
         self.zone = ZoneInfo(config.timezone)
         self.log = EventLog(self.root)
+        self.files = Files(ctx.runtime.workspace, ("memory", "watch"))
         self._state_path = ctx.data_root / "state.json"
         self._lock = asyncio.Lock()
         saved = load_json(self._state_path, {}, domain="watch")
@@ -46,8 +55,8 @@ class Runtime:
                 async with self.ctx.runtime_scope():
                     await self.tick(datetime.now(self.zone))
             except Exception as error:
-                # 一次失败不终止循环；游标没有前进，下一次重读。
-                logger.exception("值班收事件失败")
+                # 一次轻唤醒失败不终止值班；事件留在原处，下一次再判。
+                logger.exception("值班轻唤醒失败")
                 _ = self.ctx.report_incident("watch_tick_failed", f"{type(error).__name__}: {error}"[:500])
             await asyncio.sleep(self.config.interval_minutes * 60)
 
@@ -97,9 +106,21 @@ class Runtime:
         await run_file_io(lambda: atomic_save_json(self._state_path, data, domain="watch"))
 
     async def tick(self, now: datetime) -> None:
+        # 1. 收进新事件
         await self._ingest(now)
-        # 事件全文留十四天
-        await run_file_io(lambda: self.log.prune(now, 14))
+        pending = await run_file_io(lambda: self.log.since(self.state.judged, now))
+        # 2. 有新事件才动用模型
+        if pending:
+            await self._judge(now, pending[: CHUNK * MAX_CHUNKS])
+        # 3. 清理
+        await run_file_io(lambda: self._clean(now))
+        await self._save()
+
+    # 事件全文与值班记录留十四天；待看列表三天没处理的条目自动清掉。
+    def _clean(self, now: datetime) -> None:
+        self.log.prune(now, 14)
+        _prune_dated(self.root / "inbox.md", now, 3)
+        _prune_logs(self.root, now, 14)
 
     async def _ingest(self, now: datetime) -> None:
         offsets = dict(self.state.offsets)
@@ -125,3 +146,103 @@ class Runtime:
                         rows.append((str(payload.get("source_name") or envelope["source_id"]), payload, state))
                     mail_seq = int(str(envelopes[-1]["seq"]))
         _ = await self._append(rows, now, offsets=offsets, mail_seq=mail_seq)
+
+    async def _judge(self, now: datetime, pending: list[Event]) -> None:
+        context = await self._context(now)
+        chain: tuple[str | None, ...] = self.config.watch_models or (None,)
+        for start in range(0, len(pending), CHUNK):
+            chunk = pending[start:start + CHUNK]
+            lookup = {event.id: event for event in chunk}
+            outcome = await judge(self._complete, chain, context, chunk, self.files,
+                                  lambda event_id: lookup.get(event_id) or self.log.get(event_id, now))
+            await self._record(now, outcome)
+            if outcome.model is None:
+                # 整条模型链都失败：这批留到下一次轻唤醒再判
+                _ = self.ctx.report_incident("watch_models_failed", "; ".join(outcome.failures)[:500])
+                break
+            self.state.judged = max(self.state.judged, *(event.number for event in chunk))
+            await self._save()
+
+    # 值班员每次看到的现场：时间、用户状态、最近对话和长期记忆。
+    async def _context(self, now: datetime) -> str:
+        turns = await self._turns(now)
+        memory = self.files.text(self.config.memory_file) or ""
+        return "\n\n".join(part for part in (
+            f"现在：{now:%Y-%m-%d %H:%M}（周{'一二三四五六日'[now.weekday()]}）",
+            "用户当前状态：\n" + await self._user_state(now),
+            "主 Agent 和用户最近的对话（从旧到新）：\n" + recent.render(turns, now),
+            recent.stats(turns, now),
+            "用户的长期记忆：\n" + memory if memory else "",
+        ) if part)
+
+    async def _turns(self, now: datetime) -> list[recent.Turn]:
+        if not self.config.target:
+            return []
+        reader = self.ctx.require(MESSAGE_CATALOG).reader(self.config.target)
+        return await run_file_io(lambda: recent.read_turns(reader, now))
+
+    # 当前状态不另外去查：就是各来源交来的最近一条状态事件。
+    async def _user_state(self, now: datetime) -> str:
+        latest = await run_file_io(lambda: self._current(now))
+        lines = [f"- [{source}] {event.at[5:16].replace('T', ' ')} 起：{clip(' — '.join(part for part in (event.title, event.text) if part), 400)}"
+                 for source, event in sorted(latest.items())]
+        return "\n".join(lines) or "（还没有来源报告过状态）"
+
+    async def _complete(self, model_id: str | None, messages: Sequence[Mapping[str, object]], tools: Sequence[Mapping[str, object]]) -> Reply:
+        # 宿主遇到不可用的模型会悄悄换成默认模型；退避链要的是明确失败、换下一个。
+        if model_id is not None and not any(
+                model.model_id == model_id and model.kind == "chat" and model.availability == "available"
+                for model in self.ctx.require(MODEL_CATALOG).snapshot().models):
+            raise ModelFailure("模型未注册或当前不可用")
+        try:
+            async with asyncio.timeout(240), self.ctx.require(CHAT_MODELS).independent_execution(model_id=model_id) as execution:
+                response = await execution.chat().complete(ModelRequest(messages=tuple(messages), tools=tuple(tools), max_attempts=2, max_retry_wait=20))
+        except (RuntimeError, TimeoutError) as error:
+            if ModelError.matches(error) or isinstance(error, TimeoutError):
+                raise ModelFailure(str(error) or type(error).__name__) from error
+            raise
+        return Reply(response.content or "", tuple(Call(call.id, call.name, call.arguments) for call in response.tool_calls))
+
+    # 值班记录：每条事件的去向与理由，按天存成可读的文件；这一步还不叫醒主 Agent，判为 wake 的也先进待看。
+    async def _record(self, now: datetime, outcome: Outcome) -> None:
+        def write() -> None:
+            (self.root / "log").mkdir(parents=True, exist_ok=True)
+            with (self.root / "log" / f"{now:%Y-%m-%d}.md").open("a", encoding="utf-8") as file:
+                for failure in outcome.failures:
+                    file.write(f"- {now:%H:%M} 模型失败：{failure}\n")
+                for verdict in outcome.verdicts:
+                    event = verdict.event
+                    file.write(f"- {now:%H:%M} #{event.id} [{event.source}] {clip(event.title or event.text, 90)} → {verdict.to}"
+                               + (f"｜{verdict.why}" if verdict.why else "") + f"（{outcome.model}）\n")
+            _inbox(self.root, now, [verdict for verdict in outcome.verdicts if verdict.to != "log"])
+        await run_file_io(write)
+
+
+def _inbox(root: Path, now: datetime, verdicts: Sequence[Verdict]) -> None:
+    if not verdicts:
+        return
+    root.mkdir(parents=True, exist_ok=True)
+    with (root / "inbox.md").open("a", encoding="utf-8") as file:
+        for verdict in verdicts:
+            event = verdict.event
+            reason = "；".join(part for part in ("值班员认为该叫醒" if verdict.to == "wake" else "", verdict.why) if part)
+            file.write(f"- [{now:%Y-%m-%d %H:%M}] #{event.id} [{event.source}] {clip(event.title or event.text, 120)}"
+                       + (f" {event.url}" if event.url else "") + (f"｜{reason}" if reason else "") + "\n")
+
+
+# 待看列表里带日期的行过期就删。
+def _prune_dated(path: Path, now: datetime, days: int) -> None:
+    if not path.exists():
+        return
+    floor = f"- [{now - timedelta(days=days):%Y-%m-%d %H:%M}]"
+    lines = path.read_text(encoding="utf-8").splitlines()
+    kept = [line for line in lines if not (line.startswith("- [20") and line[:20] < floor)]
+    if len(kept) != len(lines):
+        path.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
+
+
+def _prune_logs(root: Path, now: datetime, days: int) -> None:
+    floor = f"{now - timedelta(days=days):%Y-%m-%d}"
+    for path in (root / "log").glob("*.md") if (root / "log").exists() else ():
+        if path.stem < floor:
+            path.unlink()
