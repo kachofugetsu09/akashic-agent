@@ -229,10 +229,6 @@ disabled = true
 plugin = "akasha@release"
 disabled = true
 
-[rows."wake"]
-plugin = "wake@release"
-disabled = true
-
 [rows."watch"]
 plugin = "watch@release"
 disabled = true

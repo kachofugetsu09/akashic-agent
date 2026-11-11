@@ -84,7 +84,7 @@
 | [0037](0037-plugin-runtime-is-pure-v3.md) | accepted / implemented | 插件运行时收敛为 pure v3 | PLG-001～PLG-014、WSP-001～WSP-005、ERR-001、TST-001～TST-008 |
 | [0038](0038-operator-trust-can-publish-offline-plugin-batches.md) | accepted / 旧提交协议部分按 0072 调整 | Operator 信任可以离线发布 exact 插件批次 | PLG-013、RUN-015、ERR-001 |
 | [0039](0039-react-core-atoms-keep-sources-unprivileged.md) | accepted | React 原子能力留在 Core，来源保持非特权 | RUN-001～RUN-003、RUN-007～RUN-009、OUT-001～OUT-004、PLG-014、SCH-001～SCH-003、PRO-001、SEC-005、SEC-007 |
-| [0040](0040-wake-duty-gate-lives-in-scoped-react.md) | accepted | Wake duty gate 属于 Wake scoped react | RUN-003、RUN-007～RUN-009、OUT-001～OUT-003、PLG-014、PRO-001～PRO-002 |
+| [0040](0040-wake-duty-gate-lives-in-scoped-react.md) | superseded by 0149 | Wake duty gate 属于 Wake scoped react | RUN-003、RUN-007～RUN-009、OUT-001～OUT-003、PLG-014、PRO-001～PRO-002 |
 | [0041](0041-turn-effects-and-memory-plugins-are-orthogonal.md) | accepted / implementing | Turn 副作用与 Memory 插件保持正交 | SES-001、SES-007～SES-008、MEM-002、MEM-009～MEM-011、PLG-001～PLG-014、RUN-003、RUN-007～RUN-009 |
 | [0042](0042-plugin-diagnostics-preserve-domain-owners.md) | accepted / implementing | 插件诊断保留领域 owner | OBJ-002、PLG-003、PLG-006、PLG-014～PLG-015、ERR-001 |
 | [0043](0043-paper-brand-tokens-replace-material-visual-semantics.md) | accepted | 纸张品牌 Token 取代 Material 视觉语义 | WEBUI-001～WEBUI-007 |
@@ -92,7 +92,7 @@
 | [0046](0046-plugin-candidate-validation-is-incremental.md) | accepted / implemented | 插件候选只重建依赖闭包 | PLG-001～PLG-004、PLG-008～PLG-010、PLG-014 |
 | [0047](0047-provides-may-bind-one-tool.md) | partially superseded | 一个 provide 可以绑定一个 Tool | PLG-001～PLG-014、PRO-001～PRO-002 |
 | [0048](0048-eventmail-keeps-three-mail-lifecycles.md) | accepted / implemented | EventMail 统一信封并保持三类生命周期 | PLG-014～PLG-016、PRO-001～PRO-005 |
-| [0049](0049-wake-content-is-a-decaying-eventmail-pool.md) | accepted / implemented | Wake Content 是 EventMail 中的衰减池 | PRO-004～PRO-006、PLG-014～PLG-016 |
+| [0049](0049-wake-content-is-a-decaying-eventmail-pool.md) | superseded by 0149 | Wake Content 是 EventMail 中的衰减池 | PRO-004～PRO-006、PLG-014～PLG-016 |
 | [0050](0050-model-revision-lives-in-ordinary-plugin.md) | accepted | 模型 revision 由普通插件拥有 | RUN-005～RUN-012、ONB-001、PLG-003、PLG-014、PLG-016、WSP-001 |
 | [0051](0051-web-ui-composes-ordinary-plugin-modules.md) | accepted / implementing | WebUI 由普通插件递归组合 | WEBUI-001～WEBUI-007、PLG-001～PLG-016、ONB-001、MOB-001 |
 | [0052](0052-compaction-and-markdown-memory-are-ordinary-plugins.md) | accepted / implementing | Compaction 与 Markdown 记忆是普通插件 | CTX-007、MEM-001～MEM-011、PLG-001～PLG-014、SES-003～SES-005 |

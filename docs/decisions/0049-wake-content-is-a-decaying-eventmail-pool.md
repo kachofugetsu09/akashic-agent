@@ -4,7 +4,7 @@
 - 日期：2026-08-28
 - 关联条款：PRO-004～PRO-006、PLG-014～PLG-016
 - supersedes：0048 中仅按 EventMail due deadline 安排 Wake 检查的局部选择
-- superseded by：无
+- superseded by：0149
 
 ## 背景
 

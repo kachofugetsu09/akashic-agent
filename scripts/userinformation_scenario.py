@@ -73,25 +73,6 @@ async def main():
     with tempfile.TemporaryDirectory(prefix='userinformation-') as directory:
         async with application(Path(directory), replying=True, extra_sources=sources) as (log, host):
             root = host.live_root
-            from plugins.wake.information import snapshot_information
-            from plugins.wake.api import InformationQuery
-            snapshot = await snapshot_information(root.context, (
-                InformationQuery(provider="sample_information", query="current"),
-                InformationQuery(provider="missing", query="current"),
-                InformationQuery(provider="sample_information", query="fail"),
-                InformationQuery(provider="sample_information", query="large"),
-                InformationQuery(provider="sample_information", query="slow"),
-            ))
-            # 来源抛错由统一入口收成该来源 unavailable，Wake 原样归档
-            assert snapshot[2]["response"]["status"] == "unavailable", snapshot[2]
-            assert snapshot[3]["reason"] == "size_limit"
-            assert snapshot[4]["status"] == "unavailable"
-            assert snapshot[0]["response"]["result"]["evidence_ref"] == "fixture:observation"
-            assert snapshot[1]["response"]["status"] == "unavailable"
-            saved = Path(directory) / 'frozen-information.json'
-            saved.write_text(json.dumps(snapshot))
-            assert json.loads(saved.read_text()) == list(snapshot)
-            print('Wake prefetch: real registered provider and absent provider, frozen JSON roundtrip passed')
             await root.context.require(CHANNEL_INPUT_V2)('test:room','u1',
                 ChannelInboundMessage('test','user','room','read user information',datetime.now(UTC),{}))
             async def finished():

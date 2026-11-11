@@ -23,7 +23,7 @@ from types import SimpleNamespace
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--slow-writes", action="store_true")
 parser.add_argument("--source", type=Path, default=Path(__file__).resolve().parents[2])
-parser.add_argument("--owner", choices=("subagent", "wake"))
+parser.add_argument("--owner", choices=("subagent",))
 parser.add_argument("--case", choices=("fresh", "recovered", "newer-input", "newer-control"))
 args = parser.parse_args()
 if args.slow_writes and args.case not in {None, "fresh"}:
@@ -69,10 +69,6 @@ from plugins.sources.session import check_source
 from plugins.subagent.request import PROFILE_TOOLS, Request as SubagentRequest
 from plugins.subagent.runtime import SUBAGENT_PROGRAM, Subagents
 from plugins.turn_projection.plugin import TurnProjection
-from plugins.wake.api import DeliveryTarget
-from plugins.wake.request import Request as WakeRequest, WAKE_PROGRAM
-from plugins.wake.source import Source as WakeSource
-from plugins.wake.state import WakeState
 from plugins.ledger.log import MessageLog, SessionAttributes
 
 
@@ -233,9 +229,6 @@ async def check(directory: Path, kind: str, mode: str):
     async def subagent_program(task, reader, _request):
         return await reply(task, reader, "subagent")
 
-    async def wake_program(task, reader, _request):
-        return await reply(task, reader, "wake")
-
     async def storage(ctx):
         for key, value in (
             (MESSAGE_CATALOG, log.catalog()), (MESSAGE_WRITERS, writers),
@@ -243,7 +236,7 @@ async def check(directory: Path, kind: str, mode: str):
             (TASKS, tasks), (BINDINGS, bindings), (CONTENT, TextContent()),
             (MODEL_SELECTION, SelectionOwner()), (CHECK_ORIGIN, lambda _part: ContentReferences()),
             (DELIVERY, LocalDelivery()), (DELIVERY_SENDERS, LocalDelivery()),
-            (SUBAGENT_PROGRAM, subagent_program), (WAKE_PROGRAM, wake_program),
+            (SUBAGENT_PROGRAM, subagent_program),
         ):
             await ctx.provide(key, value)
 
@@ -296,30 +289,7 @@ async def check(directory: Path, kind: str, mode: str):
                 expected_outcome = "cancelled" if mode == "newer-control" else "failed" if stale else "completed"
                 assert outcome is not None and outcome[0] == expected_outcome, outcome
             else:
-                request = WakeRequest(flow_id="b" * 32, owner="content", now=datetime.now(UTC), timezone="UTC",
-                    target=DeliveryTarget(channel="local", recipient="one", session_id="parent"),
-                    sink={"name": "local", "binding_id": "sink", "address": "one"},
-                    program_binding="program", tools={name: name for name in ("screen_content", "share_content", "skip_content")},
-                    snapshot_seq=0, rules="", history="")
-                source = WakeSource(ctx, WakeState(directory / "wake.db"))
-                await source.accept(request)
-                reader = log.reader(request.session_id)
-                stages = ("content",)
-                if mode == "recovered":
-                    from plugins.wake.request import Phase, check_phase
-                    log.writer(request.session_id, author="wake", source="wake", body_types=(Input,),
-                        content={"wake.phase": check_phase, "text": check_text, "model.selection": SelectionOwner.check}).append(
-                            request.phase_id("content"), Input((ContentPart("wake.phase", Phase(input_id=request.input_id, stage="content").model_dump()),
-                                ContentPart("text", "original phase"), ContentPart("model.selection", {"model_id": None, "reasoning_effort": None}))))
-                    source = WakeSource(ctx, source.state)
-                async def phases(task):
-                    for stage in stages:
-                        await source._phase(task, request, reader, stage, {})
-                task = await ctx.require(TASKS).open(ctx).admit("flow", lambda slot: slot.start(phases))
-                try:
-                    await task.join()
-                except asyncio.CancelledError:
-                    assert stale, "valid Wake phase was rejected before the model"
+                raise AssertionError(kind)
             if args.slow_writes:
                 assert delays and max(delays) < 0.2, delays
             expected = 0 if stale else 1
@@ -339,7 +309,7 @@ async def check(directory: Path, kind: str, mode: str):
 
 async def main(directory):
     results = []
-    for source in ((args.owner,) if args.owner else ("subagent", "wake")):
+    for source in ((args.owner,) if args.owner else ("subagent",)):
         for mode in ((args.case,) if args.case else ("fresh",) if args.slow_writes else ("fresh", "recovered", "newer-input", "newer-control")):
             path = directory / (source + "-" + mode)
             path.mkdir()

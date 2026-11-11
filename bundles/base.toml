@@ -192,10 +192,6 @@ plugin = "telegram_sender@release"
 [rows."akasha"]
 plugin = "akasha@release"
 
-[rows."wake"]
-plugin = "wake@release"
-disabled = true
-
 [rows."watch"]
 plugin = "watch@release"
 
