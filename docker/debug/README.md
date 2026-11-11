@@ -127,57 +127,6 @@ fleet 报告固定来源和 v3-only 静态合同；真实 MCP handshake/readines
 由保留的行为回归和每周 restart soak 负责。已删除的 composition Gate 只是按固定插件排列
 重复内部 snapshot，不再作为独立证据。
 
-## Content / Wake 真实插件互操作 Gate
-
-`content_source_interop_gate.py` 不复制 Calendar、Fitbit、Feed、Steam 或 Emotion
-实现。它先把调用方提供的 canonical checkout 与 exact lock 对账，再运行 Core 已有的
-Content/Wake/Session 组合 fixture，最后在每个插件自己的目录运行其原样 fixture。
-因此修改一个插件的业务模型只需要更新该插件与 exact revision，不会给 Core 增加来源分支。
-Content coexistence probe 在隔离 workspace 中启动 Content、MessageLog 和插件所需的内建
-provider，再用 `Manager.install` 从已核对的 checkout 安装插件；它检查同一个
-`Manager.live_root`、活动 generation、Content 行数及前后逻辑状态。
-receipt 同时保留 live Root id 和 Content 状态，不能通过并排挂载候选目录代替正式安装。
-
-```text
-exact lock ──► checkout SHA/manifest/no old seam
-                         │
-                         ├─► Core owned composition fixtures
-                         └─► plugin owned domain/reload/ACK fixtures
-```
-
-每个 root 必须显式绑定。完整行为 Gate 还要求每个插件显式绑定它实际安装依赖的
-测试 Python；Gate 会运行受控探针并在 receipt 记录 executable realpath 与 Python 版本，
-不会悄悄借用 Core Python：
-
-```bash
-python docker/debug/content_source_interop_gate.py \
-  --plugin-root calendar=/absolute/calendar-checkout \
-  --plugin-root fitbit=/absolute/fitbit-checkout \
-  --plugin-root feed=/absolute/feed-checkout \
-  --plugin-root steam=/absolute/steam-checkout \
-  --plugin-root github-watch=/absolute/github-watch-checkout \
-  --plugin-root proactive_feedback=/absolute/proactive-feedback-checkout \
-  --plugin-root emotion=/absolute/emotion-checkout \
-  --plugin-python calendar=/absolute/calendar-python \
-  --plugin-python fitbit=/absolute/fitbit-python \
-  --plugin-python feed=/absolute/feed-python \
-  --plugin-python steam=/absolute/steam-python \
-  --plugin-python github-watch=/absolute/github-watch-python \
-  --plugin-python proactive_feedback=/absolute/proactive-feedback-python \
-  --plugin-python emotion=/absolute/emotion-python
-```
-
-默认 pending 调查会让 Gate 非零；开发期间只核对已完成 revision 可使用
-`--identity-only --allow-pending`，`--allow-pending` 不能放宽完整行为 Gate。GitHub Watch
-在这个 Core Gate 中只证明真实插件可以 mount/activate 且 Content mailbox 完整逻辑状态零变化；
-BACKGROUND_JOBS 的 dispatch、ledger 和失败不重放由 GitHub Watch 自己的 exact fixture 证明。
-`cross_repo` 套件只声明参与的 exact plugin ids、fixture 和显式 Python；runner 不包含插件
-业务分支。当前 PF→Emotion fixture 用真实 `CompositionRoot` 按两种 mount 顺序分别执行
-普通 follow-up 与 explicit quote，证明 accepted history 在提交当轮不被 Emotion 抢读，只由
-下一个普通 Timer tick 拉取一次；普通 scoring 仅把 embedding provider 换成确定性测试边界。
-报告写入
-`docker/debug/reports/content-source-interop/gate.json`，不读取或写入正式 workspace。
-
 ## 安全边界
 
 - 默认调试配置只在 `docker/debug/profiles/default/config.toml`。

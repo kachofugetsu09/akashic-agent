@@ -6,6 +6,7 @@
 
 | ID | 状态 | 主题 | 关联条款 |
 |---|---|---|---|
+| [0150](0150-sources-have-one-event-entry.md) | proposed / implemented for review | 来源只有一个事件入口，删除 EventMail | PRO-004 |
 | [0149](0149-watch-replaces-wake.md) | proposed / implemented for review | 值班（watch）取代 Wake：便宜模型看流，主 Agent 自己决定做什么 | PRO-003、PRO-005、PRO-006、SEC-011 |
 | [0148](0148-plugins-stay-in-core.md) | accepted / implemented for review | 内置插件留在 Core 仓库：撤回 #1973 拆仓与热更新，正交性靠仓库内边界（前端归属、R13） | PLG-001 |
 | [0147](0147-appearance-dependencies-are-machine-checked.md) | accepted / implemented for review | 外观依赖由静态检查守护：圆角与投影取 token，变量只能解析到自己或宿主 | WEBUI-007、PLG-001 |
@@ -91,7 +92,7 @@
 | [0045](0045-akashic-direct-messages-commit-before-notify.md) | accepted | Akashic 主动消息先提交 Session 再通知客户端 | AKC-001～AKC-002、OUT-001、OUT-003～OUT-004 |
 | [0046](0046-plugin-candidate-validation-is-incremental.md) | accepted / implemented | 插件候选只重建依赖闭包 | PLG-001～PLG-004、PLG-008～PLG-010、PLG-014 |
 | [0047](0047-provides-may-bind-one-tool.md) | partially superseded | 一个 provide 可以绑定一个 Tool | PLG-001～PLG-014、PRO-001～PRO-002 |
-| [0048](0048-eventmail-keeps-three-mail-lifecycles.md) | accepted / implemented | EventMail 统一信封并保持三类生命周期 | PLG-014～PLG-016、PRO-001～PRO-005 |
+| [0048](0048-eventmail-keeps-three-mail-lifecycles.md) | superseded by 0150 | EventMail 统一信封并保持三类生命周期 | PLG-014～PLG-016、PRO-001～PRO-005 |
 | [0049](0049-wake-content-is-a-decaying-eventmail-pool.md) | superseded by 0149 | Wake Content 是 EventMail 中的衰减池 | PRO-004～PRO-006、PLG-014～PLG-016 |
 | [0050](0050-model-revision-lives-in-ordinary-plugin.md) | accepted | 模型 revision 由普通插件拥有 | RUN-005～RUN-012、ONB-001、PLG-003、PLG-014、PLG-016、WSP-001 |
 | [0051](0051-web-ui-composes-ordinary-plugin-modules.md) | accepted / implementing | WebUI 由普通插件递归组合 | WEBUI-001～WEBUI-007、PLG-001～PLG-016、ONB-001、MOB-001 |

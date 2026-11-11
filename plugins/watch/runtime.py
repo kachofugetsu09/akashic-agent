@@ -12,7 +12,6 @@ from zoneinfo import ZoneInfo
 from agent.plugin_composition import Context
 from core.common.file_io import run_file_io
 from infra.persistence.json_store import atomic_save_json, load_json
-from plugins.eventmail.contract import EVENTMAIL_STREAM
 from plugins.ledger.contract import MESSAGE_CATALOG
 from plugins.models.contract import CHAT_MODELS, MODEL_CATALOG, ModelError, ModelRequest
 from plugins.programmatic.contract import PROGRAMMATIC
@@ -31,7 +30,6 @@ CHUNK, MAX_CHUNKS, WAKE_EVENTS = 40, 5, 6
 class State:
     next_id: int = 1
     judged: int = 0
-    mail_seq: int | None = None
     offsets: dict[str, int] = field(default_factory=dict)
     # 来源名 → 它最近一条状态事件的编号
     current: dict[str, str] = field(default_factory=dict)
@@ -82,7 +80,7 @@ class Runtime:
 
     # 事件落盘和读取游标在同一次保存里前进：中途崩溃最多重读一批，不会丢。
     async def _append(self, rows: Sequence[tuple[str, Mapping[str, object] | str, bool]], now: datetime, *,
-                      offsets: dict[str, int] | None = None, mail_seq: int | None = None) -> list[Event]:
+                      offsets: dict[str, int] | None = None) -> list[Event]:
         async with self._lock:
             events: list[Event] = []
             latest = await run_file_io(lambda: self._current(now))
@@ -103,8 +101,6 @@ class Runtime:
             self.state.current = {source: event.id for source, event in latest.items()}
             if offsets is not None:
                 self.state.offsets = offsets
-            if mail_seq is not None:
-                self.state.mail_seq = mail_seq
             await self._save()
             return events
 
@@ -144,26 +140,7 @@ class Runtime:
     async def _ingest(self, now: datetime) -> None:
         offsets = dict(self.state.offsets)
         rows = [(source, raw, False) for source, raw in await run_file_io(lambda: read_sources(self.root, offsets))]
-        mail_seq = self.state.mail_seq
-        with self.ctx.borrow(EVENTMAIL_STREAM) as stream:
-            if stream is not None:
-                if mail_seq is None:
-                    # 第一次接上事件流时从当前位置开始，不回放历史
-                    mail_seq = await stream.watermark()
-                for _ in range(5):
-                    envelopes = await stream.after(mail_seq, 200)
-                    if not envelopes:
-                        break
-                    for envelope in envelopes:
-                        expires = envelope.get("expires_at")
-                        if isinstance(expires, str) and datetime.fromisoformat(expires) <= now:
-                            # 来源声明的有效期已过：不再当成新事交给值班员
-                            continue
-                        payload = dict(envelope["payload"]) if isinstance(envelope["payload"], Mapping) else {}
-                        payload["at"] = envelope["observed_at"]
-                        rows.append((str(payload.get("source_name") or envelope["source_id"]), payload, False))
-                    mail_seq = int(str(envelopes[-1]["seq"]))
-        _ = await self._append(rows, now, offsets=offsets, mail_seq=mail_seq)
+        _ = await self._append(rows, now, offsets=offsets)
 
     async def _judge(self, now: datetime, orders: list[watch_orders.Order], timed: list[watch_orders.Order], pending: list[Event]) -> None:
         text, wake_orders = watch_orders.render(orders)
