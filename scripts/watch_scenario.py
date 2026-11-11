@@ -234,7 +234,7 @@ async def run(distribution: Path, base: Path) -> None:
         assert EventLog(watch).last_number() == before + 3
         assert EventLog(watch).keys()[("scenario-plugin", "item-1")] == once
         states = await context.require(USER_INFORMATION_READ).query("watch@release", "current", {})
-        assert any(item["source"] == "scenario-place" and "到了家" in item["state"] for item in states["items"]), states
+        assert any(item["source"] == "scenario-place" and "到了家" in item["state"] for item in states["result"]["items"]), states
         await client.close()
         print("watch scenario ok")
     finally:
