@@ -248,9 +248,16 @@ def _terminal_env() -> dict[str, str]:
     return env
 
 
+def _resolve_directory(cwd: Path | None) -> Path:
+    for candidate in (cwd, Path.home(), Path.cwd(), Path("/")):
+        if candidate is not None and candidate.is_dir():
+            return candidate
+    return Path("/")
+
+
 async def _spawn(terminal_id: int, owner: str, cwd: Path | None, cols: int, rows: int) -> _Terminal:
-    # 1. 目录不存在时退回主目录，终端照常可用。
-    directory = cwd if cwd is not None and cwd.is_dir() else Path.home()
+    # 1. 目录不存在时依次退回主目录、进程当前目录或根目录，终端照常可用。
+    directory = _resolve_directory(cwd)
     shell = _user_shell()
     argv = [shell, "-l"] if Path(shell).name in _LOGIN_SHELLS else [shell]
     # 2. 先设好尺寸再启动，shell 首屏就按真实列宽排版。

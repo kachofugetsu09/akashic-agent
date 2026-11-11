@@ -140,7 +140,7 @@
 
 .conversation-tools-button[aria-pressed="true"] {
   color: var(--ak-ink-primary);
-  background: color-mix(in oklch, var(--ak-ink-primary) 8%, transparent);
+  background: color-mix(in oklab, var(--ak-ink-primary) 8%, transparent);
 }
 
 /* 标签条：浏览器式圆角标签，均分宽度，最窄 90px，再多就横向滚动；“+”紧跟最后一个标签，铺满与收起在最右。 */
@@ -180,7 +180,7 @@
   height: 30px;
   align-items: center;
   border: 1px solid transparent;
-  border-radius: 8px;
+  border-radius: var(--ak-radius-sm);
   container-type: inline-size;
 }
 
@@ -202,7 +202,7 @@
 .conversation-tools-tab-item.is-active {
   border-color: var(--ak-rule-subtle);
   background: var(--ak-paper-sheet);
-  box-shadow: 0 0 8px rgb(0 0 0 / 5%);
+  box-shadow: var(--ak-elevation-raised);
 }
 
 .conversation-tools-tab,
@@ -223,7 +223,7 @@
   align-items: center;
   gap: 7px;
   padding-inline: 9px 8px;
-  border-radius: 7px;
+  border-radius: calc(var(--ak-radius-sm) - 1px);
   font-size: 0.8125rem;
   text-align: start;
 }
@@ -277,7 +277,7 @@
   width: 22px;
   height: 22px;
   margin-inline-end: 3px;
-  border-radius: 5px;
+  border-radius: var(--ak-radius-xs);
 }
 
 .conversation-tools-tab-item.is-active .conversation-tools-tab-close,
@@ -311,7 +311,7 @@
   height: 28px;
   place-items: center;
   padding: 0;
-  border-radius: 6px;
+  border-radius: var(--ak-radius-sm);
 }
 
 .conversation-tools-button svg,
@@ -357,7 +357,7 @@
   align-items: center;
   gap: 10px;
   padding-inline: 10px;
-  border-radius: 8px;
+  border-radius: var(--ak-radius-sm);
   color: var(--ak-ink-primary);
   font-size: 0.875rem;
   text-align: start;
@@ -400,7 +400,7 @@
   .conversation-tools-button:hover,
   .conversation-tools-launch-tool:not([aria-disabled="true"]):hover {
     color: var(--ak-ink-primary);
-    background: color-mix(in oklch, var(--ak-ink-primary) 6%, transparent);
+    background: color-mix(in oklab, var(--ak-ink-primary) 6%, transparent);
   }
 }
 

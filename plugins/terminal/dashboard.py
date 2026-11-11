@@ -22,7 +22,10 @@ _SESSION = Query(min_length=1, max_length=512)
 def register(app: FastAPI, context: DashboardContext) -> None:
     @app.get("/api/dashboard/terminal/terminals")
     async def terminals(session: str = _SESSION) -> dict[str, object]:
-        return {"terminals": [_view(item) for item in await context.require(SESSION_TERMINALS).list(session)]}
+        try:
+            return {"terminals": [_view(item) for item in await context.require(SESSION_TERMINALS).list(session)]}
+        except OSError as error:
+            raise HTTPException(503, f"终端服务暂不可用：{error.strerror or error}") from error
 
     @app.post("/api/dashboard/terminal/terminals")
     async def open_terminal(
@@ -33,10 +36,15 @@ def register(app: FastAPI, context: DashboardContext) -> None:
             return _view(await context.require(SESSION_TERMINALS).open(session, cols=cols, rows=rows))
         except RuntimeError as error:
             raise HTTPException(409, str(error)) from error
+        except OSError as error:
+            raise HTTPException(503, f"终端启动失败：{error.strerror or error}") from error
 
     @app.delete("/api/dashboard/terminal/terminals/{terminal_id}")
     async def close_terminal(terminal_id: int, session: str = _SESSION) -> dict[str, object]:
-        return {"closed": await context.require(SESSION_TERMINALS).close(session, terminal_id)}
+        try:
+            return {"closed": await context.require(SESSION_TERMINALS).close(session, terminal_id)}
+        except OSError as error:
+            raise HTTPException(503, f"关闭终端失败：{error.strerror or error}") from error
 
     @app.websocket("/api/dashboard/terminal/attach")
     async def attach(socket: WebSocket) -> None:
