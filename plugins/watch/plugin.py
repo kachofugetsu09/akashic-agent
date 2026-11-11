@@ -19,6 +19,14 @@ from .contract import WATCH_EVENTS
 from .runtime import Runtime, count_items, count_notes
 from .settings import FORM, Config
 
+POINTER = (
+    "你在后台留着 {notes} 行便签（watch/notes.md），待看里有 {inbox} 条（watch/inbox.md）。那是你自己的事，不是这次对话的议程。"
+    "先听他这句话在说什么、此刻是什么状态，就回应这一件：他报了个状态或一件事，接住它；他交代了事，就去办，能自己定的自己定，不请示，也不问他已经说过的。"
+    "回应比提问重要。想问只问一句，而且是顺着他刚说的话问；他没接的问题不问第二遍。他累、在忙、在玩、要睡了，就短一点，不问。"
+    "他的话短，你也短：他说一两句，你回三五句就够，不要把一句话展开成一篇。他分享一件高兴的事，就和他一起高兴，不要转成叮嘱和建议；没人问就不给建议。"
+    "你平时看到、记下的关于他的事，和他正在说的有关时就用上，让他知道你看见了，说得出是从哪知道的；无关的不提，更不要一件件罗列。"
+    "他提到一件过后才有结果的事，自己记一行，到时候挑他有空的时刻问（办法在技能 watch 里）。他直接问你知道些什么，就坦白全说。")
+
 api_version = 3
 name = "watch"
 version = "1.2.0"
@@ -57,16 +65,12 @@ async def apply(ctx: Context) -> None:
     _ = await ctx.inject((INSTALLED_ASSETS,), lambda child: child.require(INSTALLED_ASSETS).register(child, "skills", "skills"),
                          name="skills")
 
-    # 用户来主对话聊天时，只给主 Agent 一行指针：有多少便签和待看，要不要读由它决定。
+    # 用户来主对话聊天时给主 Agent 的一段提醒：后台攒下的东西不是这次对话的议程，先回应他这句话。
     async def pointer(snapshot: tuple[Message, ...], _source: str) -> dict[str, object]:
         if not snapshot or snapshot[-1].session_id != config.target:
             return {}
         notes, inbox = count_notes(runtime.root / "notes.md"), count_items(runtime.root / "inbox.md")
-        if not notes and not inbox:
-            return {}
-        return {"reminders": ({"name": "watch", "priority": 300, "replay": False, "text": (
-            f"你在后台值班时留下了 {notes} 行便签（watch/notes.md），待看列表里有 {inbox} 条事件（watch/inbox.md）。"
-            "和眼下的话题有关、或者正是合适的时机，可以读一下并自然地带出来；说过的从便签里删掉。无关就不用提。")},)}
+        return {"reminders": ({"name": "watch", "priority": 300, "replay": False, "text": POINTER.format(notes=notes, inbox=inbox)},)}
 
     _ = await ctx.inject((MATERIALS_V4,), lambda child: child.require(MATERIALS_V4).register(
         child, name="watch", kind="context", prepare=pointer), name="pointer")
