@@ -161,12 +161,16 @@ body {
 
 .web-host-partial-error {
   inset: auto 12px calc(12px + env(safe-area-inset-bottom, 0px)) auto;
+  max-height: min(40dvh, 16rem);
+  overflow: hidden;
   border-color: color-mix(in oklab, var(--ak-color-status-error) 35%, var(--ak-rule-default));
 }
 
 .web-host-partial-error-text {
   flex: 1 1 14rem;
   min-width: 0;
+  max-height: min(26dvh, 10.5rem);
+  overflow-y: auto;
   margin: 0;
   color: var(--ak-color-status-error);
   overflow-wrap: anywhere;
