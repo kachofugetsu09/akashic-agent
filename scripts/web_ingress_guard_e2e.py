@@ -64,6 +64,30 @@ def serve(app: FastAPI, path: Path) -> None:
         time.sleep(0.05)
 
 
+def serve_flaky_guard(path: Path, mode: dict[str, str]) -> None:
+    """用真实 AF_UNIX listener 模拟对端提前关闭连接（RemoteProtocolError），验证短重试、错误分类与日志节流。"""
+    sock = raw_socket.socket(raw_socket.AF_UNIX, raw_socket.SOCK_STREAM)
+    sock.bind(str(path))
+    sock.listen(32)
+    dropped_once = False
+
+    def loop() -> None:
+        nonlocal dropped_once
+        while True:
+            conn, _ = sock.accept()
+            with conn:
+                _ = conn.recv(4096)
+                current = mode["value"]
+                if current == "drop_once" and not dropped_once:
+                    dropped_once = True
+                    continue
+                if current == "drop_always":
+                    continue
+                conn.sendall(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+
+    threading.Thread(target=loop, daemon=True).start()
+
+
 def publish(workspace: Path, *endpoints: tuple[str, str, str, list[str]], guarded: bool = False) -> None:
     """写一份与 Root 相同形状的 plan；guarded 即选中插件静态声明了 ingress_guard。"""
     rows = [{"name": name, "protocol": protocol, "address": address, "routes": routes,
@@ -117,12 +141,17 @@ def main() -> int:
     workspace = args.output / "workspace"
     (workspace / "runtime").mkdir(parents=True)
     guard, backend = workspace / "runtime/guard.sock", workspace / "runtime/back.sock"
+    flaky_guard = workspace / "runtime/flaky.sock"
+    flaky_mode = {"value": "drop_once"}
     serve(fake_guard(), guard)
     serve(fake_backend(), backend)
+    serve_flaky_guard(flaky_guard, flaky_mode)
+    shell_log = args.output / "shell.log"
+    log_stream = shell_log.open("w", encoding="utf-8")
     shell = subprocess.Popen([sys.executable, "-c", (
         "import sys; from pathlib import Path; from bootstrap.web_shell import create_web_shell_server; "
         "create_web_shell_server(Path(sys.argv[1]), port=int(sys.argv[2]), wait_for_ready=True).run()"),
-        str(workspace), str(args.port)], cwd=ROOT)
+        str(workspace), str(args.port)], cwd=ROOT, stderr=log_stream)
     base = f"http://127.0.0.1:{args.port}"
     http = httpx.Client(base_url=base, timeout=10)
     route = ("api", "http+unix", str(backend), ["/api"])
@@ -181,12 +210,33 @@ def main() -> int:
         publish(workspace, route)
         ready(workspace, "boot-b")
         check("guard_not_required_passthrough", http.get("/api/echo").status_code, 200)
-        # 8. 守卫端点已发布但进程不在：503，不放行。
+        # 8. 守卫端点已发布但进程不在：503，不放行，且区分 guard_unreachable。
         publish(workspace, route, ("gate", "guard+unix", str(workspace / "runtime/missing.sock"), []), guarded=True)
-        check("guard_unreachable_rejected", http.get("/api/echo").status_code, 503)
+        unreachable = http.get("/api/echo")
+        check("guard_unreachable_rejected", (unreachable.status_code, unreachable.json().get("code")),
+              (503, "guard_unreachable"))
+        # 9. 对端偶发提前关闭连接（RemoteProtocolError）：连接层短退避重试一次后成功放行。
+        publish(workspace, route, ("flaky", "guard+unix", str(flaky_guard), []), guarded=True)
+        flaky_mode["value"] = "drop_once"
+        check("guard_protocol_drop_once_recovers", http.get("/api/echo").status_code, 200)
+        # 10. 对端持续异常关闭连接：分类为 guard_protocol_error；页面请求拿响应式 HTML；时间窗内堆栈节流。
+        flaky_mode["value"] = "drop_always"
+        proto_resps = [http.get("/api/echo") for _ in range(6)]
+        check("guard_protocol_error_classified",
+              (proto_resps[0].status_code, proto_resps[0].json().get("code")),
+              (503, "guard_protocol_error"))
+        html_resp = http.get("/api/echo", headers={"accept": "text/html"})
+        check("guard_html_503_responsive",
+              (html_resp.status_code, 'name="viewport"' in html_resp.text, "guard_protocol_error" in html_resp.text),
+              (503, True, True))
+        time.sleep(0.2)
+        log_text = shell_log.read_text(encoding="utf-8")
+        check("guard_protocol_error_log_throttled",
+              log_text.count("code=guard_protocol_error error_type=RemoteProtocolError"), 1)
     finally:
         shell.terminate()
         shell.wait(timeout=30)
+        log_stream.close()
         (args.output / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2))
     failed = [name for name, item in report.items() if not item["ok"]]  # type: ignore[index]
     print("全部通过" if not failed else f"失败: {failed}")

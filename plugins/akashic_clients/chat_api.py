@@ -633,6 +633,7 @@ def build_chat_server(
         uds=uds,
         log_level="warning",
         access_log=False,
+        timeout_keep_alive=30,
         timeout_graceful_shutdown=10,
     )
     return ChatApiServer(config)

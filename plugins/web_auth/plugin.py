@@ -54,7 +54,8 @@ async def apply(ctx: Context) -> None:
                        "也可在本机运行 web-login 免密进入）", USERNAME, initial)
     app = create_app(auth, Path(__file__).with_name("login.html"))
     path = socket_alias_path(ctx.runtime.workspace / "runtime", "web-auth.sock")
-    server = _Server(uvicorn.Config(app, log_level="warning", lifespan="off", timeout_graceful_shutdown=5))
+    server = _Server(uvicorn.Config(app, log_level="warning", lifespan="off",
+                                    timeout_keep_alive=30, timeout_graceful_shutdown=5))
 
     # 2. Effect 持有监听器；关闭时先停接纳，再删除本次创建的 socket 节点。
     def setup():
