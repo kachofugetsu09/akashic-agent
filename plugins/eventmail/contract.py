@@ -17,6 +17,16 @@ class ContextReadServices(Protocol):
 EVENTMAIL_CONTEXT_READ = ServiceKey[ContextReadServices]("eventmail.context_read.v1")
 
 
+class EventStream(Protocol):
+    async def watermark(self) -> int: ...
+
+    async def after(self, seq: int, limit: int = 200) -> tuple[Mapping[str, object], ...]: ...
+
+
+# 只读事件流：按信封序号增量读取内容、告警与状态变化，不改变任何投影；消费者各自保存游标。
+EVENTMAIL_STREAM = ServiceKey[EventStream]("eventmail.stream.v1")
+
+
 class ContentWakeServicesV2(Protocol):
     async def snapshot(self, now: datetime) -> Mapping[str, object]: ...
 

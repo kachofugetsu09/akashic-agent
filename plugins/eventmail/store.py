@@ -1233,6 +1233,26 @@ class EventMailStore:
         assert row is not None
         return int(row["seq"])
 
+    # 按信封序号增量读取内容、告警与状态变化；kind 原样带出，由读的一方决定怎么用。
+    def envelopes_after(self, seq: int, limit: int) -> tuple[Mapping[str, object], ...]:
+        if type(seq) is not int or seq < 0 or type(limit) is not int or not 1 <= limit <= 1000:
+            raise ValueError("事件流读取需要非负序号和 1 到 1000 的 limit")
+        with self._transaction(write=False) as connection:
+            rows = connection.execute(
+                """
+                SELECT seq, kind, source_id, item_id, revision, payload_json, observed_at, expires_at, created_at
+                FROM mail_envelopes WHERE seq > ? AND kind IN ('content', 'alert', 'context') ORDER BY seq LIMIT ?
+                """,
+                (seq, limit),
+            ).fetchall()
+        return tuple(
+            {"seq": int(row["seq"]), "kind": str(row["kind"]), "source_id": str(row["source_id"]),
+             "item_id": str(row["item_id"]), "revision": str(row["revision"]),
+             "payload": _decode_payload(row["payload_json"]), "observed_at": str(row["observed_at"]),
+             "expires_at": None if row["expires_at"] is None else str(row["expires_at"]), "created_at": str(row["created_at"])}
+            for row in rows
+        )
+
     def rebuild_mail_projections(self) -> None:
         """Rebuild every mutable mail projection from immutable mail history."""
 

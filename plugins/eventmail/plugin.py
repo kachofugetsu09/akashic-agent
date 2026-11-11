@@ -449,14 +449,22 @@ async def apply(ctx: Context) -> None:
         EVENTMAIL_CONTEXT_SOURCE,
         _ContextSourceServices(store, io, lambda: ctx.emit(EVENTMAIL_CHANGED, None)),
     )
-    from .contract import EVENTMAIL_CONTEXT_READ
+    from .contract import EVENTMAIL_CONTEXT_READ, EVENTMAIL_STREAM
     from .information import contribute, USER_INFORMATION
 
     class ContextReader:
         async def active_context(self, now: datetime):
             return await run_file_io(lambda: store.active_context(now))
 
+    class Stream:
+        async def watermark(self) -> int:
+            return await run_file_io(store.mail_watermark)
+
+        async def after(self, seq: int, limit: int = 200):
+            return await run_file_io(lambda: store.envelopes_after(seq, limit))
+
     _ = await ctx.provide(EVENTMAIL_CONTEXT_READ, ContextReader())
+    _ = await ctx.provide(EVENTMAIL_STREAM, Stream())
     _ = await ctx.inject((USER_INFORMATION, EVENTMAIL_CONTEXT_READ), contribute)
     _ = await ctx.provide(EVENTMAIL_WAKE, _WakeServices(store, io))
     _ = await ctx.provide(EVENTMAIL_DELIVERY, _DeliveryServices(store, io))
