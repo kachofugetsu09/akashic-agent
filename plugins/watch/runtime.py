@@ -17,8 +17,8 @@ from plugins.models.contract import CHAT_MODELS, MODEL_CATALOG, ModelError, Mode
 from plugins.programmatic.contract import PROGRAMMATIC
 
 from . import orders as watch_orders
-from . import recent, wake
-from .events import Event, EventLog, clip, normalize, read_sources
+from . import recent, scripts, wake
+from .events import Event, EventLog, clip, normalize, parse_line, read_sources
 from .settings import WAKE_MODEL, Config
 from .watcher import Call, Files, ModelFailure, Outcome, Reply, Verdict, judge
 
@@ -118,7 +118,7 @@ class Runtime:
         await self._ingest(now)
         orders = await run_file_io(lambda: watch_orders.maintain(self.root, now.date()))
         after = datetime.fromisoformat(self.state.orders_checked) if self.state.orders_checked else now
-        timed = [order for order in orders if order.section == watch_orders.ORDERS and watch_orders.due(order, after, now)]
+        timed = [order for order in orders if watch_orders.due(order, after, now)]
         pending = await run_file_io(lambda: self.log.since(self.state.judged, now))
         # 2. 有新事件或到点的嘱托才动用模型
         if pending or timed:
@@ -140,6 +140,11 @@ class Runtime:
     async def _ingest(self, now: datetime) -> None:
         offsets = dict(self.state.offsets)
         rows = [(source, raw, False) for source, raw in await run_file_io(lambda: read_sources(self.root, offsets))]
+        for path in await run_file_io(lambda: scripts.find(self.root)):
+            lines, failure = await scripts.run(self.ctx, path)
+            # 脚本坏了也是一条事件，同一天只记一次，写它的主 Agent 会在待看里看到
+            failed: list[Mapping[str, object] | str] = [{"title": "来源脚本运行失败", "text": failure, "key": f"failed:{now:%Y-%m-%d}"}] if failure else []
+            rows += [(path.stem, raw, False) for raw in failed + [parse_line(line) for line in lines]]
         _ = await self._append(rows, now, offsets=offsets)
 
     async def _judge(self, now: datetime, orders: list[watch_orders.Order], timed: list[watch_orders.Order], pending: list[Event]) -> None:

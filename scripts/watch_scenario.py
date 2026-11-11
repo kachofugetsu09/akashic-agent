@@ -229,6 +229,16 @@ async def run(distribution: Path, base: Path) -> None:
         assert EventLog(watch).keys()[("scenario-plugin", "item-1")] == once
         states = await context.require(USER_INFORMATION_READ).query("watch@release", "current", {})
         assert any(item["source"] == "scenario-place" and "到了家" in item["state"] for item in states["result"]["items"]), states
+        # 10. 脚本来源：值班每轮替它跑一遍，输出的每一行是一条事件；跑失败也会成为一条事件，同一天只记一次
+        before = EventLog(watch).last_number()
+        (watch / "sources" / "scenario-script.sh").write_text('echo \'{"title": "脚本交来的一条", "key": "s-1"}\'\necho 纯文本的一行\n')
+        (watch / "sources" / "scenario-broken.py").write_text("raise SystemExit('boom')\n")
+        await tick()
+        await tick()
+        fresh = [event for event in EventLog(watch).since(before, datetime.now().astimezone())]
+        assert sum(event.source == "scenario-script" and event.title == "脚本交来的一条" for event in fresh) == 1, fresh
+        assert sum(event.source == "scenario-script" and "纯文本的一行" in event.text for event in fresh) == 2, fresh
+        assert sum(event.source == "scenario-broken" and "运行失败" in event.title and "boom" in event.text for event in fresh) == 1, fresh
         await client.close()
         print("watch scenario ok")
     finally:
