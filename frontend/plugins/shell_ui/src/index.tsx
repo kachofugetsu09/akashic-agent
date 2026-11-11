@@ -188,6 +188,18 @@ function Shell({ pages, railActions, settings, settingsPlugins, http, inventory 
       requestAnimationFrame(() => { track.dataset.ready = "true"; });
     };
     measure();
+    const current = track.querySelector<HTMLElement>('[aria-current="page"]');
+    const nav = track.parentElement;
+    if (current && nav && nav.scrollWidth > nav.clientWidth) {
+      const left = current.offsetLeft;
+      const right = left + current.offsetWidth;
+      const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      if (left < nav.scrollLeft) {
+        nav.scrollTo({ left: Math.max(0, left - 12), behavior: reduced ? "auto" : "smooth" });
+      } else if (right > nav.scrollLeft + nav.clientWidth) {
+        nav.scrollTo({ left: right - nav.clientWidth + 12, behavior: reduced ? "auto" : "smooth" });
+      }
+    }
     const observer = new ResizeObserver(measure);
     observer.observe(track);
     track.querySelectorAll<HTMLElement>("[data-band-item]").forEach((item) => observer.observe(item));
@@ -481,7 +493,12 @@ function Shell({ pages, railActions, settings, settingsPlugins, http, inventory 
   // 只有一个页面时没有可去的地方：顶栏整条不渲染，页面占满视口；设置入口由底栏动作与 Ctrl/Cmd+, 承担。
   const showBand = bandEntries.length > 1;
   return <div className={`unified-shell${showBand ? " has-band" : ""}`}>
-    {withdrawn && <p role="status" className="config-hint">所选页面暂不可用，已自动切换至默认页面。可在功能设置中查看已安装功能。</p>}
+    {withdrawn && <div role="status" className="config-hint">
+      <span>所选页面暂不可用，已自动切换至默认页面。可在功能设置中查看已安装功能。</span>
+      <button type="button" className="config-hint-close" aria-label="关闭提示" onClick={() => setWithdrawn(false)}>
+        <span aria-hidden="true" dangerouslySetInnerHTML={markup(CLOSE_ICON)} />
+      </button>
+    </div>}
     {showBand && <header className="product-band" aria-label="Akashic 主导航">
       <div className="product-band__brand" title="Akashic">
         <img src={akashicBrandIcon} alt="" />

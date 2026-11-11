@@ -31,6 +31,54 @@
     flex: 0 0 calc(var(--band-height) + env(safe-area-inset-top, 0px));
   }
 
+  .config-hint {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin: 0;
+    padding: max(6px, env(safe-area-inset-top, 0px))
+      max(16px, env(safe-area-inset-right, 0px)) 6px
+      max(16px, env(safe-area-inset-left, 0px));
+    border-block-end: 1px solid var(--ak-rule-subtle);
+    background: var(--ak-paper-quiet);
+    color: var(--ak-ink-secondary);
+    font-family: var(--ak-type-ui);
+    font-size: 13px;
+    line-height: 20px;
+  }
+
+  .unified-shell > .config-hint + .product-band {
+    flex-basis: var(--band-height);
+    padding-block-start: 0;
+  }
+
+  .config-hint-close {
+    display: grid;
+    flex: 0 0 auto;
+    width: 32px;
+    height: 32px;
+    place-items: center;
+    padding: 0;
+    border: 0;
+    border-radius: var(--ak-radius-sm);
+    background: transparent;
+    color: var(--ak-ink-muted);
+    cursor: pointer;
+  }
+
+  .config-hint-close:hover {
+    background: color-mix(in oklab, var(--ak-ink-primary) 6%, transparent);
+    color: var(--ak-ink-primary);
+  }
+
+  .config-hint-close svg {
+    width: 15px;
+    height: 15px;
+    stroke-width: 1.75;
+  }
+
   /* Keep contributed SVGs in the same flex layout as the former inline icons. */
   .shell-page-icon {
     display: contents;
@@ -177,7 +225,7 @@
 
   .shell-settings-close {
     position: absolute;
-    z-index: 1;
+    z-index: 2;
     inset-block-start: 14px;
     inset-inline-end: 14px;
     display: grid;
@@ -187,13 +235,13 @@
     padding: 0;
     border: 0;
     border-radius: var(--ak-radius-sm);
-    background: transparent;
+    background: var(--ak-paper-sheet);
     color: var(--ak-ink-secondary);
     cursor: pointer;
   }
 
   .shell-settings-close:hover {
-    background: color-mix(in oklab, var(--ak-ink-primary) 6%, transparent);
+    background: color-mix(in oklab, var(--ak-ink-primary) 6%, var(--ak-paper-sheet));
     color: var(--ak-ink-primary);
   }
 
@@ -393,12 +441,12 @@
   .shell-inventory-head:hover { background: color-mix(in oklab, var(--ak-ink-primary) 4%, transparent); }
   .shell-inventory-head:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: -2px; }
   .shell-inventory-head strong { min-width: 0; overflow-wrap: anywhere; font-size: 14px; font-weight: 500; }
-  .shell-inventory-status { font-size: 13px; color: var(--ak-ink-muted); }
+  .shell-inventory-status { flex: 0 0 auto; white-space: nowrap; font-size: 13px; color: var(--ak-ink-muted); }
   .shell-inventory-row[data-phase="failed"] .shell-inventory-status { color: var(--ak-color-status-error); }
   .shell-inventory-row[data-phase="pending"] .shell-inventory-status { color: var(--ak-color-status-warning); }
   /* deslop-ignore-next-line 19 */
-  .shell-inventory-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ak-color-status-success); }
-  .shell-inventory-chevron { display: inline-flex; color: var(--ak-ink-muted); transition: transform 150ms ease; }
+  .shell-inventory-dot { flex: 0 0 auto; width: 6px; height: 6px; border-radius: 50%; background: var(--ak-color-status-success); }
+  .shell-inventory-chevron { flex: 0 0 auto; display: inline-flex; color: var(--ak-ink-muted); transition: transform 150ms ease; }
   .shell-inventory-chevron svg { width: 16px; height: 16px; }
   [aria-expanded="true"] > .shell-inventory-chevron { transform: rotate(90deg); }
   .shell-inventory-sub { margin-block-start: 12px; }
@@ -497,7 +545,7 @@
     }
     .shell-settings-nav h2 {
       margin: 0 0 12px;
-      padding: 6px 4px;
+      padding: 6px 44px 6px 4px;
       font-size: 22px;
       line-height: 30px;
     }
@@ -581,4 +629,43 @@
 .product-band > .shell-settings-button svg { width: 20px; height: 20px; }
 @media (max-width: 760px) {
   .product-band > .shell-settings-button { grid-column: 2; grid-row: 1; justify-self: end; width: 44px; }
+}
+
+/* 触控设备（含 761px 以上的平板）统一满足 ≥44px 热区与 ≥16px 输入字号（design.md §3.5）。 */
+@media (pointer: coarse) {
+  .config-hint-close,
+  .shell-settings-close {
+    width: 44px;
+    height: 44px;
+  }
+
+  .shell-settings-nav button,
+  .shell-settings-crumb,
+  .shell-inventory-sub-head,
+  .shell-inventory-switch {
+    min-height: 44px;
+  }
+
+  .shell-settings-tabs button {
+    min-height: 44px;
+    padding-inline: 4px;
+  }
+
+  .shell-inventory-toolbar input {
+    min-height: 44px;
+    font-size: 16px;
+  }
+
+  .shell-inventory-filter button,
+  .shell-inventory-empty button {
+    min-height: 44px;
+    min-width: 44px;
+    padding-inline: 6px;
+  }
+
+  .shell-inventory-body summary {
+    display: inline-flex;
+    min-height: 44px;
+    align-items: center;
+  }
 }
