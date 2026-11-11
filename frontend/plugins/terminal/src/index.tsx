@@ -7,6 +7,7 @@ import "./style.css";
 const API = "/api/dashboard/terminal/terminals";
 const CLAIMS_KEY = "akashic.terminal.claims.";
 const STATE_DETAILS = { exited: "已退出", reconnecting: "重新连接中" } as const;
+const SEARCH_SVG = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>';
 
 function element<K extends keyof HTMLElementTagNameMap>(tag: K, className: string, text = ""): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
@@ -84,6 +85,9 @@ class TerminalInstance implements PaneHost {
   private readonly notice = element("div", "terminal-notice");
   private readonly finder = element("div", "terminal-search");
   private readonly query = element("input", "terminal-search-input");
+  private readonly actions = element("div", "terminal-floating-actions");
+  private readonly searchTrigger: HTMLButtonElement;
+  private readonly restartTrigger: HTMLButtonElement;
   private readonly session: string;
   private readonly instance: string;
   private pane: Pane | null = null;
@@ -104,7 +108,15 @@ class TerminalInstance implements PaneHost {
     this.finder.append(this.query, button("terminal-tool", "上一个", "↑", () => this.find(true)),
       button("terminal-tool", "下一个", "↓", () => this.find(false)), button("terminal-tool", "关闭搜索", "✕", () => this.closeSearch()));
     this.finder.hidden = true;
-    this.stage.append(this.notice);
+    this.searchTrigger = button("terminal-tool terminal-search-trigger", "搜索终端输出", "", () => this.openSearch());
+    this.searchTrigger.innerHTML = SEARCH_SVG;
+    this.restartTrigger = button("terminal-tool terminal-restart-trigger", "重新开始终端", "重新开始", () => {
+      this.pane?.requestRestart();
+    });
+    this.restartTrigger.hidden = true;
+    this.actions.hidden = true;
+    this.actions.append(this.restartTrigger, this.searchTrigger);
+    this.stage.append(this.notice, this.actions);
     this.root.append(this.finder, this.stage);
   }
 
@@ -127,6 +139,7 @@ class TerminalInstance implements PaneHost {
   private async attach(): Promise<void> {
     if (this.loading) return;
     this.loading = true;
+    this.show("正在连接终端…");
     // 实例列表在任何 await 之前取快照：getter 跟着宿主当前的会话走，换会话后读到的是别的会话的标签。
     const siblings = new Set(this.view.instances);
     try {
@@ -170,8 +183,11 @@ class TerminalInstance implements PaneHost {
 
   private async list(): Promise<TerminalFacts[]> {
     const response = await this.ctx.http.request(`${API}?${new URLSearchParams({ session: this.session })}`);
-    if (!response.ok) throw new Error(`读取终端失败（${response.status}）`);
-    return (await response.json() as { terminals: TerminalFacts[] }).terminals;
+    const body = await response.json().catch(() => ({})) as { terminals?: TerminalFacts[]; detail?: unknown };
+    if (!response.ok || !Array.isArray(body.terminals)) {
+      throw new Error(typeof body.detail === "string" ? body.detail : `读取终端失败（${response.status}）`);
+    }
+    return body.terminals;
   }
 
   // 等正在关闭的终端关完（腾出名额）再新开；等待期间被卸下就不开。
@@ -183,6 +199,7 @@ class TerminalInstance implements PaneHost {
   private mount(facts: TerminalFacts): void {
     this.pane = new Pane(this.ctx, this, this.session, facts, terminalTheme(this.root, currentTheme().colorScheme === "dark"));
     this.notice.hidden = true;
+    this.actions.hidden = false;
     this.stage.append(this.pane.element);
     this.changed(this.pane);
     this.sync();
@@ -194,8 +211,8 @@ class TerminalInstance implements PaneHost {
       const response = await this.ctx.http.request(`${API}?${new URLSearchParams({ session: this.session })}`, {
         method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(size),
       });
-      const body = await response.json() as TerminalFacts & { detail?: string };
-      if (response.ok) return body;
+      const body = await response.json().catch(() => ({})) as Partial<TerminalFacts> & { detail?: unknown };
+      if (response.ok && typeof body.id === "number") return body as TerminalFacts;
       if (response.status !== 409 || attempt >= 2)
         throw new Error(typeof body.detail === "string" ? body.detail : `新开终端失败（${response.status}）`);
       await pause(1000);
@@ -216,6 +233,9 @@ class TerminalInstance implements PaneHost {
   // 3. 标签标题跟 shell 标题（或 shell · 目录）；退出、重连写进状态，只出现在提示与新标签页里。
   changed(pane: Pane): void {
     const state = pane.facts.exited ? "exited" : pane.reconnecting ? "reconnecting" : null;
+    this.restartTrigger.hidden = !pane.facts.exited;
+    this.restartTrigger.disabled = pane.isRestarting;
+    this.restartTrigger.textContent = pane.isRestarting ? "正在重开…" : "重新开始";
     this.view.setTitle(pane.label);
     this.view.setIndicator(state ? { detail: STATE_DETAILS[state] } : null);
   }
@@ -228,16 +248,20 @@ class TerminalInstance implements PaneHost {
   gone(pane: Pane): void {
     pane.dispose();
     if (this.pane === pane) this.pane = null;
+    this.actions.hidden = true;
+    this.restartTrigger.hidden = true;
     this.forget(null);
     this.view.setIndicator({ detail: "已关闭" });
     this.show("这个终端已经关闭。", () => this.sync(), "新开终端");
   }
 
-  // 退出后按 Enter：等旧 PTY 关完（腾出名额）再在原处开一个新的，与认领串行；标签已关或已换掉时，新开的随即关掉。
+  // 退出后按 Enter 或点“重新开始”：等旧 PTY 关完（腾出名额）再在原处开一个新的，与认领串行；标签已关或已换掉时，新开的随即关掉。
   async restart(pane: Pane): Promise<void> {
+    const exitedId = pane.facts.id;
     try {
       await serial(this.session, async () => {
-        await this.release(pane.facts.id);
+        if (this.disposed || pane !== this.pane || !pane.facts.exited || pane.facts.id !== exitedId) return;
+        await this.release(exitedId);
         const facts = await this.open({ cols: pane.term.cols, rows: pane.term.rows });
         if (this.disposed || pane !== this.pane || !pane.replace(facts)) return void this.release(facts.id);
         writeClaims(this.session, { ...readClaims(this.session), [this.instance]: facts.id });
@@ -317,6 +341,7 @@ class TerminalInstance implements PaneHost {
 
   private openSearch(): void {
     this.finder.hidden = false;
+    this.searchTrigger.hidden = true;
     this.query.value = this.pane?.term.getSelection() || this.query.value;
     this.query.focus();
     this.query.select();
@@ -324,6 +349,7 @@ class TerminalInstance implements PaneHost {
 
   private closeSearch(): void {
     this.finder.hidden = true;
+    this.searchTrigger.hidden = false;
     this.pane?.search.clearDecorations();
     this.pane?.term.focus();
   }

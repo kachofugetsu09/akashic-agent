@@ -30,7 +30,8 @@
 
 .terminal-tool { padding: 6px 8px; white-space: nowrap; }
 
-.terminal-tool:hover { color: var(--ak-ink-primary); background: var(--ak-paper-raised); }
+.terminal-tool:hover:not(:disabled) { color: var(--ak-ink-primary); background: var(--ak-paper-raised); }
+.terminal-tool:disabled { opacity: 0.5; cursor: progress; }
 
 .terminal-tool:focus-visible,
 .terminal-search-input:focus-visible {
@@ -83,11 +84,49 @@
   text-align: center;
 }
 
-.terminal-notice[hidden] { display: none; }
 .terminal-notice-text { margin: 0; color: var(--ak-ink-secondary); font-size: 13px; }
 .terminal-notice .terminal-tool { border: 1px solid var(--ak-rule-default); }
 
-/* 触控：可点区域至少 44px */
+.terminal-floating-actions {
+  position: absolute;
+  z-index: 5;
+  inset: 8px 8px auto auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  pointer-events: none;
+}
+
+.terminal-floating-actions .terminal-tool {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--ak-rule-default);
+  background: var(--ak-paper-raised);
+  box-shadow: var(--ak-elevation-raised);
+  pointer-events: auto;
+}
+
+.terminal-notice[hidden],
+.terminal-floating-actions[hidden],
+.terminal-floating-actions .terminal-tool[hidden],
+.terminal-tool[hidden] {
+  display: none;
+}
+
+/* 桌面有 Ctrl+Shift+F 快捷键，搜索钮仅在键盘聚焦时显现；触屏无快捷键则常驻可见（design.md §3.6）。 */
+.terminal-search-trigger {
+  opacity: 0;
+  transition: opacity var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+}
+
+.terminal-search-trigger:focus-visible {
+  opacity: 1;
+}
+
+/* 触控：可点区域至少 44px，输入框 ≥16px 防止移动浏览器聚焦自动放大视口 */
 @media (pointer: coarse) {
   .terminal-tool { min-width: 44px; min-height: 44px; }
+  .terminal-search-input { min-height: 44px; font-size: 16px; }
+  .terminal-search-trigger { opacity: 1; }
 }
