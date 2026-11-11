@@ -27,7 +27,10 @@ button { min-height: 46px; border: 0; border-radius: 10px; background: var(--acc
 button:disabled { opacity: .45; cursor: progress; }
 .msg { min-height: 20px; font-size: 13px; color: var(--bad); }
 details { min-width: 0; max-width: 100%; border-top: 1px solid var(--rule); padding-top: 6px; font-size: 13px; color: var(--ink-2); }
-summary { display: flex; min-height: 44px; align-items: center; cursor: pointer; color: var(--accent); font-size: 14px; }
+summary { display: flex; min-height: 44px; align-items: center; gap: 6px; list-style: none; cursor: pointer; color: var(--accent); font-size: 14px; }
+summary::-webkit-details-marker { display: none; }
+summary::before { content: "▸"; display: inline-block; font-size: 12px; transition: transform 150ms ease; }
+details[open] > summary::before { transform: rotate(90deg); }
 pre { margin: 8px 0; max-width: 100%; padding: 8px 10px; border-radius: 7px; background: var(--accent-soft); font: 12px/1.6 ui-monospace, Menlo, monospace; overflow-x: auto; }
 </style>
 </head>
@@ -66,8 +69,21 @@ docker compose exec akashic python main.py web-login</pre>
   <div class="msg" role="alert"></div>
 </form>
 <script>
-const raw = new URLSearchParams(location.search).get("next") || "/";
-const next = raw.startsWith("/") && !raw.startsWith("//") && !raw.startsWith("/_auth") ? raw : "/";
+function safeNext(candidate) {
+  if (!candidate || typeof candidate !== "string") return "/";
+  if (!candidate.startsWith("/") || candidate.startsWith("//")) return "/";
+  if (/[\u0000-\u001f\u007f\\]/.test(candidate)) return "/";
+  try {
+    const parsed = new URL(candidate, location.origin);
+    if (parsed.origin !== location.origin) return "/";
+    if (parsed.pathname === "/_auth" || parsed.pathname.startsWith("/_auth/")) return "/";
+    return `${parsed.pathname}${parsed.search}${parsed.hash}` || "/";
+  } catch {
+    return "/";
+  }
+}
+
+const next = safeNext(new URLSearchParams(location.search).get("next"));
 
 async function post(path, body) {
   const response = await fetch(path, { method: "POST", headers: { "content-type": "application/json" },
