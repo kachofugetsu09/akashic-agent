@@ -46,7 +46,7 @@ body {
   overflow: hidden;
   color: var(--ak-ink-primary);
   background: var(--ak-paper-canvas);
-  font-family: var(--ak-type-reading);
+  font-family: var(--ak-type-ui);
   font-feature-settings: "cv02", "cv03", "cv04", "cv11", "ss01";
   font-synthesis: none;
   text-rendering: optimizeLegibility;
@@ -72,36 +72,130 @@ body {
   outline-offset: 2px;
 }
 
+.web-host-fallback {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: 24px max(16px, env(safe-area-inset-right, 0px)) 24px
+    max(16px, env(safe-area-inset-left, 0px));
+}
+
+.web-host-fallback-card {
+  width: min(100%, 24rem);
+  display: grid;
+  gap: 14px;
+  justify-items: start;
+}
+
 .web-host-empty,
 .web-host-entry-error {
-  margin: 32px;
+  margin: 24px;
+  font-size: 0.9375rem;
+  line-height: 1.6;
   color: var(--ak-ink-secondary);
+}
+
+.web-host-fallback-card > .web-host-empty,
+.web-host-fallback-card > .web-host-entry-error {
+  margin: 0;
 }
 
 .web-host-entry-error {
   color: var(--ak-color-status-error);
 }
 
-.web-host-stale {
+.web-host-action,
+.web-host-stale-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 36px;
+  padding: 0 14px;
+  border: 1px solid var(--ak-rule-default);
+  border-radius: var(--ak-radius-sm);
+  background: var(--ak-paper-sheet);
+  color: var(--ak-ink-primary);
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+}
+
+.web-host-action {
+  min-height: 44px;
+  padding-inline: 18px;
+}
+
+.web-host-action:hover,
+.web-host-stale-action:hover {
+  background: color-mix(in oklab, var(--ak-ink-primary) 6%, var(--ak-paper-sheet));
+}
+
+.web-host-action:disabled,
+.web-host-stale-action:disabled {
+  opacity: 0.5;
+  cursor: progress;
+}
+
+.web-host-stale,
+.web-host-partial-error {
   position: fixed;
-  z-index: 100;
+  z-index: 1100;
   inset: 12px 12px auto auto;
+  max-width: min(32rem, calc(100vw - 24px));
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
   padding: 10px 14px;
   border: 1px solid var(--ak-rule-default);
   border-radius: var(--ak-radius-md);
   color: var(--ak-ink-primary);
   background: var(--ak-paper-raised);
+  box-shadow: var(--ak-elevation-float);
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+
+.web-host-partial-error {
+  inset: auto 12px calc(12px + env(safe-area-inset-bottom, 0px)) auto;
+  border-color: color-mix(in oklab, var(--ak-color-status-error) 35%, var(--ak-rule-default));
+}
+
+.web-host-partial-error-text {
+  flex: 1 1 14rem;
+  min-width: 0;
+  margin: 0;
+  color: var(--ak-color-status-error);
+  overflow-wrap: anywhere;
 }
 
 @media (max-width: 760px) {
   .web-host-stale {
     inset: calc(8px + env(safe-area-inset-top, 0px)) 12px auto;
-    text-align: center;
+    max-width: none;
+    justify-content: space-between;
+  }
+
+  .web-host-partial-error {
+    inset: auto 12px calc(8px + env(safe-area-inset-bottom, 0px)) 12px;
+    max-width: none;
+  }
+}
+
+@media (pointer: coarse) {
+  .web-host-stale-action {
+    min-height: 44px;
   }
 }
 
 @media (prefers-contrast: more) {
-  .web-host-stale { border-color: var(--ak-rule-strong); }
+  .web-host-stale,
+  .web-host-partial-error {
+    border-color: var(--ak-rule-strong);
+  }
 }
 
 /* 桌面宿主统一标题带和工具区几何，插件继续拥有工具内容与生命周期。 */
