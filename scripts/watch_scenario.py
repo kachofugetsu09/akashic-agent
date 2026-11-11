@@ -207,10 +207,11 @@ async def run(distribution: Path, base: Path) -> None:
         from plugins.watch.events import EventLog
         assert EventLog(watch).last_number() == runtime.state.next_id - 1
 
-        # 8. 状态也是事件：eventmail 的状态变化、插件和文件来源标了 state 的事件都照常落盘，当前状态取各来源最近一条
+        # 8. 状态也是事件：插件和文件来源标了 state 的事件照常落盘，当前状态取各来源最近一条；eventmail 的状态快照不进事件流
         before = EventLog(watch).last_number()
         sleep = context.require(EVENTMAIL_CONTEXT_SOURCE).bind("scenario-sleep")
-        _ = await sleep.report(event_id="s1", payload={"state": "sleeping", "detail": {"prob": 0.9}}, observed_at=now, expires_at=now + timedelta(seconds=1))
+        _ = await sleep.report(event_id="s1", payload={"state": "sleeping"}, observed_at=now, expires_at=now + timedelta(days=1))
+        _ = await runtime.emit("scenario-sleep", text="睡着了", state=True)
         first = await runtime.emit("scenario-place", title="到了公司", state=True)
         assert await runtime.emit("scenario-place", title="到了公司", state=True) == first, "状态没变不应产生新事件"
         second = await runtime.emit("scenario-place", title="到了家", state=True)
@@ -218,7 +219,7 @@ async def run(distribution: Path, base: Path) -> None:
         await tick()
         assert EventLog(watch).last_number() == before + 4, "四条状态事件：睡眠、两次位置、文件来源"
         current = await runtime._user_state(datetime.now(runtime.zone))
-        assert "state: sleeping" in current and "到了家" in current and "到了公司" not in current and "在线" in current, current
+        assert "睡着了" in current and "state: sleeping" not in current and "到了家" in current and "到了公司" not in current and "在线" in current, current
         assert first != second and runtime.state.judged == before + 4
         await client.close()
         print("watch scenario ok")

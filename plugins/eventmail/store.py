@@ -1233,7 +1233,7 @@ class EventMailStore:
         assert row is not None
         return int(row["seq"])
 
-    # 按信封序号增量读取内容、告警与状态变化；kind 原样带出，由读的一方决定怎么用。
+    # 按信封序号增量读取内容与告警。状态快照每次轮询都会写一个信封，不代表状态变了，不进事件流。
     def envelopes_after(self, seq: int, limit: int) -> tuple[Mapping[str, object], ...]:
         if type(seq) is not int or seq < 0 or type(limit) is not int or not 1 <= limit <= 1000:
             raise ValueError("事件流读取需要非负序号和 1 到 1000 的 limit")
@@ -1241,7 +1241,7 @@ class EventMailStore:
             rows = connection.execute(
                 """
                 SELECT seq, kind, source_id, item_id, revision, payload_json, observed_at, expires_at, created_at
-                FROM mail_envelopes WHERE seq > ? AND kind IN ('content', 'alert', 'context') ORDER BY seq LIMIT ?
+                FROM mail_envelopes WHERE seq > ? AND kind IN ('content', 'alert') ORDER BY seq LIMIT ?
                 """,
                 (seq, limit),
             ).fetchall()

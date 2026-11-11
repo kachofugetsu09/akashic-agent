@@ -150,14 +150,13 @@ class Runtime:
                     if not envelopes:
                         break
                     for envelope in envelopes:
-                        state = envelope["kind"] == "context"
                         expires = envelope.get("expires_at")
-                        if not state and isinstance(expires, str) and datetime.fromisoformat(expires) <= now:
-                            # 来源声明的有效期已过：不再当成新事交给值班员。状态的变化发生过就是发生过，照收
+                        if isinstance(expires, str) and datetime.fromisoformat(expires) <= now:
+                            # 来源声明的有效期已过：不再当成新事交给值班员
                             continue
                         payload = dict(envelope["payload"]) if isinstance(envelope["payload"], Mapping) else {}
                         payload["at"] = envelope["observed_at"]
-                        rows.append((str(payload.get("source_name") or envelope["source_id"]), payload, state))
+                        rows.append((str(payload.get("source_name") or envelope["source_id"]), payload, False))
                     mail_seq = int(str(envelopes[-1]["seq"]))
         _ = await self._append(rows, now, offsets=offsets, mail_seq=mail_seq)
 
