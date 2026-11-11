@@ -143,6 +143,15 @@ def _read(path: Path) -> list[Event]:
     return events
 
 
+# 来源交来的一行：是 JSON 对象就按字段取，否则整行当正文。
+def parse_line(text: str) -> Mapping[str, object] | str:
+    try:
+        value = json.loads(text)
+    except ValueError:
+        return text
+    return value if isinstance(value, dict) else str(value)
+
+
 # 读取 watch/sources/*.jsonl 里新追加的整行；文件名就是来源名，删掉文件就是移除来源。
 def read_sources(root: Path, offsets: dict[str, int], limit: int = 500) -> list[tuple[str, Mapping[str, object] | str]]:
     rows: list[tuple[str, Mapping[str, object] | str]] = []
@@ -169,10 +178,6 @@ def read_sources(root: Path, offsets: dict[str, int], limit: int = 500) -> list[
                 text = raw.decode("utf-8", "replace").strip()
                 if not text:
                     continue
-                try:
-                    value = json.loads(text)
-                except ValueError:
-                    value = text
-                rows.append((name, value if isinstance(value, dict) else str(value)))
+                rows.append((name, parse_line(text)))
         offsets[name] = start
     return rows
