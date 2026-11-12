@@ -67,13 +67,17 @@ def read_talk(reader: MessageReader, day: date, now: datetime) -> list[dict[str,
 
 
 # 主 Agent 一个后台回合里的动线：按顺序列出工具调用、每次的结果摘要，以及它最后写下的话。
-def read_round(reader: MessageReader, limit: int = 400) -> list[dict[str, str]]:
+def read_round(reader: MessageReader, pages: int = 5) -> list[dict[str, str]]:
     steps: list[dict[str, str]] = []
     try:
-        page = reader.read_tail(limit=limit)
+        page = reader.read_tail(limit=200)
     except KeyError:
         return steps
-    for message in page.messages:
+    messages = list(page.messages)
+    while page.has_more and pages > 1 and page.messages:
+        page, pages = reader.read_tail(before_seq=page.messages[0].seq, through_seq=page.through_seq, limit=200), pages - 1
+        messages[:0] = page.messages
+    for message in messages:
         body = message.body
         if isinstance(body, Output):
             for part in body.parts:
