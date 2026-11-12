@@ -92,13 +92,15 @@ function tickView(data, tick, query) {
     }).catch((error) => steps.replaceChildren(h("li", "watch-why", `读取失败：${error instanceof Error ? error.message : error}`)));
     return h("div", null, null, [h("p", "watch-round", `${round.label}：${round.status}`), steps]);
   });
+  const memory = tick.memory?.length ? h("div", null, null, [h("p", "watch-round", "它改了记忆"),
+    h("ul", "watch-env", null, tick.memory.map((item) => h("li", null, null, [h("span", "watch-key", item.mark === "+" ? "新增" : "删去"), h("span", null, item.text)])))]) : null;
   const column = (title, children, empty) => h("section", "watch-col", null, [h("h4", null, title), ...(children.filter(Boolean).length ? children : [h("p", "watch-why", empty)])]);
   return h("div", "watch-flow", null, [
     h("h3", null, `${tick.at} 这一轮`),
     h("div", "watch-cols", null, [
       column("① 值班员手里有什么（各来源最近一条状态）", [h("ul", "watch-env", null, env)], "还没有来源报告过状态"),
       column("② 新进来的事件和去向", [...verdicts, ...failures], "这一轮没有新事件"),
-      column("③ 主 Agent 做了什么", rounds, "这一轮没有叫醒它"),
+      column("③ 主 Agent 做了什么", [...rounds, memory], "这一轮没有叫醒它"),
     ])]);
 }
 

@@ -16,6 +16,7 @@ from .events import Event, clip, read_day
 _VERDICT = re.compile(r"^- (\d\d:\d\d) #(\S+) \[(.+?)\] (.*?) → (wake|inbox|log)(?:｜(.*?))?（[^（）]*）$")
 _ROUND = re.compile(r"^- (\d\d:\d\d) (.+?)：(.+?)（会话 (\S+)）$")
 _FAILURE = re.compile(r"^- (\d\d:\d\d) 模型失败：(.*)$")
+_MEMORY = re.compile(r"^- (\d\d:\d\d) 记忆改动：([+-]) (.*)$")
 
 
 # 一天的值班记录按轮次归拢：同一分钟写下的判断、模型失败和主 Agent 的回合是同一轮。
@@ -29,11 +30,13 @@ def read_ticks(root: Path, day: date) -> list[dict[str, object]]:
         elif match := _ROUND.match(text):
             at, label, status, session = match.groups()
             row, item = "rounds", {"label": label, "status": status, "session": session}
+        elif match := _MEMORY.match(text):
+            at, row, item = match.group(1), "memory", {"mark": match.group(2), "text": match.group(3)}
         elif match := _FAILURE.match(text):
             at, row, item = match.group(1), "failures", {"text": match.group(2)}
         else:
             continue
-        ticks.setdefault(at, {"verdicts": [], "rounds": [], "failures": []})[row].append(item)
+        ticks.setdefault(at, {"verdicts": [], "rounds": [], "failures": [], "memory": []})[row].append(item)
     return [{"at": at, **rows} for at, rows in sorted(ticks.items())]
 
 
