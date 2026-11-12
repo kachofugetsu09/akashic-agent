@@ -6,8 +6,10 @@ import type { WebEntry, WebUiDisposer } from "@akashic/web-ui-v1";
  */
 export interface ConversationTab extends WebEntry {
   label: string;
-  /** 16px 线性 SVG 字符串，启动器菜单使用。 */
+  /** 16px 线性 SVG 字符串，启动器菜单与标题行直达按钮使用。 */
   icon?: string;
+  /** 带 icon 时在对话标题行右侧放置该工具的直达开关（窄屏自动收进更多菜单）。 */
+  header?: boolean;
   /**
    * 默认首次被选中才 render；需要在未打开时用 requestAttention 提示活动的标签设为 true，挂载即渲染。
    * 未选中时标签应按 onActiveChange 暂停昂贵工作。

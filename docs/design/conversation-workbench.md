@@ -76,8 +76,8 @@ type QuoteStatus = "inserted" | "stale" | "rejected";
 5. 宿主把当前可接受的意图名集合以 `akashic.workbench-intents {names}` 告诉聊天端，只用来决定是否显示“在侧栏打开”，不代表一定成功。
 6. 意图名带版本（`.v1`）。payload 的结构由该意图的领域 owner 在自己的 README 与 `contract.py` 里定义，例如
    `workspace.changes.open.v1` 由 workspace_changes 定义 `{path}`（2026-10 起，原为 `{turn_id, path?}`）。接收标签校验领域引用和读取权限。
-   通用的 `workspace.file.open.v1 {path, line?}` 表示“打开工作目录里的这个文件”，由聊天端对回复里像文件路径的行内代码发出，见 2.4。
-   本地 Markdown（`.md`/`.markdown`/`.mdown`，大小写不敏感）改发 `workspace.document.open.v1 {path, line?}`，由 markdown_reader 接收（2026-10 起）；path 可在工作目录内外，`line` 只用于识别文件，不定位行。
+   通用的 `workspace.file.open.v1 {path, line?}` 表示“打开该服务端路径的文件（可定位行号）”，由聊天端对回复里像文件路径的行内代码发出，优先交给 `markdown_reader`（「文件」，`order: 25`），见 2.4。
+   Markdown（`.md`/`.markdown`/`.mdown`，大小写不敏感）发 `workspace.document.open.v1 {path, line?}`，同样由 `markdown_reader` 接收；`path` 可在工作目录、服务端 `workspace/` 或任意可读服务端路径下，带 `line` 时切到源码行视图并定位行。
    聊天插槽上下文增加 `workbench: { accepts(name): boolean; open(name, payload): Promise<status> }`，由聊天端转发。
 
 ### 2.2 引用回输入框
@@ -103,6 +103,7 @@ Agent 活动经 `requestAttention` 亮徽标。`reveal(key)` 是唯一的自动�
 ```ts
 interface ConversationTab {
   multiple?: boolean;   // 可多开：每次打开是新实例，各占一个标签（终端）
+  header?: boolean;     // 挂入对话标题栏右上角动作区，点击可直达或收起该标签
   hint?: string;        // 新标签页里工具名后的一句说明，≤ 40 字符
   shortcut?: string;    // "Ctrl+`" 或 "Mod+Shift+字母"；保留键与重复由宿主拒绝
 }
@@ -120,11 +121,11 @@ interface ConversationTabView {
   当前停在新标签页时再打开工具，就地替换这一页。
 - **分屏**：最多上下两组，标签可拖到另一组（自定义 MIME `application/x-akashic-tab`）。
   布局按会话记为 `{open, focus, groups:[{tabs, active}]}`，旧的 `{tabs, active}` 照常读入。
-- **快捷键**：宿主占 Mod+J（开关工具区）与 Mod+\（上下分屏），工具自己声明各自的键：终端 Ctrl+`，改动 Mod+Shift+G，电脑 Mod+Shift+D。
+- **快捷键与标题栏入口**：宿主占 Mod+J（开关工具区，对话右上角工作台按钮常驻切换）与 Mod+\（上下分屏），工具自己声明各自的键：终端 Ctrl+`，文件 Mod+Shift+E（`header: true` 常驻对话标题栏），改动 Mod+Shift+G，电脑 Mod+Shift+D。
   对话 iframe 同源，宿主直接在它的 window 上监听；有对话框或菜单打开、或按键已被 preventDefault 时不接。
   对话页的快捷键面板（Ctrl+/）多出“工作台”一组，由宿主经 `akashic.chat-tools` 下发。
-- **回复里的文件路径**：相对路径加常见扩展名（可带 `:行号`）的行内代码显示为可点；工作台里没有工具接受 `workspace.file.open.v1` 时保持原样。
-- **回复里的 Markdown 引用**：行内代码和 Markdown 链接里的本地 `.md` 路径（绝对路径、`~/`、`../`、带空格或中文均可；带 glob 元字符或多个文件名的不算；网址不拦截，修饰键点击保留浏览器行为）发 `workspace.document.open.v1`，在文档阅读器里打开。没有工具接受该意图时保持原样，**有意不回退给“改动”**：文档不一定有 Git 改动，回退会打开空 diff。
+- **回复里的文件路径**：服务端绝对路径（`/…`、`~/…`）或相对路径加常见扩展名（可带 `:行号`）的行内代码显示为可点；工作台里没有工具接受 `workspace.file.open.v1` 时保持原样。
+- **回复里的 Markdown 引用**：行内代码和 Markdown 链接里的服务端 `.md` 路径（绝对路径、`~/`、`../`、带空格或中文均可；带 glob 元字符或多个文件名的不算；网址不拦截，修饰键点击保留浏览器行为）发 `workspace.document.open.v1`，在「文件」标签里打开。没有工具接受该意图时保持原样，**有意不回退给“改动”**：文档不一定有 Git 改动，回退会打开空 diff。
 
 ## 3. 终端（standard_tools 自有）
 

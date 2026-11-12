@@ -355,8 +355,12 @@ input {
 
 .chat-sidebar__new:active,
 .conversation-heading__new:active,
-.conversation-heading__action:active {
+.conversation-heading__action:active,
+.conversation-heading__action[aria-pressed="true"] {
   background: color-mix(in oklab, var(--md-sys-color-on-surface) 8%, transparent);
+}
+.conversation-heading__action[aria-pressed="true"] svg {
+  color: var(--chat-ink);
 }
 
 /* 底部动作：一行。第一个动作带字占满，其余是图标；低频入口不各占一行。 */
@@ -3213,7 +3217,8 @@ form.composer:focus-within [data-slot="input-group"] {
   .turn-rail__ticks i[data-active],
   .turn-rail:hover .turn-rail__ticks i[data-active] { background: Highlight; }
   :is(.conversation-session, .group-session, .conversation-destination).active,
-  .navigation-group.active > .navigation-group__row {
+  .navigation-group.active > .navigation-group__row,
+  .conversation-heading__action[aria-pressed="true"] {
     outline: 2px solid Highlight;
     outline-offset: -2px;
   }

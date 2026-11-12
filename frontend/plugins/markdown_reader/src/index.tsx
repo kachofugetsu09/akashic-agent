@@ -1,180 +1,981 @@
 import { micromark } from "micromark";
 import { gfm, gfmHtml } from "micromark-extension-gfm";
-import type { ConversationTabView } from "@akashic/conversation-tools-v2";
+import type { ConversationIntent, ConversationIntentStatus, ConversationTabView } from "@akashic/conversation-tools-v2";
 import type { WebHostContextV1, WebUiDisposer } from "@akashic/web-ui-v1";
+import { FileSyntax } from "./syntax";
 import "./style.css";
 
-type Entry = { name: string; path: string };
+type Entry = { name: string; path: string; kind?: "directory" | "file" | "other" };
+type RootPreset = { id: string; label: string; path: string };
 type Result = {
   status: string;
-  path: string;
+  path?: string;
   text?: string;
+  bytes?: number;
+  mime_type?: string;
+  mtime_ms?: number;
+  truncated?: boolean;
+  tail?: boolean;
   message?: string;
-  root?: string;
-  parent?: string;
-  after?: string;
+  error?: string;
+  root?: string | null;
+  roots?: RootPreset[];
+  open_file?: string;
+  parent?: string | null;
+  after?: string | null;
   items?: Entry[];
 };
 
-const errors: Record<string, string> = {
-  not_found: "文件不存在",
-  not_directory: "目录不可用",
+const API = "/api/dashboard/markdown_reader";
+const PINS_KEY = "akashic.files.pins.v1";
+const SPLIT_WIDTH_PX = 480;
+const MAX_PINS = 8;
+const IMPORT_LIMIT_BYTES = 50 * 1024 * 1024;
+const FOLDER_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>';
+
+const STATUS_MESSAGES: Record<string, string> = {
+  not_found: "服务端路径不存在",
+  not_directory: "该路径不是目录",
   permission_denied: "没有读取权限",
-  not_file: "只能打开普通文件",
-  too_large: "文档超过 1 MiB，请在编辑器中打开",
-  invalid_text: "需要 UTF-8 编码的 Markdown 文件",
+  not_file: "只能预览普通文件",
+  too_large: "文件过大，请下载后查看",
+  invalid_text: "文件不是 UTF-8 文本",
+  invalid_path: "路径格式无效",
   offline: "执行主机离线",
+  io_error: "磁盘读取失败",
 };
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, text = "", className = ""): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
-  node.textContent = text;
+  if (text) node.textContent = text;
   if (className) node.className = className;
   return node;
 }
 
-function button(text: string, action: () => void): HTMLButtonElement {
-  const node = el("button", text);
+function btn(text: string, action: () => void, className = ""): HTMLButtonElement {
+  const node = el("button", text, className);
   node.type = "button";
   node.onclick = action;
   return node;
 }
 
-function toggle(text: string, action: () => void): HTMLButtonElement {
-  const node = button(text, action);
+function toggle(text: string, action: () => void, className = ""): HTMLButtonElement {
+  const node = btn(text, action, className);
   node.setAttribute("aria-pressed", "false");
   return node;
 }
 
 function basename(path: string): string {
-  return path.slice(path.lastIndexOf("/") + 1) || path;
+  const trimmed = path.length > 1 ? path.replace(/\/+$/, "") : path;
+  return trimmed.slice(trimmed.lastIndexOf("/") + 1) || trimmed;
+}
+
+function dirnameOf(path: string): string {
+  const idx = path.lastIndexOf("/");
+  if (idx <= 0) return "/";
+  return path.slice(0, idx);
+}
+
+function normalizePosix(path: string): string {
+  const absolute = path.startsWith("/");
+  const stack: string[] = [];
+  for (const part of path.split("/")) {
+    if (!part || part === ".") continue;
+    if (part === "..") stack.pop();
+    else stack.push(part);
+  }
+  return (absolute ? "/" : "") + stack.join("/") || (absolute ? "/" : ".");
+}
+
+function isMarkdown(path: string): boolean {
+  return /\.(md|markdown|mdown)$/i.test(path);
+}
+
+function formatBytes(bytes: number | undefined): string {
+  if (bytes === undefined || !Number.isFinite(bytes)) return "";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+function readPins(): string[] {
+  try {
+    const raw: unknown = JSON.parse(window.localStorage.getItem(PINS_KEY) ?? "[]");
+    return Array.isArray(raw) ? raw.filter((item): item is string => typeof item === "string" && item.startsWith("/")).slice(0, MAX_PINS) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writePins(pins: readonly string[]): void {
+  try {
+    window.localStorage.setItem(PINS_KEY, JSON.stringify(pins.slice(0, MAX_PINS)));
+  } catch {
+    // 无痕或存储满时只在内存生效。
+  }
+}
+
+async function copyString(value: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(value);
+      return true;
+    }
+  } catch {
+    // 非 HTTPS 下回退临时选区复制。
+  }
+  try {
+    const area = document.createElement("textarea");
+    area.value = value;
+    area.setAttribute("readonly", "true");
+    area.style.position = "fixed";
+    area.style.opacity = "0";
+    document.body.append(area);
+    area.select();
+    const ok = document.execCommand("copy");
+    area.remove();
+    return ok;
+  } catch {
+    return false;
+  }
 }
 
 class Reader {
   root = el("section", "", "md-reader");
   private name = el("span", "", "md-name");
+  private meta = el("span", "", "md-meta");
+  private body = el("div", "", "md-body");
+  private nav = el("nav", "", "md-nav");
+  private topNavRow = el("div", "", "md-nav-top");
+  private rootsRow = el("div", "", "md-roots");
+  private pathToggle = toggle("路径", () => this.togglePathBox(), "md-chip-btn");
+  private pinBtn = toggle("收藏", () => this.togglePin(), "md-chip-btn");
+  private pathBox = el("div", "", "md-path-box");
   private form = el("form", "", "md-open");
   private input = el("input");
-  private nav = el("nav", "", "md-nav");
-  private list = el("div");
-  private listed = "";
-  private article = el("article");
+  private crumbBar = el("div", "", "md-crumbs");
+  private filterInput = el("input", "", "md-filter");
+  private hiddenToggle = toggle("隐藏项", () => this.toggleHidden(), "md-chip-btn");
+  private navStatusRow = el("div", "", "md-note-row md-nav-status");
+  private navNote = el("p", "", "md-note");
+  private navRetryBtn = btn("重试", () => this.retryLast(), "md-inline-btn");
+  private list = el("div", "", "md-list");
+  private outlinePane = el("nav", "", "md-outline");
+  private stage = el("div", "", "md-stage");
+  private noteRow = el("div", "", "md-note-row");
   private note = el("p", "", "md-note");
-  private filesToggle = toggle("文件", () => this.toggleFiles());
-  private outlineToggle = toggle("目录", () => this.toggleOutline());
+  private retryBtn = btn("重试", () => this.retryLast(), "md-inline-btn");
+  private banner = el("div", "", "md-banner");
+  private article = el("article", "", "md-article");
+  private filesToggle = toggle("目录", () => this.toggleFiles());
+  private outlineToggle = toggle("大纲", () => this.toggleOutline());
   private sourceToggle = toggle("源码", () => this.toggleSource());
+  private quoteBtn = btn("引用", () => this.quoteSelection());
+  private copyBtn = btn("复制路径", () => void this.copyPath());
+  private downloadBtn = btn("下载", () => void this.downloadCurrent(), "md-download");
+  private refreshBtn = btn("刷新", () => void this.refreshCurrent());
+
   private session: string | null;
-  private active: boolean;
   private path = "";
   private directory = "";
   private workdir: string | null | undefined;
-  private navMode: "files" | "outline" = "files";
-  private text: string | null = null;
+  private roots: RootPreset[] = [];
+  private pins: string[] = readPins();
+  private items: Entry[] = [];
+  private afterCursor: string | null = null;
+  private parentDir: string | null = null;
+  private showHidden = false;
+  private navOpen = true;
+  private pathBoxOpen = false;
+  private outlineOpen = false;
   private source = false;
+  private downloading = false;
+  private docResult: Result | null = null;
+  private selectedLines: { start: number; end: number } | null = null;
+  private pendingLine: number | null = null;
+  private retryAction: (() => void) | null = null;
+  private filesAbort: AbortController | null = null;
+  private docAbort: AbortController | null = null;
+  private blobUrls: string[] = [];
   private generation = 0;
   private navigation = 0;
-  private timer: ReturnType<typeof setTimeout> | undefined;
+  private copyTimer = 0;
+  private quoteTimer = 0;
+  private targetTimer = 0;
   private disposed = false;
-  private loading = false;
+  private readonly syntax = new FileSyntax();
   private stops: WebUiDisposer[];
 
-  constructor(private ctx: WebHostContextV1, view: ConversationTabView) {
+  constructor(private ctx: WebHostContextV1, private view: ConversationTabView) {
     this.session = view.session;
-    this.active = view.active;
     this.build();
     this.article.addEventListener("click", (event) => this.follow(event));
     let subscribing = true;
     this.stops = [
       view.onSessionChange((session) => {
+        if (session === this.session && this.directory) return;
         this.session = session;
-        this.reset();
-        void this.files();
+        this.workdir = undefined;
+        if (!this.directory) void this.files("");
+        else void this.refreshSessionRoots();
       }),
-      view.onIntent(async (intent) => {
-        if (intent.name !== "workspace.document.open.v1") return "invalid";
-        const payload = intent.payload as { path?: unknown } | null;
-        if (!payload || typeof payload.path !== "string" || !payload.path || payload.path.length > 4096
-          || /[\x00-\x1f]/.test(payload.path) || !/\.(md|markdown|mdown)$/i.test(payload.path)
-          || /^[a-z][a-z0-9+.-]*:/i.test(payload.path) || payload.path.startsWith("//")) return "invalid";
-        await this.open(payload.path);
-        return "handled";
-      }),
+      view.onIntent(async (intent) => this.handleIntent(intent)),
       view.onActiveChange((active) => {
-        this.active = active;
-        clearTimeout(this.timer);
-        // 初始会话通知已发起目录读取；后续每次显示仍重新校验。
-        if (active && !subscribing) {
-          void this.files(this.directory);
-          this.schedule();
+        if (active && !subscribing && !this.directory && !this.filesAbort) {
+          void this.files("");
         }
       }),
     ];
     subscribing = false;
-    this.schedule();
+    if (!this.directory && !this.filesAbort) {
+      void this.files("");
+    }
   }
 
-  // 顶栏一行放文档名与三个视图开关；路径输入只在文件面板里出现。
   private build(): void {
     const bar = el("div", "", "md-bar");
+    const titleWrap = el("div", "", "md-title-wrap");
+    titleWrap.append(this.filesToggle, this.name, this.meta);
     const tools = el("div", "", "md-tools");
-    tools.append(this.filesToggle, this.outlineToggle, this.sourceToggle);
-    bar.append(this.name, tools);
-    this.input.placeholder = "输入绝对路径打开";
-    this.input.setAttribute("aria-label", "Markdown 文件路径");
+    tools.append(this.sourceToggle, this.outlineToggle, this.quoteBtn, this.copyBtn, this.downloadBtn, this.refreshBtn);
+    bar.append(titleWrap, tools);
+
+    const navActions = el("div", "", "md-nav-actions");
+    this.pathToggle.title = "输入指定服务端目录或文件绝对路径";
+    navActions.append(this.pathToggle, this.pinBtn);
+    this.topNavRow.append(this.rootsRow, navActions);
+
+    this.input.placeholder = "服务端路径（如 /srv/... 或 ~/...）";
+    this.input.setAttribute("aria-label", "服务端目录或文件路径");
     this.input.autocomplete = "off";
-    const open = el("button", "打开");
-    open.type = "submit";
-    this.form.append(this.input, open);
+    this.input.spellcheck = false;
+    const goBtn = el("button", "前往");
+    goBtn.type = "submit";
+    this.form.append(this.input, goBtn);
     this.form.onsubmit = (event) => {
       event.preventDefault();
-      void this.open(this.input.value.trim());
+      const target = this.input.value.trim();
+      if (target) void this.files(target);
     };
+    const serverHint = el("p", "访问运行 Akashic 的服务端（执行主机）文件，非当前浏览器本机磁盘。", "md-server-hint");
+    this.pathBox.hidden = true;
+    this.pathBox.append(this.form, serverHint);
+
+    const filterRow = el("div", "", "md-filter-row");
+    this.filterInput.type = "search";
+    this.filterInput.placeholder = "筛选当前目录";
+    this.filterInput.setAttribute("aria-label", "筛选当前目录");
+    this.filterInput.autocomplete = "off";
+    this.filterInput.spellcheck = false;
+    this.filterInput.oninput = () => this.renderEntries();
+    filterRow.append(this.filterInput, this.hiddenToggle);
+
+    this.navNote.setAttribute("role", "status");
+    this.navNote.setAttribute("aria-live", "polite");
+    this.navRetryBtn.hidden = true;
+    this.navStatusRow.hidden = true;
+    this.navStatusRow.append(this.navNote, this.navRetryBtn);
+
+    this.nav.setAttribute("aria-label", "服务端目录浏览");
+    this.nav.append(this.topNavRow, this.pathBox, this.crumbBar, filterRow, this.navStatusRow, this.list);
+
+    this.outlinePane.setAttribute("aria-label", "文档大纲");
+    this.outlinePane.hidden = true;
+
     this.note.setAttribute("role", "status");
-    this.nav.setAttribute("aria-label", "文档导航");
-    this.nav.hidden = true;
+    this.note.setAttribute("aria-live", "polite");
+    this.retryBtn.hidden = true;
+    this.noteRow.hidden = true;
+    this.noteRow.append(this.note, this.retryBtn);
+    this.banner.hidden = true;
+
     this.article.tabIndex = 0;
-    this.article.setAttribute("aria-label", "Markdown 正文");
-    this.root.append(bar, this.nav, this.note, this.article);
+    this.article.setAttribute("aria-label", "文件内容预览");
+    this.article.append(el("p", "选择文件预览，或点「路径」输入任意服务端目录。", "md-empty-file"));
+    this.stage.append(this.outlinePane, this.noteRow, this.banner, this.article);
+    this.body.append(this.nav, this.stage);
+    this.root.append(bar, this.body);
+    this.syncChrome();
   }
 
-  // 开关的按下态只反映当前展开的面板与正文模式。
-  private syncTools(): void {
-    const files = !this.nav.hidden && this.navMode === "files";
-    const outline = !this.nav.hidden && this.navMode === "outline";
-    this.filesToggle.setAttribute("aria-pressed", String(files));
-    this.outlineToggle.setAttribute("aria-pressed", String(outline));
+  private isNarrow(): boolean {
+    const width = this.root.clientWidth;
+    return width > 0 && width < SPLIT_WIDTH_PX;
+  }
+
+  private clearBlobs(): void {
+    for (const url of this.blobUrls) URL.revokeObjectURL(url);
+    this.blobUrls = [];
+  }
+
+  private syncChrome(): void {
+    this.root.dataset.navOpen = String(this.navOpen);
+    this.root.dataset.hasFile = String(Boolean(this.path && this.docResult));
+    this.nav.hidden = !this.navOpen;
+    this.pathBox.hidden = !this.pathBoxOpen;
+    this.outlinePane.hidden = !this.outlineOpen;
+    this.filesToggle.setAttribute("aria-pressed", String(this.navOpen));
+    this.pathToggle.setAttribute("aria-pressed", String(this.pathBoxOpen));
+    this.outlineToggle.setAttribute("aria-pressed", String(this.outlineOpen));
     this.sourceToggle.setAttribute("aria-pressed", String(this.source));
+    this.hiddenToggle.setAttribute("aria-pressed", String(this.showHidden));
+
+    const hasFile = Boolean(this.path && this.docResult);
+    const md = hasFile && isMarkdown(this.path) && this.docResult?.status === "available" && typeof this.docResult.text === "string";
+    const hasText = hasFile && this.docResult?.status === "available" && typeof this.docResult.text === "string";
+    this.sourceToggle.hidden = !md;
+    this.outlineToggle.hidden = !md;
+    if (!md && this.outlineOpen) {
+      this.outlineOpen = false;
+      this.outlinePane.hidden = true;
+    }
+    this.quoteBtn.hidden = !(hasText && this.session);
+    this.copyBtn.hidden = !this.path && !this.directory;
+    const canDownload = hasFile && (this.docResult?.bytes ?? 0) <= IMPORT_LIMIT_BYTES
+      && (this.docResult?.status === "available" || this.docResult?.status === "binary");
+    this.downloadBtn.hidden = !canDownload;
+    this.downloadBtn.disabled = this.downloading;
+    this.downloadBtn.textContent = this.downloading ? "下载中…" : "下载";
+
+    const pinned = Boolean(this.directory && this.pins.includes(this.directory));
+    this.pinBtn.hidden = !this.directory;
+    this.pinBtn.textContent = pinned ? "★ 已收藏" : "☆ 收藏";
+    this.pinBtn.setAttribute("aria-pressed", String(pinned));
+    this.renderRoots();
+  }
+
+  private rawUrl(path: string, download: boolean): string {
+    const query = new URLSearchParams({ path, ...(this.session ? { session: this.session } : {}), ...(download ? { download: "1" } : {}) });
+    return `${API}/raw?${query}`;
+  }
+
+  // 窄屏目录打开时舞台被收起，目录请求的状态提示需要同时在目录区可见。
+  private setStatus(text: string, isError = false, retry: (() => void) | null = null, scope: "nav" | "stage" = "stage"): void {
+    this.retryAction = retry;
+    if (scope === "nav") {
+      this.navNote.textContent = text;
+      this.navStatusRow.dataset.tone = isError ? "error" : "";
+      this.navRetryBtn.hidden = !retry;
+      this.navStatusRow.hidden = !text;
+      if (!text) {
+        this.noteRow.hidden = true;
+      }
+      return;
+    }
+    this.note.textContent = text;
+    this.noteRow.dataset.tone = isError ? "error" : "";
+    this.retryBtn.hidden = !retry;
+    this.noteRow.hidden = !text;
+  }
+
+  private retryLast(): void {
+    const run = this.retryAction;
+    if (run) run();
   }
 
   private toggleFiles(): void {
-    const opening = this.nav.hidden || this.navMode !== "files";
-    this.navMode = "files";
-    if (!opening) {
-      this.nav.hidden = true;
-      this.syncTools();
-      return;
+    this.navOpen = !this.navOpen;
+    this.syncChrome();
+  }
+
+  private togglePathBox(): void {
+    this.pathBoxOpen = !this.pathBoxOpen;
+    this.syncChrome();
+    if (this.pathBoxOpen) {
+      this.input.value = this.directory || this.path;
+      this.input.focus();
+      this.input.select();
     }
-    this.showOpener();
-    void this.files(this.directory);
   }
 
   private toggleOutline(): void {
-    if (!this.nav.hidden && this.navMode === "outline") {
-      this.nav.hidden = true;
-      this.syncTools();
-      return;
-    }
-    this.outline();
+    if (this.isNarrow() && this.navOpen) this.navOpen = false;
+    this.outlineOpen = !this.outlineOpen;
+    if (this.outlineOpen) this.buildOutline();
+    this.syncChrome();
   }
 
   private toggleSource(): void {
+    if (this.isNarrow() && this.navOpen) this.navOpen = false;
     this.source = !this.source;
-    this.syncTools();
-    this.render();
-    if (!this.nav.hidden && this.navMode === "outline") this.outline();
+    this.syncChrome();
+    this.renderDocument();
+    if (this.outlineOpen) this.buildOutline();
   }
 
-  // 正文里的锚点与相对 Markdown 链接留在阅读器内打开，其余链接交给浏览器。
+  private toggleHidden(): void {
+    this.showHidden = !this.showHidden;
+    this.syncChrome();
+    void this.files(this.directory);
+  }
+
+  private togglePin(): void {
+    if (!this.directory) return;
+    if (this.pins.includes(this.directory)) {
+      this.pins = this.pins.filter((item) => item !== this.directory);
+    } else {
+      this.pins = [this.directory, ...this.pins.filter((item) => item !== this.directory)].slice(0, MAX_PINS);
+    }
+    writePins(this.pins);
+    this.syncChrome();
+  }
+
+  private renderRoots(): void {
+    const presets: RootPreset[] = [...this.roots];
+    const seen = new Set(presets.map((item) => item.path));
+    for (const pin of this.pins) {
+      if (!seen.has(pin)) {
+        seen.add(pin);
+        presets.push({ id: `pin:${pin}`, label: `★ ${basename(pin)}`, path: pin });
+      }
+    }
+    this.rootsRow.replaceChildren();
+    for (const preset of presets) {
+      const chip = btn(preset.label, () => void this.files(preset.path), "md-root-chip");
+      chip.title = preset.path;
+      if (this.directory === preset.path) chip.setAttribute("aria-current", "true");
+      this.rootsRow.append(chip);
+    }
+  }
+
+  private renderCrumbs(): void {
+    this.crumbBar.replaceChildren();
+    if (!this.directory) {
+      this.crumbBar.hidden = true;
+      return;
+    }
+    this.crumbBar.hidden = false;
+    const rootBtn = btn("/", () => void this.files("/"), "md-crumb");
+    rootBtn.title = "/";
+    if (this.directory === "/") rootBtn.setAttribute("aria-current", "location");
+    this.crumbBar.append(rootBtn);
+    const parts = this.directory.split("/").filter(Boolean);
+    let acc = "";
+    parts.forEach((part, index) => {
+      acc += `/${part}`;
+      const target = acc;
+      if (index > 0) this.crumbBar.append(el("span", "/", "md-crumb-sep"));
+      const item = btn(part, () => void this.files(target), "md-crumb");
+      item.title = target;
+      if (index === parts.length - 1) item.setAttribute("aria-current", "location");
+      this.crumbBar.append(item);
+    });
+    requestAnimationFrame(() => {
+      this.crumbBar.scrollLeft = this.crumbBar.scrollWidth;
+    });
+  }
+
+  private async handleIntent(intent: ConversationIntent): Promise<ConversationIntentStatus> {
+    if (intent.name !== "workspace.document.open.v1" && intent.name !== "workspace.file.open.v1") return "invalid";
+    const payload = intent.payload as { path?: unknown; line?: unknown } | null;
+    if (!payload || typeof payload.path !== "string" || !payload.path || payload.path.length > 4096
+      || /[\x00-\x1f]/.test(payload.path) || /^[a-z][a-z0-9+.-]*:/i.test(payload.path) || payload.path.startsWith("//")) {
+      return "invalid";
+    }
+    const line = typeof payload.line === "number" && Number.isInteger(payload.line) && payload.line > 0 ? payload.line : null;
+    await this.openOrBrowse(payload.path, line);
+    return "handled";
+  }
+
+  private async openOrBrowse(targetPath: string, line: number | null): Promise<void> {
+    if (targetPath.endsWith("/") && targetPath.length > 1) {
+      this.navOpen = true;
+      this.syncChrome();
+      await this.files(targetPath);
+      return;
+    }
+    const opened = await this.open(targetPath, { line, allowDirectoryFallback: true });
+    if (opened === "directory") {
+      this.navOpen = true;
+      this.syncChrome();
+      await this.files(targetPath);
+    }
+  }
+
+  private async refreshSessionRoots(): Promise<void> {
+    try {
+      const result = await this.requestJson("files", { path: this.directory, ...(this.showHidden ? { hidden: "1" } : {}) });
+      if (this.disposed) return;
+      const nextWorkdir = result.root ?? null;
+      const prevWorkdir = this.workdir;
+      this.workdir = nextWorkdir;
+      this.roots = this.normalizeRoots(result);
+      if (nextWorkdir && nextWorkdir !== prevWorkdir && nextWorkdir !== this.directory) {
+        void this.files(nextWorkdir);
+        return;
+      }
+      this.syncChrome();
+    } catch {
+      // 后台刷新根目录列表失败不打断当前阅读。
+    }
+  }
+
+  private normalizeRoots(result: Result): RootPreset[] {
+    if (Array.isArray(result.roots) && result.roots.length) return result.roots;
+    if (typeof result.root === "string" && result.root) return [{ id: "workdir", label: "会话目录", path: result.root }];
+    return this.roots;
+  }
+
+  private async requestJson(route: string, params: Record<string, string>, signal?: AbortSignal): Promise<Result> {
+    const query = new URLSearchParams({ ...(this.session ? { session: this.session } : {}), ...params });
+    const response = await this.ctx.http.request(`${API}/${route}?${query}`, signal ? { signal } : undefined);
+    let data: Result | null = null;
+    try {
+      data = await response.json() as Result;
+    } catch {
+      if (!response.ok) throw new Error(`服务端响应异常（${response.status}）`);
+      throw new Error("服务端返回格式无效");
+    }
+    if (!response.ok) {
+      throw new Error(data?.message || data?.error || `请求失败（${response.status}）`);
+    }
+    return data;
+  }
+
+  private async files(path = "", after = ""): Promise<void> {
+    const navId = ++this.navigation;
+    this.filesAbort?.abort();
+    const abort = this.filesAbort = new AbortController();
+    this.view.setIndicator?.({ busy: true, detail: "读取目录" });
+    this.setStatus(`正在读取服务端目录${path ? ` ${basename(path)}` : ""}…`, false, null, "nav");
+    try {
+      const result = await this.requestJson("files", {
+        path,
+        ...(after ? { after } : {}),
+        ...(this.showHidden ? { hidden: "1" } : {}),
+      }, abort.signal);
+      if (this.disposed || navId !== this.navigation) return;
+      this.workdir = result.root ?? null;
+      this.roots = this.normalizeRoots(result);
+      if (result.status !== "available") {
+        const msg = result.message || `${STATUS_MESSAGES[result.status] || "目录读取失败"}${result.path ? `：${result.path}` : ""}`;
+        this.pathBoxOpen = true;
+        this.setStatus(msg, true, () => void this.files(path, after), "nav");
+        this.syncChrome();
+        return;
+      }
+      const resolvedDir = result.path || path;
+      const dirChanged = resolvedDir !== this.directory;
+      this.directory = resolvedDir;
+      this.parentDir = result.parent ?? (resolvedDir !== "/" ? dirnameOf(resolvedDir) : null);
+      this.afterCursor = result.after ?? null;
+      if (after && !dirChanged) {
+        this.items = [...this.items, ...(result.items ?? [])];
+      } else {
+        this.items = result.items ?? [];
+        if (dirChanged) this.filterInput.value = "";
+      }
+      this.input.value = resolvedDir;
+      if (!this.path) {
+        this.name.textContent = basename(resolvedDir);
+        this.name.title = resolvedDir;
+        this.meta.textContent = "";
+      }
+      this.setStatus("", false, null, "nav");
+      this.renderCrumbs();
+      this.renderEntries();
+      this.syncChrome();
+      if (result.open_file) {
+        this.pathBoxOpen = false;
+        this.syncChrome();
+        await this.open(result.open_file, {});
+      }
+    } catch (error) {
+      if (abort.signal.aborted || this.disposed || navId !== this.navigation) return;
+      this.pathBoxOpen = true;
+      this.setStatus(error instanceof Error ? error.message : String(error), true, () => void this.files(path, after), "nav");
+      this.syncChrome();
+    } finally {
+      if (this.filesAbort === abort) {
+        this.filesAbort = null;
+        if (!this.docAbort) this.view.setIndicator?.(null);
+      }
+    }
+  }
+
+  private renderEntries(): void {
+    this.list.replaceChildren();
+    const needle = this.filterInput.value.trim().toLowerCase();
+    if (!needle && this.parentDir && this.parentDir !== this.directory) {
+      const targetParent = this.parentDir;
+      const up = btn("↑ 上一级", () => void this.files(targetParent), "md-entry");
+      up.dataset.kind = "parent";
+      up.title = targetParent;
+      this.list.append(up);
+    }
+    const filtered = needle
+      ? this.items.filter((item) => item.name.toLowerCase().includes(needle))
+      : this.items;
+    for (const item of filtered) {
+      const kind = item.kind ?? (item.name.endsWith("/") ? "directory" : "file");
+      const row = btn(item.name, () => {
+        if (kind === "directory") {
+          void this.files(item.path);
+          return;
+        }
+        if (kind === "other") return;
+        if (this.isNarrow()) {
+          this.navOpen = false;
+          this.syncChrome();
+        }
+        void this.open(item.path, {});
+      }, "md-entry");
+      row.title = item.path;
+      row.dataset.kind = kind;
+      if (kind === "other") {
+        row.disabled = true;
+        row.append(el("span", "特殊", "md-entry-badge"));
+      }
+      if (this.path && item.path === this.path) {
+        row.setAttribute("aria-current", "true");
+      }
+      this.list.append(row);
+    }
+    if (!filtered.length) {
+      this.list.append(el("p", needle ? "没有匹配的条目。" : "此目录为空。", "md-empty-list"));
+    }
+    if (!needle && this.afterCursor) {
+      const cursor = this.afterCursor;
+      const more = btn("加载更多", () => void this.files(this.directory, cursor), "md-entry");
+      more.dataset.more = "true";
+      this.list.append(more);
+    }
+  }
+
+  private async open(
+    path: string,
+    options: { tail?: boolean; line?: number | null; fragment?: string; allowDirectoryFallback?: boolean },
+  ): Promise<"opened" | "directory" | "failed"> {
+    if (!path) return "failed";
+    const gen = ++this.generation;
+    this.docAbort?.abort();
+    const abort = this.docAbort = new AbortController();
+    this.syntax.cancel();
+    if (this.isNarrow()) {
+      this.navOpen = false;
+      this.syncChrome();
+    }
+    this.view.setIndicator?.({ busy: true, detail: basename(path) });
+    this.setStatus(`正在读取 ${basename(path)}…`, false, null, "stage");
+    try {
+      const result = await this.requestJson("document", {
+        path,
+        ...(options.tail ? { tail: "1" } : {}),
+      }, abort.signal);
+      if (this.disposed || gen !== this.generation) return "failed";
+      if (result.status === "not_file" && options.allowDirectoryFallback) {
+        this.setStatus("", false, null, "stage");
+        return "directory";
+      }
+      if (result.status !== "available" && result.status !== "binary") {
+        const msg = result.message || `${STATUS_MESSAGES[result.status] || "读取失败"}：${path}`;
+        this.setStatus(msg, true, () => void this.open(path, options), "stage");
+        return "failed";
+      }
+      const resolvedPath = result.path || path;
+      const fileChanged = resolvedPath !== this.path;
+      this.path = resolvedPath;
+      this.docResult = result;
+      this.selectedLines = null;
+      this.pendingLine = options.line ?? null;
+      if (fileChanged) {
+        this.source = Boolean(options.line && isMarkdown(resolvedPath));
+      }
+      this.name.textContent = basename(resolvedPath);
+      this.name.title = resolvedPath;
+      this.meta.textContent = formatBytes(result.bytes);
+      this.view.setTitle?.(`文件 · ${basename(resolvedPath)}`.slice(0, 80));
+      this.setStatus("", false, null, "stage");
+      this.renderBanner(result);
+      this.renderDocument(gen, abort.signal);
+      this.renderEntries();
+      this.syncChrome();
+      if (options.fragment) this.jump(options.fragment);
+      if (this.outlineOpen) this.buildOutline();
+      const parent = dirnameOf(resolvedPath);
+      if (resolvedPath.startsWith("/") && parent !== this.directory && !this.filesAbort) {
+        void this.syncParentDirectory(parent);
+      }
+      return "opened";
+    } catch (error) {
+      if (abort.signal.aborted || this.disposed || gen !== this.generation) return "failed";
+      this.setStatus(error instanceof Error ? error.message : String(error), true, () => void this.open(path, options), "stage");
+      return "failed";
+    } finally {
+      if (this.docAbort === abort) {
+        this.docAbort = null;
+        if (!this.filesAbort) this.view.setIndicator?.(null);
+      }
+    }
+  }
+
+  private async syncParentDirectory(parent: string): Promise<void> {
+    const navId = ++this.navigation;
+    try {
+      const result = await this.requestJson("files", { path: parent, ...(this.showHidden ? { hidden: "1" } : {}) });
+      if (this.disposed || navId !== this.navigation || result.status !== "available") return;
+      this.workdir = result.root ?? null;
+      this.roots = this.normalizeRoots(result);
+      this.directory = result.path || parent;
+      this.parentDir = result.parent ?? (this.directory !== "/" ? dirnameOf(this.directory) : null);
+      this.afterCursor = result.after ?? null;
+      this.items = result.items ?? [];
+      this.input.value = this.directory;
+      this.renderCrumbs();
+      this.renderEntries();
+      this.syncChrome();
+    } catch {
+      // 附带目录同步失败不影响当前已打开的文件。
+    }
+  }
+
+  // Dashboard 路由受插件 generation 头保护，图片与下载经 ctx.http.request 取回 Blob 再挂到页面。
+  private attachImage(img: HTMLImageElement, targetPath: string, gen: number, signal?: AbortSignal): void {
+    img.alt = basename(targetPath);
+    void this.ctx.http.request(this.rawUrl(targetPath, false), signal ? { signal } : undefined)
+      .then(async (res) => {
+        if (!res.ok) throw new Error(`图片读取失败（${res.status}）`);
+        return res.blob();
+      })
+      .then((blob) => {
+        if (this.disposed || gen !== this.generation || !img.isConnected) return;
+        const url = URL.createObjectURL(blob);
+        this.blobUrls.push(url);
+        img.src = url;
+      })
+      .catch(() => {
+        if (this.disposed || gen !== this.generation || !img.isConnected) return;
+        img.replaceWith(el("span", `[图片未能读取：${basename(targetPath)}]`, "md-image-note"));
+      });
+  }
+
+  private async downloadCurrent(): Promise<void> {
+    if (!this.path || this.downloading) return;
+    const targetPath = this.path;
+    this.downloading = true;
+    this.syncChrome();
+    try {
+      const response = await this.ctx.http.request(this.rawUrl(targetPath, true));
+      if (!response.ok) throw new Error(`下载失败（${response.status}）`);
+      const blob = await response.blob();
+      if (this.disposed) return;
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = basename(targetPath);
+      document.body.append(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 2000);
+    } catch (error) {
+      if (!this.disposed) {
+        this.setStatus(error instanceof Error ? error.message : "下载失败", true, () => void this.downloadCurrent(), "stage");
+      }
+    } finally {
+      this.downloading = false;
+      if (!this.disposed) this.syncChrome();
+    }
+  }
+
+  private renderBanner(result: Result): void {
+    this.banner.replaceChildren();
+    if (!result.truncated || !this.path) {
+      this.banner.hidden = true;
+      return;
+    }
+    this.banner.hidden = false;
+    const sizeText = formatBytes(result.bytes);
+    const copy = result.tail
+      ? `文件较大${sizeText ? `（共 ${sizeText}）` : ""}，当前显示末尾片段`
+      : `文件较大${sizeText ? `（共 ${sizeText}）` : ""}，当前仅显示前 256 KB`;
+    const switchBtn = btn(
+      result.tail ? "查看开头" : "查看末尾",
+      () => void this.open(this.path, { tail: !result.tail }),
+      "md-inline-btn",
+    );
+    this.banner.append(el("span", copy), switchBtn);
+  }
+
+  private renderDocument(gen = this.generation, signal?: AbortSignal): void {
+    this.syntax.cancel();
+    this.clearBlobs();
+    this.article.replaceChildren();
+    const result = this.docResult;
+    if (!result || !this.path) return;
+
+    if (result.mime_type) {
+      const box = el("div", "", "md-media-preview");
+      const img = el("img");
+      this.attachImage(img, this.path, gen, signal);
+      const caption = el("p", `${this.path}${result.bytes !== undefined ? ` · ${formatBytes(result.bytes)}` : ""}`, "md-media-caption");
+      box.append(img, caption);
+      this.article.append(box);
+      return;
+    }
+
+    if (result.status === "binary") {
+      const card = el("div", "", "md-binary-card");
+      card.append(
+        el("strong", `${basename(this.path)} 是二进制文件`),
+        el("p", `路径：${this.path}`),
+        el("p", `大小：${formatBytes(result.bytes) || "未知"} · 为避免阻塞 IO，不直接加载二进制正文。`),
+      );
+      const actions = el("div", "", "md-binary-actions");
+      actions.append(btn("复制服务端路径", () => void this.copyPath(), "md-inline-btn"));
+      if ((result.bytes ?? 0) <= IMPORT_LIMIT_BYTES) {
+        actions.append(btn("下载到本地", () => void this.downloadCurrent(), "md-inline-btn"));
+      }
+      card.append(actions);
+      this.article.append(card);
+      return;
+    }
+
+    const text = result.text ?? "";
+    if (!text) {
+      this.article.append(el("p", "这是一个空文件。", "md-empty-file"));
+      return;
+    }
+
+    if (isMarkdown(this.path) && !this.source) {
+      this.renderMarkdown(text, gen, signal);
+      return;
+    }
+    this.renderCode(text);
+  }
+
+  private renderMarkdown(text: string, gen: number, signal?: AbortSignal): void {
+    const template = document.createElement("template");
+    template.innerHTML = micromark(text, { extensions: [gfm()], htmlExtensions: [gfmHtml()] });
+    const dir = dirnameOf(this.path);
+    const pendingImages: Array<{ img: HTMLImageElement; target: string }> = [];
+    template.content.querySelectorAll("img").forEach((image) => {
+      const src = (image.getAttribute("src") || "").trim();
+      image.removeAttribute("src");
+      if (src && !/^[a-z][a-z0-9+.-]*:/i.test(src) && !src.startsWith("//") && /\.(png|jpe?g|webp|gif)$/i.test(src.split("?")[0])) {
+        const joined = src.startsWith("/") ? src : `${dir === "/" ? "" : dir}/${src}`;
+        pendingImages.push({ img: image, target: normalizePosix(joined) });
+      } else {
+        image.replaceWith(el("span", `[图片：${image.alt || "外部或不支持的资源"}；已省略]`, "md-image-note"));
+      }
+    });
+    const prose = el("div", "", "md-prose");
+    prose.append(template.content);
+    this.decorateProse(prose);
+    this.article.append(prose);
+    for (const item of pendingImages) {
+      this.attachImage(item.img, item.target, gen, signal);
+    }
+  }
+
+  private renderCode(text: string): void {
+    const lines = text.replace(/\r\n/g, "\n").split("\n");
+    if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
+    const pre = el("div", "", "md-source md-code-view");
+    pre.setAttribute("role", "region");
+    pre.setAttribute("aria-label", `${basename(this.path)} 代码内容`);
+    lines.forEach((lineText, idx) => {
+      const lineNo = idx + 1;
+      const row = el("div", "", "md-code-row");
+      row.dataset.line = String(lineNo);
+      const gutter = el("button", String(lineNo), "md-code-ln");
+      gutter.type = "button";
+      gutter.title = "点击选择行，Shift+点击选择范围后可引用到对话";
+      gutter.onclick = (event) => this.selectLine(lineNo, event.shiftKey);
+      const code = el("span", lineText || " ", "md-code-text");
+      row.append(gutter, code);
+      pre.append(row);
+    });
+    this.article.append(pre);
+    this.article.scrollTop = 0;
+    this.syntax.highlight(this.path, lines, pre);
+    if (this.pendingLine !== null) {
+      const targetLine = this.pendingLine;
+      this.pendingLine = null;
+      this.revealLine(targetLine);
+    }
+  }
+
+  private selectLine(lineNo: number, extend: boolean): void {
+    if (extend && this.selectedLines) {
+      const start = Math.min(this.selectedLines.start, lineNo);
+      const end = Math.max(this.selectedLines.start, lineNo);
+      this.selectedLines = { start, end };
+    } else if (this.selectedLines && this.selectedLines.start === lineNo && this.selectedLines.end === lineNo) {
+      this.selectedLines = null;
+    } else {
+      this.selectedLines = { start: lineNo, end: lineNo };
+    }
+    const range = this.selectedLines;
+    this.article.querySelectorAll<HTMLElement>(".md-code-row").forEach((row) => {
+      const n = Number(row.dataset.line);
+      row.classList.toggle("is-selected", Boolean(range && n >= range.start && n <= range.end));
+    });
+    this.quoteBtn.textContent = range
+      ? (range.start === range.end ? `引用 L${range.start}` : `引用 L${range.start}-${range.end}`)
+      : "引用";
+  }
+
+  private revealLine(lineNo: number): void {
+    const row = this.article.querySelector<HTMLElement>(`.md-code-row[data-line="${lineNo}"]`);
+    if (!row) return;
+    row.scrollIntoView({ block: "center" });
+    row.classList.add("is-target");
+    window.clearTimeout(this.targetTimer);
+    this.targetTimer = window.setTimeout(() => row.classList.remove("is-target"), 1600);
+  }
+
+  private quoteSelection(): void {
+    if (!this.session || !this.path || typeof this.docResult?.text !== "string") return;
+    const browserSelection = window.getSelection()?.toString().trim() ?? "";
+    const allLines = this.docResult.text.replace(/\r\n/g, "\n").split("\n");
+    let snippet = "";
+    let sourceLabel = `文件 · ${this.path}`;
+    if (this.selectedLines) {
+      const { start, end } = this.selectedLines;
+      snippet = allLines.slice(start - 1, Math.min(end, start + 120)).join("\n");
+      sourceLabel = `文件 · ${this.path}:${start}${end > start ? `-${end}` : ""}`;
+    } else if (browserSelection) {
+      snippet = browserSelection.slice(0, 4000);
+    } else {
+      snippet = allLines.slice(0, 40).join("\n");
+      if (allLines.length > 40) sourceLabel = `文件 · ${this.path}:1-40`;
+    }
+    if (!snippet) return;
+    const status = this.view.quote?.({
+      session: this.session,
+      source: sourceLabel.slice(0, 200),
+      text: `\`\`\`\n${snippet.slice(0, 7800)}\n\`\`\``,
+    });
+    if (status === "inserted") {
+      this.quoteBtn.textContent = "已引用";
+      window.clearTimeout(this.quoteTimer);
+      this.quoteTimer = window.setTimeout(() => {
+        this.quoteBtn.textContent = this.selectedLines
+          ? (this.selectedLines.start === this.selectedLines.end
+            ? `引用 L${this.selectedLines.start}`
+            : `引用 L${this.selectedLines.start}-${this.selectedLines.end}`)
+          : "引用";
+      }, 1500);
+    }
+  }
+
+  private async copyPath(): Promise<void> {
+    const target = this.path || this.directory;
+    if (!target) return;
+    const ok = await copyString(target);
+    this.copyBtn.textContent = ok ? "已复制" : "复制失败";
+    window.clearTimeout(this.copyTimer);
+    this.copyTimer = window.setTimeout(() => {
+      this.copyBtn.textContent = "复制路径";
+    }, 1500);
+  }
+
+  private async refreshCurrent(): Promise<void> {
+    if (this.directory) await this.files(this.directory);
+    if (this.path) await this.open(this.path, { tail: Boolean(this.docResult?.tail) });
+  }
+
   private follow(event: MouseEvent): void {
     const link = (event.target as Element).closest("a");
     if (!link) return;
@@ -186,194 +987,29 @@ class Reader {
     }
     if (/^(https?|mailto):/i.test(href)) return;
     event.preventDefault();
-    if (/^[a-z][a-z0-9+.-]*:/i.test(href) || !/\.(md|markdown|mdown)(?:#.*)?$/i.test(href)) {
-      this.note.textContent = "阅读器只打开 Markdown 链接和网页链接。";
-      return;
-    }
+    if (/^[a-z][a-z0-9+.-]*:/i.test(href)) return;
     const [raw, fragment] = href.split("#");
     let relative: string;
     try {
       relative = decodeURIComponent(raw);
     } catch {
-      this.note.textContent = "链接路径编码无效。";
+      this.setStatus("链接路径编码无效。", true, null, "stage");
       return;
     }
-    const base = this.path.slice(0, this.path.lastIndexOf("/") + 1);
-    void this.open(relative.startsWith("/") ? relative : base + relative, false, fragment);
-  }
-
-  private reset(): void {
-    this.generation++;
-    this.navigation++;
-    this.path = "";
-    this.directory = "";
-    this.text = null;
-    this.workdir = undefined;
-    this.input.value = "";
-    this.name.textContent = "";
-    this.name.title = "";
-    this.article.replaceChildren();
-    this.nav.replaceChildren();
-    this.list.replaceChildren();
-    this.listed = "";
-    this.loading = false;
-  }
-
-  private async get(route: string, params: Record<string, string>): Promise<Result> {
-    if (!this.session) throw new Error("先选择一个会话，再打开文档。");
-    const query = new URLSearchParams({ session: this.session, ...params });
-    const response = await this.ctx.http.request(`/api/dashboard/markdown_reader/${route}?${query}`);
-    if (!response.ok) throw new Error(`读取失败（${response.status}），请检查路径后重试。`);
-    const result = await response.json() as Result;
-    if (result.status !== "available") {
-      throw new Error(result.message || `${errors[result.status] || "读取失败"}。请检查路径后重试。`);
-    }
-    return result;
-  }
-
-  // 1. 只采用最新一次浏览的结果；2. 工作目录换了就整体重置；3. 大纲模式下只更新状态不重画。
-  private async files(path = "", after = "", background = false): Promise<void> {
-    const generation = this.generation;
-    const navigation = background ? this.navigation : ++this.navigation;
-    try {
-      const result = await this.get("files", { path, after });
-      if (this.disposed || generation !== this.generation || navigation !== this.navigation) return;
-      if (this.workdir !== undefined && result.root !== this.workdir) {
-        this.reset();
-        void this.files();
-        return;
+    const base = dirnameOf(this.path);
+    const nextPath = relative.startsWith("/") ? relative : normalizePosix(`${base === "/" ? "" : base}/${relative}`);
+    void this.open(nextPath, { fragment, allowDirectoryFallback: true }).then((res) => {
+      if (res === "directory") {
+        this.navOpen = true;
+        this.syncChrome();
+        void this.files(nextPath);
       }
-      this.workdir = result.root ?? null;
-      this.directory = result.path;
-      if (this.navMode === "outline" && this.path) return;
-      this.listFiles(result, after);
-      if (!this.path) {
-        this.nav.hidden = false;
-        this.syncTools();
-        this.note.textContent = result.items?.length
-          ? "选择文档，或输入绝对路径。"
-          : "此目录没有 Markdown 文档，可进入子目录或输入绝对路径。";
-      }
-    } catch (error) {
-      if (generation === this.generation && navigation === this.navigation) {
-        this.note.textContent = String((error as Error).message);
-        if (!this.path) this.showOpener();
-      }
-    }
-  }
-
-  // 没有可列的目录时仍给出路径输入，绝对路径是唯一入口。
-  private showOpener(): void {
-    if (this.navMode === "outline") return;
-    if (this.nav.firstChild !== this.form) this.nav.replaceChildren(this.form, this.list);
-    this.nav.hidden = false;
-    this.syncTools();
-  }
-
-  // 输入框常驻面板顶部，轮询只重画下面的列表；结果没变时不动 DOM，保留焦点与悬停。
-  private listFiles(result: Result, after: string): void {
-    if (this.nav.firstChild !== this.form) this.nav.replaceChildren(this.form, this.list);
-    const key = JSON.stringify([result.path, result.items, result.after]);
-    if (after) {
-      this.list.querySelector("[data-more]")?.remove();
-    } else {
-      if (key === this.listed) return;
-      this.list.replaceChildren(el("div", result.path, "md-directory"));
-      if (result.parent && result.path !== result.root) {
-        const parent = button("上一级", () => void this.files(result.parent));
-        parent.dataset.kind = "parent";
-        this.list.append(parent);
-      }
-    }
-    if (!after) this.listed = key;
-    for (const item of result.items || []) {
-      const directory = item.name.endsWith("/");
-      const entry = button(item.name, () => {
-        if (directory) {
-          void this.files(item.path);
-          return;
-        }
-        this.nav.hidden = true;
-        this.syncTools();
-        void this.open(item.path);
-      });
-      entry.title = item.path;
-      entry.dataset.kind = directory ? "directory" : "file";
-      this.list.append(entry);
-    }
-    if (result.after) {
-      const more = button("加载更多", () => void this.files(result.path, result.after));
-      more.dataset.more = "true";
-      this.list.append(more);
-    }
-  }
-
-  // 刷新只在内容或路径变化时重画，并保留滚动位置。
-  private async open(path: string, refresh = false, fragment?: string): Promise<void> {
-    if (!path || (refresh && this.loading)) return;
-    const generation = ++this.generation;
-    this.loading = true;
-    if (!refresh) this.note.textContent = "正在读取…";
-    try {
-      const result = await this.get("document", { path });
-      if (this.disposed || generation !== this.generation) return;
-      const changed = result.text !== this.text || result.path !== this.path;
-      this.path = result.path;
-      if (!refresh) this.input.value = result.path;
-      this.name.textContent = basename(result.path);
-      this.name.title = result.path;
-      this.text = result.text ?? "";
-      this.note.textContent = this.text ? "" : "这是一个空文档。";
-      if (!refresh && this.navMode === "files") {
-        this.nav.hidden = true;
-        this.syncTools();
-      }
-      if (changed) {
-        const position = refresh ? this.article.scrollTop : 0;
-        this.render();
-        this.article.scrollTop = position;
-      }
-      if (fragment) this.jump(fragment);
-      if (changed && this.navMode === "outline" && !this.nav.hidden) this.outline();
-    } catch (error) {
-      if (generation === this.generation) {
-        this.note.textContent = (refresh ? "更新失败，保留当前内容。" : "") + (error as Error).message;
-      }
-    } finally {
-      if (generation === this.generation) this.loading = false;
-    }
-  }
-
-  private render(): void {
-    if (this.text === null) return;
-    if (this.source) {
-      const source = el("pre", "", "md-source");
-      // 保留原始换行并分开段落，减少无障碍序列化成本；连续空行只产生一个节点。
-      let start = 0;
-      for (const separator of this.text.matchAll(/(?:\r?\n){2,}/g)) {
-        const end = separator.index + separator[0].length;
-        source.append(document.createTextNode(this.text.slice(start, end)));
-        start = end;
-      }
-      if (start < this.text.length) source.append(document.createTextNode(this.text.slice(start)));
-      this.article.replaceChildren(source);
-      return;
-    }
-    // micromark escapes raw HTML and rejects dangerous protocols by default. Never enable dangerous HTML.
-    const template = document.createElement("template");
-    template.innerHTML = micromark(this.text, { extensions: [gfm()], htmlExtensions: [gfmHtml()] });
-    // Images are removed in the inert template, before any network request can start.
-    template.content.querySelectorAll("img").forEach((image) => {
-      image.replaceWith(el("span", `[图片：${image.alt || "未命名"}；暂不加载]`, "md-image-note"));
     });
-    this.article.replaceChildren(template.content);
-    this.decorate();
   }
 
-  // 标题补稳定 id，外链新开页，表格套横滚框，任务项只读。
-  private decorate(): void {
+  private decorateProse(container: HTMLElement): void {
     const slugs = new Map<string, number>();
-    this.article.querySelectorAll("h1,h2,h3,h4,h5,h6").forEach((heading) => {
+    container.querySelectorAll("h1,h2,h3,h4,h5,h6").forEach((heading) => {
       if (heading.id) return;
       const slug = (heading.textContent || "section").toLowerCase()
         .replace(/[^\p{L}\p{N}\s_-]/gu, "").replace(/\s+/g, "-");
@@ -381,19 +1017,19 @@ class Reader {
       slugs.set(slug, count + 1);
       heading.id = `md-${count ? `${slug}-${count}` : slug}`;
     });
-    this.article.querySelectorAll("a").forEach((link) => {
+    container.querySelectorAll("a").forEach((link) => {
       if (/^https?:/i.test(link.getAttribute("href") || "")) {
         link.target = "_blank";
         link.rel = "noopener noreferrer";
       }
     });
-    this.article.querySelectorAll("table").forEach((table) => {
+    container.querySelectorAll("table").forEach((table) => {
       const wrapper = el("div", "", "md-table");
       wrapper.tabIndex = 0;
       table.replaceWith(wrapper);
       wrapper.append(table);
     });
-    this.article.querySelectorAll("input").forEach((input) => {
+    container.querySelectorAll("input").forEach((input) => {
       input.disabled = true;
     });
   }
@@ -410,48 +1046,37 @@ class Reader {
     heading?.scrollIntoView({ block: "start" });
   }
 
-  private outline(): void {
-    this.navMode = "outline";
-    this.listed = "";
-    this.nav.replaceChildren();
-    this.nav.hidden = false;
-    this.syncTools();
+  private buildOutline(): void {
+    this.outlinePane.replaceChildren();
     if (this.source) {
-      this.nav.append(el("p", "切回阅读模式查看目录。"));
+      this.outlinePane.append(el("p", "切回阅读模式查看文档大纲。"));
       return;
     }
-    this.article.querySelectorAll<HTMLElement>("h1,h2,h3,h4,h5,h6").forEach((heading) => {
-      const row = button(heading.textContent || "标题", () => {
+    this.article.querySelectorAll<HTMLElement>(".md-prose :is(h1,h2,h3,h4,h5,h6)").forEach((heading) => {
+      const row = btn(heading.textContent || "标题", () => {
         heading.scrollIntoView({ block: "start" });
-        this.nav.hidden = true;
-        this.syncTools();
+        this.outlineOpen = false;
+        this.syncChrome();
         heading.tabIndex = -1;
         heading.focus({ preventScroll: true });
       });
       row.style.paddingInlineStart = `${8 + (Number(heading.tagName.slice(1)) - 1) * 12}px`;
-      this.nav.append(row);
+      this.outlinePane.append(row);
     });
-    if (!this.nav.childElementCount) this.nav.append(el("p", "文档没有标题。"));
-  }
-
-  // 标签可见时每 5 秒对照一次磁盘；页面隐藏时跳过请求。
-  private schedule(): void {
-    clearTimeout(this.timer);
-    if (!this.active || this.disposed) return;
-    this.timer = setTimeout(async () => {
-      if (!document.hidden) {
-        await this.files(this.directory, "", true);
-        if (this.path) await this.open(this.path, true);
-      }
-      this.schedule();
-    }, 5000);
+    if (!this.outlinePane.childElementCount) this.outlinePane.append(el("p", "文档没有标题。"));
   }
 
   dispose(): void {
     this.disposed = true;
-    this.generation++;
-    this.navigation++;
-    clearTimeout(this.timer);
+    this.generation += 1;
+    this.navigation += 1;
+    this.filesAbort?.abort();
+    this.docAbort?.abort();
+    this.syntax.cancel();
+    this.clearBlobs();
+    window.clearTimeout(this.copyTimer);
+    window.clearTimeout(this.quoteTimer);
+    window.clearTimeout(this.targetTimer);
     this.stops.forEach((stop) => stop());
   }
 }
@@ -459,10 +1084,13 @@ class Reader {
 export function activate(ctx: WebHostContextV1): WebUiDisposer {
   return ctx.ui.inject("conversation.tools.v2", (mount) => mount.register({
     id: "markdown-reader",
-    accepts: ["workspace.document.open.v1"],
-    label: "文档",
-    order: 35,
-    hint: "阅读 Markdown，支持绝对路径",
+    accepts: ["workspace.document.open.v1", "workspace.file.open.v1"],
+    label: "文件",
+    order: 25,
+    header: true,
+    icon: FOLDER_ICON,
+    shortcut: "Mod+Shift+E",
+    hint: "浏览服务端工作区、会话目录或指定路径文件",
     render(host, _entry, raw) {
       const reader = new Reader(ctx, raw as ConversationTabView);
       host.replaceChildren(reader.root);

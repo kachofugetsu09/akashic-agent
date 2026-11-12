@@ -6,6 +6,7 @@ from plugins.host_execution.contract import (
     AgentsChain, AgentsChainFailure, AgentsChainFile, DirectoryEntry, PathInfo, PathStatus
 )
 
+import codecs
 import heapq
 import json
 import os
@@ -18,6 +19,13 @@ from .factory import build_file_bridge
 
 from core.common.file_io import run_file_io
 
+FILE_PREVIEW_MAX_BYTES = 256 * 1024
+_ACTIONS = frozenset({
+    "resolve", "inspect", "browse", "read_text", "agents_chain",
+    "markdown_list", "markdown_read",
+    "file_list", "file_list_hidden", "file_read", "file_tail",
+})
+
 
 class PathInfoOperation:
     async def execute(
@@ -25,7 +33,7 @@ class PathInfoOperation:
         after: str | None = None, limit: int = 100, max_bytes: int = 32768,
     ) -> str:
         """Validate the request once and run all disk work in a bounded worker."""
-        if action not in {"resolve", "inspect", "browse", "read_text", "agents_chain", "markdown_list", "markdown_read"}:
+        if action not in _ACTIONS:
             raise ValueError("Unknown path operation")
         if not isinstance(path, str) or not path or "\x00" in path:
             raise ValueError("Path must be nonempty text")
@@ -33,8 +41,9 @@ class PathInfoOperation:
             raise ValueError("base_dir must be absolute")
         if type(limit) is not int or not 1 <= limit <= 200:
             raise ValueError("Directory page limit must be 1..200")
-        if type(max_bytes) is not int or not 1 <= max_bytes <= 32768:
-            raise ValueError("Read limit must be 1..32768 bytes")
+        upper = FILE_PREVIEW_MAX_BYTES if action in {"file_read", "file_tail"} else 32768
+        if type(max_bytes) is not int or not 1 <= max_bytes <= upper:
+            raise ValueError(f"Read limit must be 1..{upper} bytes")
         if after is not None and (not isinstance(after, str) or "/" in after):
             raise ValueError("Directory cursor must be a file name")
         return await run_file_io(lambda: self._read(
@@ -79,6 +88,12 @@ class PathInfoOperation:
                 result.update(_markdown_list(target, after, limit))
             if action == "markdown_read":
                 return json.dumps(_markdown_read(target, path, result), ensure_ascii=False)
+            if action in {"file_list", "file_list_hidden"}:
+                if kind != "directory":
+                    raise NotADirectoryError(str(target))
+                result.update(_file_list(target, after, limit, include_hidden=action == "file_list_hidden"))
+            if action in {"file_read", "file_tail"}:
+                return json.dumps(_file_read(target, path, result, max_bytes, tail=action == "file_tail"), ensure_ascii=False)
             # 3. Never read a device or FIFO; over-limit files have no partial text.
             if action == "read_text":
                 if kind != "file":
@@ -144,6 +159,100 @@ def _markdown_read(target: Path, requested: str, result: dict[str, object]) -> d
     if len(raw) > MARKDOWN_MAX_BYTES:
         return {**result, "status": "too_large"}
     return {**result, "text": raw.decode("utf-8-sig"), "bytes": len(raw)}
+
+
+def _entry_kind(entry: os.DirEntry[str]) -> Literal["directory", "file", "other"]:
+    try:
+        if entry.is_dir(follow_symlinks=True):
+            return "directory"
+        if entry.is_file(follow_symlinks=True):
+            return "file"
+    except OSError:
+        pass
+    return "other"
+
+
+# 单层目录游标分页：目录排在文件前，依赖 d_type 不逐项 stat，不递归子树。
+def _file_list(target: Path, after: str | None, limit: int, *, include_hidden: bool) -> dict[str, object]:
+    after_key: tuple[int, str, str] | None = None
+    if after is not None:
+        if after.startswith(("0:", "1:")):
+            after_key = (int(after[0]), after[2:].lower(), after[2:])
+        else:
+            after_key = (0, after.lower(), after)
+    with os.scandir(target) as entries:
+        candidates = []
+        for entry in entries:
+            if not include_hidden and entry.name.startswith("."):
+                continue
+            kind = _entry_kind(entry)
+            key = (0 if kind == "directory" else 1, entry.name.lower(), entry.name)
+            if after_key is None or key > after_key:
+                candidates.append((key, entry.name, kind))
+        rows = heapq.nsmallest(limit + 1, candidates)
+    return {
+        "items": [
+            {"name": name + ("/" if kind == "directory" else ""), "path": str(target / name), "kind": kind}
+            for _, name, kind in rows[:limit]
+        ],
+        "after": f"{rows[limit - 1][0][0]}:{rows[limit - 1][1]}" if len(rows) > limit else None,
+        "parent": str(target.parent) if target.parent != target else None,
+    }
+
+
+def _detect_image_mime(head: bytes) -> str | None:
+    if head.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if head.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if len(head) >= 12 and head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return "image/webp"
+    if head.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    return None
+
+
+# 只读普通文件：先探 8KiB 识别图片与二进制（4.5GB SQLite 只读 8KiB），超长文本按头/尾有界切片。
+def _file_read(target: Path, requested: str, result: dict[str, object], max_bytes: int, *, tail: bool) -> dict[str, object]:
+    checked = target.stat()
+    if not stat.S_ISREG(checked.st_mode):
+        return {"path": requested, "status": "not_file"}
+    descriptor = os.open(target, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+    with os.fdopen(descriptor, "rb") as stream:
+        opened = os.fstat(stream.fileno())
+        if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (checked.st_dev, checked.st_ino):
+            return {"path": requested, "status": "not_file"}
+        size = opened.st_size
+        mtime_ms = opened.st_mtime_ns // 1_000_000
+        probe = stream.read(min(8192, max_bytes))
+        if mime := _detect_image_mime(probe):
+            return {**result, "mime_type": mime, "bytes": size, "mtime_ms": mtime_ms}
+        if b"\x00" in probe:
+            return {**result, "status": "binary", "bytes": size, "mtime_ms": mtime_ms}
+        if tail and size > max_bytes:
+            stream.seek(size - max_bytes)
+            raw = stream.read(max_bytes)
+            while raw and (raw[0] & 0xC0) == 0x80:
+                raw = raw[1:]
+            newline = raw.find(b"\n")
+            if 0 <= newline < min(4096, len(raw) - 1):
+                raw = raw[newline + 1:]
+            truncated = True
+            final = True
+        else:
+            rest = stream.read(max_bytes - len(probe) + 1) if size > len(probe) else b""
+            truncated = len(probe) + len(rest) > max_bytes
+            raw = (probe + rest)[:max_bytes]
+            final = not truncated
+    try:
+        text = codecs.getincrementaldecoder("utf-8")().decode(raw, final=final).removeprefix("\ufeff")
+    except UnicodeDecodeError:
+        return {**result, "status": "binary", "bytes": size, "mtime_ms": mtime_ms}
+    out: dict[str, object] = {**result, "text": text, "bytes": size, "mtime_ms": mtime_ms}
+    if truncated:
+        out["truncated"] = True
+        out["tail"] = tail
+    return out
 
 
 def _probe_marker(path: Path) -> tuple[str, str | None]:

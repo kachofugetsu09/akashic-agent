@@ -31,7 +31,14 @@ function currentDirectory(row: Record<string, unknown>): CurrentDirectory {
     agents: { status: rules.status, sources: rules.sources as string[], error: "error" in rules ? rules.error as string : undefined } };
 }
 
-interface DirectoryView { current: CurrentDirectory; path: string; error: string; refresh(): void }
+interface DirectoryView {
+  current: CurrentDirectory;
+  path: string;
+  error: string;
+  canBrowse: boolean;
+  browse(): void;
+  refresh(): void;
+}
 
 // 只读会话状态；工具回执（宿主失效通知）、重新聚焦及可见轮询都重新检查执行主机。
 // 不渲染界面：目录登记为说明行「在哪」路径的一段，详细内容在宿主的会话信息面板里展开。
@@ -70,7 +77,17 @@ function SessionDirectory({ context }: { context: PluginUiContext<"header.meta">
   useEffect(() => {
     // 目录未设置属于常态，不占位置；已设置或出现异常才登记。
     if (!current || !path) { store.set(null); context.meta.publish([]); return; }
-    store.set({ current, path, error, refresh: () => setRetry((value) => value + 1) });
+    const syncStore = () => store.set({
+      current, path, error,
+      canBrowse: current.status === "available" && context.workbench.accepts("workspace.file.open.v1"),
+      browse: () => {
+        void context.workbench.open("workspace.file.open.v1", { path });
+        context.meta.closePanel();
+      },
+      refresh: () => setRetry((value) => value + 1),
+    });
+    syncStore();
+    const stopWorkbench = context.onInvalidate(syncStore);
     const abnormal = !["available", "unset"].includes(current.status);
     context.meta.publish([{
       id: "directory", scope: "project", path: true, weight: 10, iconSvg: ICONS.folder,
@@ -78,6 +95,7 @@ function SessionDirectory({ context }: { context: PluginUiContext<"header.meta">
       text: abnormal ? statusLabel(current.status) : directoryName(path), value: directoryName(path),
       detail: (host) => render(host, <DirectoryDetail store={store} />),
     }]);
+    return () => { stopWorkbench(); };
   }, [context, current, error, path, store]);
   return null;
 }
@@ -102,6 +120,7 @@ function DirectoryDetail({ store }: { store: ValueStore<DirectoryView | null> })
     </p> : current.agents.status !== "ready" ? <p role="status">仓库规则不可用：{current.agents.error}</p> : null}
     {error ? <p data-tone="error" role="status">{error}</p> : null}
     <div className="directory-detail__actions">
+      {view.canBrowse ? <button type="button" onClick={view.browse}>浏览文件</button> : null}
       <button type="button" onClick={copy}>{copied ? "已复制" : "复制路径"}</button>
       <button type="button" onClick={view.refresh}>刷新</button>
     </div>
