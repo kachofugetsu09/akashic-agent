@@ -239,6 +239,11 @@ async def run(distribution: Path, base: Path) -> None:
         assert sum(event.source == "scenario-script" and event.title == "脚本交来的一条" for event in fresh) == 1, fresh
         assert sum(event.source == "scenario-script" and "纯文本的一行" in event.text for event in fresh) == 2, fresh
         assert sum(event.source == "scenario-broken" and "运行失败" in event.title and "boom" in event.text for event in fresh) == 1, fresh
+        # 11. 主 Agent 认出来的地点记在 places.md；之后位置事件里附近的坐标带上名字，远处的不带
+        (watch / "places.md").write_text("- 公司: 40.0023,116.4745\n", encoding="utf-8")
+        _ = await runtime.emit("scenario-place", text="停在 (40.00231, 116.47446)，之前在 (39.99901, 116.32381)", state=True)
+        named = EventLog(watch).since(EventLog(watch).last_number() - 1, datetime.now().astimezone())[-1].text
+        assert "(40.00231, 116.47446)【公司】" in named and named.count("【") == 1, named
         await client.close()
         print("watch scenario ok")
     finally:

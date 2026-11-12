@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -141,6 +142,29 @@ def _read(path: Path) -> list[Event]:
         except (ValueError, TypeError):
             continue
     return events
+
+
+_PLACE = re.compile(r"^- (.+?)[:：]\s*(-?\d{1,3}\.\d+)\s*[,，]\s*(-?\d{1,3}\.\d+)")
+_COORD = re.compile(r"\(?(-?\d{1,3}\.\d{3,})\s*[,，]\s*(-?\d{1,3}\.\d{3,})\)?")
+
+
+# watch/places.md 里主 Agent 认出来的地点，一行一个："- 名字: 纬度,经度"。
+def load_places(root: Path) -> list[tuple[str, float, float]]:
+    path = root / "places.md"
+    if not path.exists():
+        return []
+    found = (_PLACE.match(line) for line in path.read_text(encoding="utf-8").splitlines())
+    return [(match.group(1).strip(), float(match.group(2)), float(match.group(3))) for match in found if match is not None]
+
+
+# 事件正文里的坐标落在认识的地点三百米内，就在后面标上名字；值班员和主 Agent 读到的是"公司""家"，不是一对数字。
+def name_places(event: Event, places: Sequence[tuple[str, float, float]]) -> Event:
+    def label(match: re.Match[str]) -> str:
+        lat, lon = float(match.group(1)), float(match.group(2))
+        near = min(places, key=lambda place: math.hypot(place[1] - lat, (place[2] - lon) * math.cos(math.radians(lat))))
+        metres = math.hypot(near[1] - lat, (near[2] - lon) * math.cos(math.radians(lat))) * 111_000
+        return match.group(0) + (f"【{near[0]}】" if metres <= 300 else "")
+    return replace(event, text=_COORD.sub(label, event.text), title=_COORD.sub(label, event.title)) if places else event
 
 
 # 来源交来的一行：是 JSON 对象就按字段取，否则整行当正文。

@@ -18,7 +18,7 @@ from plugins.programmatic.contract import PROGRAMMATIC
 
 from . import orders as watch_orders
 from . import recent, scripts, wake
-from .events import Event, EventLog, clip, normalize, parse_line, read_sources
+from .events import Event, EventLog, clip, load_places, name_places, normalize, parse_line, read_sources
 from .settings import WAKE_MODEL, Config
 from .watcher import Call, Files, ModelFailure, Outcome, Reply, Verdict, judge
 
@@ -84,8 +84,9 @@ class Runtime:
         async with self._lock:
             events: list[Event] = []
             latest = await run_file_io(lambda: self._current(now))
+            places = await run_file_io(lambda: load_places(self.root))
             for source, raw, state in rows:
-                event = normalize(self.state.next_id + len(events), source, raw, now, state)
+                event = name_places(normalize(self.state.next_id + len(events), source, raw, now, state), places)
                 previous = latest.get(event.source)
                 if event.key and ((event.source, event.key) in self._keys or any(other.key == event.key and other.source == event.source for other in events)):
                     continue
