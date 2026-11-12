@@ -6,7 +6,7 @@ import math
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 _TEXT_KEYS = ("text", "content", "body", "message", "summary", "description")
@@ -142,6 +142,11 @@ def _read(path: Path) -> list[Event]:
         except (ValueError, TypeError):
             continue
     return events
+
+
+# 某一天的全部事件，按写入顺序。
+def read_day(root: Path, day: date) -> list[Event]:
+    return _read(root / "events" / f"{day:%Y-%m-%d}.jsonl")
 
 
 _PLACE = re.compile(r"^- (.+?)[:：]\s*(-?\d{1,3}\.\d+)\s*[,，]\s*(-?\d{1,3}\.\d+)")

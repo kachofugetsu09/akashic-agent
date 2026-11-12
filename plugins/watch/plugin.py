@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping
+from datetime import datetime
 
 from agent.plugin_composition import RUNTIME_STARTED, RUNTIME_STOPPING, Context, stop_spawned
 from agent.plugin_composition.plugin_config import PLUGIN_CONFIG
+from core.common.file_io import run_file_io
 from plugins.assets.contract import INSTALLED_ASSETS
 from plugins.context.contract import MATERIALS_V4
 from plugins.host_execution.contract import PROCESSES
@@ -13,8 +15,10 @@ from plugins.ledger.contract import MESSAGE_CATALOG
 from plugins.models.contract import CHAT_MODELS, MODEL_CATALOG
 from plugins.plugin_settings.contract import SETTINGS_FORMS, declare_settings
 from plugins.programmatic.contract import PROGRAMMATIC
+from plugins.ui.contract import UI_SLOTS, PluginUiDefinition, PluginUiRpcInvalidRequest
 from plugins.userinformation.contract import USER_INFORMATION
 
+from . import panel
 from .contract import WATCH_EVENTS
 from .runtime import Runtime, count_items, count_notes
 from .settings import FORM, Config
@@ -29,7 +33,7 @@ POINTER = (
 
 api_version = 3
 name = "watch"
-version = "1.3.0"
+version = "1.4.0"
 desc = "值班：便宜的模型看着事件流，只在该叫的时候叫醒主 Agent；主 Agent 在后台醒来后自己决定做什么、说不说话"
 inject = (PLUGIN_CONFIG, CHAT_MODELS, MODEL_CATALOG, MESSAGE_CATALOG, PROGRAMMATIC, PROCESSES)
 workspace_roots = ("watch",)
@@ -89,3 +93,22 @@ async def apply(ctx: Context) -> None:
 
     _ = await ctx.on(RUNTIME_STARTED, start)
     _ = await ctx.on(RUNTIME_STOPPING, stop)
+
+    # 值班面板：侧栏插件面板里的一项，数据从日志、事件文件和账本现读。
+    async def query(method: str, payload: dict[str, object], *, session_id: str | None, turn_id: str | None) -> dict[str, object]:
+        now = datetime.now(runtime.zone)
+        catalog = ctx.require(MESSAGE_CATALOG)
+        if method == "round":
+            reader = catalog.reader(panel.parse_session(payload))
+            return {"steps": await run_file_io(lambda: panel.read_round(reader))}
+        if method != "day":
+            raise PluginUiRpcInvalidRequest(f"不支持的查询：{method}")
+        day = panel.parse_day(payload, now.date())
+        talk = await run_file_io(lambda: panel.read_talk(catalog.reader(config.target), day, now)) if config.target else []
+        ticks, lanes = await run_file_io(lambda: (panel.read_ticks(runtime.root, day), panel.read_lanes(runtime.root, day)))
+        files = {name: runtime.files.text(f"watch/{name}") or "" for name in ("WATCH.md", "notes.md", "inbox.md")}
+        return {"date": day.isoformat(), "today": now.date().isoformat(), "now": f"{now:%H:%M}", "interval": config.interval_minutes,
+                "ticks": ticks, "lanes": lanes, "talk": talk, "files": files}
+
+    _ = await ctx.inject((UI_SLOTS,), lambda child: child.require(UI_SLOTS).register_plugin_ui(
+        child, PluginUiDefinition(module="plugin_ui.js", stylesheet="plugin_ui.css", slots=("sidebar.panels",)), query=query), name="panel")

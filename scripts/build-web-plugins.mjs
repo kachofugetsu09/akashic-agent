@@ -118,6 +118,8 @@ await chatSlotModule("frontend/plugins/models/src/plugin-ui.tsx", "models/plugin
 await chatSlotModule("frontend/plugins/projects/src/plugin-ui.tsx", "projects/plugin_ui.js");
 // 侧栏顶部的对话：品牌行的目的地数据、第一次的引导卡与选择面板。
 await chatSlotModule("frontend/plugins/main_session/src/plugin-ui.tsx", "main_session/plugin_ui.js");
+// 值班面板：侧栏插件面板里的一项。
+await chatSlotModule("frontend/plugins/watch/src/plugin-ui.js", "watch/plugin_ui.js");
 // Akasha 的每轮检索卡片与项目记忆设置共用一个模块。
 await chatSlotModule("frontend/plugins/akasha/src/plugin-ui.js", "akasha/message_ui.js");
 
