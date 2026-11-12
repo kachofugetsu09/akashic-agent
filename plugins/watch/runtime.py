@@ -299,6 +299,7 @@ class Runtime:
         session_id = f"programmatic:watch-{datetime.now(self.zone):%Y%m%d-%H%M%S}-{kind}"
         self.state.last_agent = now.isoformat()
         await self._save()
+        memory_before = self.files.text(self.config.memory_file) or ""
         try:
             status = await wake.run(self.ctx.require(PROGRAMMATIC), session_id, prompt, model_id=selection.model_id,
                                     reasoning_effort=selection.reasoning_effort, timeout=1800)
@@ -311,8 +312,17 @@ class Runtime:
             (self.root / "log").mkdir(parents=True, exist_ok=True)
             with (self.root / "log" / f"{now:%Y-%m-%d}.md").open("a", encoding="utf-8") as file:
                 file.write(f"- {now:%H:%M} {label}：{status}（会话 {session_id}）\n")
+                # 记忆会被之后每一轮值班读到：它这一轮改了哪几行，留一行让人能翻到
+                for mark, line in _changed(memory_before, self.files.text(self.config.memory_file) or ""):
+                    file.write(f"- {now:%H:%M} 记忆改动：{mark} {clip(line, 300)}\n")
         await run_file_io(write)
         return status
+
+
+# 两版文本之间增删的行；只看非空行，顺序按新增在前。
+def _changed(before: str, after: str) -> list[tuple[str, str]]:
+    old, new = [line.strip() for line in before.splitlines() if line.strip()], [line.strip() for line in after.splitlines() if line.strip()]
+    return [("+", line) for line in new if line not in old][:20] + [("-", line) for line in old if line not in new][:20]
 
 
 def _inbox(root: Path, now: datetime, verdicts: Sequence[Verdict], note: str = "") -> None:
