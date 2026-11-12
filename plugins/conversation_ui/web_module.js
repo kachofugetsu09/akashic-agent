@@ -32,6 +32,7 @@ function checkTabs(entries) {
     if (
       typeof entry.id !== "string" || typeof entry.label !== "string"
       || (entry.icon !== undefined && (typeof entry.icon !== "string" || !entry.icon.startsWith("<svg")))
+      || (entry.header !== undefined && typeof entry.header !== "boolean")
       || (entry.background !== undefined && typeof entry.background !== "boolean")
       || (entry.multiple !== undefined && typeof entry.multiple !== "boolean")
       || (entry.hint !== undefined && (typeof entry.hint !== "string" || entry.hint.length > HINT_LIMIT))
@@ -750,9 +751,25 @@ function mountTools(root, chat, tools, entries) {
   function updateToggle() {
     const pending = [...new Set([...records.singles(), ...allTabs()])].find((record) => record.attention || record.indicator?.busy);
     const keys = shortcutKeys(HOST_SHORTCUTS.toggle).join("+");
-    const label = pending ? `打开工作台（${keys}）· ${pending.label ?? pending.entry.label}有新活动` : `打开工作台（${keys}）`;
-    // 开关画在聊天标题行（ADR 0126 的聊天接口）：随标题行一起收起，不再浮在正文上；打开后由面板自己的收起按钮接手。
-    chat.handle.setHeaderActions(state.open ? [] : [{ id: "workbench", label: "工作台", hint: label, iconSvg: TOOL_ICON, attention: Boolean(pending) }]);
+    const active = state.open ? activeRecord() : null;
+    const promoted = entries.filter((entry) => entry.header && entry.icon).map((entry) => {
+      const current = active?.entry === entry;
+      const shortcut = entry.shortcut ? `（${shortcutKeys(entry.shortcut).join("+")}）` : "";
+      return {
+        id: `tool:${entry.id}`,
+        label: entry.label,
+        hint: `${current ? "收起" : "打开"}${entry.label}${shortcut}`,
+        iconSvg: entry.icon,
+        active: current,
+      };
+    });
+    const label = state.open
+      ? `收起工作台（${keys}）`
+      : pending ? `打开工作台（${keys}）· ${pending.label ?? pending.entry.label}有新活动` : `打开工作台（${keys}）`;
+    chat.handle.setHeaderActions([
+      ...promoted,
+      { id: "workbench", label: state.open ? "收起工作台" : "工作台", hint: label, iconSvg: TOOL_ICON, attention: !state.open && Boolean(pending), active: state.open },
+    ]);
   }
 
   function remember() {
@@ -1100,7 +1117,19 @@ function mountTools(root, chat, tools, entries) {
   window.addEventListener("resize", sizing.fit);
   Object.assign(chat.hooks, {
     session: applySession, overlay: followChatOverlay, intent: routeIntent,
-    headerAction: (id) => { if (id === "workbench") openPanel(true); },
+    headerAction: (id) => {
+      if (id === "workbench") {
+        if (state.open) closePanel(chat.actionTarget());
+        else openPanel(true);
+        return;
+      }
+      if (id.startsWith("tool:")) {
+        const entry = entries.find((item) => `tool:${item.id}` === id);
+        if (!entry) return;
+        if (state.open && activeRecord()?.entry === entry) closePanel(chat.actionTarget());
+        else focusTool(entry);
+      }
+    },
   });
   chat.handle.setShortcuts(toolShortcuts(entries));
   chat.handle.setWorkbenchIntents(intentNames(entries));

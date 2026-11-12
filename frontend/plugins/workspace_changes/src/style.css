@@ -174,8 +174,14 @@
   .changes-row { transition: none; }
 }
 
-/* Token colors never change diff backgrounds, metrics, or the +/- prefix. */
-.changes-code { --syntax-keyword: #a626a4; --syntax-string: #306b31; --syntax-number: #986018; --syntax-comment: #687078; --syntax-title: #175aa3; }
+/* Token colors never change diff backgrounds, metrics, or the +/- prefix; light-dark() works inside @scope where ancestor .dark cannot match. */
+.changes-code {
+  --syntax-keyword: light-dark(#a626a4, #dca1e8);
+  --syntax-string: light-dark(#306b31, #a5d6a7);
+  --syntax-number: light-dark(#986018, #e7ba7a);
+  --syntax-comment: light-dark(#687078, #a0a8b0);
+  --syntax-title: light-dark(#175aa3, #90c7f7);
+}
 .dark .changes-code { --syntax-keyword: #dca1e8; --syntax-string: #a5d6a7; --syntax-number: #e7ba7a; --syntax-comment: #a0a8b0; --syntax-title: #90c7f7; }
 .changes-token { color: var(--ak-ink-primary); }
 .changes-token:is(.hljs-keyword, .hljs-selector-tag, .hljs-literal, .hljs-meta) { color: var(--syntax-keyword); }

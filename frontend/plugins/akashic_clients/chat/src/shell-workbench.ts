@@ -66,10 +66,10 @@ export function setWorkbenchSession(sessionId: string): void {
   currentSession = sessionId;
 }
 
-// 像工作目录里文件的行内代码：带常见扩展名（或 Makefile 这类固定文件名）的相对路径，可带 :行号 或 :行:列；
-// 网址、绝对路径、带 .. 的、带空格的、order.currency 这类属性访问、Node.js 这类框架名都不算。
-// Markdown 先经 markdownFileRef 判定，绝对路径、~/、../ 与带空格的文档路径在那里放行。
-const FILE_PATH = /^(?:\.\/)?(?:(?!\.\.\/)[\w@.-]+\/)*(?:[\w@-][\w@.-]*\.(?:py|pyi|ts|tsx|js|jsx|mjs|cjs|json|md|mdx|toml|ya?ml|css|scss|html|vue|svelte|rs|go|java|kt|swift|c|h|cc|cpp|hpp|cs|rb|php|lua|dart|scala|proto|sh|sql|txt|ini|cfg|xml|lock)|Makefile|Dockerfile|LICENSE)(?::\d+){0,2}$/;
+// 像工作目录或执行主机路径的行内代码：相对路径、绝对路径或 ~/，带常见扩展名（或 Makefile 这类固定文件名），可带 :行号 或 :行:列；
+// 网址、// 网络路径、带 .. 的、带空格的、order.currency 这类属性访问、Node.js 这类框架名都不算。
+// Markdown 先经 markdownFileRef 判定，带空格的文档路径在那里放行。
+const FILE_PATH = /^(?:\/(?!\/)|~\/|\.\/)?(?:(?!\.\.\/)[\w@.-]+\/)*(?:[\w@-][\w@.-]*\.(?:py|pyi|ts|tsx|js|jsx|mjs|cjs|json|jsonl|md|mdx|toml|ya?ml|css|scss|html|vue|svelte|rs|go|java|kt|swift|c|h|cc|cpp|hpp|cs|rb|php|lua|dart|scala|proto|sh|zsh|sql|txt|log|ini|cfg|xml|lock)|Makefile|Dockerfile|LICENSE)(?::\d+){0,2}$/;
 const FRAMEWORK_NAME = /^[A-Z][a-z]+\.js$/;
 
 export interface WorkspaceFileRef { path: string; line: number | null }

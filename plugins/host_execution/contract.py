@@ -389,7 +389,7 @@ class ResolvedShell:
 
 PathStatus = Literal[
     "available", "not_found", "not_directory", "permission_denied",
-    "not_file", "too_large", "invalid_text", "io_error", "offline",
+    "not_file", "too_large", "invalid_text", "binary", "io_error", "offline",
 ]
 
 
@@ -397,6 +397,7 @@ class DirectoryEntry(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     name: str
     path: str
+    kind: Literal["directory", "file", "other"] | None = None
 
 
 class AgentsChainFile(BaseModel):
@@ -429,6 +430,10 @@ class PathInfo(BaseModel):
     error: str | None = None
     text: str | None = None
     bytes: int | None = None
+    mime_type: str | None = None
+    mtime_ms: int | None = None
+    truncated: bool | None = None
+    tail: bool | None = None
     items: list[DirectoryEntry] | None = None
     after: str | None = None
     parent: str | None = None
