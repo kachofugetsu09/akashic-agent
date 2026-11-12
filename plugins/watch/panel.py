@@ -1,8 +1,9 @@
 """值班面板的数据：全部从已有的日志、事件文件和账本现读，不另存一份。"""
 from __future__ import annotations
 
+import json
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -67,7 +68,7 @@ def read_talk(reader: MessageReader, day: date, now: datetime) -> list[dict[str,
 
 
 # 主 Agent 一个后台回合里的动线：按顺序列出工具调用、每次的结果摘要，以及它最后写下的话。
-def read_round(reader: MessageReader, pages: int = 5) -> list[dict[str, str]]:
+def read_round(reader: MessageReader, name: Callable[[str], str], pages: int = 5) -> list[dict[str, str]]:
     steps: list[dict[str, str]] = []
     try:
         page = reader.read_tail(limit=200)
@@ -82,13 +83,22 @@ def read_round(reader: MessageReader, pages: int = 5) -> list[dict[str, str]]:
         if isinstance(body, Output):
             for part in body.parts:
                 if isinstance(part, ToolCall):
-                    steps.append({"kind": "call", "tool": part.binding_id.rsplit("/", 1)[-1], "text": clip(_plain(part.arguments), 300)})
+                    steps.append({"kind": "call", "tool": name(part.binding_id), "text": clip(_plain(part.arguments), 300)})
                 elif isinstance(part, ContentPart) and part.kind == "text" and str(part.value).strip():
                     steps.append({"kind": "text", "tool": "", "text": clip(str(part.value).strip(), 600)})
         elif isinstance(body, ToolResult) and steps and steps[-1]["kind"] == "call":
-            text = " ".join(str(part.value) for part in body.parts if part.kind == "text")
+            text = _output(" ".join(str(part.value) for part in body.parts if part.kind == "text"))
             steps[-1]["result"] = ("" if body.outcome == "success" else f"[{body.outcome}] ") + clip(" ".join(text.split()), 200)
     return steps
+
+
+# 工具结果常是一个 JSON 对象：有 output 字段就只取它，读起来是命令的输出而不是一层包装。
+def _output(text: str) -> str:
+    try:
+        value = json.loads(text)
+    except ValueError:
+        return text
+    return str(value["output"]) if isinstance(value, dict) and isinstance(value.get("output"), str) else text
 
 
 def _plain(arguments: Mapping[str, object]) -> str:
