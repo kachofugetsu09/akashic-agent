@@ -29,7 +29,7 @@ POINTER = (
 
 api_version = 3
 name = "watch"
-version = "1.2.0"
+version = "1.3.0"
 desc = "值班：便宜的模型看着事件流，只在该叫的时候叫醒主 Agent；主 Agent 在后台醒来后自己决定做什么、说不说话"
 inject = (PLUGIN_CONFIG, CHAT_MODELS, MODEL_CATALOG, MESSAGE_CATALOG, PROGRAMMATIC, PROCESSES)
 workspace_roots = ("watch",)
