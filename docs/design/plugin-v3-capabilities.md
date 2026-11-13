@@ -228,8 +228,8 @@ Runtime Service 通过 `inject` 和 `ctx.require(KEY)` 连接；插件能力由�
 | `DELIVERY` / `DELIVERY_READ` | 打开发送 admission 或只读历史 | Delivery 发送、恢复和查询 |
 
 旧 Core `TOOL_CATALOG` 及其注册、冻结和快照装配已删除。旧 `DELIVERIES`、
-`DURABLE_DELIVERIES` ServiceKey 和注入也已退役。旧持久投递记录与恢复实现保留，
-Manager 不扫描这些业务记录来判断业务兼容性；移除检查不会删除记录、结算或重发旧效果。
+`DURABLE_DELIVERIES` ServiceKey 和注入也已退役。旧持久投递的记录与恢复实现已无生产消费者并随之删除；`runtime/deliveries/settlements.sqlite`
+作为历史数据原样保留，没有代码读写，物理删除需单独授权。
 工具消费者通过公共 `agent.plugin_contracts.tools` 中的 key 和结构接口协作，
 不能 import `plugins.tools.api` 或其他兄弟插件实现。工具结果提供 `outcome` 与 `parts`；
 Tools owner 在入口校验。ToolResult Message 是对话调用的持久结果正文。
