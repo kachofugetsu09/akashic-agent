@@ -20,7 +20,7 @@ from . import orders as watch_orders
 from . import recent, scripts, wake
 from .events import Event, EventLog, clip, load_places, name_places, normalize, parse_line, read_sources
 from .settings import WAKE_MODEL, Config
-from .watcher import Call, Files, ModelFailure, Outcome, Reply, Verdict, judge
+from .watcher import Call, Files, ModelFailure, ModelStats, Outcome, Reply, Verdict, judge
 
 logger = logging.getLogger(__name__)
 CHUNK, MAX_CHUNKS, WAKE_EVENTS = 40, 5, 6
@@ -226,12 +226,18 @@ class Runtime:
             raise ModelFailure("模型未注册或当前不可用")
         try:
             async with asyncio.timeout(240), self.ctx.require(CHAT_MODELS).independent_execution(model_id=model_id) as execution:
-                response = await execution.chat().complete(ModelRequest(messages=tuple(messages), tools=tuple(tools), max_attempts=2, max_retry_wait=20))
+                chat = execution.chat()
+                response = await chat.complete(ModelRequest(messages=tuple(messages), tools=tuple(tools), max_attempts=2, max_retry_wait=20))
         except (RuntimeError, TimeoutError) as error:
             if ModelError.matches(error) or isinstance(error, TimeoutError):
                 raise ModelFailure(str(error) or type(error).__name__) from error
             raise
-        return Reply(response.content or "", tuple(Call(call.id, call.name, call.arguments) for call in response.tool_calls))
+        return Reply(
+            response.content or "",
+            tuple(Call(call.id, call.name, call.arguments) for call in response.tool_calls),
+            model=chat.descriptor.model or model_id or "default",
+            usage=response.usage,
+        )
 
     # 值班记录：每条事件的去向与理由，按天存成可读的文件；待看的另记一份给主 Agent。
     async def _record(self, now: datetime, outcome: Outcome) -> None:
@@ -240,6 +246,8 @@ class Runtime:
             with (self.root / "log" / f"{now:%Y-%m-%d}.md").open("a", encoding="utf-8") as file:
                 for failure in outcome.failures:
                     file.write(f"- {now:%H:%M} 模型失败：{failure}\n")
+                for stat in outcome.usage.values():
+                    file.write(f"- {now:%H:%M} 值班模型：{_format_usage(stat)}\n")
                 for verdict in outcome.verdicts:
                     event = verdict.event
                     file.write(f"- {now:%H:%M} #{event.id} [{event.source}] {clip(event.title or event.text, 90)} → {verdict.to}"
@@ -317,6 +325,16 @@ class Runtime:
                     file.write(f"- {now:%H:%M} 记忆改动：{mark} {clip(line, 300)}\n")
         await run_file_io(write)
         return status
+
+
+def _format_usage(stat: ModelStats) -> str:
+    model = stat.model.replace("｜", "|").replace("\n", " ").strip() or "default"
+    if stat.reported_calls == 0:
+        return f"{model}｜{stat.calls} 次｜用量未知"
+    if stat.cache_reported_calls == 0:
+        return f"{model}｜{stat.calls} 次｜输入 {stat.input_tokens}｜输出 {stat.output_tokens}"
+    hit = f"命中 {stat.hit_tokens}" if stat.hit_input_tokens == stat.input_tokens else f"命中 {stat.hit_tokens}/{stat.hit_input_tokens}"
+    return f"{model}｜{stat.calls} 次｜输入 {stat.input_tokens}（{hit}）｜输出 {stat.output_tokens}"
 
 
 # 两版文本之间增删的行；只看非空行，顺序按新增在前。

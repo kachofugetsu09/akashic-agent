@@ -49,8 +49,17 @@
 .watch-steps code { margin-right: 6px; }
 .watch-said { margin: 4px 0; padding: 8px 10px; border-radius: var(--ak-radius-md); background: var(--ak-paper-quiet); font-family: var(--ak-type-reading); }
 .watch-file { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--ak-type-technical); font-size: 0.75rem; line-height: 1.7; }
+.watch-usage-bar { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; }
+.watch-usage-card { min-width: 0; padding: 10px 12px; border: 1px solid var(--ak-rule-subtle); border-radius: var(--ak-radius-md); background: var(--ak-paper-editing); }
+.watch-usage-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 4px 10px; margin-bottom: 4px; font-weight: 600; }
+.watch-usage-list { margin: 0; padding: 0; list-style: none; }
+.watch-usage-list li { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 2px 10px; padding: 2px 0; }
+.watch-usage-inline { margin: 2px 0 8px; }
+.watch-usage-inline:empty { display: none; }
+.watch-model { color: var(--ak-ink-secondary); font-family: var(--ak-type-technical); font-size: 0.6875rem; overflow-wrap: anywhere; }
+.watch-stat { color: var(--ak-ink-muted); font-family: var(--ak-type-technical); font-size: 0.6875rem; font-variant-numeric: tabular-nums; }
 @media (max-width: 860px) {
-  .watch-cols { grid-template-columns: 1fr; }
+  .watch-cols, .watch-usage-bar { grid-template-columns: 1fr; }
   .watch-lane { grid-template-columns: 64px 1fr; }
   .watch-hours, .watch-legend { margin-left: 72px; }
 }

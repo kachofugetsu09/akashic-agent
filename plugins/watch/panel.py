@@ -3,41 +3,132 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from plugins.ledger.contract import ContentPart, MessageReader, Output, ToolCall, ToolResult
+from plugins.ledger.contract import ContentPart, Message, MessageReader, Output, ToolCall, ToolResult
+from plugins.models.contract import ModelCallStats
 from plugins.ui.contract import PluginUiRpcInvalidRequest
 
 from . import recent
 from .events import Event, clip, read_day
+from .watcher import ModelStats
 
 _VERDICT = re.compile(r"^- (\d\d:\d\d) #(\S+) \[(.+?)\] (.*?) → (wake|inbox|log)(?:｜(.*?))?（[^（）]*）$")
 _ROUND = re.compile(r"^- (\d\d:\d\d) (.+?)：(.+?)（会话 (\S+)）$")
 _FAILURE = re.compile(r"^- (\d\d:\d\d) 模型失败：(.*)$")
 _MEMORY = re.compile(r"^- (\d\d:\d\d) 记忆改动：([+-]) (.*)$")
+_WATCHER_USAGE = re.compile(
+    r"^- (\d\d:\d\d) 值班模型：(.+?)｜(\d+) 次｜(?:(用量未知)|输入 (\d+)(?:（命中 (\d+)(?:/(\d+))?）)?｜输出 (\d+))$"
+)
 
 
-# 一天的值班记录按轮次归拢：同一分钟写下的判断、模型失败和主 Agent 的回合是同一轮。
+# 一天的值班记录按轮次归拢：同一分钟写下的判断、值班用量、模型失败和主 Agent 的回合是同一轮。
 def read_ticks(root: Path, day: date) -> list[dict[str, object]]:
     path = root / "log" / f"{day:%Y-%m-%d}.md"
-    ticks: dict[str, dict[str, list[dict[str, str]]]] = {}
+    ticks: dict[str, dict[str, list[dict[str, object]]]] = {}
+    watcher: dict[str, dict[str, ModelStats]] = {}
     for text in path.read_text(encoding="utf-8").splitlines() if path.exists() else ():
         if match := _VERDICT.match(text):
             at, event_id, source, title, to, why = match.groups()
-            row, item = "verdicts", {"id": event_id, "source": source, "title": title, "to": to, "why": why or ""}
+            row, item = "verdicts", dict[str, object](id=event_id, source=source, title=title, to=to, why=why or "")
         elif match := _ROUND.match(text):
             at, label, status, session = match.groups()
-            row, item = "rounds", {"label": label, "status": status, "session": session}
+            row, item = "rounds", dict[str, object](label=label, status=status, session=session)
         elif match := _MEMORY.match(text):
-            at, row, item = match.group(1), "memory", {"mark": match.group(2), "text": match.group(3)}
+            at, row, item = match.group(1), "memory", dict[str, object](mark=match.group(2), text=match.group(3))
         elif match := _FAILURE.match(text):
-            at, row, item = match.group(1), "failures", {"text": match.group(2)}
+            at, row, item = match.group(1), "failures", dict[str, object](text=match.group(2))
+        elif match := _WATCHER_USAGE.match(text):
+            at = match.group(1)
+            ticks.setdefault(at, {"verdicts": [], "rounds": [], "failures": [], "memory": []})
+            stat = _parse_watcher_usage(match)
+            bucket = watcher.setdefault(at, {})
+            if stat.model in bucket:
+                bucket[stat.model].merge(stat)
+            else:
+                bucket[stat.model] = stat
+            continue
         else:
             continue
         ticks.setdefault(at, {"verdicts": [], "rounds": [], "failures": [], "memory": []})[row].append(item)
-    return [{"at": at, **rows} for at, rows in sorted(ticks.items())]
+    return [
+        {"at": at, **rows, "watcher": [item.to_dict() for item in watcher.get(at, {}).values()]}
+        for at, rows in sorted(ticks.items())
+    ]
+
+
+def _parse_watcher_usage(match: re.Match[str]) -> ModelStats:
+    _, model, raw_calls, unknown, raw_in, raw_hit, raw_hit_in, raw_out = match.groups()
+    calls = int(raw_calls)
+    if unknown:
+        return ModelStats(model=model, calls=calls)
+    input_tokens = int(raw_in)
+    output_tokens = int(raw_out)
+    if raw_hit is None:
+        return ModelStats(model=model, calls=calls, input_tokens=input_tokens, output_tokens=output_tokens, reported_calls=calls)
+    hit_tokens = int(raw_hit)
+    hit_input_tokens = int(raw_hit_in) if raw_hit_in is not None else input_tokens
+    return ModelStats(
+        model=model, calls=calls, input_tokens=input_tokens, hit_tokens=hit_tokens,
+        hit_input_tokens=hit_input_tokens, output_tokens=output_tokens,
+        reported_calls=calls, cache_reported_calls=calls,
+    )
+
+
+def _as_int(value: object) -> int:
+    return value if isinstance(value, int) else 0
+
+
+def summarize_stats(items: Iterable[Mapping[str, object]]) -> dict[str, object]:
+    grouped: dict[str, ModelStats] = {}
+    total = ModelStats("total")
+    for raw in items:
+        model = str(raw["model"])
+        stat = ModelStats(
+            model=model,
+            calls=_as_int(raw.get("calls")),
+            input_tokens=_as_int(raw.get("input_tokens")),
+            hit_tokens=_as_int(raw.get("hit_tokens")),
+            hit_input_tokens=_as_int(raw.get("hit_input_tokens")),
+            output_tokens=_as_int(raw.get("output_tokens")),
+            reported_calls=_as_int(raw.get("reported_calls")),
+            cache_reported_calls=_as_int(raw.get("cache_reported_calls")),
+        )
+        if model in grouped:
+            grouped[model].merge(stat)
+        else:
+            grouped[model] = stat
+        total.merge(stat)
+    return {"models": [item.to_dict() for item in grouped.values()], "total": total.to_dict()}
+
+
+def read_day_usage(
+    root: Path, day: date, reader_for: Callable[[str], MessageReader], call_stats: Callable[[str], ModelCallStats],
+) -> tuple[list[dict[str, object]], dict[str, object]]:
+    ticks = read_ticks(root, day)
+    watcher_items: list[Mapping[str, object]] = []
+    agent_items: list[Mapping[str, object]] = []
+    for tick in ticks:
+        raw_watcher = tick["watcher"]
+        if isinstance(raw_watcher, list):
+            for entry in raw_watcher:
+                if isinstance(entry, Mapping):
+                    watcher_items.append(entry)
+        raw_rounds = tick["rounds"]
+        if isinstance(raw_rounds, list):
+            for round_item in raw_rounds:
+                if not isinstance(round_item, dict):
+                    continue
+                usage = read_round_usage(reader_for(str(round_item["session"])), call_stats)
+                round_item["usage"] = usage
+                models = usage.get("models")
+                if isinstance(models, list):
+                    for entry in models:
+                        if isinstance(entry, Mapping):
+                            agent_items.append(entry)
+    return ticks, {"watcher": summarize_stats(watcher_items), "agent": summarize_stats(agent_items)}
 
 
 # 每个报过状态的来源一行：一段是相邻两条状态事件之间的时间，文字是事件原文。前一天最后一条带到当天零点。
@@ -70,17 +161,61 @@ def read_talk(reader: MessageReader, day: date, now: datetime) -> list[dict[str,
     return rows
 
 
-# 主 Agent 一个后台回合里的动线：按顺序列出工具调用、每次的结果摘要，以及它最后写下的话。
-def read_round(reader: MessageReader, name: Callable[[str], str], pages: int = 5) -> list[dict[str, str]]:
-    steps: list[dict[str, str]] = []
+def _read_tail_messages(reader: MessageReader, pages: int = 5) -> list[Message]:
     try:
         page = reader.read_tail(limit=200)
     except KeyError:
-        return steps
+        return []
     messages = list(page.messages)
     while page.has_more and pages > 1 and page.messages:
         page, pages = reader.read_tail(before_seq=page.messages[0].seq, through_seq=page.through_seq, limit=200), pages - 1
         messages[:0] = page.messages
+    return messages
+
+
+def _collect_usage(messages: Iterable[Message], call_stats: Callable[[str], ModelCallStats]) -> dict[str, object]:
+    grouped: dict[str, ModelStats] = {}
+    total = ModelStats("total")
+    for message in messages:
+        body = message.body
+        if not isinstance(body, Output):
+            continue
+        for part in body.parts:
+            if not (isinstance(part, ContentPart) and part.kind == "model.facts" and isinstance(part.value, Mapping)):
+                continue
+            call_id = part.value.get("call_record_id")
+            if not isinstance(call_id, str) or not call_id:
+                continue
+            try:
+                stats = call_stats(call_id)
+            except (KeyError, ValueError):
+                continue
+            bucket = grouped.get(stats.model)
+            if bucket is None:
+                bucket = grouped[stats.model] = ModelStats(stats.model)
+            bucket.add(stats.usage)
+            total.add(stats.usage)
+    return {"models": [item.to_dict() for item in grouped.values()], "total": total.to_dict()}
+
+
+def read_round_usage(reader: MessageReader, call_stats: Callable[[str], ModelCallStats], pages: int = 5) -> dict[str, object]:
+    return _collect_usage(_read_tail_messages(reader, pages), call_stats)
+
+
+# 主 Agent 一个后台回合里的动线：按顺序列出工具调用、每次的结果摘要，以及它最后写下的话。
+def read_round(reader: MessageReader, name: Callable[[str], str], pages: int = 5) -> list[dict[str, str]]:
+    return _read_steps(_read_tail_messages(reader, pages), name)
+
+
+def read_round_detail(
+    reader: MessageReader, name: Callable[[str], str], call_stats: Callable[[str], ModelCallStats], pages: int = 5,
+) -> tuple[list[dict[str, str]], dict[str, object]]:
+    messages = _read_tail_messages(reader, pages)
+    return _read_steps(messages, name), _collect_usage(messages, call_stats)
+
+
+def _read_steps(messages: Iterable[Message], name: Callable[[str], str]) -> list[dict[str, str]]:
+    steps: list[dict[str, str]] = []
     for message in messages:
         body = message.body
         if isinstance(body, Output):
