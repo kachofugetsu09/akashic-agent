@@ -52,6 +52,7 @@ Computer 镜像只在 main 中的镜像源码变化或手动触发时发布。
 | Yoyo 迁移 | `python scripts/check_yoyo_migrations.py --base <base>` |
 | Control / Host Bridge 协议 | 对应 `scripts/generate_control_schema.py --check` / `scripts/generate_host_bridge_protocol.py --check` |
 | 前端类型 | `npm run typecheck` |
+| 前端产物 | 不入库；从源码运行或做浏览器验收前先 `npm run build` |
 | 文档 | 相对链接、规则一致性、代表任务阅读路径、`git diff --check` |
 
 前端视觉验证按 [packages/akashic-theme/design.md](../packages/akashic-theme/design.md)；实际设备隔离按 TST-008。已有测试与 CI 不因本流程自动删除或降低断言；它们的结果与功能、部署、真实设备证据分开报告。没有实际运行的层次写明未验证。

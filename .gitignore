@@ -115,3 +115,13 @@ lme_error_log_*.txt
 
 # 设计编辑器的构建产物（open-pencil、CanvasKit WASM、字体）由 build:web-plugins 生成，不入库
 /plugins/*/static/
+# 插件界面模块由 npm run build 从 frontend/plugins/*/src（或 plugins/*/web）生成，和外壳产物一样不入库。
+# conversation_ui 的两个文件是手写源码，没有构建来源，继续跟踪。
+/plugins/*/web_module.js
+/plugins/*/web_module.css
+/plugins/*/plugin_ui.js
+/plugins/*/plugin_ui.css
+/plugins/*/message_ui.js
+/plugins/*/message_ui.css
+!/plugins/conversation_ui/web_module.js
+!/plugins/conversation_ui/web_module.css
