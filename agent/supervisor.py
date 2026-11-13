@@ -24,10 +24,8 @@ from agent.background.boot_guardian import (
     _reap_adopted_children,
 )
 from utils.process_guard import (
-    ProcessRef,
     open_process_ref,
     process_wait_timeout,
-    signal_process_ref,
 )
 
 RESTART_EXIT_CODE = 75
@@ -86,9 +84,6 @@ class _ChildResult:
     exit_code: int
     ready: bool
     commit_valid: bool
-    settings_generation: int = 0
-    gateway_pid: int | None = None
-    last_stage: str = "guardian.spawn"
     protocol_error: str = ""
 
 
@@ -103,7 +98,6 @@ class _LifecycleState:
     last_elapsed_ms: int = -1
     protocol_error: str = ""
     buffer: bytearray = field(default_factory=bytearray)
-    settings_results: list[tuple[bool, str]] = field(default_factory=list)
 
     def feed(self, payload: bytes, *, eof: bool = False) -> None:
         """解析完整 NDJSON frame，并保留末尾尚未完成的字节。"""
@@ -142,8 +136,6 @@ class _LifecycleState:
             self._accept_ready(frame)
         elif frame_type == "commit":
             self._accept_commit(frame)
-        elif frame_type == "settings_reloaded":
-            self._accept_settings_reloaded(frame)
         else:
             self.protocol_error = f"未知 lifecycle frame: {frame_type!r}"
 
@@ -185,60 +177,6 @@ class _LifecycleState:
             return
         self.commit_valid = True
 
-    def _accept_settings_reloaded(self, frame: dict[str, object]) -> None:
-        success = frame.get("success")
-        detail = frame.get("detail", "")
-        if (
-            not self.ready
-            or not isinstance(success, bool)
-            or not isinstance(detail, str)
-            or len(detail.encode("utf-8")) > 2048
-        ):
-            self.protocol_error = "settings reload frame 无效"
-            return
-        self.settings_results.append((success, detail))
-
-
-class _SettingsRestartBridge:
-    """用 wake pipe 在设置线程与 Supervisor 之间交接一次热重载。"""
-
-    def __init__(self, timeout_s: float) -> None:
-        self.timeout_s = timeout_s
-        self.request_event = threading.Event()
-        self._condition = threading.Condition()
-        self._next_generation = 0
-        self._requested_generation = 0
-        self._completed: dict[int, bool] = {}
-        self._read_fd, self._write_fd = os.pipe()
-        os.set_blocking(self._read_fd, False)
-        os.set_blocking(self._write_fd, False)
-
-    def fileno(self) -> int:
-        return self._read_fd
-
-    def take_request(self) -> int:
-        with self._condition:
-            if not self.request_event.is_set():
-                return 0
-            generation = self._requested_generation
-            self.request_event.clear()
-            _drain_fd(self._read_fd)
-            return generation
-
-    def wait_request(self) -> int:
-        if not self.request_event.wait(self.timeout_s):
-            return 0
-        return self.take_request()
-
-    def complete(self, generation: int, success: bool) -> None:
-        with self._condition:
-            self._completed[generation] = success
-            self._condition.notify_all()
-
-    def close(self) -> None:
-        os.close(self._read_fd)
-        os.close(self._write_fd)
-
 
 def run_supervisor(
     *,
@@ -263,11 +201,10 @@ def run_supervisor(
             file=sys.stderr,
         )
         return 2
-    # 1. 建立 workspace owner、设置线程和停止信号边界。
+    # 1. 建立 workspace owner、Web Shell 线程和停止信号边界。
     _enable_child_subreaper()
     lock = _SupervisorLock(workspace)
     lock.acquire()
-    settings_bridge = _SettingsRestartBridge(max(30.0, readiness_timeout_s * 2))
     signal_read_fd, signal_write_fd = os.pipe()
     os.set_blocking(signal_read_fd, False)
     os.set_blocking(signal_write_fd, False)
@@ -287,15 +224,10 @@ def run_supervisor(
     stop_signals = (signal.SIGINT, signal.SIGTERM)
     previous_handlers = {sig: signal.signal(sig, forward_stop) for sig in stop_signals}
     try:
-        settings_server, settings_thread = _start_settings_server(
-            config_path,
-            workspace,
-            settings_bridge,
-        )
+        web_shell_server, web_shell_thread = _start_web_shell_server(workspace)
     except BaseException:
         for sig, handler in previous_handlers.items():
             signal.signal(sig, handler)
-        settings_bridge.close()
         os.close(signal_read_fd)
         os.close(signal_write_fd)
         lock.release()
@@ -303,7 +235,6 @@ def run_supervisor(
 
     try:
         # 2. 每一代只创建一个 Guardian，并在上一代清空后进入下一代。
-        report_settings_generation = 0
         while True:
             if stopping_signal is not None:
                 return 0
@@ -375,12 +306,9 @@ def run_supervisor(
                     guardian,
                     read_fd=lifecycle_read_fd,
                     lease_fd=lease_write_fd,
-                    workspace=workspace,
                     boot_id=boot_id,
                     nonce=nonce,
                     readiness_timeout_s=readiness_timeout_s,
-                    settings_bridge=settings_bridge,
-                    report_settings_generation=report_settings_generation,
                 )
             except BaseException:
                 _stop_guardian(guardian)
@@ -400,38 +328,22 @@ def run_supervisor(
             )
             _reap_adopted_children()
             guardian = None
-            if report_settings_generation:
-                report_settings_generation = 0
             if stopping_signal is not None:
                 return 0
             if result.protocol_error:
                 print(result.protocol_error, file=sys.stderr)
                 return SUPERVISOR_FAILURE_EXIT_CODE
             if result.exit_code != RESTART_EXIT_CODE:
-                if result.settings_generation:
-                    settings_bridge.complete(result.settings_generation, False)
-                    rollback_generation = settings_bridge.wait_request()
-                    if rollback_generation:
-                        report_settings_generation = rollback_generation
-                        continue
                 return _portable_exit_code(result.exit_code)
             if not result.ready or not result.commit_valid:
-                if result.settings_generation:
-                    settings_bridge.complete(result.settings_generation, False)
-                    rollback_generation = settings_bridge.wait_request()
-                    if rollback_generation:
-                        report_settings_generation = rollback_generation
-                        continue
                 return SUPERVISOR_FAILURE_EXIT_CODE
-            report_settings_generation = result.settings_generation
     finally:
         if guardian is not None:
             _stop_guardian(guardian)
         for sig, handler in previous_handlers.items():
             signal.signal(sig, handler)
-        settings_server.should_exit = True
-        settings_thread.join(timeout=5)
-        settings_bridge.close()
+        web_shell_server.should_exit = True
+        web_shell_thread.join(timeout=5)
         os.close(signal_read_fd)
         os.close(signal_write_fd)
         lock.release()
@@ -442,23 +354,16 @@ def _wait_child(
     *,
     read_fd: int,
     lease_fd: int | None = None,
-    workspace: Path,
     boot_id: str,
     nonce: str,
     readiness_timeout_s: float,
-    settings_bridge: _SettingsRestartBridge | None = None,
-    report_settings_generation: int = 0,
 ) -> _ChildResult:
     """等待进程与生命周期事件，直到 Guardian 退出或启动失败。"""
 
-    # 1. 建立本代协议状态和三个可等待的内核事件。
-    _ = workspace
-    owned_bridge = settings_bridge is None
-    settings_bridge = settings_bridge or _SettingsRestartBridge(readiness_timeout_s)
+    # 1. 建立本代协议状态和两个可等待的内核事件。
     state = _LifecycleState(boot_id, nonce)
     deadline = time.monotonic() + readiness_timeout_s
-    settings_generation = 0
-    gateway_ref: ProcessRef | None = None
+    gateway_verified = False
     child_ref = open_process_ref(child.pid)
     lifecycle_open = True
     try:
@@ -486,40 +391,15 @@ def _wait_child(
                         chunk = os.read(read_fd, 65536)
                         if chunk:
                             state.feed(chunk)
-                            if state.settings_results:
-                                if not settings_generation:
-                                    state.protocol_error = "收到无对应请求的 settings reload 回执"
-                                elif len(state.settings_results) != 1:
-                                    state.protocol_error = "收到重复 settings reload 回执"
-                                else:
-                                    success, _detail = state.settings_results.pop()
-                                    settings_bridge.complete(
-                                        settings_generation,
-                                        success,
-                                    )
-                                    settings_generation = 0
                         else:
                             state.feed(b"", eof=True)
                             selector.unregister(read_fd)
                             lifecycle_open = False
-                    elif key.data == "settings":
-                        settings_generation = settings_bridge.take_request()
-                        if settings_generation:
-                            assert gateway_ref is not None
-                            if not gateway_ref.stable and not _pid_has_boot_identity(
-                                gateway_ref.pid,
-                                boot_id,
-                            ):
-                                state.protocol_error = (
-                                    "Gateway PID 已退出或身份变化，拒绝发送设置重载信号"
-                                )
-                                break
-                            signal_process_ref(gateway_ref, signal.SIGUSR1)
 
                 if state.protocol_error:
                     _stop_guardian(child)
                     break
-                if state.ready and gateway_ref is None:
+                if state.ready and not gateway_verified:
                     assert state.gateway_pid is not None
                     if not _pid_has_boot_identity(state.gateway_pid, boot_id):
                         state.protocol_error = (
@@ -528,20 +408,10 @@ def _wait_child(
                         state.commit_valid = False
                         _stop_guardian(child)
                         break
-                    gateway_ref = open_process_ref(state.gateway_pid)
-                    if report_settings_generation:
-                        settings_bridge.complete(report_settings_generation, True)
-                        report_settings_generation = 0
-                    selector.register(
-                        settings_bridge.fileno(),
-                        selectors.EVENT_READ,
-                        "settings",
-                    )
+                    gateway_verified = True
 
             if lifecycle_open and not state.protocol_error:
                 _read_lifecycle_to_eof(read_fd, state)
-            if report_settings_generation:
-                settings_bridge.complete(report_settings_generation, False)
         # 3. 只返回已解析的私有证据；调用方负责最终 boot 空集验证。
         return _ChildResult(
             (
@@ -551,20 +421,13 @@ def _wait_child(
             ),
             state.ready,
             state.commit_valid,
-            settings_generation or report_settings_generation,
-            state.gateway_pid,
-            state.last_stage,
             state.protocol_error,
         )
     finally:
         if lease_fd is not None:
             os.close(lease_fd)
-        if gateway_ref is not None:
-            gateway_ref.close()
         child_ref.close()
         os.close(read_fd)
-        if owned_bridge:
-            settings_bridge.close()
 
 
 def _supervisor_platform_supported(platform: str | None = None) -> bool:
@@ -603,24 +466,11 @@ def _stop_guardian(child: subprocess.Popen[bytes]) -> None:
         child.wait(timeout=2)
 
 
-def _drain_fd(fd: int) -> None:
-    while True:
-        try:
-            if not os.read(fd, 4096):
-                return
-        except BlockingIOError:
-            return
-
-
 def _portable_exit_code(code: int) -> int:
     return code if code >= 0 else 128 + abs(code)
 
 
-def _start_settings_server(
-    config_path: Path,
-    workspace: Path,
-    bridge: _SettingsRestartBridge,
-):
+def _start_web_shell_server(workspace: Path):
     """启动唯一的 loopback Web Shell，并等待确定的启动事件。"""
 
     import asyncio

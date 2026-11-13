@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import ctypes
 import os
-import signal
 import sys
 
 _LIBC = ctypes.CDLL(None, use_errno=True)
@@ -25,22 +24,3 @@ def open_pidfd(pid: int) -> int:
         error_number = ctypes.get_errno()
         raise OSError(error_number, os.strerror(error_number))
     return fd
-
-
-def send_pidfd_signal(pidfd: int, sig: signal.Signals) -> None:
-    """向 pidfd 精确指向的进程发送信号。"""
-
-    if hasattr(signal, "pidfd_send_signal"):
-        signal.pidfd_send_signal(pidfd, sig)
-        return
-    function = _LIBC.pidfd_send_signal
-    function.argtypes = (
-        ctypes.c_int,
-        ctypes.c_int,
-        ctypes.c_void_p,
-        ctypes.c_uint,
-    )
-    function.restype = ctypes.c_int
-    if function(pidfd, int(sig), None, 0) != 0:
-        error_number = ctypes.get_errno()
-        raise OSError(error_number, os.strerror(error_number))
