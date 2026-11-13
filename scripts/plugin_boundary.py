@@ -76,7 +76,6 @@ PLUGIN_ALLOWED_MODULES = frozenset({
     "agent.plugin_composition.effect",
     "agent.plugin_composition.events",
     "agent.plugin_composition.execution",
-    "agent.plugin_composition.executor",
     # Reviewed narrow host fact: docs/design/plugin-boundary-foundation.md §9.37.
     "agent.plugin_composition.host",
     "agent.plugin_composition.model",
@@ -551,7 +550,7 @@ def public_modules(source: str) -> frozenset[str]:
 CORE_KEYS = frozenset({
     "core.host_info", "core.restart_gate.v1", "core.runtime_catalog.v1",
     "core.plugin_config.v1", "core.plugin_updates", "core.credentials",
-    "host.execution.v1", "core.tasks", "executor",
+    "host.execution.v1", "core.tasks",
 })
 # 这里只允许宿主 journal、迁移回执、完整 release 备份；不授予业务表写入权。
 SQLITE_OWNERS = {

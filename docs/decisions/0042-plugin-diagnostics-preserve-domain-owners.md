@@ -3,6 +3,7 @@
 - 状态：accepted / implementing
 - 日期：2026-08-26
 - 关联条款：OBJ-002、PLG-003、PLG-006、PLG-014～PLG-015、ERR-001
+- 勘误：`ObserveEventKey` / `ctx.observe` 没有消费者，由 [0155](0155-composition-kernel-keeps-used-dispatch-only.md) 删除。
 
 ## 背景
 

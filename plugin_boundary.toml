@@ -18,10 +18,6 @@ note = "Core 按可信插件 owner 打开短凭据租约"
 role = "core"
 note = "Core 只拥有执行身份与 generation 作用域；实际进程和文件由插件提供"
 
-[capabilities.executor]
-role = "core"
-note = "有界纯同步 worker 池"
-
 [capabilities."core.host_info"]
 role = "core"
 note = "宿主装配固定提供 boot identity 与 validation marker 的只读值"

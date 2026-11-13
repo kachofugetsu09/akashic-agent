@@ -326,26 +326,6 @@ def plugin_entrypoint(
     )
 
 
-def start_plugin_entrypoint(
-    *,
-    plugin_id: str,
-    generation_id: str,
-    fiber: str,
-    operation: str,
-    entrypoint: str = "",
-) -> PluginOperation:
-    """Start an entrypoint whose callback and awaitable settle separately."""
-
-    return PluginOperation(
-        plugin_id=plugin_id,
-        generation_id=generation_id,
-        fiber=fiber,
-        operation=operation,
-        observation_kind="entrypoint",
-        plugin_entrypoint=entrypoint,
-    ).start()
-
-
 def _emit_operation(
     operation: PluginOperation,
     terminal: str,
