@@ -10,6 +10,7 @@ from typing import cast
 from agent.plugin_composition import CompositionError, Context
 from agent.plugin_composition.context import RuntimeScope
 from agent.plugin_composition.tasks import Task, TaskAdmission, TaskSlot
+from core.common.file_io import run_file_io
 from plugins.ledger.contract import BINDINGS, Bindings, CallRef, Control, Message, MessageReader, Output, ToolCall
 from plugins.tools.contract import TOOLS, ToolRelease
 
@@ -79,6 +80,26 @@ def _plan(reader: MessageReader, source: str, from_seq: int) -> _Plan:
     return _Plan(calls, abandoned is not None, end)
 
 
+# 规划要读本程序的全部消息：放进文件 worker，磁盘繁忙时不卡住事件循环。收尾不能被取消截断，
+# 读取期间到达的取消在读完后重新送达，与原来同步读取时落在下一个等待点一致。
+async def _read_plan(reader: MessageReader, source: str, from_seq: int) -> _Plan:
+    task = asyncio.current_task()
+    assert task is not None
+    work = asyncio.ensure_future(run_file_io(lambda: _plan(reader, source, from_seq)))
+    cancelled = False
+    while not work.done():
+        try:
+            _ = await asyncio.shield(work)
+        except asyncio.CancelledError:
+            cancelled = True
+    try:
+        return work.result()
+    finally:
+        if cancelled:
+            _ = task.uncancel()
+            _ = task.cancel()
+
+
 # 只释放入口时已声明 release 且 owner 一致的调用；state 合同与 ToolCatalog.open 相同。
 async def _release(ctx: Context, bindings: Bindings, releases: Mapping[str, Release], identity: str,
                    session_id: str, source: str, boundary: str | None) -> None:
@@ -112,7 +133,7 @@ async def tool_cleanup(
             yield
         finally:
             try:
-                plan = _plan(reader, source, from_seq)
+                plan = await _read_plan(reader, source, from_seq)
                 if plan.calls:
                     cleanup = _Cleanup(ctx, owners, releases, reader, source, plan.calls, drain)
                     owners = []
