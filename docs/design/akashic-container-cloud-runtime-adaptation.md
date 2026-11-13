@@ -236,18 +236,9 @@ Akashic只拥有字段白名单、关联上下文与脱敏策略。事件至少�
 日志只保存诊断证据，不成为SessionDB或外部效果的权威事实。命令正文、消息正文、token、cookie、
 authorization、完整env和工具输出不得进入日志；原命令和消息只能记录字节数与不可逆短指纹。
 
-```text
-Core container local log ─┐
-peripheral local logs ────┼─> Alloy ─> Loki ─> Grafana(loopback)
-Host Bridge journal ──────┘      │
-                                 └─ read-only Docker API proxy
-```
-
-Grafana、Loki、Alloy和Docker API proxy由独立私有外围仓库拥有，不能并入Core image或Core发布合同。
-Core不持有Docker socket，也不依赖采集链存活：Loki或Alloy中断时，本地`local`日志driver继续限额写入，
-外围恢复后从持久position补采。`environment`、`service`、`source`和`level`可作为低基数label；turn、
-request和execution只能作为structured metadata，避免索引基数失控。外围栈默认保留30天，实际保留期、
-资源上限、镜像digest和loopback端口由外围release固定。
+日志留在本机：Core与外围容器写Docker `local`日志driver并限额轮转，Host Bridge写journald。
+Core不持有Docker socket，也不依赖任何外部采集链；hua-home于2026-11-14撤掉了Grafana/Loki/Alloy
+外围栈，排查用`docker logs`、`journalctl`与`runtime_diagnostics`插件。
 
 一次release同时产生Core image、同commit CLI和协议兼容Bridge。GitHub Actions只构建、生成SBOM并
 发布不可变artifact，不自动部署hua-home。

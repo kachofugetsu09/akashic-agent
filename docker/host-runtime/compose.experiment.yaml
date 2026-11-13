@@ -10,10 +10,6 @@ services:
     security_opt:
       - no-new-privileges:true
       - seccomp:${AKASHIC_RUNTIME_CHECKOUT:?AKASHIC_RUNTIME_CHECKOUT is required}/docker/host-runtime/chromium-seccomp.json
-    labels:
-      com.akashic.observability: "true"
-      com.akashic.service: "akashic-core"
-      com.akashic.environment: "${AKASHIC_ENVIRONMENT:-hua-home}"
     environment:
       AKASHIC_CONFIG: "${AKASHIC_CONFIG:?AKASHIC_CONFIG is required}"
       AKASHIC_WORKSPACE: "${AKASHIC_WORKSPACE:?AKASHIC_WORKSPACE is required}"
