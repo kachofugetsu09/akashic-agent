@@ -924,10 +924,11 @@ class MessageProjection:
                 # 字符估算最多差约 3 倍（1 字符 1 token）。远超它的 usage 与请求大小无关：压缩后比例只会更离谱，
                 # 用它校准会让每条输入都付一次摘要费。这里不看窗口，静默超窗（200 + 超窗 usage）仍能触发压缩。
                 fold.token_calibration = None if actual > estimated * _MAX_USAGE_RATIO else (estimated, actual)
-            metadata = receipt.get("provider_metadata")
-            # Input transforms clear opaque continuation, not this new response's native parts.
-            if metadata is not None:
-                fold.response_metadata[message.message_id] = metadata
+        # 原生部件（Gemini thoughtSignature）属于产出它的模型，不随重启或保存设置失效；校准仍跟实例走。
+        metadata = receipt.get("provider_metadata")
+        # Input transforms clear opaque continuation, not this new response's native parts.
+        if metadata is not None and _same_model(receipt["binding"], self._model.descriptor):
+            fold.response_metadata[message.message_id] = metadata
         previous = inherited.get(message.message_id)
         if previous is None or previous[0] is not message:
             indices = {

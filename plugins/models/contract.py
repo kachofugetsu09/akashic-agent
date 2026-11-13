@@ -110,7 +110,7 @@ class LLMResponse:
     continuation: ModelContinuation | None = None
     usage: ModelUsage | None = None
     call_record_id: str | None = None
-    # 原生响应部件由调用账本保存，随同一 binding 的消息重放。
+    # 原生响应部件由调用账本保存，随同一模型的消息重放。
     provider_metadata: Mapping[str, Any] | None = None
     # 长度截断时驱动丢弃了不完整的输出（工具片段等）；没有 usage 时它是区分真 0 输出的唯一证据。
     output_discarded: bool = False
@@ -1396,6 +1396,10 @@ _BALANCE_ERROR = re.compile(
     r"credit balance|insufficient[ _](?:balance|credit|funds|quota)|exceeded your current quota|余额不足|账户已欠费|套餐已到期|套餐已失效",
     re.IGNORECASE,
 )
+# 代理会把上游原话整段加引号再转发；带具体数字的形式是上游的判断，对原文匹配。
+_OVERFLOW_EVIDENCE = re.compile(r"maximum context length(?: is| of)? ?\(?[\d,]+|[\d,]+ tokens? > [\d,]+", re.IGNORECASE)
+# 字段校验错误引号里是回显的取值，同样的数字也不算证据。
+_FIELD_ECHO = re.compile(r"\binvalid(?: (?:value|param|parameter|field)\b|\s*:)", re.IGNORECASE)
 # 代理常把上游错误包成字符串，先取出里面的 message，否则下面的去引号会把正文一起去掉。
 _EMBEDDED_MESSAGE = re.compile(r"""["']message["']\s*:\s*(["'])((?:\\.|(?!\1).)*)""", re.DOTALL)
 # 引号内是回显的用户内容或字段值，不是上游的判断；"model's" 这样的撇号不算开引号。
@@ -1606,7 +1610,11 @@ def _own_words(text: str) -> str:
 
 def _is_context_overflow(code: str, text: str, own: str) -> bool:
     return (
-        (_CONTEXT_ERROR.search(own) is not None or _OVERFLOW_MARKER.search(text) is not None)
+        (
+            _CONTEXT_ERROR.search(own) is not None
+            or _OVERFLOW_MARKER.search(text) is not None
+            or (_OVERFLOW_EVIDENCE.search(text) is not None and _FIELD_ECHO.search(own) is None)
+        )
         and _RATE_LIMIT_ERROR.search(own) is None
         and not is_quota_error(code, own)
     )
