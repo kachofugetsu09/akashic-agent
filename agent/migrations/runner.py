@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import json
 import os
 import tempfile
@@ -211,6 +212,11 @@ class MigrationRunner:
                 pending = backend.to_apply(selected)
                 migration_ids = tuple(migration.id for migration in pending)
                 backend.apply_migrations(pending)
+                if migration_ids:
+                    # 已发布的迁移用 `with sqlite3.connect(...)` 打开 reload journal：只提交、不关闭，
+                    # 连接留到垃圾回收才释放 WAL 旁文件。迁移不可改，这里收一次，
+                    # 之后的 journal 快照不会在读取途中看到旁文件消失。
+                    _ = gc.collect()
         except (MigrationBundleBlocked, MigrationBundleError):
             raise
         except Exception as exc:
