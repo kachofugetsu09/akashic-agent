@@ -128,7 +128,7 @@ class PluginOperation:
         finally:
             _CURRENT_OPERATION.reset(token)
 
-    def finish(self, error: BaseException | None = None) -> None:
+    def finish(self, error: BaseException | None = None, *, client_error: bool = False) -> None:
         """Emit exactly one terminal fact while preserving the caller error."""
 
         if self._started_at is None:
@@ -140,6 +140,10 @@ class PluginOperation:
             event = "cancelled"
             outcome = "cancelled"
             level = logging.INFO
+        elif error is not None and client_error:
+            event = "done"
+            outcome = "invalid_request"
+            level = logging.WARNING
         elif error is not None:
             event = "error"
             outcome = "error"
@@ -154,13 +158,20 @@ class PluginOperation:
             outcome=outcome,
             duration_ms=(monotonic() - self._started_at) * 1000,
             error=error,
+            client_error=client_error,
             level=level,
         )
 
 
 class _OperationContext:
-    def __init__(self, operation: PluginOperation) -> None:
+    def __init__(
+        self,
+        operation: PluginOperation,
+        *,
+        client_errors: tuple[type[BaseException], ...] = (),
+    ) -> None:
         self._operation = operation
+        self._client_errors = client_errors
         self._binding: ContextManager[None] | None = None
 
     def __enter__(self) -> PluginOperation:
@@ -178,7 +189,8 @@ class _OperationContext:
         _ = traceback
         assert self._binding is not None
         _ = self._binding.__exit__(error_type, error, traceback)
-        self._operation.finish(error)
+        client_error = error is not None and bool(self._client_errors) and isinstance(error, self._client_errors)
+        self._operation.finish(error, client_error=client_error)
         return False
 
 
@@ -297,6 +309,7 @@ def plugin_entrypoint(
     fiber: str,
     operation: str,
     entrypoint: str = "",
+    client_errors: tuple[type[BaseException], ...] = (),
 ) -> _OperationContext:
     """Build one Core-owned entrypoint context for a direct dispatch seam."""
 
@@ -308,7 +321,8 @@ def plugin_entrypoint(
             operation=operation,
             observation_kind="entrypoint",
             plugin_entrypoint=entrypoint,
-        )
+        ),
+        client_errors=client_errors,
     )
 
 
@@ -339,6 +353,7 @@ def _emit_operation(
     outcome: str,
     duration_ms: float | None = None,
     error: BaseException | None = None,
+    client_error: bool = False,
     level: int = logging.INFO,
 ) -> None:
     fields: dict[str, object] = {
@@ -357,7 +372,7 @@ def _emit_operation(
         fields["duration_ms"] = round(duration_ms, 3)
     if error is not None:
         fields["error_type"] = type(error).__name__
-        if not isinstance(error, asyncio.CancelledError):
+        if not isinstance(error, asyncio.CancelledError) and not client_error:
             # finish 也可能在 except 之外调用，必须保留传入异常的原始栈。
             fields["exc_info"] = (type(error), error, error.__traceback__)
     _safe_log_event(
