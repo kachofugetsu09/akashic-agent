@@ -85,7 +85,7 @@ Shell ── 固定公共 socket ──┬── 默认 listener
                          └── owner 发布的链接 ── 自定义 listener
 ```
 
-临时场景 orthology_web_endpoint.py 使用真实双层 UDS listener，验证 HTTP 代理和
+临时场景 orthology_web_endpoint.py（已删除）使用真实双层 UDS listener，当时验证 HTTP 代理和
 WebSocket ping/pong、默认/自定义切换、缺席状态、冲突拒绝与节点身份清理。
 不调用模型、不访问正式 workspace。恢复点 c2fad5e8 与
 /tmp/akashic-orthology-before-web-endpoint-c2fad5e8.tar；无 schema 或数据迁移。

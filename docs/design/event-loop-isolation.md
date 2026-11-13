@@ -212,8 +212,8 @@ before-image、草稿、两份文件及其独立 receipt 的顺序不变；已�
 异常路径两个 unlink 仍是同步小操作，本层不宣称消除了全部系统调用阻塞。
 
 URL/DNS 校验、长度上限、hash、最终路径与成功返回时机不变。只删除本次失败下载
-尚未交付的随机路径，不触碰已有附件。`docker/debug/remote_media_io_isolation.py`
-验证真实字节/hash，并在 fsync 屏障内取消，确认文件只在物理工作结束后清理。
+尚未交付的随机路径，不触碰已有附件。`docker/debug/remote_media_io_isolation.py`（已删除：所依赖的 `infra.channels` 已不存在）
+当时验证真实字节/hash，并在 fsync 屏障内取消，确认文件只在物理工作结束后清理。
 
 ## Scheduler 文件事务（#879）
 
@@ -548,7 +548,7 @@ changed 事件仍在原 loop 发出，已提交后取消不丢通知，同身份
 同步 v1 契约与 provider 已退役。[fleet 当前外置集合](hua-home-plugin-runtime-source-of-truth.md#1-维护范围只认-fleet运行事实只认-hua-home)
 中没有 Drift proposal 消费者；非 fleet 的历史仓库不构成保留兼容接口或新增迁移的理由。
 
-`owner_write_io.py` 的真实 SQLite/本地 socket 场景覆盖摘要 CAS、Computer 回执、
+`owner_write_io.py`（已删除：所依赖的 `MCP_SERVERS` 已不存在）的真实 SQLite/本地 socket 场景当时覆盖摘要 CAS、Computer 回执、
 取消排空和原消息完整性；同一提交屏障下旧基线约 1 秒，改后小于 1 毫秒。
 `drift_proposal_io.py`（已随 0146 删除）验证真实 Root 的提案提交、请求快照、取消、重放与 loop 通知。
 这些是隔离组件证据，不是生产 P99。外置 Observe、status_commands、proactive_feedback、
