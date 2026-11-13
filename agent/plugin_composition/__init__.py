@@ -19,15 +19,7 @@ from agent.plugin_composition.diagnostics import (
 from agent.plugin_composition.events import (
     Bail,
     EmitEventKey,
-    ObserveEventKey,
-    ParallelEventKey,
     SerialEventKey,
-    TransformEventKey,
-)
-from agent.plugin_composition.executor import (
-    EXECUTOR_SERVICE,
-    ExecutorService,
-    SyncTask,
 )
 from agent.plugin_composition.model import (
     CompositionError,
@@ -69,8 +61,6 @@ __all__ = [
     "CredentialClients",
     "EmitEventKey",
     "Effect",
-    "EXECUTOR_SERVICE",
-    "ExecutorService",
     "Fiber",
     "FiberHandle",
     "FiberState",
@@ -80,13 +70,11 @@ __all__ = [
     "IncidentView",
     "OwnerCall",
     "SourceMutationFence",
-    "ObserveEventKey",
     "PluginRuntime",
     "PluginDiagnostics",
     "PluginDiagnosticContext",
     "ProviderClient",
     "ProviderClientFactory",
-    "ParallelEventKey",
     "ServiceKey",
     "RUNTIME_STARTING",
     "RUNTIME_STARTED",
@@ -97,8 +85,6 @@ __all__ = [
     "stop_spawned",
     "RuntimeScope",
     "SerialEventKey",
-    "SyncTask",
     "TopologyFiberView",
     "TopologyView",
-    "TransformEventKey",
 ]

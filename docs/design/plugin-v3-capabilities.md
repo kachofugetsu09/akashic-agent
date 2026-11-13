@@ -203,9 +203,6 @@ key 的相等比较和哈希，不成为可注入别名，也不改写既有 des
 |---|---|---|
 | `EmitEventKey[P]` / `ctx.emit(key, payload)` | 同步调用 listener | 按注册顺序；listener 必须同步，异常立即向调用者传播；返回 awaitable 是错误 |
 | `SerialEventKey[P, R]` / `await ctx.serial(...)` | 逐个等待 listener | 按注册顺序；`None` 继续，类型正确的 `Bail[R]` 立即短路；异常记录 owner failure 后传播 |
-| `ParallelEventKey[P]` / `await ctx.parallel(...)` | 为全部 listener 建立异步任务并等待 settle | listener 必须返回 awaitable；并发执行，异常聚合为 `BaseExceptionGroup`；调用取消会取消并 drain 子任务 |
-| `TransformEventKey[P]` / `await ctx.transform(...)` | 将当前 payload 依注册顺序交给下一 listener | 每步必须返回声明的同类型 payload；`None`、`Bail`、错误类型和异常都失败 |
-| `ObserveEventKey[P]` / `await ctx.observe(...)` | 调用全部 observer，再等待异步结果 | 全部 observer 都会被调用；普通 listener 失败隔离为 owner Incident，调用者继续；调用取消仍取消并 drain 未完成 observer |
 
 Runtime lifecycle signal 使用同一 typed event 基础：`RUNTIME_STARTING` 在正式接纳开放前准备资源，
 `RUNTIME_STARTED` 在相应 activation 具备启动条件后启动工作，`RUNTIME_STOPPING` 在其停止前收束工作；
@@ -268,7 +265,6 @@ Turn 是 `plugins.turn_projection` 从 Message 日志得到的无状态读投影
 | `MCP_SERVERS` | `register(ctx, definition)`、`open(ctx, name)` | 普通 `mcp` provider；每次调用独立会话 |
 | `MANAGED_PROCESSES` | `register(ctx, definition)` | 普通 `managed_processes` provider；返回实际进程句柄 |
 | `WORKLOADS` | `register(ctx, definition)` | 普通 `workloads` provider；取得窄 Controller 管理的容器句柄 |
-| `EXECUTOR_SERVICE` | `parallel_sync(jobs)` | 有界纯同步工作；worker 不取得 Context/Fiber |
 
 资产通过普通 `assets` 插件提供的 `INSTALLED_ASSETS` 注册。贡献方在 `inject` 中声明依赖，
 在 `apply(ctx)` 中调用 `await ctx.require(INSTALLED_ASSETS).register(ctx, "skills", "skills")`。

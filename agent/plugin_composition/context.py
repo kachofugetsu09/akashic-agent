@@ -31,12 +31,8 @@ from agent.plugin_composition.events import (
     EventKey,
     EventListener,
     EventRegistry,
-    ObserveEventKey,
-    ParallelEventKey,
     SerialEventKey,
-    TransformEventKey,
 )
-from agent.plugin_composition.executor import reject_executor_context_access
 from agent.plugin_composition.endpoints import Endpoint, EndpointPublisher
 from agent.plugin_composition.model import (
     CallerIdentity,
@@ -130,30 +126,25 @@ class Context:
 
     @property
     def fiber(self) -> FiberHandle:
-        reject_executor_context_access()
         self._require_current()
         return self._fiber_handle
 
     @property
     def generation_id(self) -> str:
-        reject_executor_context_access()
         return self._root.generation_id
 
     @property
     def root_instance_token(self) -> object:
         """Return the opaque identity of this exact composition Root."""
 
-        reject_executor_context_access()
         return self._root.instance_token
 
     def _declared_dependencies(self) -> tuple[ServiceKey[Any], ...]:
         """供 Core 请求边界冻结声明 Fiber 的能力集合。"""
-        reject_executor_context_access()
         return self._fiber.dependencies
 
     def _reserve_scope(self) -> RuntimeScope | None:
         """在派发时保留准确 owner；生命周期与 Root 由其外层寿命保护。"""
-        reject_executor_context_access()
         self._require_current()
         binding = _lifecycle_binding.get()
         if self._fiber._is_root or binding == (self, asyncio.current_task()):
@@ -204,7 +195,6 @@ class Context:
     @contextmanager
     def borrow(self, key: ServiceKey[T]) -> Iterator[T | None]:
         """临时查询可选服务，借用期间保护实际 provider；缺席返回 None。"""
-        reject_executor_context_access()
         self._require_current()
         provider = self._root._active_provider(cast(ServiceKey[Any], key))
         if provider is None:
@@ -215,7 +205,6 @@ class Context:
 
     def require_runtime_identity(self, key: ServiceKey[Any], service: object) -> CallerIdentity:
         """核对实际 Task、Context 和服务后返回身份；不接受调用方填写的身份字段。"""
-        reject_executor_context_access()
         self._require_current()
         task = asyncio.current_task()
         binding = _lifecycle_binding.get()
@@ -241,7 +230,6 @@ class Context:
 
     def _caller_context(self) -> Context:
         """只读取当前 Task 的实际许可，不信任继承的 ContextVar。"""
-        reject_executor_context_access()
         self._require_current()
         current = _current_runtime_scope()
         if current is not None:
@@ -320,7 +308,6 @@ class Context:
     def capture_runtime_scope(self) -> RuntimeScope:
         """把当前 Task 已接纳的许可延长成一份可移交子 Task 的 scope。"""
 
-        reject_executor_context_access()
         self._require_current()
         owned = self._fiber._call_owned_by_current_task()
         if owned is None:
@@ -340,7 +327,6 @@ class Context:
     def runtime(self) -> PluginRuntime:
         """Return the Core-owned runtime identity for this plugin tree."""
 
-        reject_executor_context_access()
         runtime = self._fiber.runtime
         if runtime is None:
             raise CompositionError(
@@ -353,7 +339,6 @@ class Context:
     def diagnostics(self) -> PluginDiagnostics:
         """Return diagnostics bound to this exact plugin Fiber and generation."""
 
-        reject_executor_context_access()
         runtime = self.runtime
         return CorePluginDiagnostics(
             plugin_id=runtime.plugin_id,
@@ -370,13 +355,11 @@ class Context:
     def workspace_root(self, name: str) -> Path:
         """返回 Core 为当前 generation 投影的声明式 workspace root。"""
 
-        reject_executor_context_access()
         return self.runtime.workspace_root(name)
 
     def workspace_file(self, name: str) -> Path:
         """Return one Core-projected product file declared by the plugin."""
 
-        reject_executor_context_access()
         return self.runtime.workspace_file(name)
 
     async def mount(
@@ -387,7 +370,6 @@ class Context:
         inject: Iterable[ServiceKey[Any]] | None = None,
         required_for_readiness: bool = True,
     ) -> FiberHandle:
-        reject_executor_context_access()
         self._require_current()
         if not callable(plugin) or hasattr(plugin, "apply"):
             raise TypeError("Context.mount 只接受 child callable")
@@ -411,7 +393,6 @@ class Context:
     ) -> FiberHandle:
         """挂载独立随依赖激活的子 Fiber，不阻塞父 Fiber 就绪。"""
 
-        reject_executor_context_access()
         return await self.mount(
             apply,
             name=name or getattr(apply, "__name__", "inject"),
@@ -422,7 +403,6 @@ class Context:
     async def provide(self, key: ServiceKey[T], value: T, *,
                       binding_contributors: Callable[[], tuple[Context, ...]] | None = None) -> Effect:
         """服务 owner 可声明归档时实际需要的动态注册 Context，生命周期随同一 Effect。"""
-        reject_executor_context_access()
         self._require_current()
         typed_key = cast(ServiceKey[Any], key)
         if self._fiber.state == FiberState.ACTIVE:
@@ -485,7 +465,6 @@ class Context:
         return effect
 
     def get(self, key: ServiceKey[T]) -> T | None:
-        reject_executor_context_access()
         self._require_current()
         provider = self._fiber.dependency_store.get(cast(ServiceKey[Any], key))
         if provider is None:
@@ -508,7 +487,6 @@ class Context:
         return cast(T | None, None if provider is None else provider.value)
 
     def require(self, key: ServiceKey[T]) -> T:
-        reject_executor_context_access()
         value = self.get(key)
         if value is None:
             raise CompositionError(
@@ -523,7 +501,6 @@ class Context:
         return self._fiber.dependency_store[key].revision
 
     async def effect(self, setup: EffectSetup, *, label: str = "effect") -> Effect:
-        reject_executor_context_access()
         self._require_current()
         return await self._fiber.add_effect(setup, label=label)
 
@@ -535,7 +512,6 @@ class Context:
     ) -> HealthHandle:
         """注册一个由当前 Fiber Effect 持有的健康项。"""
 
-        reject_executor_context_access()
         self._require_current()
         entry = self._root._new_health_entry(
             self._fiber,
@@ -555,7 +531,6 @@ class Context:
         self, name: str, *, protocol: str, address: str, routes: tuple[str, ...] = (),
     ) -> Effect:
         """发布已就绪的监听器；同一 Effect 先撤下路由，再由插件关闭监听器。"""
-        reject_executor_context_access()
         self._require_current()
         runtime = self._fiber.runtime
         endpoint = Endpoint(name, protocol, address, routes, self._fiber.path,
@@ -570,7 +545,6 @@ class Context:
     def report_incident(self, kind: str, message: str) -> IncidentView:
         """记录一条结构化 Incident，但不隐式改变当前 Health。"""
 
-        reject_executor_context_access()
         self._require_current()
         if not kind or kind.strip() != kind:
             raise ValueError("Incident kind 必须是非空且无首尾空白的字符串")
@@ -587,15 +561,11 @@ class Context:
         key: (
             EmitEventKey[T]
             | SerialEventKey[T, R]
-            | ParallelEventKey[T]
-            | TransformEventKey[T]
-            | ObserveEventKey[T]
         ),
         listener: Callable[[T], object],
     ) -> Effect:
         """Register one typed listener as an Effect of the current Fiber."""
 
-        reject_executor_context_access()
         raw_key = cast(EventKey, key)
         raw_listener = cast(EventListener, listener)
         return await self.effect(
@@ -608,7 +578,6 @@ class Context:
         )
 
     def emit(self, key: EmitEventKey[T], payload: T) -> None:
-        reject_executor_context_access()
         self._require_current()
         self._root._events.emit(key, payload)
 
@@ -617,24 +586,8 @@ class Context:
         key: SerialEventKey[T, R],
         payload: T,
     ) -> Bail[R] | None:
-        reject_executor_context_access()
         self._require_current()
         return await self._root._events.serial(key, payload)
-
-    async def parallel(self, key: ParallelEventKey[T], payload: T) -> None:
-        reject_executor_context_access()
-        self._require_current()
-        await self._root._events.parallel(key, payload)
-
-    async def transform(self, key: TransformEventKey[T], payload: T) -> T:
-        reject_executor_context_access()
-        self._require_current()
-        return await self._root._events.transform(key, payload)
-
-    async def observe(self, key: ObserveEventKey[T], payload: T) -> None:
-        reject_executor_context_access()
-        self._require_current()
-        await self._root._events.observe(key, payload)
 
     async def spawn(
         self,
@@ -644,7 +597,6 @@ class Context:
     ) -> asyncio.Task[T]:
         """Start one Fiber-owned task and expose failures to Core readiness."""
 
-        reject_executor_context_access()
         try:
             self._require_current()
         except BaseException:
@@ -747,24 +699,20 @@ class FiberHandle:
     @property
     def fiber_id(self) -> int:
         """供只读图消费者关联实际功能分支。"""
-        reject_executor_context_access()
         return self._fiber.fiber_id
 
     @property
     def name(self) -> str:
-        reject_executor_context_access()
         return self._fiber.name
 
     @property
     def state(self) -> FiberState:
-        reject_executor_context_access()
         return self._fiber.state
 
     @property
     def activation_token(self) -> object | None:
         """返回当前 Fiber activation 的不透明身份令牌。"""
 
-        reject_executor_context_access()
         return self._fiber._activation_token
 
     def acquire_call(self, expected_activation: object) -> OwnerCall:
@@ -773,11 +721,9 @@ class FiberHandle:
         旧绑定在 owner 换代后必须显式失败，不默认替调用方改绑最新实例。
         """
 
-        reject_executor_context_access()
         return self._fiber._begin_call(expected_activation)
 
     async def dispose(self) -> None:
-        reject_executor_context_access()
         await self._fiber.dispose()
 
 
@@ -997,20 +943,16 @@ class HealthHandle:
 
     @property
     def healthy(self) -> bool:
-        reject_executor_context_access()
         return self._entry.active and self._entry.reason is None
 
     @property
     def reason(self) -> str | None:
-        reject_executor_context_access()
         return self._entry.reason
 
     def degrade(self, reason: str) -> None:
-        reject_executor_context_access()
         self._root._degrade_health(self._entry, reason)
 
     def recover(self) -> None:
-        reject_executor_context_access()
         self._root._recover_health(self._entry)
 
 

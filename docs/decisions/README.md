@@ -9,6 +9,7 @@
 | [0151](0151-watch-closes-every-loop.md) | proposed / implemented for review | 值班：每件事要有着落，来源可以是一个脚本 | PRO-004～PRO-006 |
 | [0152](0152-watch-speaks-at-the-right-moment.md) | proposed / implemented for review | 值班：话留到合适的时刻说，聊天里先回应 | PRO-004～PRO-006 |
 | [0153](0153-watch-panel.md) | proposed / implemented for review | 值班面板：从已有记录现读，只认识来源和事件 | PRO-005 |
+| [0155](0155-composition-kernel-keeps-used-dispatch-only.md) | accepted / implemented for review | 组合内核只保留有消费者的派发方式；删除 parallel/transform/observe 与 ExecutorService | PLG |
 | [0154](0154-watch-reshapes-its-own-sources.md) | proposed / implemented for review | 值班：自己去看、自己接着看、到头就拆；猜的先放便签 | PRO-004～PRO-006 |
 | [0150](0150-sources-have-one-event-entry.md) | proposed / implemented for review | 来源只有一个事件入口，删除 EventMail | PRO-004 |
 | [0149](0149-watch-replaces-wake.md) | proposed / implemented for review | 值班（watch）取代 Wake：便宜模型看流，主 Agent 自己决定做什么 | PRO-003、PRO-005、PRO-006、SEC-011 |
