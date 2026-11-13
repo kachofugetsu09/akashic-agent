@@ -21,7 +21,6 @@ from scripts.akashic_release.prepare import (
 )
 from scripts.akashic_release.source import commit_subject, resolve_target
 from scripts.akashic_release.source import verify_bootstrap_checkout
-from scripts.akashic_release.systemd import verify_external_service_contract
 from scripts.akashic_release.warm import StateCacheWarmer
 
 _DEFAULT_ORIGIN = "https://github.com/kachofugetsu09/akashic-agent.git"
@@ -68,7 +67,6 @@ def install(args: argparse.Namespace, *, self_deploy: dict[str, object] | None =
     with release_lock(paths.run / "release.lock"):
         paths.create_layout()
         verify_host_prerequisites(mise=args.mise, run=_run)
-        verify_external_service_contract(run=_run, unit_root=args.unit_root)
         # 页缓存跨进程保留：只准备产物的一轮也预热，自部署 worker 停机前即可命中。
         warmer = StateCacheWarmer(paths.state / "workspace")
         warmer.start()
