@@ -13,34 +13,9 @@ from typing import Callable
 
 Run = Callable[..., subprocess.CompletedProcess[str]]
 _UNITS = ("akashic-host-bridge.service", "akashic-core.service")
-_EXTERNAL_UNIT = "akashic-home-services.service"
 _SYSTEM_UNIT_ROOT = Path("/etc/systemd/system")
 # sudoers 只免密放行 /tmp/akashic-units-*/ 下的单元；部署者常把 TMPDIR 改到别处，暂存目录要固定。
 _UNIT_STAGING_ROOT = Path("/tmp")
-
-
-def verify_external_service_contract(
-    *, run: Run, unit_root: Path = _SYSTEM_UNIT_ROOT
-) -> None:
-    """Require the separately owned home-services lifecycle unit."""
-
-    if unit_root != _SYSTEM_UNIT_ROOT:
-        external_unit = unit_root / _EXTERNAL_UNIT
-        if not external_unit.is_file():
-            raise RuntimeError(f"隔离 unit root 缺少外围服务合同: {external_unit}")
-        run(
-            ["systemd-analyze", "verify", str(external_unit)],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        return
-    run(
-        ["systemctl", "cat", "--", _EXTERNAL_UNIT],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
 
 
 def require_unit_install(
