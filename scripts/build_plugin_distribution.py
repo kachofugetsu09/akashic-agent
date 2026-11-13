@@ -55,6 +55,7 @@ _RUNTIME_WIRING = (
 )
 _GENERATED_PLUGIN_UI_FILES = (
     "plugin_ui.js",
+    "plugin_ui.css",
     "web_module.js",
     "web_module.css",
     "message_ui.js",
