@@ -65,11 +65,18 @@ function remember(key: string, value: unknown): void {
   if (recent.size > RECENT_LIMIT) recent.delete(recent.keys().next().value as string);
 }
 
-function useQuery<T>(query: Query, method: string, payload: Record<string, unknown>, token: string): { data: T | null; error: string } {
+function useQuery<T>(
+  query: Query,
+  method: string,
+  payload: Record<string, unknown>,
+  token: string,
+  enabled = true,
+): { data: T | null; error: string } {
   const key = `${method}:${JSON.stringify(payload)}:${token}`;
   const [state, setState] = useState<{ data: T | null; error: string; key: string }>(() =>
-    recent.has(key) ? { data: recent.get(key) as T, error: "", key } : { data: null, error: "", key: "" });
+    enabled && recent.has(key) ? { data: recent.get(key) as T, error: "", key } : { data: null, error: "", key: "" });
   useEffect(() => {
+    if (!enabled) return;
     let live = true;
     let timer = 0;
     const load = (attempt: number) => query(method, payload, { cache: "none" }).then((result) => {
@@ -85,7 +92,8 @@ function useQuery<T>(query: Query, method: string, payload: Record<string, unkno
     }).catch((error: unknown) => { if (live) setState({ data: null, error: error instanceof Error ? error.message : "用量读取失败", key }); });
     void load(0);
     return () => { live = false; window.clearTimeout(timer); };
-  }, [key]);
+  }, [key, enabled]);
+  if (!enabled) return { data: null, error: "" };
   if (state.key === key) return state;
   return { data: recent.has(key) ? recent.get(key) as T : state.data, error: "" };
 }
@@ -128,7 +136,7 @@ function todayBuckets(hours: Insights["hours"]) {
 
 function Summary({ query, sessionId, open, sheet }: { query: Query; sessionId?: string; open: (tab: Tab, session?: string) => void; sheet: boolean }) {
   const start = rangeStart(1);
-  const own = useQuery<SessionDetail>(query, "usage.session", sessionId ? { session_id: sessionId } : {}, sessionId ?? "none");
+  const own = useQuery<SessionDetail>(query, "usage.session", sessionId ? { session_id: sessionId } : {}, sessionId ?? "none", Boolean(sessionId));
   const all = useQuery<Insights>(query, "usage.insights", { since: start.toISOString(), limit: 3 }, "");
   const row = sessionId ? own.data?.session ?? null : null;
   const today = all.data ? since(all.data.hours, start) : null;

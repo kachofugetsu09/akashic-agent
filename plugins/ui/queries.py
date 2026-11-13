@@ -544,6 +544,7 @@ class LivePluginUiProvider:
                     generation_id=binding.context.runtime.generation_id,
                     fiber=binding.context.fiber.name,
                     operation="plugin_ui.query",
+                    client_errors=(PluginUiRpcInvalidRequest,),
                 ):
                     handler = binding.query
                     if inspect.iscoroutinefunction(handler) or inspect.iscoroutinefunction(
