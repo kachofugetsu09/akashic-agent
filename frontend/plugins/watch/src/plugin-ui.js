@@ -15,6 +15,51 @@ function h(tag, className, text, children) {
 const minutes = (at) => Number(at.slice(0, 2)) * 60 + Number(at.slice(3, 5));
 const left = (at) => `${(minutes(at) / 1440 * 100).toFixed(2)}%`;
 const tickKind = (tick) => tick.rounds.length ? "wake" : tick.verdicts.some((v) => v.to === "inbox") ? "inbox" : "quiet";
+const fmt = (value) => value >= 1e9 ? `${(value / 1e9).toFixed(2)}B` : value >= 1e6 ? `${(value / 1e6).toFixed(1)}M`
+  : value >= 1e4 ? `${Math.round(value / 1e3)}k` : value >= 1e3 ? `${(value / 1e3).toFixed(1)}k` : String(value);
+const hitRate = (item) => item.cache_reported_calls && item.hit_input_tokens
+  ? `${Math.round(item.hit_tokens / item.hit_input_tokens * 100)}%` : "—";
+const usageText = (item) => item.reported_calls
+  ? `${item.calls} 次 · 输入 ${fmt(item.input_tokens)} · 命中 ${hitRate(item)} · 输出 ${fmt(item.output_tokens)}`
+  : `${item.calls} 次 · 用量未知`;
+const usageTitle = (item) => {
+  if (!item.reported_calls) return `${item.model}：${item.calls} 次，未返回 token 用量`;
+  const cache = item.cache_reported_calls
+    ? `（缓存命中 ${item.hit_tokens.toLocaleString()} / 基数 ${item.hit_input_tokens.toLocaleString()}）`
+    : "（未上报缓存）";
+  return `${item.model}：${item.calls} 次 · 输入 ${item.input_tokens.toLocaleString()}${cache} · 输出 ${item.output_tokens.toLocaleString()}`;
+};
+const briefUsage = (label, total) => !total?.calls ? `${label} 无`
+  : total.reported_calls ? `${label} ${fmt(total.input_tokens)}（命中 ${hitRate(total)}）`
+  : `${label} ${total.calls} 次`;
+
+function usageList(models) {
+  if (!models?.length) return null;
+  return h("ul", "watch-usage-list", null, models.map((item) => {
+    const row = h("li", null, null, [h("span", "watch-model", item.model), h("span", "watch-stat", usageText(item))]);
+    row.title = usageTitle(item);
+    return row;
+  }));
+}
+
+function dayUsageView(data) {
+  const usage = data.usage;
+  if (!usage) return null;
+  const card = (label, group, empty) => {
+    const has = group?.total?.calls > 0;
+    return h("section", "watch-usage-card", null, [
+      h("div", "watch-usage-head", null, [
+        h("span", null, label),
+        has && group.models.length > 1 ? h("span", "watch-stat", usageText(group.total)) : null,
+      ]),
+      has ? usageList(group.models) : h("p", "watch-why", empty),
+    ]);
+  };
+  return h("div", "watch-usage-bar", null, [
+    card("值班员", usage.watcher, "还没有调用记录"),
+    card("主 Agent（唤醒）", usage.agent, "这一天没有叫醒"),
+  ]);
+}
 
 function summary(data) {
   const events = data.ticks.reduce((sum, tick) => sum + tick.verdicts.length, 0);
@@ -35,9 +80,11 @@ function compactView(data, panel) {
   const rounds = data.ticks.flatMap((tick) => tick.rounds.map((round) => ({ at: tick.at, text: `${round.label}：${round.status}` })));
   const said = data.talk.filter((row) => row.kind === "push").map((row) => ({ at: row.at, text: `说了一句：${row.text}` }));
   const recent = [...rounds, ...said].sort((a, b) => b.at.localeCompare(a.at)).slice(0, 4);
+  const hasUsage = data.usage?.watcher?.total?.calls || data.usage?.agent?.total?.calls;
   return h("div", "watch-compact", null, [
     h("p", "watch-line", `今天${summary(data)}`),
     h("p", "watch-sub", `每 ${data.interval} 分钟看一次 · 上次 ${data.ticks.at(-1)?.at ?? "还没有"}`),
+    hasUsage ? h("p", "watch-sub watch-stat", `${briefUsage("值班", data.usage.watcher.total)} · ${briefUsage("唤醒", data.usage.agent.total)}`) : null,
     recent.length ? h("ul", "watch-mini", null, recent.map((row) => h("li", null, null, [h("time", null, row.at), h("span", null, row.text)]))) : null,
     button("watch-more", "看全部", () => panel.setSize("expanded")),
   ]);
@@ -77,20 +124,25 @@ function tickView(data, tick, query) {
     const segment = [...item.segments].reverse().find((row) => row.at <= tick.at);
     return segment ? h("li", null, null, [h("span", "watch-key", item.source), h("span", null, segment.text, [h("small", null, ` ${segment.since.slice(5, 16).replace("T", " ")} 起`)])]) : null;
   });
+  const watcherUsage = tick.watcher?.length ? h("div", "watch-usage-inline", null, [usageList(tick.watcher)]) : null;
   const verdicts = tick.verdicts.map((item) => h("div", "watch-ev", null, [
     h("div", "watch-key", `${item.source} #${item.id}`),
     h("p", null, null, [h("b", `watch-to watch-to--${item.to}`, TO[item.to]), document.createTextNode(item.title)]),
     item.why ? h("p", "watch-why", item.why) : null]));
   const failures = tick.failures.map((item) => h("p", "watch-why", `模型失败：${item.text}`));
   const rounds = tick.rounds.map((round) => {
+    const usageBox = h("div", "watch-usage-inline", null, [usageList(round.usage?.models)]);
     const steps = h("ol", "watch-steps", null, [h("li", "watch-why", "正在读取…")]);
     query("round", { session: round.session }, { cache: "memory" }).then((result) => {
+      const models = result.usage?.models ?? round.usage?.models;
+      const list = usageList(models);
+      usageBox.replaceChildren(...(list ? [list] : []));
       steps.replaceChildren(...result.steps.map((step) => step.kind === "text"
         ? h("li", "watch-said", step.text)
         : h("li", null, null, [h("code", null, step.tool), document.createTextNode(step.text), step.result ? h("small", null, step.result) : null])));
       if (!result.steps.length) steps.replaceChildren(h("li", "watch-why", "这一轮没有留下记录"));
     }).catch((error) => steps.replaceChildren(h("li", "watch-why", `读取失败：${error instanceof Error ? error.message : error}`)));
-    return h("div", null, null, [h("p", "watch-round", `${round.label}：${round.status}`), steps]);
+    return h("div", null, null, [h("p", "watch-round", `${round.label}：${round.status}`), usageBox, steps]);
   });
   const memory = tick.memory?.length ? h("div", null, null, [h("p", "watch-round", "它改了记忆"),
     h("ul", "watch-env", null, tick.memory.map((item) => h("li", null, null, [h("span", "watch-key", item.mark === "+" ? "新增" : "删去"), h("span", null, item.text)])))]) : null;
@@ -99,7 +151,7 @@ function tickView(data, tick, query) {
     h("h3", null, `${tick.at} 这一轮`),
     h("div", "watch-cols", null, [
       column("① 值班员手里有什么（各来源最近一条状态）", [h("ul", "watch-env", null, env)], "还没有来源报告过状态"),
-      column("② 新进来的事件和去向", [...verdicts, ...failures], "这一轮没有新事件"),
+      column("② 新进来的事件和去向", [watcherUsage, ...verdicts, ...failures], "这一轮没有新事件"),
       column("③ 主 Agent 做了什么", [...rounds, memory], "这一轮没有叫醒它"),
     ])]);
 }
@@ -121,7 +173,7 @@ function mount(host, context) {
     });
     const tick = data.ticks[state.selected];
     const body = state.tab === "today"
-      ? [timeline(data, state.selected, (index) => { state.selected = index; draw(); }), tick ? tickView(data, tick, context.query) : h("p", "watch-why", "这一天还没有值班记录")]
+      ? [dayUsageView(data), timeline(data, state.selected, (index) => { state.selected = index; draw(); }), tick ? tickView(data, tick, context.query) : h("p", "watch-why", "这一天还没有值班记录")]
       : [h("pre", "watch-file", data.files[state.tab] || "（空）")];
     host.replaceChildren(h("div", "watch-page", null, [
       h("header", "watch-head", null, [button("watch-nav", "‹", () => shift(-1), "前一天"), h("b", null, data.date), next, h("span", "watch-line", summary(data))]),

@@ -12,7 +12,7 @@ from plugins.context.contract import MATERIALS_V4
 from plugins.host_execution.contract import PROCESSES
 from plugins.ledger.contract import Message
 from plugins.ledger.contract import MESSAGE_CATALOG
-from plugins.models.contract import CHAT_MODELS, MODEL_CATALOG
+from plugins.models.contract import CHAT_MODELS, MODEL_CALL_STATS, MODEL_CATALOG
 from plugins.plugin_settings.contract import SETTINGS_FORMS, declare_settings
 from plugins.programmatic.contract import PROGRAMMATIC
 from plugins.tools.contract import TOOL_DISPLAY
@@ -101,6 +101,7 @@ async def apply(ctx: Context) -> None:
     # 值班面板：侧栏插件面板里的一项，数据从日志、事件文件和账本现读。
     async def register_panel(child: Context) -> object:
         display = child.require(TOOL_DISPLAY)
+        call_stats = child.require(MODEL_CALL_STATS)
 
         def tool_name(binding_id: str) -> str:
             try:
@@ -113,17 +114,19 @@ async def apply(ctx: Context) -> None:
             catalog = ctx.require(MESSAGE_CATALOG)
             if method == "round":
                 reader = catalog.reader(panel.parse_session(payload))
-                return {"steps": await run_file_io(lambda: panel.read_round(reader, tool_name))}
+                steps, usage = await run_file_io(lambda: panel.read_round_detail(reader, tool_name, call_stats))
+                return {"steps": steps, "usage": usage}
             if method != "day":
                 raise PluginUiRpcInvalidRequest(f"不支持的查询：{method}")
             day = panel.parse_day(payload, now.date())
             talk = await run_file_io(lambda: panel.read_talk(catalog.reader(config.target), day, now)) if config.target else []
-            ticks, lanes = await run_file_io(lambda: (panel.read_ticks(runtime.root, day), panel.read_lanes(runtime.root, day)))
+            ticks, usage = await run_file_io(lambda: panel.read_day_usage(runtime.root, day, catalog.reader, call_stats))
+            lanes = await run_file_io(lambda: panel.read_lanes(runtime.root, day))
             files = {name: runtime.files.text(f"watch/{name}") or "" for name in ("WATCH.md", "notes.md", "inbox.md")}
             return {"date": day.isoformat(), "today": now.date().isoformat(), "now": f"{now:%H:%M}", "interval": config.interval_minutes,
-                    "ticks": ticks, "lanes": lanes, "talk": talk, "files": files}
+                    "ticks": ticks, "lanes": lanes, "talk": talk, "files": files, "usage": usage}
 
         return await child.require(UI_SLOTS).register_plugin_ui(
             child, PluginUiDefinition(module="plugin_ui.js", stylesheet="plugin_ui.css", slots=("sidebar.panels",)), query=query)
 
-    _ = await ctx.inject((UI_SLOTS, TOOL_DISPLAY), register_panel, name="panel")
+    _ = await ctx.inject((UI_SLOTS, TOOL_DISPLAY, MODEL_CALL_STATS), register_panel, name="panel")

@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Protocol
 
+from plugins.models.contract import ModelUsage
+
 from .events import Event, line
 
 SYSTEM = """你是值班员。有一个更有判断力、也更贵的主 Agent 在休息，你替它看着不断流进来的事件，决定每条事件的去向。你不和用户说话，也不处理事件本身。
@@ -64,11 +66,61 @@ class Verdict:
 
 
 @dataclass(slots=True)
+class ModelStats:
+    model: str
+    calls: int = 0
+    input_tokens: int = 0
+    hit_tokens: int = 0
+    hit_input_tokens: int = 0
+    output_tokens: int = 0
+    reported_calls: int = 0
+    cache_reported_calls: int = 0
+
+    def add(self, usage: ModelUsage | None) -> None:
+        self.calls += 1
+        if usage is None:
+            return
+        if usage.input_tokens is not None or usage.output_tokens is not None:
+            self.reported_calls += 1
+        if usage.input_tokens is not None:
+            self.input_tokens += usage.input_tokens
+        if usage.output_tokens is not None:
+            self.output_tokens += usage.output_tokens
+        if usage.cached_input_tokens is not None:
+            self.cache_reported_calls += 1
+            self.hit_tokens += usage.cached_input_tokens
+            if usage.input_tokens is not None:
+                self.hit_input_tokens += usage.input_tokens
+
+    def merge(self, other: ModelStats) -> None:
+        self.calls += other.calls
+        self.input_tokens += other.input_tokens
+        self.hit_tokens += other.hit_tokens
+        self.hit_input_tokens += other.hit_input_tokens
+        self.output_tokens += other.output_tokens
+        self.reported_calls += other.reported_calls
+        self.cache_reported_calls += other.cache_reported_calls
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "model": self.model,
+            "calls": self.calls,
+            "input_tokens": self.input_tokens,
+            "hit_tokens": self.hit_tokens,
+            "hit_input_tokens": self.hit_input_tokens,
+            "output_tokens": self.output_tokens,
+            "reported_calls": self.reported_calls,
+            "cache_reported_calls": self.cache_reported_calls,
+        }
+
+
+@dataclass(slots=True)
 class Outcome:
     verdicts: list[Verdict] = field(default_factory=list)
     model: str | None = None
     failures: list[str] = field(default_factory=list)
     calls: int = 0
+    usage: dict[str, ModelStats] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +134,8 @@ class Call:
 class Reply:
     content: str
     calls: tuple[Call, ...]
+    model: str = ""
+    usage: ModelUsage | None = None
 
 
 class ModelFailure(Exception):
@@ -155,7 +209,12 @@ async def judge(complete: Complete, chain: Sequence[str | None], context: str, b
         try:
             for _ in range(max_steps):
                 reply = await complete(model_id, messages, TOOLS)
+                used = reply.model or model_id or "default"
                 outcome.calls += 1
+                stat = outcome.usage.get(used)
+                if stat is None:
+                    stat = outcome.usage[used] = ModelStats(used)
+                stat.add(reply.usage)
                 if not reply.calls:
                     messages += [{"role": "assistant", "content": reply.content or "…"},
                                  {"role": "user", "content": "你还没有调用 decide。请现在调用。"}]
@@ -166,7 +225,7 @@ async def judge(complete: Complete, chain: Sequence[str | None], context: str, b
                 for call in reply.calls:
                     result = _run(call, by_id, files, lookup)
                     if isinstance(result, list):
-                        outcome.verdicts, outcome.model = result, model_id or "default"
+                        outcome.verdicts, outcome.model = result, used
                         return outcome
                     messages.append({"role": "tool", "tool_call_id": call.id, "content": result})
             raise ModelFailure(f"{max_steps} 步内没有给出合格的 decide")
