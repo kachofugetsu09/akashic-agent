@@ -1,11 +1,8 @@
 "use client";
 
-import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { ArrowDownIcon } from "lucide-react";
 import type { ComponentProps } from "react";
-import { useCallback } from "react";
-import { StickToBottom, useStickToBottomContext } from "use-stick-to-bottom";
+import { StickToBottom } from "use-stick-to-bottom";
 
 export type ConversationProps = ComponentProps<typeof StickToBottom>;
 
@@ -68,35 +65,3 @@ export const ConversationEmptyState = ({
     )}
   </div>
 );
-
-export type ConversationScrollButtonProps = ComponentProps<typeof Button>;
-
-export const ConversationScrollButton = ({
-  className,
-  ...props
-}: ConversationScrollButtonProps) => {
-  const { isAtBottom, scrollToBottom } = useStickToBottomContext();
-
-  const handleScrollToBottom = useCallback(() => {
-    scrollToBottom();
-  }, [scrollToBottom]);
-
-  return (
-    !isAtBottom && (
-      <Button
-        aria-label="滚动到底部"
-        className={cn(
-          "absolute rounded-full",
-          className
-        )}
-        onClick={handleScrollToBottom}
-        size="icon"
-        type="button"
-        variant="outline"
-        {...props}
-      >
-        <ArrowDownIcon className="size-4" />
-      </Button>
-    )
-  );
-};

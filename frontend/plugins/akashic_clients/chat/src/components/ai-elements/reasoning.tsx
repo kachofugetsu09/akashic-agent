@@ -3,17 +3,14 @@
 import { useControllableState } from "@radix-ui/react-use-controllable-state";
 import {
   Collapsible,
-  CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
 import { BrainIcon, ChevronDownIcon } from "lucide-react";
-import type { ComponentProps, ComponentType, ReactNode } from "react";
+import type { ComponentProps, ReactNode } from "react";
 import {
   createContext,
-  lazy,
   memo,
-  Suspense,
   useCallback,
   useContext,
   useEffect,
@@ -21,12 +18,6 @@ import {
   useRef,
   useState,
 } from "react";
-import { richRendererFallback } from "@/static-message-response";
-import type { MessageResponseProps } from "./message-response";
-
-const LazyMessageResponse = lazy<ComponentType<MessageResponseProps>>(() =>
-  import("./message-response").then(({ MessageResponse }) => ({ default: MessageResponse }), richRendererFallback),
-);
 
 interface ReasoningContextValue {
   isStreaming: boolean;
@@ -202,29 +193,5 @@ export const ReasoningTrigger = memo(
   }
 );
 
-export type ReasoningContentProps = ComponentProps<
-  typeof CollapsibleContent
-> & {
-  children: string;
-};
-
-export const ReasoningContent = memo(
-  ({ className, children, ...props }: ReasoningContentProps) => (
-    <CollapsibleContent
-      className={cn(
-        "mt-4 text-sm",
-        "data-[state=closed]:fade-out-0 data-[state=closed]:slide-out-to-top-2 data-[state=open]:slide-in-from-top-2 text-muted-foreground outline-none data-[state=closed]:animate-out data-[state=open]:animate-in",
-        className
-      )}
-      {...props}
-    >
-      <Suspense fallback={<p className="plain-message-response">{children}</p>}>
-        <LazyMessageResponse>{children}</LazyMessageResponse>
-      </Suspense>
-    </CollapsibleContent>
-  )
-);
-
 Reasoning.displayName = "Reasoning";
 ReasoningTrigger.displayName = "ReasoningTrigger";
-ReasoningContent.displayName = "ReasoningContent";
