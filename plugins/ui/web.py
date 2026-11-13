@@ -53,6 +53,9 @@ def resolve_web_module(
     root = plugin_dir.resolve(strict=False)
     raw_module = plugin_dir / declared
     module_path = raw_module.resolve(strict=False)
+    if not raw_module.exists():
+        # 界面模块是构建产物，不入库；内置插件从源码运行前要先构建。
+        raise RuntimeError(f"插件 web module 不存在: {declared}（内置插件从源码运行前先执行 npm run build）")
     if (
         not module_path.is_relative_to(root)
         or raw_module.suffix != ".js"
