@@ -305,7 +305,7 @@ class ToolExecution:
         reply.check(self._state)
         source = None
         if self._check_batch is not None:
-            source = reply.source()
+            source = await run_file_io(reply.source)
             refusal = self._check_batch(source)
             if refusal is not None:
                 return await commit(Result("denied", (ContentPart("text", refusal),)))
@@ -348,7 +348,9 @@ class ToolExecution:
                 raise asyncio.CancelledError
             mark("tool.prepare.begin")
             try:
-                prepared = await tool.prepare(arguments, reply.source() if source is None else source)
+                if source is None:
+                    source = await run_file_io(reply.source)
+                prepared = await tool.prepare(arguments, source)
             except Exception as error:
                 return _tool_failure("工具参数准备失败，未执行", error)
             mark("tool.prepare.end")
@@ -485,7 +487,7 @@ class ToolExecution:
             # source() 的前缀以调用消息序号为上界、不可变，同一调用内只取一次。
             source = None
             if reply is not None and self._check_batch is not None:
-                source = reply.source()
+                source = await run_file_io(reply.source)
                 refusal = self._check_batch(source)
                 if refusal is not None:
                     return await commit(record, Result("denied", (ContentPart("text", refusal),)))
@@ -499,7 +501,7 @@ class ToolExecution:
                 # 2. prepare 的最终参数只固定一次，恢复不重新随机化或改写。
                 if record is None or record.value["phase"] == "requested":
                     if reply is not None and source is None:
-                        source = reply.source()
+                        source = await run_file_io(reply.source)
                     try:
                         mark("tool.prepare.begin")
                         prepared = await tool.prepare(arguments, source)
