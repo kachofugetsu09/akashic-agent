@@ -220,7 +220,7 @@ def _read_steps(messages: Iterable[Message], name: Callable[[str], str]) -> list
                 if isinstance(part, ToolCall):
                     steps.append({"kind": "call", "tool": name(part.binding_id), "text": clip(_plain(part.arguments), 300)})
                 elif isinstance(part, ContentPart) and part.kind == "text" and str(part.value).strip():
-                    steps.append({"kind": "text", "tool": "", "text": clip(str(part.value).strip(), 2400)})
+                    steps.append({"kind": "text", "tool": "", "text": str(part.value).strip()[:2400]})
         elif isinstance(body, ToolResult) and steps and steps[-1]["kind"] == "call":
             text = _output(" ".join(str(part.value) for part in body.parts if part.kind == "text"))
             steps[-1]["result"] = ("" if body.outcome == "success" else f"[{body.outcome}] ") + clip(" ".join(text.split()), 200)
