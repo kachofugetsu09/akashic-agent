@@ -11,6 +11,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, AsyncIterator, Callable, cast
 
+from core.common.file_io import run_file_io
 from plugins.models.contract import AuthenticationError
 
 
@@ -47,6 +48,10 @@ class StoredCredentialHandle:
     async def read(self) -> Mapping[str, str]:
         """Read only the credential bound to this exact scoped identity."""
 
+        # 每次模型请求和重试都会读凭据；SQLite 打开与查询放到文件线程，不占事件循环。
+        return await run_file_io(self._read)
+
+    def _read(self) -> Mapping[str, str]:
         _check_private_file(self._path)
         with closing(sqlite3.connect(self._path)) as connection:
             row = connection.execute(
@@ -69,6 +74,9 @@ class StoredCredentialHandle:
         if not self._writable:
             raise PermissionError("model registry is read-only")
         encoded = _encode_payload(payload)
+        await run_file_io(lambda: self._refresh(payload, encoded))
+
+    def _refresh(self, payload: Mapping[str, str], encoded: str) -> None:
         _check_private_file(self._path)
         with closing(sqlite3.connect(self._path)) as connection:
             connection.execute("PRAGMA foreign_keys = ON")
