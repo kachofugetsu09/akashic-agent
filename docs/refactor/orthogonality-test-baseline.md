@@ -84,8 +84,7 @@
 | 36 | `tests/test_message_log.py::test_concurrent_writers_allocate_one_sequence_per_fact` | SES-002 seq 单调唯一 | 并发写入时每条事实恰好一个序号。 |
 | 37 | `tests/test_message_log.py::test_missing_resource_rolls_back_message_and_sequence` | SES-001 原子追加 | 资源缺失时消息和序号一起回滚，不留半条事实。 |
 | 38 | `tests/test_message_metadata.py::test_unknown_metadata_survives_restart_history_and_follow_without_plugins` | O：删除插件后核心事实照常可读；SES 公共 Message | 写入元数据的插件不在场时，历史、重启和 follow 仍能完整读回。Session 事实不依赖插件存在。 |
-| 39 | `tests/test_durable_deliveries.py::test_provider_receipt_precedes_one_append_only_session_projection` | C5外部发送留回执 | 先有 provider 回执，再有唯一一条只追加的 Session 投影。 |
-| 40 | `tests/test_durable_deliveries.py::test_provider_started_sigkill_recovers_uncertain_without_resend` | C5结果未知时保持 `uncertain` | 发送中途被 SIGKILL 后恢复为 `uncertain`，不自动重发。外部效果不能被"恢复内存指针"伪装成已回滚。 |
+| 39、40 | （已删除）`tests/test_durable_deliveries.py` | C5 | 两条用例只覆盖旧 `plugins/ledger/durable_deliveries.py`；该实现没有生产消费者，已与用例一同删除。现行发送与未知结果恢复由 `plugins/delivery` 拥有。 |
 | 42 | `tests/test_message_log.py::test_session_scope_is_fixed_at_admission_and_absent_for_old_sessions` | C4 Session 固定事实不可改写；O：新增维度不改旧行（SES-010） | 真实 `MessageLog` 上断言 scope 首次接纳后同值幂等、异值失败，已有消息的 Session 不能补写 scope，旧 Session 属性字节不变。Akasha 分图和项目归属都以此为唯一依据。 |
 | 43 | `tests/test_akasha_graphs.py::test_unavailable_graph_does_not_stop_other_graphs` | O：故障局部化；MEM-013 独立图消费进度 | 真实安装 Akasha 与 MessageLog，default 或独立图缺少消费出处时，另一图仍完成学习与召回，原图错误保持可见。既有插件生命周期测试没有覆盖同一记忆插件内的独立图。 |
 | 44 | `tests/test_parallel_tool_calls.py`（2 个节点） | C4/SES-002：重叠执行不得改变同一来源事实的提交顺序 | 0079 引入受控重叠后，"ToolResult 按模型顺序落盘"成为新的失败面，同一不变量只留两条最直接路径：`test_parallel_calls_overlap_but_results_commit_in_model_order`（正常提交按模型顺序落盘）与 `test_parallel_failure_does_not_commit_later_results_first`（前驱失败时后继不得抢先落盘）；旧串行实现没有 `parallel` 注册与提交门，这些用例在其上直接失败。分组、容量与取消竞态属于 §1 不保留的实现细节。 |
@@ -113,7 +112,7 @@ MEM-009（同图学习按固定输入顺序发布）。用户明确要求证明 
 
 清理时只删 `test_*` 函数，下列模块里的 helper 要保留，否则保留的测试会 import 失败：
 
-- `tests/conftest.py`、`tests/fixtures/plugin_workspace.py`、`tests/fixtures/durable_delivery_crash/`（第 40 条要用）
+- `tests/conftest.py`、`tests/fixtures/plugin_workspace.py`
 - `tests/test_plugin_install.py` 保留 `_commit`、`_write_v3_plugin`（被第 19、22、23、28 条 import）
 - `tests/test_plugin_fresh_root.py` 保留 `module`（被第 22、23 条 import）
 - `tests/test_default_reply.py` 保留 `application`、`live_root`（被第 31 条 import）
