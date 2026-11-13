@@ -121,7 +121,12 @@ def read_day_usage(
             for round_item in raw_rounds:
                 if not isinstance(round_item, dict):
                     continue
-                usage = read_round_usage(reader_for(str(round_item["session"])), call_stats)
+                messages = _read_tail_messages(reader_for(str(round_item["session"])), 5)
+                usage = _collect_usage(messages, call_stats)
+                steps = _read_steps(messages, lambda _binding: "")
+                # 回合收尾时它自己写的那段话就是这一轮的交代；列表里直接给出来，不用点进去才知道做了什么。
+                round_item["said"] = next((step["text"] for step in reversed(steps) if step["kind"] == "text"), "")
+                round_item["steps"] = sum(step["kind"] == "call" for step in steps)
                 round_item["usage"] = usage
                 models = usage.get("models")
                 if isinstance(models, list):
@@ -198,15 +203,7 @@ def _collect_usage(messages: Iterable[Message], call_stats: Callable[[str], Mode
     return {"models": [item.to_dict() for item in grouped.values()], "total": total.to_dict()}
 
 
-def read_round_usage(reader: MessageReader, call_stats: Callable[[str], ModelCallStats], pages: int = 5) -> dict[str, object]:
-    return _collect_usage(_read_tail_messages(reader, pages), call_stats)
-
-
 # 主 Agent 一个后台回合里的动线：按顺序列出工具调用、每次的结果摘要，以及它最后写下的话。
-def read_round(reader: MessageReader, name: Callable[[str], str], pages: int = 5) -> list[dict[str, str]]:
-    return _read_steps(_read_tail_messages(reader, pages), name)
-
-
 def read_round_detail(
     reader: MessageReader, name: Callable[[str], str], call_stats: Callable[[str], ModelCallStats], pages: int = 5,
 ) -> tuple[list[dict[str, str]], dict[str, object]]:
@@ -223,7 +220,7 @@ def _read_steps(messages: Iterable[Message], name: Callable[[str], str]) -> list
                 if isinstance(part, ToolCall):
                     steps.append({"kind": "call", "tool": name(part.binding_id), "text": clip(_plain(part.arguments), 300)})
                 elif isinstance(part, ContentPart) and part.kind == "text" and str(part.value).strip():
-                    steps.append({"kind": "text", "tool": "", "text": clip(str(part.value).strip(), 600)})
+                    steps.append({"kind": "text", "tool": "", "text": str(part.value).strip()[:2400]})
         elif isinstance(body, ToolResult) and steps and steps[-1]["kind"] == "call":
             text = _output(" ".join(str(part.value) for part in body.parts if part.kind == "text"))
             steps[-1]["result"] = ("" if body.outcome == "success" else f"[{body.outcome}] ") + clip(" ".join(text.split()), 200)
