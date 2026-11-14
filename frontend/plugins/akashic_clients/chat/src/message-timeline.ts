@@ -12,11 +12,22 @@ export interface TimelineAttachment {
 
 export type TimelineSessionReference = { session_id: string; title: string };
 
+export interface CompactionBoundaryValue {
+  reference: string;
+  trigger: "idle" | "soft_limit" | "context_overflow";
+  mode?: "background" | "in_turn";
+  generation: number;
+  tokens_before: number;
+  tokens_after: number;
+  summary_preview?: string;
+}
+
 export type TimelinePart =
   | { kind: "text" | "artifact_ref" | "reply_ref"; value: string }
   | { kind: "session.reference"; value: { sessions: TimelineSessionReference[] } }
   | { kind: "tool_call"; binding_id: string; name: string; owner?: string; arguments: Record<string, unknown> }
   | { kind: "context.notice"; value: { text: string } }
+  | { kind: "compaction.boundary"; value: CompactionBoundaryValue }
   | { kind: "history.provenance" | "history.transcript" | "history.record" | "history.turn_input"; archive: unknown }
   | { kind: string; display: "unavailable" | "hidden" }
   // owner 声明的思考过程：宿主只按通用思考行展示 text，不解读 owner 的 kind 与字段。
@@ -293,6 +304,12 @@ function validPart(value: unknown): boolean {
     case "tool_call": return nonempty(part.binding_id) && nonempty(part.name) && object(part.arguments) !== null
       && (part.owner === undefined || nonempty(part.owner));
     case "context.notice": return nonempty(object(part.value)?.text);
+    case "compaction.boundary": {
+      const value = object(part.value);
+      return value !== null && nonempty(value.reference) && nonempty(value.trigger)
+        && integer(value.generation) && integer(value.tokens_before) && integer(value.tokens_after)
+        && (value.summary_preview === undefined || typeof value.summary_preview === "string");
+    }
     case "history.provenance": case "history.transcript": case "history.record": case "history.turn_input":
       return "archive" in part;
     default: return false;
@@ -363,8 +380,13 @@ export function isTimelinePartVisible(part: TimelinePart): boolean {
   return true;
 }
 
-// 过程与指针类 part（工具调用、思考、上下文提示、回复引用）不算正文；附件与其它可见 part 都算。
-const PROCESS_PARTS = new Set(["tool_call", "context.notice", "reply_ref"]);
+// 过程与指针类 part（工具调用、思考、上下文提示、压缩边界、回复引用）不算正文；附件与其它可见 part 都算。
+const PROCESS_PARTS = new Set(["tool_call", "context.notice", "compaction.boundary", "reply_ref"]);
+export function isCompactionBoundaryMessage(message: TimelineMessage): boolean {
+  if (message.body.kind !== "output" || message.source !== "compaction" || message.attachments.length > 0) return false;
+  const visible = message.body.parts.filter(isTimelinePartVisible);
+  return visible.length > 0 && visible.every((part) => !("display" in part) && part.kind === "compaction.boundary");
+}
 function hasReplyBody(message: TimelineMessage): boolean {
   if (message.attachments.length > 0) return true;
   return message.body.kind !== "control" && message.body.parts.some((part) =>

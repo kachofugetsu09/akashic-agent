@@ -11,6 +11,10 @@
 - 目标读者：维护者、coding agent、迁移与备份实现者、评审者
 - 关联条款：STA-001～STA-003、CTX-001、SES-001～SES-006、MEM-001～MEM-009、PLG-001～PLG-013、WSP-001～WSP-004、SCH-001～SCH-002、PRO-001～PRO-002、BAK-001
 
+## 2026-11-14：后台空闲压缩边界
+
+按 [0157](../decisions/0157-background-idle-compaction.md)，compaction owner 正常新增不可变摘要和一条 source=compaction 的静默 Output，并在同一 Ledger 事务推进 head。边界只含引用和统计，摘要预览只属于 UI 投影。既有 Message 与摘要不原位更新、不逻辑失效或物理减少；head 仍仅由原 owner 按 parent CAS 更新。失败整笔回滚，模型调用账保留；恢复读取原数据库与发行版身份，无新增清理或迁移权限。
+
 ## 2026-10-11：workspace 插件选择与配置（待评审）
 
 [0109](../decisions/0109-workspace-owns-plugin-choices.md) 取代下文旧全局清单的现状描述。

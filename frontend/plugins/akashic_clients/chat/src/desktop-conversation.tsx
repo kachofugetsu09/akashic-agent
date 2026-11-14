@@ -1,6 +1,6 @@
 import { focusMessagePart } from "./message-actions";
 import { copyText } from "./copy-text";
-import { timelineVisibleMessages, timelineFailureRetries, timelineToolResults, timelineReplyGroups, timelineAnchorIndexes, timelineInputStarts, timelineSourceKey, timelineSourceRefreshTokens, needsBeforeReasoningFallback, type ReplyActivity } from "./message-timeline";
+import { timelineVisibleMessages, timelineFailureRetries, timelineToolResults, timelineReplyGroups, timelineAnchorIndexes, timelineInputStarts, timelineSourceKey, timelineSourceRefreshTokens, needsBeforeReasoningFallback, isCompactionBoundaryMessage, type ReplyActivity } from "./message-timeline";
 import { userInput, timelineReply, timelineReplyText, timelineText, type TimelineMessage, type TimelineReply } from "./message-timeline";
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useStickToBottomContext } from "use-stick-to-bottom";
@@ -401,10 +401,12 @@ export const DesktopTimelineMessages = React.memo(function DesktopTimelineMessag
   // 宽度约两页历史：content-visibility 每次解锁都要一帧布局，用户最常滚动的近段不锁更省；
   // 更早的历史仍然锁住，改窗口宽度、开合侧栏时重排的范围有上限。
   const settledFrom = visibleMessages.length - LIVE_TAIL_MESSAGES;
-  return <>{visibleMessages.map((message, index) => <React.Fragment key={message.id}>
+  return <>{visibleMessages.map((message, index) => {
+    const compactionBoundary = isCompactionBoundaryMessage(message);
+    return <React.Fragment key={message.id}>
     {dayBreaks.has(message.id) ? <DaySeparator label={dayBreaks.get(message.id)!} /> : null}
     <div
-    className={`web-message-anchor${index < settledFrom ? " history-isolated" : ""} timeline-${message.body.kind}`}
+    className={`web-message-anchor${index < settledFrom ? " history-isolated" : ""} timeline-${message.body.kind}${compactionBoundary ? " is-compaction-boundary" : ""}`}
     tabIndex={-1} data-message-id={message.id} data-message-kind={message.body.kind} data-message-seq={message.seq}
     ref={(element) => {
       if (element) messageElementsRef.current.set(message.id, element);
@@ -413,17 +415,18 @@ export const DesktopTimelineMessages = React.memo(function DesktopTimelineMessag
     <TimelineMessageView message={message} turnStartedAt={turnStarts.get(message.id)} hideBody={groups.hiddenBodies.has(message.id) || groups.moved.has(message.id)} processMessages={groups.completed.get(message.id)} turnOpen={groups.unsettled.has(message.id)}
       inlineReply={groups.inline.outputs.has(message.id)} leadingProcess={groups.inline.leading.get(message.id)}
       hideProcess={groups.moved.has(message.id)} lookupMessage={lookupMessage} toolResults={toolResults} onNavigate={onNavigate} onError={onError}
-      beforeReasoning={(origin) => needsBeforeReasoningFallback(origin, inputStarts) ? <PluginUiSlot name="turn.before_reasoning"
+      beforeReasoning={compactionBoundary ? undefined : (origin) => needsBeforeReasoningFallback(origin, inputStarts) ? <PluginUiSlot name="turn.before_reasoning"
         sessionId={origin.session_id} messageId={origin.id} block={{ source: origin.source }}
         refreshToken={refreshTokens.get(timelineSourceKey(origin))} /> : null}
-      afterBody={message.body.kind === "output" && message.body.finish === "complete" ? <PluginUiSlot
+      afterBody={compactionBoundary ? undefined
+        : message.body.kind === "output" && message.body.finish === "complete" ? <PluginUiSlot
         name="turn.after_answer" sessionId={message.session_id} messageId={message.id} />
         : message.body.kind === "control" && message.body.action === "failure" ? <FailureRetry
           inputId={failures.retryable.get(message.id)} earlier={failures.earlier.get(message.id)}
           disabled={status !== "idle"} onRetry={onRetry} /> : undefined} />
     {isEngineAbandon(message) || failures.abandonable.has(message.id) ? <TimelineAbandon disabled={status !== "idle"} onAbandon={onAbandon} /> : null}
     {/* 轮次未结束的输出还会接着长，时间与复制等落定后挂在末条上，和实时视图一致。 */}
-    {!groups.hiddenBodies.has(message.id) && !groups.moved.has(message.id) && !groups.joined.has(message.id) && !groups.unsettled.has(message.id) ? <div className={`shared-message-meta timeline-meta ${message.body.kind === "input" ? "user" : "assistant"}`}>
+    {!compactionBoundary && !groups.hiddenBodies.has(message.id) && !groups.moved.has(message.id) && !groups.joined.has(message.id) && !groups.unsettled.has(message.id) ? <div className={`shared-message-meta timeline-meta ${message.body.kind === "input" ? "user" : "assistant"}`}>
       <time dateTime={message.timestamp}>{formatMessageTime(message.timestamp)}</time>
       {message.body.kind === "output" && message.body.finish === "complete" ? <PluginUiSlot
         name="message.meta" sessionId={message.session_id} messageId={message.id} quiet /> : null}
@@ -443,7 +446,8 @@ export const DesktopTimelineMessages = React.memo(function DesktopTimelineMessag
         refreshToken={refreshTokens.get(timelineSourceKey(message))} /></div>
     </div> : null}
   </div>
-  </React.Fragment>)}</>;
+  </React.Fragment>;
+  })}</>;
 }, (previous, next) => {
   // 草稿正文只更新活动行；身份/活动阶段变化才让稳定输入槽位重新读取事实。
   return previous.messages === next.messages

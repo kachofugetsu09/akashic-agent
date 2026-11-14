@@ -20,7 +20,7 @@ import {
   DialogContent,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Brain, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Download, ExternalLink, Gauge, MessagesSquare, Wrench, X, ZoomIn, ZoomOut } from "lucide-react";
+import { Brain, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Download, ExternalLink, Gauge, MessagesSquare, Minimize2, Wrench, X, ZoomIn, ZoomOut } from "lucide-react";
 import { useStickToBottomContext } from "use-stick-to-bottom";
 import { MarqueeText } from "./marquee-text";
 import {
@@ -45,8 +45,8 @@ import type {
   MessageAttachment,
   ToolBlock,
 } from "./chat-message";
-import type { ModelAttempt, ReplyActivity, TimelineAttachment, TimelineMessage, TimelinePart } from "./message-timeline";
-import { userInput, timelineReply, timelineTruncated, timelineToolOutput, historyTranscript, isTimelinePartVisible, needsBeforeReasoningFallback } from "./message-timeline";
+import type { CompactionBoundaryValue, ModelAttempt, ReplyActivity, TimelineAttachment, TimelineMessage, TimelinePart } from "./message-timeline";
+import { userInput, timelineReply, timelineTruncated, timelineToolOutput, historyTranscript, isCompactionBoundaryMessage, isTimelinePartVisible, needsBeforeReasoningFallback } from "./message-timeline";
 import { MessageReplyReference } from "./message-actions";
 import { StaticMessageResponse, richRendererFallback } from "./static-message-response";
 import type { MessageResponseProps } from "@/components/ai-elements/message-response";
@@ -308,6 +308,7 @@ type FlowItem =
   | { kind: "tool"; key: string; origin: TimelineMessage; index: number; part: TimelinePart; block: ToolBlock }
   | { kind: "narration"; key: string; origin: TimelineMessage; index: number; part: TimelinePart; text: string }
   | { kind: "notice"; key: string; origin: TimelineMessage; index: number; part: TimelinePart; text: string }
+  | { kind: "compaction"; key: string; origin: TimelineMessage; index: number; part: TimelinePart; value: CompactionBoundaryValue }
   | { kind: "part"; key: string; origin: TimelineMessage; index: number; part: TimelinePart };
 
 /** 组内全部成员按 part 顺序展开成独立流项：思考、工具、中途正文、末条正文各归原位。 */
@@ -343,6 +344,7 @@ function timelineFlow(messages: TimelineMessage[], finalId: string | undefined, 
             : outcome && outcome !== "success" ? outcomeLabels[outcome] : undefined } }];
       }
       if (part.kind === "context.notice") return [{ kind: "notice", key, origin, index, part, text: part.value.text }];
+      if (part.kind === "compaction.boundary") return [{ kind: "compaction", key, origin, index, part, value: part.value }];
       if (origin.id === finalId) {
         return isTimelinePartVisible(part) ? [{ kind: "part", key, origin, index, part }] : [];
       }
@@ -361,11 +363,74 @@ function toolImages(result: TimelineMessage | undefined): SentAttachmentItem[] |
 
 function flowRank(part: TimelinePart): number {
   if ("display" in part) return part.display === "thinking" ? 1 : 0;
-  return part.kind === "context.notice" ? 2 : 0;
+  return part.kind === "context.notice" || part.kind === "compaction.boundary" ? 2 : 0;
 }
 
-/** 上下文提示是本轮请求的诊断，与思考行同级：收起时一行摘要，展开看全文。 */
+function formatCompactTokenCount(tokens: number): string {
+  if (tokens >= 10_000) return `${Math.round(tokens / 1000)}k`;
+  if (tokens >= 1_000) return `${(tokens / 1000).toFixed(1).replace(/\.0$/u, "")}k`;
+  return String(tokens);
+}
+
+const COMPACTION_TRIGGER_LABELS: Record<CompactionBoundaryValue["trigger"], string> = {
+  idle: "空闲自动压缩",
+  soft_limit: "容量软水位",
+  context_overflow: "容量触顶",
+};
+
+/** 压缩边界：对齐 Claude Desktop 的低调发丝线分隔条，默认收起一行，点开可看节省体积与摘要片段。 */
+function CompactionBoundaryRow({ boundary, standalone = false }: {
+  boundary: CompactionBoundaryValue;
+  standalone?: boolean;
+}) {
+  const saved = Math.max(0, boundary.tokens_before - boundary.tokens_after);
+  const verb = boundary.mode === "background" ? "已后台自动压缩" : "已压缩会话";
+  const label = saved > 0
+    ? `${verb} · 省下 ${formatCompactTokenCount(saved)} tokens`
+    : boundary.tokens_before > 0
+    ? `${verb} · 原 ${formatCompactTokenCount(boundary.tokens_before)} tokens`
+    : verb;
+  const triggerLabel = boundary.mode === "background"
+    ? "后台空闲自动压缩"
+    : (COMPACTION_TRIGGER_LABELS[boundary.trigger] ?? "自动压缩");
+  return <details className={`compaction-boundary${standalone ? " is-standalone" : ""}`}>
+    <summary className="compaction-boundary__trigger">
+      <span className="compaction-boundary__pill">
+        <Minimize2 className="compaction-boundary__icon" size={12} aria-hidden="true" />
+        <span className="compaction-boundary__label">{label}</span>
+        <ChevronDown className="compaction-boundary__chevron" size={12} aria-hidden="true" />
+      </span>
+    </summary>
+    <div className="compaction-boundary__detail" role="status">
+      <p className="compaction-boundary__meta">
+        {triggerLabel} · {boundary.tokens_before.toLocaleString()} → {boundary.tokens_after.toLocaleString()} tokens · 第 {boundary.generation} 代摘要
+      </p>
+      {boundary.summary_preview ? (
+        <pre className="compaction-boundary__preview">{boundary.summary_preview}</pre>
+      ) : null}
+    </div>
+  </details>;
+}
+
+/** 上下文提示是本轮请求的诊断，与思考行同级：收起时一行摘要，展开看全文；压缩完成提示复用分隔条视觉。 */
 function ContextNoticeRow({ text }: { text: string }) {
+  if (text.startsWith("已压缩会话")) {
+    const paren = text.indexOf("（");
+    const headline = paren > 0 ? text.slice(0, paren) : text;
+    const detail = paren > 0 && text.endsWith("）") ? text.slice(paren + 1, -1) : text;
+    return <details className="compaction-boundary">
+      <summary className="compaction-boundary__trigger">
+        <span className="compaction-boundary__pill">
+          <Minimize2 className="compaction-boundary__icon" size={12} aria-hidden="true" />
+          <span className="compaction-boundary__label">{headline}</span>
+          <ChevronDown className="compaction-boundary__chevron" size={12} aria-hidden="true" />
+        </span>
+      </summary>
+      <div className="compaction-boundary__detail" role="status">
+        <p className="compaction-boundary__meta">{detail}</p>
+      </div>
+    </details>;
+  }
   return <details className="context-notice">
     <summary className="process-trigger">
       <Gauge className="process-trigger-icon" size={13} aria-hidden="true" />
@@ -392,6 +457,7 @@ function FlowItemView({ item, onCopyToolDetail, partView }: {
   const content = item.kind === "thinking" ? <ThinkingRow content={item.content} streaming={false} />
     : item.kind === "tool" ? <ToolStep block={item.block} active={item.block.status === "input-available"} onCopyDetail={onCopyToolDetail} />
     : item.kind === "notice" ? <ContextNoticeRow text={item.text} />
+    : item.kind === "compaction" ? <CompactionBoundaryRow boundary={item.value} />
     : item.kind === "narration" ? <div className="timeline-narration">
       <MessageBody content={item.text} streaming={false} deferRichContent onError={partView?.onError} />
     </div>
@@ -688,7 +754,17 @@ export function TimelineMessageView({ message, lookupMessage, toolResults, onNav
   onNavigate: (id: string, partIndex?: number) => void;
   onError?: (error: unknown) => void;
 }) {
+  usePluginUiCatalogVersion();
   const body = message.body;
+  if (isCompactionBoundaryMessage(message)) {
+    return <div className="message-row compaction-row">
+      {body.kind === "output" ? body.parts.map((part, index) => (
+        !("display" in part) && part.kind === "compaction.boundary"
+          ? <div key={index} data-part-index={index} tabIndex={-1}><CompactionBoundaryRow boundary={part.value} standalone /></div>
+          : null
+      )) : null}
+    </div>;
+  }
   // 未结束轮次仍可有正文；是否最终完成不改变文字的展示类别。
   const flow = hideProcess || inlineReply ? [] : timelineFlow(processMessages, turnOpen ? "" : message.id, toolResults);
   const hasFlow = body.kind === "output" && flow.length > 0;
@@ -708,7 +784,6 @@ export function TimelineMessageView({ message, lookupMessage, toolResults, onNav
     {!body.parts.some(part => part.kind === "text" && !("display" in part) && part.value.trim())
       ? <p>{deliveredFiles[0].filename ?? "附件"}</p> : null}</div> : null;
   // 插件认领的文件附件（例如网页）在任何消息里都作为插图展示，插件缺席时退回普通附件卡片。
-  usePluginUiCatalogVersion();
   const figure = (ref: TimelineAttachment) => !renderAttachment && ref.kind === "file"
     && pluginSlotAccepts("message.attachment", { ...ref, origin });
   const attachment = (id: string) => {
@@ -907,6 +982,7 @@ function TimelinePartView({ part, toolResult = false, userInput = false, attachm
   if ("archive" in part) return part.kind === "history.transcript" ? <TimelineTranscript archive={part.archive} hideProcess={hideTranscriptProcess} /> : null;
   switch (part.kind) {
     case "context.notice": return <ContextNoticeRow text={part.value.text} />;
+    case "compaction.boundary": return <CompactionBoundaryRow boundary={part.value} />;
     case "text": return toolResult ? <ToolResultContent value={"rendered" in part ? part.rendered : part.value} />
       : userInput && !messageNeedsMarkdown(part.value) ? <UserPlainText text={part.value} />
       : <MessageBody content={part.value} streaming={false} deferRichContent onError={onError} />;

@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from functools import partial
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 import logging
 import time
 from typing import Literal, cast
@@ -19,18 +21,23 @@ from agent.plugin_composition import (
     RUNTIME_STARTED,
     RUNTIME_STOPPING,
     Context,
+    stop_spawned,
 )
 from plugins.models.contract import (
-    CHAT_MODELS, MODEL_CATALOG, BoundChatModel, ContentSafetyError, ContextLengthError, ContextModel, ModelChoice, ModelError, ModelExecution,
-    ModelRequest, ModelTimeoutError, ModelUnavailableError, ModelUse, content_rejection_reason, is_content_rejection, model_options,
+    CHAT_MODELS, MODEL_CALLS, MODEL_CATALOG, MODEL_CONTENT, MODEL_PROJECTION, MODEL_SELECTION,
+    BoundChatModel, ChatModelSelection, ContentSafetyError, ContextLengthError, ContextModel, ModelChoice,
+    ModelError, ModelExecution, ModelRequest, ModelTimeoutError, ModelUnavailableError, ModelUse,
+    content_rejection_reason, is_content_rejection, model_options,
 )
+from plugins.tools.contract import TOOL_DISPLAY
 from plugins.context.contract import (
     CONTEXT, IDLE_COMPACT_MINUTES, IDLE_COMPACT_TOKENS, MATERIALS_V4, OUTPUT_RESERVE_TOKENS,
-    MaterialData, ReductionStatus, SUMMARY_SOFT_LIMIT, idle_gap_anchor, idle_gap_minutes, idle_summary_due, output_reserve, summary_due,
+    MaterialData, ReductionStatus, SUMMARY_SOFT_LIMIT, background_idle_anchor, background_idle_due,
+    idle_gap_anchor, idle_gap_minutes, idle_summary_due, output_reserve, summary_due,
 )
-from plugins.ledger.contract import BINDINGS
-from plugins.ledger.contract import MESSAGE_CATALOG, OWNER_STATE
-from plugins.ledger.contract import HistoryWindow, Input, Message
+from plugins.ledger.contract import ARTIFACT_READ, BINDINGS
+from plugins.ledger.contract import MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE
+from plugins.ledger.contract import ContentPart, ContentReferences, Control, HistoryWindow, Input, Message, Output
 
 from .records import StoredSummary, SummaryLookup, SummaryRecord, SummaryRecords
 from .message_summary import (
@@ -41,7 +48,7 @@ from plugins.compaction.contract import COMPACTION_READER, COMPACTION_SUMMARIES
 from plugins.turn_projection.contract import TURN_PROJECTION, TurnProjection
 from agent.plugin_composition.plugin_config import PLUGIN_CONFIG
 from agent.plugin_composition.model import ServiceKey
-from plugins.ui.contract import Configuration, ModelSettings, mount_settings
+from plugins.ui.contract import Configuration, ModelSettings, mount_settings, part_display_key
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +56,11 @@ api_version = 3
 name = "compaction"
 version = "4.1.0"
 desc = "按不可变消息身份发布摘要，并为已使用的摘要保留原始读取口"
-inject = (PLUGIN_CONFIG, MATERIALS_V4, CONTEXT, OWNER_STATE, BINDINGS, MESSAGE_CATALOG, CHAT_MODELS, MODEL_CATALOG, TURN_PROJECTION)
+inject = (
+    PLUGIN_CONFIG, MATERIALS_V4, CONTEXT, OWNER_STATE, BINDINGS, ARTIFACT_READ,
+    MESSAGE_CATALOG, MESSAGE_WRITERS, CHAT_MODELS, MODEL_CALLS, MODEL_CATALOG,
+    MODEL_CONTENT, MODEL_PROJECTION, MODEL_SELECTION, TOOL_DISPLAY, TURN_PROJECTION,
+)
 
 
 SETTINGS = ServiceKey[Configuration]("compaction.settings.v1")
@@ -72,6 +83,73 @@ IDLE_DEADLINE_SECONDS = 120.0
 SOFT_DEADLINE_SECONDS = 300.0
 # 按计划节省不到请求估算的这一比例时不值得花钱（新摘要按父摘要原长估算）。
 IDLE_MIN_SAVING = 0.2
+IDLE_SWEEP_SECONDS = 60.0
+IDLE_SWEEP_INITIAL_DELAY_SECONDS = 15.0
+IDLE_MAX_SESSION_AGE_DAYS = 7
+BOUNDARY_SOURCE = "compaction"
+BOUNDARY_KIND = "compaction.boundary"
+BOUNDARY_PREVIEW_CHARS = 800
+
+_TRIGGER_LABELS = {
+    "idle": "空闲预压缩",
+    "soft_limit": "容量软水位",
+    "context_overflow": "容量触顶",
+}
+
+
+def _format_tokens_short(tokens: int) -> str:
+    if tokens >= 10_000:
+        return f"{round(tokens / 1000)}k"
+    if tokens >= 1_000:
+        return f"{tokens / 1000:.1f}k".removesuffix(".0")
+    return str(tokens)
+
+
+def _format_compaction_notice(record: SummaryRecord) -> str:
+    label = _TRIGGER_LABELS.get(record.trigger, "自动压缩")
+    saved = max(0, record.tokens_before - record.tokens_after)
+    if saved > 0:
+        return (
+            f"已压缩会话 · 省下 {_format_tokens_short(saved)} tokens"
+            f"（{record.tokens_before:,} → {record.tokens_after:,} · {label} · 第 {record.generation} 代）"
+        )
+    return (
+        f"已压缩会话（{record.tokens_before:,} → {record.tokens_after:,} · {label} · 第 {record.generation} 代）"
+    )
+
+
+def _check_boundary(part: ContentPart) -> ContentReferences:
+    raw = part.value
+    if not isinstance(raw, Mapping):
+        raise ValueError("compaction.boundary 必须是对象")
+    value = cast(Mapping[str, object], raw)
+    required = {"reference", "trigger", "generation", "tokens_before", "tokens_after"}
+    allowed = required | {"mode"}
+    if not required.issubset(value) or not set(value).issubset(allowed):
+        raise ValueError("compaction.boundary 字段无效")
+    ref = value["reference"]
+    trigger = value["trigger"]
+    generation = value["generation"]
+    tokens_before = value["tokens_before"]
+    tokens_after = value["tokens_after"]
+    mode = value.get("mode", "background")
+    if not isinstance(ref, str) or not ref:
+        raise ValueError("compaction.boundary.reference 无效")
+    if trigger not in _TRIGGER_LABELS:
+        raise ValueError("compaction.boundary.trigger 无效")
+    if type(generation) is not int or generation < 1:
+        raise ValueError("compaction.boundary.generation 无效")
+    if type(tokens_before) is not int or tokens_before < 0 or type(tokens_after) is not int or tokens_after < 0:
+        raise ValueError("compaction.boundary token 计数无效")
+    if mode not in {"background", "in_turn"}:
+        raise ValueError("compaction.boundary.mode 无效")
+    return ContentReferences()
+
+
+@dataclass
+class _SessionLock:
+    lock: asyncio.Lock
+    users: int = 0
 
 
 @dataclass
@@ -139,6 +217,24 @@ def _idle_minutes_for(config: Config, snapshot: tuple[Message, ...]) -> int:
     if config.idle_scope == "all":
         return config.idle_trigger_minutes
     return config.idle_trigger_minutes if snapshot[0].session_id in config.idle_sessions else 0
+
+
+def _visible_messages(messages: tuple[Message, ...], source: str) -> tuple[Message, ...]:
+    """与 reply_program 保持同一隐藏规则：其他来源尚未收尾的尾部消息不进入后台评估与摘要。"""
+    finished: set[str] = set()
+    hidden: set[int] = set()
+    for index in range(len(messages) - 1, -1, -1):
+        message = messages[index]
+        if message.source == source or message.source in finished:
+            continue
+        body = message.body
+        if isinstance(body, Control) and body.action in {"failure", "abandon"} or isinstance(body, Output) and body.finish != "continue":
+            finished.add(message.source)
+        else:
+            hidden.add(index)
+    if not hidden:
+        return messages
+    return tuple(message for index, message in enumerate(messages) if index not in hidden)
 
 
 class _CompactionReader:
@@ -398,19 +494,53 @@ async def apply(ctx: Context) -> None:
 
     await mount_settings(ctx, SETTINGS, ModelSettings(ctx, Config, SETTING_FIELDS, status=status))
 
-    async def start(_event: object) -> None:
-        nonlocal read_current, read_state
-        state = records()
-        read_state = state
-        read_current = partial(current_head, state)
+    async def _display_boundary(part: ContentPart) -> Mapping[str, object]:
+        """在线程读取不可变摘要，只把预览加入展示投影。"""
+        _ = _check_boundary(part)
+        value = dict(cast(Mapping[str, object], part.value))
+        ref = cast(str, value["reference"])
+        if read_state is not None:
+            stored = await run_file_io(lambda: read(ref))
+            if stored is not None and stored.content:
+                text = stored.content.strip()
+                if len(text) > BOUNDARY_PREVIEW_CHARS:
+                    text = text[:BOUNDARY_PREVIEW_CHARS].rstrip() + "…"
+                value["summary_preview"] = text
+        return value
 
-    async def stop(_event: object) -> None:
-        nonlocal read_current, read_state
-        read_state = None
-        read_current = None
+    _ = await ctx.provide(part_display_key(BOUNDARY_KIND), _display_boundary)
 
-    _ = await ctx.on(RUNTIME_STARTED, start)
-    _ = await ctx.on(RUNTIME_STOPPING, stop)
+    boundary_writers = ctx.require(MESSAGE_WRITERS).bind(
+        ctx,
+        author="compaction",
+        source=BOUNDARY_SOURCE,
+        body_types=(Output,),
+        content={BOUNDARY_KIND: _check_boundary},
+    )
+
+    session_locks: dict[str, _SessionLock] = {}
+    active_bg_tasks: dict[str, asyncio.Task[bool]] = {}
+    sweeper_task: asyncio.Task[None] | None = None
+
+    def _session_lock_busy(session_id: str) -> bool:
+        entry = session_locks.get(session_id)
+        return entry is not None and (entry.lock.locked() or entry.users > 0)
+
+    @asynccontextmanager
+    async def hold_session_lock(session_id: str) -> AsyncIterator[None]:
+        entry = session_locks.get(session_id)
+        if entry is None:
+            entry = _SessionLock(asyncio.Lock())
+            session_locks[session_id] = entry
+        entry.users += 1
+        try:
+            async with entry.lock:
+                yield
+        finally:
+            entry.users -= 1
+            if entry.users == 0 and session_locks.get(session_id) is entry:
+                del session_locks[session_id]
+
     lookup = SummaryLookup(read, head)
     _ = await ctx.provide(COMPACTION_SUMMARIES, lookup)
     _ = await ctx.provide(COMPACTION_READER, _CompactionReader(
@@ -458,10 +588,23 @@ async def apply(ctx: Context) -> None:
             windows[record.reference] = window
         return window
 
-    async def compact(snapshot: tuple[Message, ...], materials: MaterialData, request: ModelRequest,
-                      model: BoundChatModel, projection: ContextModel, *, source: str, force: bool,
-                      hard_limit: bool, on_status: ReductionStatus | None = None,
-                      summary_limit: int | None = None) -> MaterialData | None:
+    bg_published_refs: set[str] = set()
+
+    async def _compact_core(
+        snapshot: tuple[Message, ...],
+        materials: MaterialData,
+        request: ModelRequest,
+        model: BoundChatModel,
+        projection: ContextModel,
+        *,
+        source: str,
+        force: bool,
+        hard_limit: bool,
+        on_status: ReductionStatus | None = None,
+        summary_limit: int | None = None,
+        background_idle: bool = False,
+        execution: ModelExecution | None = None,
+    ) -> tuple[MaterialData, SummaryRecord] | None:
         """按已结算工具批次选未覆盖消息，再原子发布一份真实摘要。"""
         # 1. 容量与近期保留均按当前已固定的业务模型判断。
         reminder = context.reminder_content(materials)
@@ -479,19 +622,50 @@ async def apply(ctx: Context) -> None:
         )
         window = projection.context_window
         before = projection.estimate(request)
-        if window is None or not snapshot or not summary_due(
-            before, window, force=force, snapshot=snapshot,
-            idle_minutes=_idle_minutes_for(config, snapshot), idle_tokens=config.idle_trigger_tokens,
-        ):
+        if window is None or not snapshot:
             return None
-        soft_due = force or before >= int(window * SUMMARY_SOFT_LIMIT)
+        if background_idle:
+            if not background_idle_due(
+                before, snapshot, now=datetime.now(UTC),
+                idle_minutes=_idle_minutes_for(config, snapshot),
+                idle_tokens=config.idle_trigger_tokens,
+                source=source, boundary_source=BOUNDARY_SOURCE,
+            ):
+                return None
+            soft_due = False
+        else:
+            if not summary_due(
+                before, window, force=force, snapshot=snapshot,
+                idle_minutes=_idle_minutes_for(config, snapshot), idle_tokens=config.idle_trigger_tokens,
+            ):
+                return None
+            soft_due = force or before >= int(window * SUMMARY_SOFT_LIMIT)
         state = records()
         parent = await run_file_io(lambda: state.head(snapshot[0].session_id))
         current_summary = materials.get("summary")
         if current_summary is not None and not isinstance(current_summary, Mapping):
             raise TypeError("Context 材料摘要必须是对象")
         if (None if parent is None else material(parent)) != current_summary:
-            raise ValueError("本次已取得摘要与当前 Session head 不一致")
+            if parent is not None and parent.reference in bg_published_refs and isinstance(parent, SummaryRecord):
+                if not force and not hard_limit:
+                    return material(parent), parent
+                materials = {**materials, "summary": material(parent)}
+                refreshed, refresh_error = context.build_attempt(
+                    snapshot, materials=materials, model=projection, tools=request.tools,
+                    max_output_tokens=request.max_output_tokens,
+                    current_reminder_input_id=reminder_input_id,
+                )
+                if refresh_error is None:
+                    before = projection.estimate(refreshed)
+                    if (
+                        not force
+                        and before + output_reserve(request.max_output_tokens, window) <= window
+                        and before < int(window * SUMMARY_SOFT_LIMIT)
+                    ):
+                        return material(parent), parent
+                    soft_due = force or before >= int(window * SUMMARY_SOFT_LIMIT)
+            else:
+                raise ValueError("本次已取得摘要与当前 Session head 不一致")
         turns = ctx.require(TURN_PROJECTION)
         parent_ids = frozenset() if parent is None else frozenset(parent.source_message_ids)
         if parent is not None:
@@ -633,12 +807,13 @@ async def apply(ctx: Context) -> None:
             # 嵌套 execution 复用调用者已经固定的角色，不重读模型配置；
             # 只包住模型调用，摘要 binding 必须回到 compaction 自己的调用方；期限也不覆盖发布事务。
             try:
-                async with asyncio.timeout_at(deadline), ctx.require(CHAT_MODELS).execution() as execution:
+                exec_cm = nullcontext(execution) if execution is not None else ctx.require(CHAT_MODELS).execution()
+                async with asyncio.timeout_at(deadline), exec_cm as active_execution:
                     async def report_fallback(text: str) -> None:
                         if on_status is not None:
                             await on_status(text, True)
 
-                    chosen, fallback = await summary_models(execution, model, config.model, report_fallback)
+                    chosen, fallback = await summary_models(active_execution, model, config.model, report_fallback)
                     return await summarize(groups, previous=previous, limit=limit, model=chosen,
                                            fallback=fallback, on_fallback=report_fallback,
                                            call=call, on_delta=report_retry)
@@ -677,9 +852,22 @@ async def apply(ctx: Context) -> None:
         record = record.model_copy(update={"tokens_after": after})
         # 3. binding 可以先固定，但读者只有在摘要事务成功后才取得此引用。
         reader = ctx.require(MESSAGE_CATALOG).reader(record.session_id)
-        _ = await state.publish(
-            record, reader, parent=parent, summary_indexes=context.summary_indexes,
-        )
+        writer = boundary_writers(record.session_id) if background_idle else None
+        try:
+            boundary = None if writer is None else await writer.prepare_async(
+                f"compaction-boundary:{record.reference}",
+                Output((ContentPart(BOUNDARY_KIND, {
+                    "reference": record.reference, "trigger": record.trigger, "mode": "background",
+                    "generation": record.generation, "tokens_before": record.tokens_before,
+                    "tokens_after": record.tokens_after,
+                }),), "complete"),
+            )
+            _ = await state.publish(
+                record, reader, parent=parent, summary_indexes=context.summary_indexes, boundary=boundary,
+            )
+        finally:
+            if writer is not None:
+                writer.expire()
         if not soft_due:
             logger.info("空闲预压缩完成 session=%s 估算 %d -> %d tokens 耗时 %.1fs",
                         record.session_id, before, after, time.monotonic() - started)
@@ -689,7 +877,20 @@ async def apply(ctx: Context) -> None:
         if record.omitted_message_ids and on_status is not None:
             await on_status(f"摘要请求放不下全部历史：{len(record.omitted_message_ids)} 条更早的消息没有进入摘要，"
                             "模型之后看不到它们。", True)
-        return summary
+        if on_status is not None:
+            await on_status(_format_compaction_notice(record), True)
+        return summary, record
+
+    async def compact(snapshot: tuple[Message, ...], materials: MaterialData, request: ModelRequest,
+                      model: BoundChatModel, projection: ContextModel, *, source: str, force: bool,
+                      hard_limit: bool, on_status: ReductionStatus | None = None,
+                      summary_limit: int | None = None) -> MaterialData | None:
+        result = await _compact_core(
+            snapshot, materials, request, model, projection,
+            source=source, force=force, hard_limit=hard_limit,
+            on_status=on_status, summary_limit=summary_limit,
+        )
+        return None if result is None else result[0]
 
     # 空闲压缩是可选优化：任何异常都转成 notice 后继续回合，只有取消继续向外传。
     async def reduce_idle(snapshot: tuple[Message, ...], materials: MaterialData, request: ModelRequest,
@@ -722,6 +923,14 @@ async def apply(ctx: Context) -> None:
             resume_idle(snapshot[0].session_id, attempts, "压缩成功")
         return summary
 
+    async def _wait_background_for_turn(session_id: str, on_status: ReductionStatus | None) -> None:
+        bg_task = active_bg_tasks.get(session_id)
+        if bg_task is None or bg_task.done():
+            return
+        if on_status is not None:
+            await on_status("正在等待后台空闲压缩完成…", False)
+        _ = await asyncio.shield(bg_task)
+
     async def reduce(snapshot: tuple[Message, ...], materials: MaterialData, request: ModelRequest,
                      model: BoundChatModel, projection: ContextModel, *, source: str, force: bool,
                      required: bool = True,
@@ -732,64 +941,256 @@ async def apply(ctx: Context) -> None:
         before = projection.estimate(request)
         if window is None or not snapshot:
             return None
-        # 软水位以下只剩空闲路径：硬水位一定高于软水位，走到这里的请求原样也能发。
-        if not summary_due(before, window, force=force):
-            if not idle_due(snapshot, before, model):
+        session_id = snapshot[0].session_id
+        await _wait_background_for_turn(session_id, on_status)
+        async with hold_session_lock(session_id):
+            # 软水位以下只剩空闲路径：硬水位一定高于软水位，走到这里的请求原样也能发。
+            if not summary_due(before, window, force=force):
+                if not idle_due(snapshot, before, model):
+                    return None
+                return await reduce_idle(snapshot, materials, request, model, projection, source=source,
+                                         on_status=on_status, summary_limit=summary_limit)
+            hard_limit = (force and required) or before + output_reserve(request.max_output_tokens, window) > window
+            # An optional shrink must not rewrite a request already within the raw-history target.
+            if (force or before < int(window * SUMMARY_SOFT_LIMIT)) and not hard_limit and before <= config.keep_recent_tokens:
                 return None
-            return await reduce_idle(snapshot, materials, request, model, projection, source=source,
-                                     on_status=on_status, summary_limit=summary_limit)
-        hard_limit = (force and required) or before + output_reserve(request.max_output_tokens, window) > window
-        # An optional shrink must not rewrite a request already within the raw-history target.
-        if (force or before < int(window * SUMMARY_SOFT_LIMIT)) and not hard_limit and before <= config.keep_recent_tokens:
-            return None
-        state = failure_state(snapshot, source, model)
-        budget = (f"模型 {model.descriptor.model_id}；窗口 {window:,}；输入估算 {before:,}；"
-                  f"输出预留 {output_reserve(request.max_output_tokens, window):,}；原文目标 {config.keep_recent_tokens:,} tokens")
-        paused = f"本轮上下文压缩连续失败 {MAX_SUMMARY_FAILURES} 次，已暂停自动压缩；新输入或更换模型后重新尝试。"
-        if state.count >= MAX_SUMMARY_FAILURES:
-            if hard_limit:
-                raise SummaryError(state.detail + budget + "。" + paused + "本次请求被阻断，未继续业务生成。" + state.recovery)
-            return None
-        if on_status is not None:
-            await on_status("正在压缩上下文：" + budget, False)
-        notices: list[str] = []
-        async def report(text: str, retain: bool) -> None:
-            if retain:
-                notices.append(text)
+            state = failure_state(snapshot, source, model)
+            budget = (f"模型 {model.descriptor.model_id}；窗口 {window:,}；输入估算 {before:,}；"
+                      f"输出预留 {output_reserve(request.max_output_tokens, window):,}；原文目标 {config.keep_recent_tokens:,} tokens")
+            paused = f"本轮上下文压缩连续失败 {MAX_SUMMARY_FAILURES} 次，已暂停自动压缩；新输入或更换模型后重新尝试。"
+            if state.count >= MAX_SUMMARY_FAILURES:
+                if hard_limit:
+                    raise SummaryError(state.detail + budget + "。" + paused + "本次请求被阻断，未继续业务生成。" + state.recovery)
+                return None
             if on_status is not None:
-                await on_status(text, retain)
+                await on_status("正在压缩上下文：" + budget, False)
+            notices: list[str] = []
+            async def report(text: str, retain: bool) -> None:
+                if retain:
+                    notices.append(text)
+                if on_status is not None:
+                    await on_status(text, retain)
 
-        try:
-            summary = await compact(snapshot, materials, request, model, projection,
-                                    source=source, force=force, hard_limit=hard_limit, on_status=report,
-                                    summary_limit=summary_limit)
-        except (RuntimeError, TimeoutError, SummaryError) as error:
-            if not (ModelError.matches(error) or isinstance(error, SummaryError)):
-                raise
-            state.count += 1
-            if state.count == MAX_SUMMARY_FAILURES:
-                logger.warning("[paused] 上下文压缩: session=%s 本轮连续失败 %d 次，暂停自动压缩；新输入或更换模型后重新尝试",
-                               snapshot[0].session_id, state.count)
-            state.detail = f"上下文压缩失败：{type(error).__name__}: {error}。"
-            state.recovery = _recovery(error)
-            detail = state.detail + budget + "。"
-            if hard_limit:
-                blocked = "\n".join((*notices, detail + "本次请求被阻断，未继续业务生成。"))
-                # 摘要模型自身的配置问题（如 404）要留「切换摘要模型」的出口，不引导放弃当前输入。
-                unsafe = is_content_rejection(error) and ModelError.matches(error, ContentSafetyError)
-                raise SummaryError(content_rejection_reason(blocked) if unsafe else blocked + state.recovery) from error
-            if on_status is not None:
-                outcome = ("本次压缩没有缩小请求，保留原文继续生成。" if isinstance(error, SummaryCapacityError)
-                           else detail + "原请求仍满足硬容量，本次继续生成。")
-                await on_status(outcome
-                                + (paused if state.count >= MAX_SUMMARY_FAILURES else ""), True)
-            return None
-        state.count, state.detail = 0, ""
-        # 软水位或强制压缩成功同样证明摘要模型可用。
-        if summary is not None and snapshot[0].session_id in idle_attempts:
-            idle_attempts[snapshot[0].session_id].failures = 0
-            resume_idle(snapshot[0].session_id, idle_attempts[snapshot[0].session_id], "压缩成功")
-        return summary
+            try:
+                summary = await compact(snapshot, materials, request, model, projection,
+                                        source=source, force=force, hard_limit=hard_limit, on_status=report,
+                                        summary_limit=summary_limit)
+            except (RuntimeError, TimeoutError, SummaryError) as error:
+                if not (ModelError.matches(error) or isinstance(error, SummaryError)):
+                    raise
+                state.count += 1
+                if state.count == MAX_SUMMARY_FAILURES:
+                    logger.warning("[paused] 上下文压缩: session=%s 本轮连续失败 %d 次，暂停自动压缩；新输入或更换模型后重新尝试",
+                                   session_id, state.count)
+                state.detail = f"上下文压缩失败：{type(error).__name__}: {error}。"
+                state.recovery = _recovery(error)
+                detail = state.detail + budget + "。"
+                if hard_limit:
+                    blocked = "\n".join((*notices, detail + "本次请求被阻断，未继续业务生成。"))
+                    # 摘要模型自身的配置问题（如 404）要留「切换摘要模型」的出口，不引导放弃当前输入。
+                    unsafe = is_content_rejection(error) and ModelError.matches(error, ContentSafetyError)
+                    raise SummaryError(content_rejection_reason(blocked) if unsafe else blocked + state.recovery) from error
+                if on_status is not None:
+                    outcome = ("本次压缩没有缩小请求，保留原文继续生成。" if isinstance(error, SummaryCapacityError)
+                               else detail + "原请求仍满足硬容量，本次继续生成。")
+                    await on_status(outcome
+                                    + (paused if state.count >= MAX_SUMMARY_FAILURES else ""), True)
+                return None
+            state.count, state.detail = 0, ""
+            # 软水位或强制压缩成功同样证明摘要模型可用。
+            if summary is not None and session_id in idle_attempts:
+                idle_attempts[session_id].failures = 0
+                resume_idle(session_id, idle_attempts[session_id], "压缩成功")
+            return summary
+
+    async def _compact_idle_session(session_id: str) -> bool:
+        if read_state is None or config.idle_scope == "off" or config.idle_trigger_minutes <= 0:
+            return False
+        if config.idle_scope == "selected" and session_id not in config.idle_sessions:
+            return False
+        catalog = ctx.require(MESSAGE_CATALOG)
+        if (session_id, "conversation") in await catalog.open_input_sources_async():
+            return False
+        if _session_lock_busy(session_id):
+            return False
+        async with hold_session_lock(session_id):
+            if (session_id, "conversation") in await catalog.open_input_sources_async():
+                return False
+            reader = catalog.reader(session_id)
+            if await reader.deleted_async():
+                return False
+            tail_page = await reader.read_tail_async(limit=1)
+            if not tail_page.messages:
+                return False
+            latest = tail_page.messages[-1]
+            if latest.source == BOUNDARY_SOURCE:
+                return False
+            if latest.source == "conversation":
+                if isinstance(latest.body, Input):
+                    return False
+                if isinstance(latest.body, Output) and latest.body.finish == "continue":
+                    return False
+                if (datetime.now(UTC) - latest.recorded_at).total_seconds() / 60.0 < config.idle_trigger_minutes:
+                    return False
+            raw_snapshot = await run_file_io(lambda: tuple(reader.snapshot()))
+            snapshot = _visible_messages(raw_snapshot, "conversation")
+            if not snapshot:
+                return False
+            settled = context.settled_prefixes(snapshot)
+            if not settled or settled[-1] != len(snapshot):
+                return False
+            anchor = background_idle_anchor(snapshot, source="conversation", boundary_source=BOUNDARY_SOURCE)
+            if anchor is None:
+                return False
+            metadata = await run_file_io(reader.metadata) or {}
+            selection_owner = ctx.require(MODEL_SELECTION)
+            sel = selection_owner.read_saved(metadata)
+            if not sel.model_id:
+                sel = selection_owner.read(snapshot) or ChatModelSelection()
+            models_svc = ctx.require(CHAT_MODELS)
+            exec_cm = models_svc.independent_execution(model_id=sel.model_id, reasoning_effort=sel.reasoning_effort)
+            try:
+                async with exec_cm as execution, ctx.runtime_scope():
+                    business = execution.chat()
+                    window = business.descriptor.capabilities.context_window
+                    if window is None:
+                        return False
+                    attempts = idle_attempts_for(session_id, business.descriptor.binding_id)
+                    if attempts.failures >= MAX_SUMMARY_FAILURES or attempts.gap == anchor:
+                        return False
+                    model_content = ctx.require(MODEL_CONTENT)
+                    model_projection = ctx.require(MODEL_PROJECTION)
+                    read_call = ctx.require(MODEL_CALLS)
+                    tool_display = ctx.require(TOOL_DISPLAY)
+                    artifact_reader = ctx.require(ARTIFACT_READ)
+                    identities = tuple(message.message_id for message in snapshot)
+                    refs = await run_file_io(lambda: reader.attachments_for(identities))
+                    artifacts = await model_content.load_artifacts(
+                        artifact_reader, refs,
+                        accepts_images="image" in business.descriptor.capabilities.input_modalities,
+                        current_artifact_ids=frozenset(),
+                    )
+                    projection = model_projection.create(
+                        business,
+                        source="conversation",
+                        render_content=lambda part: model_content.render(
+                            part, artifacts=artifacts, read_message=reader.get,
+                        ),
+                        tool_name=lambda ref: tool_display(ref).name,
+                        read_call=read_call,
+                        check_summary=context.check_summary,
+                    )
+                    async with ctx.require(MATERIALS_V4).bind() as material_view:
+                        materials = await material_view.prepare(snapshot, source="conversation")
+                    request, _ = await run_file_io(lambda: context.build_attempt(
+                        snapshot, materials=materials, model=projection,
+                        tools=(), max_output_tokens=output_reserve(0, window),
+                    ))
+                    before = projection.estimate(request)
+                    if before <= config.keep_recent_tokens or not background_idle_due(
+                        before, snapshot, now=datetime.now(UTC),
+                        idle_minutes=_idle_minutes_for(config, snapshot),
+                        idle_tokens=config.idle_trigger_tokens,
+                        source="conversation", boundary_source=BOUNDARY_SOURCE,
+                    ):
+                        return False
+                    attempts.gap = anchor
+                    try:
+                        result = await _compact_core(
+                            snapshot, materials, request, business, projection,
+                            source="conversation", force=False, hard_limit=False,
+                            background_idle=True, execution=execution,
+                        )
+                    except (RuntimeError, TimeoutError, SummaryError) as error:
+                        if not (ModelError.matches(error) or isinstance(error, SummaryError)):
+                            raise
+                        attempts.failures += 1
+                        if attempts.failures == MAX_SUMMARY_FAILURES:
+                            attempts.paused = True
+                            logger.warning("[paused] 后台空闲预压缩: session=%s 连续失败 %d 次，暂停自动压缩；更换模型后恢复",
+                                           session_id, attempts.failures)
+                        logger.warning(
+                            "后台空闲预压缩失败 session=%s failures=%d: %r",
+                            session_id, attempts.failures, error,
+                            exc_info=not isinstance(error, (RuntimeError, TimeoutError, SummaryError)),
+                        )
+                        return False
+                    if result is None:
+                        return False
+                    _, record = result
+                    attempts.failures = 0
+                    resume_idle(session_id, attempts, "压缩成功")
+                    if len(bg_published_refs) >= 256:
+                        bg_published_refs.clear()
+                    bg_published_refs.add(record.reference)
+                    return True
+            except (RuntimeError, TimeoutError) as error:
+                if not (ModelError.matches(error) or isinstance(error, TimeoutError)):
+                    raise
+                logger.warning("后台空闲预压缩执行失败 session=%s: %s", session_id, error)
+                return False
+
+    async def _sweep_idle_sessions() -> int:
+        if read_state is None or config.idle_scope == "off" or config.idle_trigger_minutes <= 0:
+            return 0
+        catalog = ctx.require(MESSAGE_CATALOG)
+        now = datetime.now(UTC)
+        if config.idle_scope == "selected":
+            candidates = list(config.idle_sessions)
+        else:
+            cutoff_idle = now - timedelta(minutes=config.idle_trigger_minutes)
+            cutoff_old = now - timedelta(days=IDLE_MAX_SESSION_AGE_DAYS)
+            candidates = []
+            cursor: tuple[str, str] | None = None
+            while True:
+                page = await catalog.sessions_async(visibility="listed", after=cursor, limit=200)
+                if not page.items:
+                    break
+                for entry in page.items:
+                    if cutoff_old <= entry.updated_at <= cutoff_idle:
+                        candidates.append(entry.session_id)
+                if page.next_cursor is None or page.items[-1].updated_at < cutoff_old:
+                    break
+                cursor = page.next_cursor
+        compacted = 0
+        for session_id in candidates:
+            if read_state is None:
+                break
+            task = asyncio.create_task(_compact_idle_session(session_id))
+            active_bg_tasks[session_id] = task
+            try:
+                if await task:
+                    compacted += 1
+            finally:
+                if active_bg_tasks.get(session_id) is task:
+                    _ = active_bg_tasks.pop(session_id, None)
+        return compacted
+
+    async def _idle_sweeper() -> None:
+        await asyncio.sleep(IDLE_SWEEP_INITIAL_DELAY_SECONDS)
+        while read_state is not None:
+            _ = await _sweep_idle_sessions()
+            await asyncio.sleep(IDLE_SWEEP_SECONDS)
+
+    async def start(_event: object) -> None:
+        nonlocal read_current, read_state, sweeper_task
+        state = records()
+        read_state = state
+        read_current = partial(current_head, state)
+        if config.idle_scope != "off" and config.idle_trigger_minutes > 0:
+            sweeper_task = await ctx.spawn(_idle_sweeper(), name="compaction.idle_sweeper")
+
+    async def stop(_event: object) -> None:
+        nonlocal read_current, read_state, sweeper_task
+        read_state = None
+        read_current = None
+        task, sweeper_task = sweeper_task, None
+        await stop_spawned(task)
+        # 扫盘直接 await 子任务，stop_spawned 已取消并排空该链路。
+        active_bg_tasks.clear()
+
+    _ = await ctx.on(RUNTIME_STARTED, start)
+    _ = await ctx.on(RUNTIME_STOPPING, stop)
 
     _ = await ctx.require(MATERIALS_V4).register(ctx, kind="context", name="compaction", prepare=prepare, reduce=reduce,
                                                  history_start=history_start, reduce_due=idle_due, priority=500)

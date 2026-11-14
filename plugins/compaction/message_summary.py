@@ -123,7 +123,7 @@ def source_text(messages: Sequence[Message], *, excerpt: int | None = None) -> s
             body = replace(body, parts=tuple(
                 part for part in body.parts
                 if not isinstance(part, ContentPart) or part.kind not in {
-                    "model.facts", "context.summary", "context.notice", "model.selection", "tool.selection",
+                    "model.facts", "context.summary", "context.notice", "compaction.boundary", "model.selection", "tool.selection",
                 }
             ))
         data = body_to_dict(body)

@@ -13,6 +13,7 @@ from plugins.ledger.contract import (
     MessageReader,
     OwnerStore,
     OwnerTransaction,
+    PreparedAppend,
 )
 from plugins.ledger.contract import Message, json_value
 from plugins.compaction.contract import (
@@ -353,9 +354,12 @@ class SummaryRecords:
     async def publish(
         self, record: SummaryRecord, reader: MessageReader, *, parent: StoredSummary | None,
         summary_indexes: Callable[[tuple[Message, ...], tuple[str, ...]], tuple[int, ...]],
+        boundary: PreparedAppend | None = None,
     ) -> SummaryRecord:
         """原子检查 parent 与精确消息覆盖，再只增摘要并推进本 Session 指针。"""
         self._state.check_access(reader)
+        if boundary is not None and boundary.session_id != record.session_id:
+            raise ValueError("压缩边界与摘要必须属于同一 Session")
         if reader.session_id != record.session_id:
             raise ValueError("摘要 reader 与记录必须属于同一 Session")
 
@@ -391,6 +395,8 @@ class SummaryRecords:
             previous = tx.read(key)
             _ = tx.save(key, {"reference": record.reference},
                         expected_version=None if previous is None else previous.version)
+            if boundary is not None:
+                _ = tx.append_prepared(boundary)
             return record
 
         return await self._state.transact_async(commit)
