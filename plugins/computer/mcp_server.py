@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import logging
 import httpx
 from control import endpoint_name
 
@@ -24,6 +25,10 @@ _SCREENSHOT_EXTENSIONS = {
     "image/webp": ".webp",
 }
 _MAX_SCREENSHOT_FILES = 32
+_SURROGATE_NOTED: list[bool] = []
+
+
+logger = logging.getLogger(__name__)
 
 
 def plain_text(text: str) -> str:
@@ -36,6 +41,9 @@ def plain_text(text: str) -> str:
 
     if not any("\ud800" <= character <= "\udfff" for character in text):
         return text
+    if not _SURROGATE_NOTED:
+        _SURROGATE_NOTED.append(True)
+        logger.info("[fallback] 文本含孤立代理项，已替换为 U+FFFD（只记一次）")
     return "".join(
         "\ufffd" if "\ud800" <= character <= "\udfff" else character for character in text
     )
@@ -256,8 +264,8 @@ async def control_connection(
             )
             try:
                 await writer.drain()
-            except (ConnectionError, BrokenPipeError):
-                pass
+            except (ConnectionError, BrokenPipeError) as drain_error:
+                logger.warning("错误回复写回失败，连接已断开: %s", type(drain_error).__name__)
     finally:
         if cancellation is not None:
             cancellation.cancel()

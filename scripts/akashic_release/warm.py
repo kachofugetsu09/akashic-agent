@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import threading
 import time
 from pathlib import Path
@@ -71,12 +72,18 @@ class StateCacheWarmer:
                     break
                 warmed += _read_through(path, budget - warmed)
             result.update(bytes=warmed, budget=budget)
+            if _WARM_FAILURES[0]:
+                print(f"缓存预热有 {_WARM_FAILURES[0]} 个库读取失败，已跳过（只影响开机速度）", file=sys.stderr, flush=True)
+
+
+_WARM_FAILURES: list[int] = [0]
 
 
 def _read_through(path: Path, limit: int) -> int:
     try:
         descriptor = os.open(path, os.O_RDONLY)
     except OSError:
+        _WARM_FAILURES[0] += 1
         return 0
     total = 0
     try:
@@ -88,7 +95,7 @@ def _read_through(path: Path, limit: int) -> int:
                 break
             total += count
     except OSError:
-        pass
+        _WARM_FAILURES[0] += 1
     finally:
         os.close(descriptor)
     return total

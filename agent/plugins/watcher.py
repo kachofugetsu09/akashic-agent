@@ -72,6 +72,8 @@ class PluginWatcher:
             )
             # 平台不支持或监听预算耗尽时回退到纯轮询。
             self._events = events if events.start() else None
+            if self._events is None:
+                logger.warning("[fallback] 插件监听: inotify 不可用或监听预算耗尽，改为轮询")
             if self._events is not None:
                 # 首次扫描前先用源码树目标武装事件来源；配置文件目标在扫描后补齐。
                 trees, files = self._manager.watch_targets()

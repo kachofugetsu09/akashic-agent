@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import json
 import os
 import re
@@ -21,6 +22,20 @@ from plugins.assets.contract import InstalledAsset
 from plugins.host_execution.contract import Processes
 
 SkillSource = Literal["plugin", "builtin", "workspace", "user"]
+
+
+logger = logging.getLogger(__name__)
+
+
+_UNRESOLVABLE_NOTED: set[str] = set()
+
+
+# 技能目录 resolve 失败会被跳过；每个目录只记一次。
+def _note_unresolvable(skill_dir: Path) -> None:
+    if str(skill_dir) in _UNRESOLVABLE_NOTED:
+        return
+    _UNRESOLVABLE_NOTED.add(str(skill_dir))
+    logger.warning("[paused] 技能目录无法解析，已跳过: %s", skill_dir.name)
 
 
 class RequirementsChecker(Protocol):
@@ -267,6 +282,7 @@ class SkillCatalogParser:
                     try:
                         resolved = skill_dir.resolve(strict=True)
                     except OSError:
+                        _note_unresolvable(skill_dir)
                         continue
                     if source == "workspace" and skill_dir.is_symlink() and resolved in plugin_roots:
                         continue

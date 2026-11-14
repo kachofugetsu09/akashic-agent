@@ -364,15 +364,27 @@ class ShellForkPool:
     def __init__(self) -> None:
         self._enabled = fork_server_enabled()
         self._servers: dict[Path, ShellForkServer] = {}
+        self._noted: set[str] = set()
+
+    # 改走普通 spawn 的原因变化时记一次；达到上限用 warning，其余 info。
+    def _note_fallback(self, reason: str, text: str, level: int) -> None:
+        if reason in self._noted:
+            return
+        self._noted.add(reason)
+        log_event(logger, level, "shell.fork_server_fallback", message=f"[fallback] fork server 不可用，本次改走普通 spawn：{text}")
 
     # 返回 None 表示命令尚未交给任何 server，调用方可以安全地走每命令 spawn。
     async def spawn(
         self, shell_path: Path, snapshot: Path, command: str, cwd: Path | None, env: Mapping[str, str],
     ) -> ForkedProcess | None:
         # 1. 关闭开关、cwd 不存在或环境名无法 export 时保持原有 spawn 语义。
-        if not self._enabled or (cwd is not None and not cwd.is_dir()):
+        if not self._enabled:
+            return None
+        if cwd is not None and not cwd.is_dir():
+            self._note_fallback("cwd", "工作目录不是目录", logging.INFO)
             return None
         if not all(name.isidentifier() for name in env):
+            self._note_fallback("env", "环境变量名不合法", logging.INFO)
             return None
         server = self._servers.get(snapshot)
         if server is not None and not server.alive:
@@ -382,7 +394,9 @@ class ShellForkPool:
         # 2. 首次使用该快照时启动 server；启动失败关闭整个池，不再反复付启动成本。
         if server is None:
             if len(self._servers) >= _MAX_SERVERS:
+                self._note_fallback("max", f"server 数量已达上限 {_MAX_SERVERS}", logging.WARNING)
                 return None
+            self._noted.discard("max")
             server = ShellForkServer(shell_path, snapshot, dict(env))
             self._servers[snapshot] = server
             try:
