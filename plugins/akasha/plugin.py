@@ -79,9 +79,8 @@ from .scopes import DEFAULT_GRAPH, LEARN_POLICIES, LearnPolicy, MemoryDisabled, 
 logger = logging.getLogger(__name__)
 
 
+# 包装 embedding 健康项：只在进入或离开不可用状态时各记一条日志。
 class _EmbeddingHealth:
-    """包装 embedding 健康项：只在进入或离开不可用状态时各记一条日志。"""
-
     def __init__(self, inner: HealthHandle) -> None:
         self._inner = inner
         self._paused = False
