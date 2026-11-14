@@ -338,15 +338,19 @@ class MarkdownProfileStore:
             if not rows:
                 return
             known: dict[tuple[str, str], tuple[str, str]] = {}
+            bad_refs: list[str] = []
             for source_ref, payload, done_at in rows:
                 if not isinstance(payload, str):
+                    bad_refs.append(str(source_ref))
                     continue
                 raw = cast(Any, json.loads(payload))
                 if not isinstance(raw, dict):
+                    bad_refs.append(str(source_ref))
                     continue
                 try:
                     ops = parse_ops({"ops": raw.get("ops")})
                 except ValueError:
+                    bad_refs.append(str(source_ref))
                     continue
                 for op in ops:
                     if not op.line:
@@ -362,6 +366,9 @@ class MarkdownProfileStore:
                         if prev:
                             stamp = max(prev, key=lambda item: item[0])
                     known[(target_doc, content_digest(op.line))] = stamp
+            if bad_refs:
+                logger.warning("[skipped] Markdown 条目时间戳回填跳过 %s 条无法解析的 receipt（数据损坏）: %s",
+                               len(bad_refs), self.receipts_path)
             if known:
                 with conn:
                     _ = conn.executemany(

@@ -15,7 +15,7 @@ from typing import Literal, Self, cast
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from agent.plugin_composition import RUNTIME_STARTED, RUNTIME_STOPPING, CompositionError, Context, ServiceKey, stop_spawned
+from agent.plugin_composition import RUNTIME_STARTED, HealthHandle, RUNTIME_STOPPING, CompositionError, Context, ServiceKey, stop_spawned
 from agent.plugin_composition.host import HOST_INFO
 from core.common.diagnostic_log import log_event
 from plugins.akasha.contract import EMBEDDING_MEMORY_PLUGIN
@@ -77,6 +77,32 @@ from .tools import FeedbackArguments, FeedbackTool, check_feedback
 from .scopes import DEFAULT_GRAPH, LEARN_POLICIES, LearnPolicy, MemoryDisabled, PolicyLocked, ScopePolicies, ensure_graph_directory, graph_path
 
 logger = logging.getLogger(__name__)
+
+
+class _EmbeddingHealth:
+    """包装 embedding 健康项：只在进入或离开不可用状态时各记一条日志。"""
+
+    def __init__(self, inner: HealthHandle) -> None:
+        self._inner = inner
+        self._paused = False
+
+    @property
+    def reason(self) -> str | None:
+        return self._inner.reason
+
+    # 进入不可用状态时 warning 一次，持续不可用不重复。
+    def degrade(self, reason: str) -> None:
+        if not self._paused:
+            self._paused = True
+            logger.warning("[paused] Akasha embedding 不可用，召回与学习暂停: %s", reason)
+        self._inner.degrade(reason)
+
+    # 从不可用恢复时 info 一次。
+    def recover(self) -> None:
+        if self._paused:
+            self._paused = False
+            logger.info("[resumed] Akasha embedding 已恢复，召回与学习继续")
+        self._inner.recover()
 
 # 迁移与插件共同寻址的一次性重放凭据名；两处必须保持一致。
 _REPLAY_REQUEST_NAME = ".akasha-replay-request.json"
@@ -211,7 +237,8 @@ async def run(ctx: Context, interest: Interest) -> None:
             yield
         finally:
             lock.release()
-    health = await ctx.health("embedding", required=False)
+    health = _EmbeddingHealth(await ctx.health("embedding", required=False))
+    rebuild_fallback_logged = False
     graph_health = await ctx.health("graphs", required=False)
     graph_errors: dict[str, str] = {}
 
@@ -507,6 +534,10 @@ async def run(ctx: Context, interest: Interest) -> None:
         key = DEFAULT_GRAPH if session_id is None else policies.route(session_id).read
         # 重建期间不排队等待活图，照旧读已发布副本。
         if not running or not graphs_ready.is_set() or key is None or key not in memories:
+            nonlocal rebuild_fallback_logged
+            if running and not graphs_ready.is_set() and not rebuild_fallback_logged:
+                rebuild_fallback_logged = True
+                logger.info("[fallback] Akasha 重建期间召回改读已发布副本，不读运行中的图")
             yield None
             return
         async with graph_access(key):
@@ -633,7 +664,7 @@ async def run(ctx: Context, interest: Interest) -> None:
 
     async def rebuild_now() -> str:
         """全量重放 canonical 来源；失败时已发布学习图保持不变。"""
-        nonlocal memory_rule
+        nonlocal memory_rule, rebuild_fallback_logged
         # 1. 先确认 embedding 空间可用，避免无谓地停掉在线学习。
         identity, rule, model_id = select_learning()
         async with rebuild_lock:
@@ -661,6 +692,7 @@ async def run(ctx: Context, interest: Interest) -> None:
                         reports.append(manifest_json(report))
             finally:
                 graphs_ready.set()
+                rebuild_fallback_logged = False
         # 3. 用同一启动边界重新装载；装载失败必须让调用者看到。
         if not await start_if_available():
             raise RuntimeError("Akasha 重建后无法重新装载学习图")
@@ -680,7 +712,8 @@ async def run(ctx: Context, interest: Interest) -> None:
                            ensure_ascii=False, sort_keys=True) + "\n",
                 encoding="utf-8",
             )
-        except OSError:
+        except OSError as error:
+            logger.warning("Akasha 重放状态文件写入失败: %s: %s", path, error)
             return
 
     async def run_pending_rebuild() -> None:

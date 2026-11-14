@@ -70,6 +70,10 @@ from .documents import (
 from .store import DEFAULT_SELF_MD, ConcurrentChange, MarkdownProfileStore
 
 logger = logging.getLogger("plugins.markdown_memory")
+# 日志去重状态：同一对象同一原因只打一次。
+_LOGGED_PAUSED_REFS: set[str] = set()
+_LOGGED_SCOPE_REASONS: dict[str, str] = {}
+_LOGGED_INELIGIBLE_SESSIONS: set[str] = set()
 
 api_version = 3
 name = "markdown_memory"
@@ -299,6 +303,7 @@ async def consolidate(store: MarkdownProfileStore, models: ChatModels, lock_path
 
     reference = await run_file_io(identity)
     if await run_file_io(lambda: store.learning_stopped(reference)):
+        _log_consolidation_paused(reference)
         return None
     try:
         await _consolidate(store, models, lock_path, config)
@@ -307,6 +312,28 @@ async def consolidate(store: MarkdownProfileStore, models: ChatModels, lock_path
             return f"Markdown 整理已停止重试，修改记忆或模型配置后再处理: {reference} {error}"
         raise
     return None
+
+
+# 整理已被标记停止时，同一输入只在进入该状态后打一次。
+def _log_consolidation_paused(reference: str) -> None:
+    if reference in _LOGGED_PAUSED_REFS:
+        return
+    if len(_LOGGED_PAUSED_REFS) >= 256:
+        _LOGGED_PAUSED_REFS.clear()
+    _LOGGED_PAUSED_REFS.add(reference)
+    logger.warning("[paused] Markdown 整理已被标记停止重试，修改记忆或模型配置后才会再处理: %s", reference)
+
+
+# 整理 scope 被跳过时按 scope 去重，原因不变就不再重复。
+def _log_scope_skipped(scope: str | None, reason: str, *, warn: bool, detail: str) -> None:
+    key = scope or "global"
+    if _LOGGED_SCOPE_REASONS.get(key) == reason:
+        return
+    _LOGGED_SCOPE_REASONS[key] = reason
+    if warn:
+        logger.warning("[paused] Markdown 整理跳过 scope=%s: %s", key, detail)
+    else:
+        logger.info("[skipped] Markdown 整理跳过 scope=%s: %s", key, detail)
 
 
 # Only bounded model failures consume the per-input budget; service outages pause learning.
@@ -341,8 +368,15 @@ async def _consolidate(store: MarkdownProfileStore, models: ChatModels, lock_pat
                 dates = await run_file_io(lambda: store.entry_dates(list(docs))) if docs else {}
                 prompt = _consolidation_prompt(workspace, docs, dates)
                 window = provider.descriptor.capabilities.context_window or 0
-                if not docs or provider.estimate_context_tokens([{"role": "user", "content": prompt}]) > window * 0.74:
+                if not docs:
+                    _log_scope_skipped(scope, "no-docs", warn=False, detail="没有可整理的文档")
                     continue
+                estimated = provider.estimate_context_tokens([{"role": "user", "content": prompt}])
+                if estimated > window * 0.74:
+                    _log_scope_skipped(scope, "over-window", warn=True,
+                                       detail=f"上下文估算 {estimated} 超过窗口 {window} 的 74%（上限 {int(window * 0.74)}）")
+                    continue
+                _ = _LOGGED_SCOPE_REASONS.pop(scope or "global", None)
                 try:
                     ops = await _complete_ops(provider, prompt, lambda response: _check_consolidation(
                         response, workspace, docs, config))
@@ -361,6 +395,7 @@ async def _consolidate(store: MarkdownProfileStore, models: ChatModels, lock_pat
                         _ = store.write_ops(reference, draft)
                         store.apply(reference)
                     await run_file_io(install)
+                logger.info("Markdown 整理已写入: scope=%s operations=%s", scope or "global", len(ops))
     await run_file_io(lambda: store.mark_consolidated(stamp, scopes))
 
 
@@ -797,7 +832,15 @@ async def project(
     if message.source not in sources or not isinstance(message.body, Output):
         return
     refs = [part for part in message.body.parts if isinstance(part, ContentPart) and part.kind == "context.summary"]
-    if not refs or reader.attributes.learning != "eligible":
+    if not refs:
+        return
+    if reader.attributes.learning != "eligible":
+        if message.session_id not in _LOGGED_INELIGIBLE_SESSIONS:
+            if len(_LOGGED_INELIGIBLE_SESSIONS) >= 1024:
+                _LOGGED_INELIGIBLE_SESSIONS.clear()
+            _LOGGED_INELIGIBLE_SESSIONS.add(message.session_id)
+            logger.info("[skipped] Markdown 提炼跳过会话 %s: 会话不参与学习 (learning=%s)",
+                        message.session_id, reader.attributes.learning)
         return
     if len(refs) != 1:
         raise ValueError("一个 Output 只能声明实际使用的一份摘要")
@@ -860,6 +903,8 @@ async def project(
                 _ = store.write_draft(record.reference, draft, session_key=record.session_id, generation=record.generation)
                 store.apply(record.reference)
             await run_file_io(install)
+        logger.info("Markdown 提炼已写入: source_ref=%s operations=%s", record.reference,
+                    len(cast(list[object], draft.get("ops") or [])))
 
 
 async def apply(ctx: Context) -> None:
