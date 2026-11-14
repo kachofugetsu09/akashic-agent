@@ -9,6 +9,7 @@
 | [0151](0151-watch-closes-every-loop.md) | proposed / implemented for review | 值班：每件事要有着落，来源可以是一个脚本 | PRO-004～PRO-006 |
 | [0152](0152-watch-speaks-at-the-right-moment.md) | proposed / implemented for review | 值班：话留到合适的时刻说，聊天里先回应 | PRO-004～PRO-006 |
 | [0153](0153-watch-panel.md) | proposed / implemented for review | 值班面板：从已有记录现读，只认识来源和事件 | PRO-005 |
+| [0158](0158-watch-prompts-state-agnostic.md) | proposed / implemented for review | 值班：提示词不认识具体状态，叫醒之后有自己的时间，开口规矩自己定 | PRO-004～PRO-006 |
 | [0157](0157-background-idle-compaction.md) | accepted | 空闲摘要提前后台生成，摘要与聊天边界同事务发布 | CTX-001、CTX-007、STA-002、PLG-017 |
 | [0156](0156-watch-observations-carry-over.md) | proposed / implemented for review | 值班：看到的和走过的路留进记忆专题，收尾并进已有回合 | PRO-004～PRO-006 |
 | [0155](0155-composition-kernel-keeps-used-dispatch-only.md) | accepted / implemented for review | 组合内核只保留有消费者的派发方式；删除 parallel/transform/observe 与 ExecutorService | PLG |
