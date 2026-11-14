@@ -306,7 +306,8 @@ function validPart(value: unknown): boolean {
     case "context.notice": return nonempty(object(part.value)?.text);
     case "compaction.boundary": {
       const value = object(part.value);
-      return value !== null && nonempty(value.reference) && nonempty(value.trigger)
+      return value !== null && nonempty(value.reference) && ["idle", "soft_limit", "context_overflow"].includes(String(value.trigger))
+        && (value.mode === undefined || value.mode === "background" || value.mode === "in_turn")
         && integer(value.generation) && integer(value.tokens_before) && integer(value.tokens_after)
         && (value.summary_preview === undefined || typeof value.summary_preview === "string");
     }

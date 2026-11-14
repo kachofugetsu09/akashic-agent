@@ -882,6 +882,7 @@ class MessageLog:
         update_metadata: Callable[[Body], Mapping[str, object | None]] | None = None,
         message_metadata_keys: frozenset[str] = frozenset(),
         check_metadata: Callable[[Mapping[str, object]], None] | None = None,
+        update_activity: bool = True,
     ) -> MessageWriter:
         """绑定纯检查与元数据投影；投影只改获授键，None 移除键，不执行外部效果。"""
         if ToolResult in body_types and call_ref is None:
@@ -899,6 +900,7 @@ class MessageLog:
             update_metadata,
             message_metadata_keys,
             check_metadata,
+            update_activity,
         )
 
     def save_binding(self, binding_id: str, descriptor: Mapping[str, object]) -> None:
@@ -2013,6 +2015,7 @@ class MessageWriter:
         update_metadata: Callable[[Body], Mapping[str, object | None]] | None,
         message_metadata_keys: frozenset[str],
         check_metadata: Callable[[Mapping[str, object]], None] | None,
+        update_activity: bool = True,
     ):
         self._log: MessageLog = log
         self._session_id: str = session_id
@@ -2026,6 +2029,7 @@ class MessageWriter:
         self._check_metadata = check_metadata
         self._metadata_keys = frozenset(metadata_keys)
         self._update_metadata = update_metadata
+        self._update_activity = update_activity
         self._active = True
         self._grant_lock = threading.RLock()
 
@@ -2230,10 +2234,14 @@ class MessageWriter:
                 "INSERT INTO message_bindings VALUES (?, ?)",
                 (message_id, binding_id),
             )
-        _ = connection.execute(
-            "UPDATE sessions SET next_seq=?, updated_at=? WHERE key=?",
-            (seq + 1, stamp, self._session_id),
-        )
+        if self._update_activity:
+            _ = connection.execute(
+                "UPDATE sessions SET next_seq=?, updated_at=? WHERE key=?",
+                (seq + 1, stamp, self._session_id),
+            )
+        else:
+            # 诊断消息仍追加并通知读者，但不改变用户会话的活跃时间。
+            _ = connection.execute("UPDATE sessions SET next_seq=? WHERE key=?", (seq + 1, self._session_id))
 
         # 3. 只合并获授键；失败回滚消息、序号与元数据，不覆盖其他 owner 的键。
         if session_metadata:

@@ -502,7 +502,10 @@ class MessageWriters(Protocol):
         update_metadata: Callable[[Body], Mapping[str, object | None]] | None = None,
         check_metadata: Callable[[Mapping[str, object]], None] | None = None,
         part_metadata: bool = False,
-    ) -> Callable[..., MessageWriter]: ...
+        update_activity: bool = True,
+    ) -> Callable[..., MessageWriter]:
+        """默认推进会话活跃时间；纯诊断来源可关闭，消息仍正常追加与通知。"""
+        ...
 
 
 class OwnerState(Protocol):
