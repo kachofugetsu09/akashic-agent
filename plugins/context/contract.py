@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
+from datetime import datetime
 from typing import Any, Literal, Protocol
 
 from agent.plugin_composition import Context, Effect, ServiceKey
@@ -232,23 +233,20 @@ def background_idle_due(
     estimated: int,
     snapshot: Sequence[Message],
     *,
-    now: object,
+    now: datetime,
     idle_minutes: int = IDLE_COMPACT_MINUTES,
     idle_tokens: int = IDLE_COMPACT_TOKENS,
     source: str = "conversation",
     boundary_source: str = "compaction",
 ) -> bool:
     """后台空闲扫盘判定：对话静默已达阈值且体积达标（未等新消息进来即可先压缩）。"""
-    from datetime import datetime
-
     if idle_minutes <= 0 or idle_tokens <= 0 or estimated < idle_tokens:
         return False
     anchor = background_idle_anchor(snapshot, source=source, boundary_source=boundary_source)
     if anchor is None:
         return False
     last_conv = next((message for message in reversed(snapshot) if message.message_id == anchor), None)
-    if last_conv is None or not isinstance(now, datetime):
-        return False
+    assert last_conv is not None
     minutes = (now - last_conv.recorded_at).total_seconds() / 60.0
     return minutes >= idle_minutes
 

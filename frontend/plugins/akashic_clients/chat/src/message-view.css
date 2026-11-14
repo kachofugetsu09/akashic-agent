@@ -2316,6 +2316,7 @@ button.tool-step-summary:active {
 }
 
 .compaction-boundary__trigger {
+  min-height: 44px;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -2336,7 +2337,7 @@ button.tool-step-summary:active {
   content: "";
   flex: 1;
   height: 1px;
-  background: color-mix(in oklab, var(--ak-ink-primary) 10%, transparent);
+  background: var(--ak-rule-subtle);
 }
 
 .compaction-boundary__pill {

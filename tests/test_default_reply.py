@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 import shutil
+from typing import Any, cast
 import pytest
 from tests.fixtures.plugin_workspace import initialize_plugin_workspace
 from agent.plugin_composition.config_input import save_config
@@ -141,6 +142,7 @@ async def apply(ctx):
             # 与正式 models 一致：执行期间调用方切换为提供者自己的 Context。
             async with ctx.runtime_scope():
                 yield SimpleNamespace(chat=lambda: model, use=use)
+        independent_execution = execution
     class Target:
         idempotent = False
         async def prepare(self, args, source=None):
@@ -451,9 +453,10 @@ async def test_background_idle_compaction_writes_boundary_and_avoids_recompact(t
         part = boundary.body.parts[0]
         assert isinstance(part, ContentPart)
         assert part.kind == "compaction.boundary"
-        assert part.value["mode"] == "background"
-        assert part.value["trigger"] == "idle"
-        assert part.value["tokens_before"] > part.value["tokens_after"]
+        value = cast(dict[str, Any], part.value)
+        assert value["mode"] == "background"
+        assert value["trigger"] == "idle"
+        assert value["tokens_before"] > value["tokens_after"]
 
         # 3. 展示层投影应带出 summary_preview 供前端折叠卡片展示。
         async with live_root(host) as root:
@@ -461,7 +464,7 @@ async def test_background_idle_compaction_writes_boundary_and_avoids_recompact(t
             rows = await project_message_rows(root.context, page, display_only=False)
         boundary_rows = [r for r in rows if r["source"] == "compaction"]
         assert len(boundary_rows) == 1
-        shown_part = boundary_rows[0]["body"]["parts"][0]
+        shown_part = cast(dict[str, Any], boundary_rows[0]["body"])["parts"][0]
         assert shown_part["kind"] == "compaction.boundary"
         assert "Preserved facts." in shown_part["value"]["summary_preview"]
 

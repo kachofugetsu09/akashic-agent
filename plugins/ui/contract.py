@@ -318,12 +318,15 @@ class ThinkingDisplay:
     value: Mapping[str, object]
 
 
-PartDisplayProvider = Callable[[ContentPart], Mapping[str, object] | ThinkingDisplay]
+PartDisplayValue = Mapping[str, object] | ThinkingDisplay
+PartDisplayProvider = Callable[[ContentPart], PartDisplayValue]
+PartDisplayHandler = Callable[[ContentPart], PartDisplayValue | Awaitable[PartDisplayValue]]
 
 
 # 内容 owner 以 message.display:<kind> 提供展示回调；没有 owner 回调的内容显示为“无法展示”。
-def part_display_key(kind: str) -> ServiceKey[PartDisplayProvider]:
-    return ServiceKey[PartDisplayProvider](f"message.display:{kind}")
+def part_display_key(kind: str) -> ServiceKey[PartDisplayHandler]:
+    """展示回调可异步读取；UI 在同代作用域内等待后再生成消息行。"""
+    return ServiceKey[PartDisplayHandler](f"message.display:{kind}")
 
 
 # owner 把自己的内部材料声明为不进聊天正文：`ctx.provide(part_display_key(kind), hidden_part)`。

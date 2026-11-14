@@ -9,7 +9,7 @@ from functools import partial
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 import logging
 import time
-from typing import Any, Literal, cast
+from typing import Literal, cast
 from uuid import uuid4
 from weakref import WeakKeyDictionary
 
@@ -144,6 +144,12 @@ def _check_boundary(part: ContentPart) -> ContentReferences:
     if mode not in {"background", "in_turn"}:
         raise ValueError("compaction.boundary.mode 无效")
     return ContentReferences()
+
+
+@dataclass
+class _SessionLock:
+    lock: asyncio.Lock
+    users: int = 0
 
 
 @dataclass
@@ -488,12 +494,13 @@ async def apply(ctx: Context) -> None:
 
     await mount_settings(ctx, SETTINGS, ModelSettings(ctx, Config, SETTING_FIELDS, status=status))
 
-    def _display_boundary(part: ContentPart) -> Mapping[str, object]:
+    async def _display_boundary(part: ContentPart) -> Mapping[str, object]:
+        """在线程读取不可变摘要，只把预览加入展示投影。"""
         _ = _check_boundary(part)
         value = dict(cast(Mapping[str, object], part.value))
         ref = cast(str, value["reference"])
         if read_state is not None:
-            stored = read(ref)
+            stored = await run_file_io(lambda: read(ref))
             if stored is not None and stored.content:
                 text = stored.content.strip()
                 if len(text) > BOUNDARY_PREVIEW_CHARS:
@@ -511,39 +518,28 @@ async def apply(ctx: Context) -> None:
         content={BOUNDARY_KIND: _check_boundary},
     )
 
-    session_locks: dict[str, list[Any]] = {}
+    session_locks: dict[str, _SessionLock] = {}
     active_bg_tasks: dict[str, asyncio.Task[bool]] = {}
-    bg_attempts: dict[str, _IdleAttempts] = {}
     sweeper_task: asyncio.Task[None] | None = None
 
     def _session_lock_busy(session_id: str) -> bool:
         entry = session_locks.get(session_id)
-        return entry is not None and (entry[0].locked() or entry[1] > 0)
+        return entry is not None and (entry.lock.locked() or entry.users > 0)
 
     @asynccontextmanager
     async def hold_session_lock(session_id: str) -> AsyncIterator[None]:
         entry = session_locks.get(session_id)
         if entry is None:
-            entry = [asyncio.Lock(), 0]
+            entry = _SessionLock(asyncio.Lock())
             session_locks[session_id] = entry
-        entry[1] += 1
+        entry.users += 1
         try:
-            async with entry[0]:
+            async with entry.lock:
                 yield
         finally:
-            entry[1] -= 1
-            if entry[1] == 0 and session_locks.get(session_id) is entry:
+            entry.users -= 1
+            if entry.users == 0 and session_locks.get(session_id) is entry:
                 del session_locks[session_id]
-
-    def bg_attempts_for(session_id: str, binding_id: str) -> _IdleAttempts:
-        attempts = bg_attempts.get(session_id)
-        if attempts is None:
-            if len(bg_attempts) >= 256:
-                bg_attempts.clear()
-            attempts = bg_attempts[session_id] = _IdleAttempts(binding_id)
-        elif attempts.binding_id != binding_id:
-            attempts.binding_id, attempts.failures = binding_id, 0
-        return attempts
 
     lookup = SummaryLookup(read, head)
     _ = await ctx.provide(COMPACTION_SUMMARIES, lookup)
@@ -856,9 +852,22 @@ async def apply(ctx: Context) -> None:
         record = record.model_copy(update={"tokens_after": after})
         # 3. binding 可以先固定，但读者只有在摘要事务成功后才取得此引用。
         reader = ctx.require(MESSAGE_CATALOG).reader(record.session_id)
-        _ = await state.publish(
-            record, reader, parent=parent, summary_indexes=context.summary_indexes,
-        )
+        writer = boundary_writers(record.session_id) if background_idle else None
+        try:
+            boundary = None if writer is None else await writer.prepare_async(
+                f"compaction-boundary:{record.reference}",
+                Output((ContentPart(BOUNDARY_KIND, {
+                    "reference": record.reference, "trigger": record.trigger, "mode": "background",
+                    "generation": record.generation, "tokens_before": record.tokens_before,
+                    "tokens_after": record.tokens_after,
+                }),), "complete"),
+            )
+            _ = await state.publish(
+                record, reader, parent=parent, summary_indexes=context.summary_indexes, boundary=boundary,
+            )
+        finally:
+            if writer is not None:
+                writer.expire()
         if not soft_due:
             logger.info("空闲预压缩完成 session=%s 估算 %d -> %d tokens 耗时 %.1fs",
                         record.session_id, before, after, time.monotonic() - started)
@@ -920,12 +929,7 @@ async def apply(ctx: Context) -> None:
             return
         if on_status is not None:
             await on_status("正在等待后台空闲压缩完成…", False)
-        try:
-            _ = await asyncio.shield(bg_task)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            pass
+        _ = await asyncio.shield(bg_task)
 
     async def reduce(snapshot: tuple[Message, ...], materials: MaterialData, request: ModelRequest,
                      model: BoundChatModel, projection: ContextModel, *, source: str, force: bool,
@@ -999,10 +1003,6 @@ async def apply(ctx: Context) -> None:
                 resume_idle(session_id, idle_attempts[session_id], "压缩成功")
             return summary
 
-    class _NoArtifacts(dict[str, tuple[Mapping[str, object], ...]]):
-        def __missing__(self, _key: str) -> tuple[Mapping[str, object], ...]:
-            return ()
-
     async def _compact_idle_session(session_id: str) -> bool:
         if read_state is None or config.idle_scope == "off" or config.idle_trigger_minutes <= 0:
             return False
@@ -1048,18 +1048,14 @@ async def apply(ctx: Context) -> None:
             if not sel.model_id:
                 sel = selection_owner.read(snapshot) or ChatModelSelection()
             models_svc = ctx.require(CHAT_MODELS)
-            exec_factory = getattr(models_svc, "independent_execution", models_svc.execution)
-            try:
-                exec_cm = exec_factory(model_id=sel.model_id, reasoning_effort=sel.reasoning_effort)
-            except Exception:
-                exec_cm = exec_factory()
+            exec_cm = models_svc.independent_execution(model_id=sel.model_id, reasoning_effort=sel.reasoning_effort)
             try:
                 async with exec_cm as execution, ctx.runtime_scope():
                     business = execution.chat()
                     window = business.descriptor.capabilities.context_window
                     if window is None:
                         return False
-                    attempts = bg_attempts_for(session_id, business.descriptor.binding_id)
+                    attempts = idle_attempts_for(session_id, business.descriptor.binding_id)
                     if attempts.failures >= MAX_SUMMARY_FAILURES or attempts.gap == anchor:
                         return False
                     model_content = ctx.require(MODEL_CONTENT)
@@ -1069,14 +1065,10 @@ async def apply(ctx: Context) -> None:
                     artifact_reader = ctx.require(ARTIFACT_READ)
                     identities = tuple(message.message_id for message in snapshot)
                     refs = await run_file_io(lambda: reader.attachments_for(identities))
-                    artifacts: Mapping[str, tuple[Mapping[str, object], ...]] = (
-                        await model_content.load_artifacts(
-                            artifact_reader, refs,
-                            accepts_images="image" in business.descriptor.capabilities.input_modalities,
-                            current_artifact_ids=frozenset(),
-                        )
-                        if refs
-                        else _NoArtifacts()
+                    artifacts = await model_content.load_artifacts(
+                        artifact_reader, refs,
+                        accepts_images="image" in business.descriptor.capabilities.input_modalities,
+                        current_artifact_ids=frozenset(),
                     )
                     projection = model_projection.create(
                         business,
@@ -1109,8 +1101,14 @@ async def apply(ctx: Context) -> None:
                             source="conversation", force=False, hard_limit=False,
                             background_idle=True, execution=execution,
                         )
-                    except Exception as error:
+                    except (RuntimeError, TimeoutError, SummaryError) as error:
+                        if not (ModelError.matches(error) or isinstance(error, SummaryError)):
+                            raise
                         attempts.failures += 1
+                        if attempts.failures == MAX_SUMMARY_FAILURES:
+                            attempts.paused = True
+                            logger.warning("[paused] 后台空闲预压缩: session=%s 连续失败 %d 次，暂停自动压缩；更换模型后恢复",
+                                           session_id, attempts.failures)
                         logger.warning(
                             "后台空闲预压缩失败 session=%s failures=%d: %r",
                             session_id, attempts.failures, error,
@@ -1121,32 +1119,15 @@ async def apply(ctx: Context) -> None:
                         return False
                     _, record = result
                     attempts.failures = 0
+                    resume_idle(session_id, attempts, "压缩成功")
                     if len(bg_published_refs) >= 256:
                         bg_published_refs.clear()
                     bg_published_refs.add(record.reference)
-                    writer = boundary_writers(session_id)
-                    try:
-                        _ = await writer.append_async(
-                            f"compaction-boundary:{record.reference}",
-                            Output(
-                                (ContentPart(BOUNDARY_KIND, {
-                                    "reference": record.reference,
-                                    "trigger": record.trigger,
-                                    "mode": "background",
-                                    "generation": record.generation,
-                                    "tokens_before": record.tokens_before,
-                                    "tokens_after": record.tokens_after,
-                                }),),
-                                "complete",
-                            ),
-                        )
-                    finally:
-                        writer.expire()
                     return True
-            except Exception as error:
-                if ModelError.matches(error, ModelUnavailableError):
-                    return False
-                logger.warning("后台空闲预压缩执行异常 session=%s: %r", session_id, error)
+            except (RuntimeError, TimeoutError) as error:
+                if not (ModelError.matches(error) or isinstance(error, TimeoutError)):
+                    raise
+                logger.warning("后台空闲预压缩执行失败 session=%s: %s", session_id, error)
                 return False
 
     async def _sweep_idle_sessions() -> int:
@@ -1188,12 +1169,7 @@ async def apply(ctx: Context) -> None:
     async def _idle_sweeper() -> None:
         await asyncio.sleep(IDLE_SWEEP_INITIAL_DELAY_SECONDS)
         while read_state is not None:
-            try:
-                _ = await _sweep_idle_sessions()
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.exception("后台空闲压缩扫盘失败")
+            _ = await _sweep_idle_sessions()
             await asyncio.sleep(IDLE_SWEEP_SECONDS)
 
     async def start(_event: object) -> None:
@@ -1210,13 +1186,7 @@ async def apply(ctx: Context) -> None:
         read_current = None
         task, sweeper_task = sweeper_task, None
         await stop_spawned(task)
-        for bg_task in tuple(active_bg_tasks.values()):
-            _ = bg_task.cancel()
-        for bg_task in tuple(active_bg_tasks.values()):
-            try:
-                await bg_task
-            except BaseException:
-                pass
+        # 扫盘直接 await 子任务，stop_spawned 已取消并排空该链路。
         active_bg_tasks.clear()
 
     _ = await ctx.on(RUNTIME_STARTED, start)
