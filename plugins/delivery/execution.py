@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import logging
 from collections.abc import Hashable, Mapping
 from contextlib import AbstractContextManager, AsyncExitStack, nullcontext
 from typing import cast
@@ -17,6 +18,8 @@ from plugins.ledger.contract import Body, Message, with_truncated_head
 
 from .api import OpenSender, Receipt, Sink
 from .records import Delivery, DeliveryRecords, Selection, delivery_key
+
+logger = logging.getLogger(__name__)
 
 
 class Deliveries:
@@ -209,6 +212,8 @@ class Deliveries:
                     result = Receipt(status="rejected" if delivery.phase == "prepared" else "failed",
                         error=f"发送者无法打开（{type(error).__name__}）；"
                               + ("尚未发送" if delivery.phase == "prepared" else "原发送结果未知，不自动重发"))
+                    logger.warning("[paused] 发送者打不开，重试用尽，回执落为 %s：message=%s sink=%s 原因=%s",
+                                   result.status, message_id, sink, type(error).__name__)
                     _ = await self._records.save_async(message_id, record, Delivery(
                         sink=delivery.sink, phase=result.status, receipt=result))
                     return result
@@ -224,6 +229,7 @@ class Deliveries:
                     return found
                 if not sender.idempotent:
                     result = Receipt(status="failed", error="原发送中断且没有可查询回执；可能已送达，不自动重发")
+                    logger.warning("[paused] 原发送中断且无可查询回执，回执落为 failed，不自动重发：message=%s sink=%s", message_id, sink)
                     _ = await self._records.save_async(message_id, record, Delivery(
                         sink=delivery.sink, phase="failed", receipt=result,
                     ))
@@ -261,8 +267,10 @@ class Deliveries:
                 response = await sender.send(key, delivery.sink.address, content)
                 # 不同归档拥有独立 Python 类型；按本版本公开 schema 接纳跨插件回执。
                 result = Receipt.model_validate(response.model_dump())
-            except BaseException:
+            except BaseException as error:
                 if record.value["phase"] == "started":
+                    logger.warning("[paused] 发送已开始但未取得可确认回执，回执落为 failed：message=%s sink=%s 原因=%s",
+                                   message_id, sink, type(error).__name__)
                     _ = await self._records.save_async(message_id, record, Delivery(
                         sink=delivery.sink, phase="failed",
                         receipt=Receipt(status="failed", error="发送已开始但未取得可确认回执"),

@@ -54,6 +54,7 @@ class Runtime:
         self.state = State(**{key: value for key, value in saved.items() if key in State.__slots__})
         self.state.next_id = max(self.state.next_id, self.log.last_number() + 1)
         self._keys = self.log.keys()
+        self._skip_noted = ""
 
     async def follow(self) -> None:
         while True:
@@ -165,6 +166,7 @@ class Runtime:
             await self._record(now, outcome)
             if outcome.model is None:
                 # 整条模型链都失败：这批留到下一次轻唤醒再判
+                logger.warning("[paused] 值班模型链全部失败，这批事件留到下一轮再判：失败数=%s 本批=%s 条", len(outcome.failures), len(chunk))
                 _ = self.ctx.report_incident("watch_models_failed", "; ".join(outcome.failures)[:500])
                 break
             for verdict in outcome.verdicts:
@@ -265,6 +267,7 @@ class Runtime:
         recent_wakes = [stamp for stamp in self.state.wakes if datetime.fromisoformat(stamp) > now - timedelta(hours=24)]
         if len(recent_wakes) >= self.config.daily_wakes:
             # 今日额度用完：不丢，放进待看列表
+            logger.warning("[fallback] 今日叫醒额度已用完，叫醒改写进待看列表：额度=%s 事件=%s 条", self.config.daily_wakes, len(verdicts))
             await run_file_io(lambda: _inbox(self.root, now, verdicts, "今日叫醒额度已用完；值班员认为该叫醒"))
             return
         shown, rest = verdicts[:WAKE_EVENTS], verdicts[WAKE_EVENTS:]
@@ -282,13 +285,24 @@ class Runtime:
         return bool(said) and (last is None or said[-1] > last) and now - said[-1] >= timedelta(minutes=30)
 
     # 待看列表和没收尾的对话都不能只等复盘：攒了新条目或他说过话，主 Agent 又很久没醒，就叫它过一眼。
+    # 只因为额度用完而没跑待看过目：一天内同一原因只记一次。
+    def _note_digest_skipped(self, now: datetime, fresh: int) -> None:
+        reason = "待看有新条目" if fresh else "对话没收尾"
+        stamp = f"{now:%Y-%m-%d}:{reason}"
+        if self._skip_noted != stamp:
+            self._skip_noted = stamp
+            logger.info("[skipped] 待看过目没有执行：今日叫醒额度已用完（%s，额度=%s）", reason, self.config.daily_wakes)
+
     async def _digest(self, now: datetime) -> None:
         last = datetime.fromisoformat(self.state.last_agent) if self.state.last_agent else None
         if not self.config.digest_hours or (last is not None and now - last < timedelta(hours=self.config.digest_hours)):
             return
         fresh = await run_file_io(lambda: _fresh(self.root / "inbox.md", last))
         recent_wakes = [stamp for stamp in self.state.wakes if datetime.fromisoformat(stamp) > now - timedelta(hours=24)]
-        if len(recent_wakes) >= self.config.daily_wakes or not (fresh or await self._owed(now)):
+        owed = bool(fresh) or await self._owed(now)
+        if len(recent_wakes) >= self.config.daily_wakes or not owed:
+            if owed:
+                self._note_digest_skipped(now, fresh)
             return
         self.state.wakes = [*recent_wakes, now.isoformat()]
         _ = await self._run_agent(now, "inbox", wake.digest_prompt(await self._scene(now), fresh), "待看列表过一眼" if fresh else "对话收尾")
@@ -305,6 +319,8 @@ class Runtime:
         if status == "complete" or self.state.review_tries >= 3:
             # 成功才算当天复盘过；连续三次没跑成就放到明天，不反复重试
             self.state.review_day, self.state.review_tries = f"{now:%Y-%m-%d}", 0
+            if status != "complete":
+                logger.warning("[paused] 每日复盘连续 3 次没有成功，今天不再重试：最后状态=%s", status)
         await self._save()
 
     # 每一轮用自己的会话名：同一次轻唤醒里可能先后跑事件叫醒、待看过目和复盘。
@@ -320,6 +336,7 @@ class Runtime:
         except Exception as error:
             # 主 Agent 这一轮没跑起来：记下来，不影响后面的值班
             status = f"没有跑起来（{type(error).__name__}）"
+            logger.warning("[paused] 主 Agent %s 回合没有跑起来，这一轮放弃：%s", kind, type(error).__name__)
             _ = self.ctx.report_incident("watch_agent_failed", f"{type(error).__name__}: {error}"[:500])
 
         def write() -> None:

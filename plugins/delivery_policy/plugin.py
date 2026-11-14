@@ -256,6 +256,7 @@ async def apply(ctx: Context) -> None:
                                 if permit is not None:
                                     task.on_done(permit.release)
                         except RouteError as error:
+                            logger.warning("[paused] 选路失败，登记 rejected 回执，该消息不会送出：message=%s 原因=%s", message.message_id, error)
                             _ = await delivery.reject_async(reader, message, str(error))
                         except Exception:
                             # 回复事实已提交；发送失败不能反向改写来源为推理失败。
