@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
@@ -41,6 +42,9 @@ from .state import (
 
 import hashlib
 
+logger = logging.getLogger(__name__)
+# 已经报过的坏操作记录键：清理会反复扫描，同一条只报一次
+_corrupt_reported: set[str] = set()
 GOAL_PREFIX = "goal:"
 OPERATION_PREFIX = "goalop:"
 NOTICE_SOURCE = "goal"
@@ -549,6 +553,9 @@ class GoalStore:
             try:
                 decoded.append((decode_operation(record.value).created_at, key, record.version))
             except ValueError:
+                if key not in _corrupt_reported:
+                    _corrupt_reported.add(key)
+                    logger.warning("[skipped] 目标操作记录损坏，清理时已跳过：key=%s", key)
                 continue
         decoded.sort(key=lambda item: item[0])
         return tuple(

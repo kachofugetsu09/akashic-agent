@@ -123,6 +123,7 @@ async def follow(
                             try:
                                 sinks = select(reader, message) if delivery.selection(message.message_id) is None else ()
                             except RouteError as error:
+                                logger.warning("[paused] 选路失败，登记 rejected 回执，该消息不会送出：message=%s 原因=%s", message.message_id, error)
                                 _ = await delivery.reject_async(reader, message, str(error))
                                 sinks = ()
                             batch.append((message, sinks))

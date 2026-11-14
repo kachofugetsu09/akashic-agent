@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import re
 from collections.abc import Mapping, Sequence
@@ -11,6 +12,9 @@ from pathlib import Path
 
 _TEXT_KEYS = ("text", "content", "body", "message", "summary", "description")
 _TIME_KEYS = ("at", "time", "published_at", "observed_at", "mail_date")
+logger = logging.getLogger(__name__)
+# 文件 -> 上次报过的损坏行数：同一文件同样的数量不重复报
+_corrupt_reported: dict[str, int] = {}
 _STAMP = re.compile(r"\d{4}-\d{2}-\d{2}T")
 
 
@@ -136,11 +140,15 @@ class EventLog:
 
 def _read(path: Path) -> list[Event]:
     events: list[Event] = []
+    bad = 0
     for raw in path.read_text(encoding="utf-8").splitlines():
         try:
             events.append(Event(**json.loads(raw)))
         except (ValueError, TypeError):
-            continue
+            bad += 1
+    if bad and _corrupt_reported.get(path.name) != bad:
+        _corrupt_reported[path.name] = bad
+        logger.warning("[skipped] 事件文件有损坏的行，已丢弃：文件=%s 损坏行数=%s", path.name, bad)
     return events
 
 

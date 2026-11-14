@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -12,6 +13,7 @@ from plugins.models.contract import ModelUsage
 
 from .events import Event, line
 
+logger = logging.getLogger(__name__)
 SYSTEM = """你是值班员。有一个更有判断力、也更贵的主 Agent 在休息，你替它看着不断流进来的事件，决定每条事件的去向。你不和用户说话，也不处理事件本身。
 
 每条事件给一个去向：
@@ -204,7 +206,7 @@ async def judge(complete: Complete, chain: Sequence[str | None], context: str, b
     outcome = Outcome()
     by_id = {event.id: event for event in batch}
     user = context + f"\n\n本批（{len(batch)} 条）：\n" + "\n".join(line(event) for event in batch)
-    for model_id in chain:
+    for index, model_id in enumerate(chain):
         messages: list[Mapping[str, object]] = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": user}]
         try:
             for _ in range(max_steps):
@@ -231,6 +233,8 @@ async def judge(complete: Complete, chain: Sequence[str | None], context: str, b
             raise ModelFailure(f"{max_steps} 步内没有给出合格的 decide")
         except ModelFailure as failure:
             outcome.failures.append(f"{model_id or 'default'}: {failure}"[:300])
+            if index + 1 < len(chain):
+                logger.warning("[fallback] 值班模型失败，换链上的下一个：模型=%s 原因=%s", model_id or "default", str(failure)[:200])
     return outcome
 
 
