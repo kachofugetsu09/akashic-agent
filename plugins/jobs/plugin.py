@@ -352,7 +352,7 @@ class Jobs:
             logger.info("[skipped] 后台任务完成不唤醒主 Agent：completion_delivery=quiet job=%s", job.job_id)
             return
         if job.source != _CONVERSATION:
-            logger.warning("[skipped] 后台任务完成不唤醒主 Agent：任务来源不是对话 job=%s source=%s", job.job_id, job.source)
+            logger.info("[skipped] 后台任务完成不唤醒主 Agent：任务来源不是对话 job=%s source=%s", job.job_id, job.source)
             return
         # 2. 唤醒失败撤回领取，下一次用户输入仍会注入这条结算。
         try:
@@ -439,11 +439,11 @@ class Jobs:
         ctx = self._ctx
         reader = ctx.require(MESSAGE_CATALOG).reader(message.session_id)
         if reader.attributes.visibility == "internal":
-            logger.warning("[paused] 后台任务结果不回传：原会话是内部会话 job=%s", message.source)
+            logger.info("[skipped] 后台任务结果不回传：原会话是内部会话 source=%s", message.source)
             return
         origin = _origin(await reader.read_async(lambda current: _latest_user_input(current, message.seq)))
         if origin is None:
-            logger.warning("[paused] 后台任务结果不回传：找不到来源渠道 job=%s", message.source)
+            logger.warning("[paused] 后台任务结果不回传：找不到来源渠道 source=%s", message.source)
             return
         channel, address = origin
         try:
