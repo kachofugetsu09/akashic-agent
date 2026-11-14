@@ -355,6 +355,7 @@ class Jobs:
             logger.info("[skipped] 后台任务完成不唤醒主 Agent：任务来源不是对话 job=%s source=%s", job.job_id, job.source)
             return
         # 2. 唤醒失败撤回领取，下一次用户输入仍会注入这条结算。
+        # 3. 唤醒失败是终态：宿主记录标记已处理，重启不再重试；会话里的宿主通知已可见。
         try:
             async with self._ctx.runtime_scope():
                 reader = self._ctx.require(MESSAGE_CATALOG).reader(job.session_id)
@@ -364,7 +365,8 @@ class Jobs:
             logger.warning("[skipped] 后台任务完成唤醒没有执行：能力不可用 job=%s 原因=%s", job.job_id, error)
             return
         except Exception:
-            logger.exception("后台任务完成唤醒失败 job=%s", job.job_id)
+            logger.exception("后台任务完成唤醒失败，不再重试 job=%s", job.job_id)
+            await self._finish_host(job.job_id)
 
     # 在原会话槽空闲后运行一轮；槽内再次核对，忙时已被回合领取的结算不再唤醒。
     async def _wake(self, notice: Notice) -> None:
