@@ -4,6 +4,7 @@ from plugins.host_execution.contract import (
     ResolvedShell, ShellKind
 )
 
+import logging
 import hashlib
 import os
 import shlex
@@ -17,6 +18,9 @@ from enum import Enum
 from pathlib import Path
 
 from core.common.file_io import run_file_io
+
+
+logger = logging.getLogger(__name__)
 
 
 def detect_shell_kind(shell_path: str | Path) -> ShellKind | None:
@@ -66,8 +70,10 @@ def _resolve_default_shell() -> ResolvedShell:
     """Use the passwd shell first, followed by Codex's platform order."""
 
     # 1. Unix 默认值来自 passwd，而不是可被单次进程覆盖的 SHELL 环境变量。
+    user_path_text = ""
     if os.name != "nt":
         user_path = _unix_user_shell_path()
+        user_path_text = str(user_path) if user_path is not None else ""
         user_kind = detect_shell_kind(user_path) if user_path is not None else None
         if (
             user_path is not None
@@ -86,8 +92,23 @@ def _resolve_default_shell() -> ResolvedShell:
     for kind in order:
         resolved = _find_shell(kind)
         if resolved is not None:
+            _note_shell_fallback(user_path_text, resolved)
             return resolved
     raise RuntimeError("找不到可执行的默认 shell")
+
+
+_SHELL_FALLBACKS_NOTED: set[tuple[str, str]] = set()
+
+
+# 用户 shell 不可用而换了别的 shell 时记一条；进程内同一结果只记一次。
+def _note_shell_fallback(original: str, chosen: ResolvedShell) -> None:
+    if os.name == "nt":
+        return
+    key = (original, str(chosen.path))
+    if key in _SHELL_FALLBACKS_NOTED:
+        return
+    _SHELL_FALLBACKS_NOTED.add(key)
+    logger.warning("[fallback] 用户 shell 不可用，改用 %s（原 shell: %s）", chosen.path, original or "未配置")
 
 
 def _unix_user_shell_path() -> Path | None:

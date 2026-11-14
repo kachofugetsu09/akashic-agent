@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import inspect
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
@@ -14,6 +15,10 @@ from plugins.tools.contract import ToolPresentation as ToolPresentation
 
 from .execution import MessageReply, Result, ToolExecution
 from .plugin import TOOLS
+
+
+logger = logging.getLogger(__name__)
+_SERIAL_NOTED: set[str] = set()
 
 
 @dataclass(frozen=True, slots=True)
@@ -182,6 +187,9 @@ class ToolMenu:
         try:
             return self.name(binding_id) in self._parallel_names
         except Exception:
+            if binding_id not in _SERIAL_NOTED:
+                _SERIAL_NOTED.add(binding_id)
+                logger.warning("[fallback] 工具并行判断失败，退回串行: binding=%.40s", binding_id)
             return False
 
     def check_call(self, call: ToolCall) -> None:

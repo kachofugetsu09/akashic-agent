@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import asyncio
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -25,6 +26,9 @@ from plugins.models.contract import (
 _TIMEOUT_SECONDS = 15.0
 # Command Code 的套餐接口有时要 15–20 秒，等不到就只显示额度。
 _PLAN_TIMEOUT_SECONDS = 6.0
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,6 +64,17 @@ async def read_plan_quota(
     return source.read(payload, plan, source, "/api/coding/" in parts.path)
 
 
+_NOTED: set[tuple[str, str]] = set()
+
+
+# 同一字段同一原因只记一次；原始值截断，不输出完整响应。
+def _note(field: str, reason: str, raw: object = "") -> None:
+    if (field, reason) in _NOTED:
+        return
+    _NOTED.add((field, reason))
+    logger.warning("[fallback] 套餐额度字段 %s %s，改用默认值（原始值: %.60s）", field, reason, str(raw))
+
+
 async def _get_plan(url: str, authorization: str) -> Mapping[str, Any] | None:
     if not url:
         return None
@@ -67,9 +82,11 @@ async def _get_plan(url: str, authorization: str) -> Mapping[str, Any] | None:
         async with asyncio.timeout(_PLAN_TIMEOUT_SECONDS):
             return await _get_json(url, authorization)
     except TimeoutError:
+        _note("plan", "接口超时")
         return None
     except RuntimeError as error:
         if ModelError.matches(error):
+            _note("plan", "接口返回错误")
             return None
         raise
 
@@ -202,6 +219,7 @@ def _float(value: object) -> float:
     try:
         return float(value) if isinstance(value, str) and value.strip() else 0.0
     except ValueError:
+        _note("数值(float)", "无法解析", value)
         return 0.0
 
 
@@ -211,6 +229,7 @@ def _iso(value: object) -> str | None:
         try:
             return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc).isoformat()
         except ValueError:
+            _note("时间(iso)", "无法解析", value)
             return None
     stamp = _float(value)
     if stamp <= 0:
@@ -225,6 +244,8 @@ def _int(value: object) -> int:
         return int(value)
     if isinstance(value, str) and value.strip().lstrip("-").isdigit():
         return int(value.strip())
+    if isinstance(value, str) and value.strip():
+        _note("数值(int)", "无法解析", value)
     return 0
 
 

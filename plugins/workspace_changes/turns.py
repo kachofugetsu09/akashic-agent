@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import logging
 import asyncio
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import aclosing
@@ -25,6 +26,9 @@ _ACTIVE = "active"
 
 
 # 内存里只放进行中的窗口；记录本身在 OWNER_STATE，按会话 50 个槽位循环覆盖。
+logger = logging.getLogger(__name__)
+
+
 @dataclass(slots=True)
 class _Window:
     session: str
@@ -45,6 +49,7 @@ class TurnWindows:
         self._starting: dict[str, int] = {}
         self._starting_after: dict[str, int] = {}
         self._active: dict[str, _Window] = {}
+        self._no_directory_noted: set[str] = set()
         self._locks: dict[str, asyncio.Lock] = {}
 
     # SOURCE_CHANGED_V3 的同步监听：只记下当时的 head（索引查询）并排队，不读历史。
@@ -146,6 +151,9 @@ class TurnWindows:
         except GitUnavailable as error:
             # 没设工作目录的会话（如聊天渠道）不留记录。
             if error.reason == "no_directory":
+                if session not in self._no_directory_noted:
+                    self._no_directory_noted.add(session)
+                    logger.info("[skipped] 工作区改动记录: 会话没有工作目录，不记录改动")
                 return None
             record["error"] = error.view()
             return record

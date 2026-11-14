@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import asyncio
 import json
 from collections import deque
@@ -84,6 +85,9 @@ inject = ()
 
 
 Preview = Callable[[str], AbstractContextManager[StreamCallback]]
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -456,6 +460,16 @@ async def _settle(
             await scope.close()
 
 
+_SERIAL_NOTED: set[str] = set()
+
+
+# 并行判断失败退回串行；同一 binding 只记一次。
+def _note_serial_fallback(binding_id: str) -> None:
+    if binding_id not in _SERIAL_NOTED:
+        _SERIAL_NOTED.add(binding_id)
+        logger.warning("[fallback] 工具并行判断失败，退回串行: binding=%.40s", binding_id)
+
+
 def _parallel(reader: MessageReader, tools: ToolMenu, call: CallRef) -> bool:
     """只按当前注册分类；失效引用一律串行，真实错误留给结算路径。"""
     message = reader.get(call.message_id)
@@ -468,6 +482,7 @@ def _parallel(reader: MessageReader, tools: ToolMenu, call: CallRef) -> bool:
     try:
         return tools.parallel(part.binding_id) is True
     except Exception:
+        _note_serial_fallback(part.binding_id)
         return False
 
 

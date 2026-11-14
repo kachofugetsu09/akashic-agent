@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Mapping
+import logging
 from datetime import datetime, timezone
 from typing import Any, cast
 
@@ -24,6 +25,9 @@ from .auth import headers
 
 _PLANS = {"free": "Free", "plus": "Plus", "pro": "Pro", "team": "Team", "business": "Business",
           "enterprise": "Enterprise", "edu": "Edu"}
+
+
+logger = logging.getLogger(__name__)
 
 
 async def read_quota(
@@ -104,6 +108,9 @@ def _window(value: object) -> QuotaWindow | None:
     return QuotaWindow(quota_window_label(span), float(used), resets_at, span)
 
 
+_NOTED: set[str] = set()
+
+
 # 订阅之外另购的 credits：只在有余量且不是无限时提一句。
 def _credits(value: object) -> str:
     raw = _mapping(value)
@@ -112,6 +119,9 @@ def _credits(value: object) -> str:
     try:
         balance = float(str(raw.get("balance") or "0"))
     except ValueError:
+        if "credits" not in _NOTED:
+            _NOTED.add("credits")
+            logger.warning("[fallback] codex 额度 credits 余额无法解析，按没有处理（原始值: %.60s）", str(raw.get("balance")))
         return ""
     return f"另有 {balance:g} credits" if balance > 0 else ""
 
