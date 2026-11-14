@@ -202,6 +202,57 @@ def idle_summary_due(
     return gap is not None and gap >= idle_minutes
 
 
+def background_idle_anchor(
+    snapshot: Sequence[Message],
+    *,
+    source: str = "conversation",
+    boundary_source: str = "compaction",
+) -> str | None:
+    """无进行中回合且尚未为当前静默期写入压缩边界时，返回末条会话消息 ID。"""
+    if not snapshot:
+        return None
+    latest_boundary_seq = max(
+        (message.seq for message in snapshot if message.source == boundary_source),
+        default=-1,
+    )
+    last_conv = next(
+        (message for message in reversed(snapshot) if message.source == source),
+        None,
+    )
+    if last_conv is None or last_conv.seq <= latest_boundary_seq:
+        return None
+    if isinstance(last_conv.body, Input):
+        return None
+    if isinstance(last_conv.body, Output) and last_conv.body.finish == "continue":
+        return None
+    return last_conv.message_id
+
+
+def background_idle_due(
+    estimated: int,
+    snapshot: Sequence[Message],
+    *,
+    now: object,
+    idle_minutes: int = IDLE_COMPACT_MINUTES,
+    idle_tokens: int = IDLE_COMPACT_TOKENS,
+    source: str = "conversation",
+    boundary_source: str = "compaction",
+) -> bool:
+    """后台空闲扫盘判定：对话静默已达阈值且体积达标（未等新消息进来即可先压缩）。"""
+    from datetime import datetime
+
+    if idle_minutes <= 0 or idle_tokens <= 0 or estimated < idle_tokens:
+        return False
+    anchor = background_idle_anchor(snapshot, source=source, boundary_source=boundary_source)
+    if anchor is None:
+        return False
+    last_conv = next((message for message in reversed(snapshot) if message.message_id == anchor), None)
+    if last_conv is None or not isinstance(now, datetime):
+        return False
+    minutes = (now - last_conv.recorded_at).total_seconds() / 60.0
+    return minutes >= idle_minutes
+
+
 def summary_due(
     estimated: int,
     context_window: int | None,

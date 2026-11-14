@@ -2305,6 +2305,113 @@ button.tool-step-summary:active {
 .context-notice[open] .process-chevron { rotate: 180deg; }
 .context-notice > .process-content { margin: 2px 0 6px; }
 
+/* 压缩边界分隔条：参考 Claude Desktop 的低调状态行 + 发丝线分隔，默认收起一行，点开看细节。 */
+.compaction-row {
+  width: 100%;
+  margin: 10px 0 4px;
+}
+
+.compaction-boundary {
+  width: 100%;
+}
+
+.compaction-boundary__trigger {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  list-style: none;
+  cursor: pointer;
+  padding: 4px 0;
+  color: var(--ak-ink-muted);
+  font-size: var(--chat-type-caption, 0.75rem);
+  line-height: 1.4;
+  user-select: none;
+  transition: color var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+}
+
+.compaction-boundary__trigger::-webkit-details-marker { display: none; }
+
+.compaction-boundary.is-standalone .compaction-boundary__trigger::before,
+.compaction-boundary__trigger::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: color-mix(in oklab, var(--ak-ink-primary) 10%, transparent);
+}
+
+.compaction-boundary__pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 2px 8px;
+  border-radius: var(--ak-radius-full);
+  background: color-mix(in oklab, var(--ak-ink-primary) 4%, transparent);
+}
+
+.compaction-boundary__icon {
+  flex: none;
+  opacity: 0.75;
+}
+
+.compaction-boundary__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.compaction-boundary__chevron {
+  flex: none;
+  opacity: 0.45;
+  transition:
+    opacity var(--ak-sys-duration-short) var(--ak-sys-motion-standard),
+    transform var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+}
+
+.compaction-boundary__trigger:is(:hover, :focus-visible) {
+  color: var(--ak-ink-secondary);
+}
+
+.compaction-boundary__trigger:is(:hover, :focus-visible) .compaction-boundary__chevron,
+.compaction-boundary[open] .compaction-boundary__chevron {
+  opacity: 0.85;
+}
+
+.compaction-boundary[open] .compaction-boundary__chevron {
+  transform: rotate(180deg);
+}
+
+.compaction-boundary__detail {
+  margin: 4px 0 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--ak-rule-subtle);
+  border-radius: var(--ak-radius-md);
+  background: var(--ak-paper-quiet);
+  color: var(--ak-ink-secondary);
+  font-size: var(--chat-type-caption, 0.75rem);
+  line-height: 1.5;
+}
+
+.compaction-boundary__meta {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.compaction-boundary__preview {
+  margin: 6px 0 0;
+  padding-top: 6px;
+  border-top: 1px solid var(--ak-rule-subtle);
+  max-height: 200px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: inherit;
+  font-size: var(--chat-type-caption, 0.75rem);
+  line-height: 1.5;
+  color: var(--ak-ink-muted);
+}
+
 .retry-status {
   display: flex;
   align-items: flex-start;

@@ -375,3 +375,105 @@ async def test_reply_projects_images_by_model_capability(tmp_path, vision, attac
             for ref in refs:
                 assert ref.artifact_id in text
                 assert ref.filename in text
+
+
+@pytest.mark.asyncio
+async def test_background_idle_compaction_writes_boundary_and_avoids_recompact(tmp_path: Path, monkeypatch) -> None:
+    """空闲时后台自动压缩写入 compaction.boundary，下轮消息进来直接复用且不再重复压缩。"""
+    import sqlite3
+    from datetime import UTC, datetime, timedelta
+    from plugins.ledger.contract import ContentPart, Control
+    from plugins.ui.contract import MESSAGE_DISPLAY, MessagePage
+    from plugins.ui.message_display import project_message_rows
+
+    def configure_bg_idle(sources):
+        compaction_mod = sources / "compaction/plugin.py"
+        text = compaction_mod.read_text()
+        text = text.replace("IDLE_SWEEP_SECONDS = 60.0", "IDLE_SWEEP_SECONDS = 0.05")
+        text = text.replace("IDLE_SWEEP_INITIAL_DELAY_SECONDS = 15.0", "IDLE_SWEEP_INITIAL_DELAY_SECONDS = 0.01")
+        compaction_mod.write_text(text)
+
+    save_config(tmp_path / "workspace/plugin-data/compaction-builtin", {
+        "idle_scope": "all",
+        "idle_trigger_minutes": 60,
+        "idle_trigger_tokens": 180,
+        "keep_recent_tokens": 80,
+    })
+
+    async with application(
+        tmp_path, replying=True, compaction=True, keep_recent_tokens=80, extra_sources=configure_bg_idle,
+    ) as (log, host):
+        # 1. 先跑两轮对话积累足够大的历史，再把历史时间戳回拨到 2 小时前模拟空闲。
+        async with live_root(host) as root:
+            in1 = await root.context.require(CHANNEL_INPUT)(
+                "test:bg", "u1", ChannelInboundMessage(
+                    "test", "user", "bg", "alpha " * 90, datetime(2026, 11, 14, 0, 0, tzinfo=UTC), {},
+                ),
+            )
+        async def wait_output(after_seq: int):
+            async for _ in log.catalog().follow():
+                for row in log.reader("test:bg").snapshot():
+                    if row.seq > after_seq and row.source == "conversation" and (
+                        isinstance(row.body, Control)
+                        or (isinstance(row.body, Output) and row.body.finish == "complete")
+                    ):
+                        return row
+
+        out1 = await asyncio.wait_for(wait_output(in1.seq), 5)
+        assert isinstance(out1.body, Output)
+
+        async with live_root(host) as root:
+            in2 = await root.context.require(CHANNEL_INPUT)(
+                "test:bg", "u2", ChannelInboundMessage(
+                    "test", "user", "bg", "beta " * 90, datetime(2026, 11, 14, 0, 2, tzinfo=UTC), {},
+                ),
+            )
+        out2 = await asyncio.wait_for(wait_output(in2.seq), 5)
+        assert isinstance(out2.body, Output)
+
+        from contextlib import closing
+        old_ts = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
+        with closing(sqlite3.connect(tmp_path / "workspace/sessions.db")) as conn:
+            conn.execute("UPDATE messages SET ts = ? WHERE session_key = ?", (old_ts, "test:bg"))
+            conn.execute("UPDATE sessions SET updated_at = ? WHERE key = ?", (old_ts, "test:bg"))
+            conn.commit()
+        log.catalog().reader("test:bg")
+
+        # 2. 等后台空闲扫盘在无新输入的情况下主动写出 compaction.boundary。
+        async def wait_boundary():
+            while True:
+                for row in log.reader("test:bg").snapshot():
+                    if row.source == "compaction" and isinstance(row.body, Output):
+                        return row
+                await asyncio.sleep(0.05)
+
+        boundary = await asyncio.wait_for(wait_boundary(), 5)
+        part = boundary.body.parts[0]
+        assert isinstance(part, ContentPart)
+        assert part.kind == "compaction.boundary"
+        assert part.value["mode"] == "background"
+        assert part.value["trigger"] == "idle"
+        assert part.value["tokens_before"] > part.value["tokens_after"]
+
+        # 3. 展示层投影应带出 summary_preview 供前端折叠卡片展示。
+        async with live_root(host) as root:
+            page = log.reader("test:bg").read_page(after_seq=-1, limit=50)
+            rows = await project_message_rows(root.context, page, display_only=False)
+        boundary_rows = [r for r in rows if r["source"] == "compaction"]
+        assert len(boundary_rows) == 1
+        shown_part = boundary_rows[0]["body"]["parts"][0]
+        assert shown_part["kind"] == "compaction.boundary"
+        assert "Preserved facts." in shown_part["value"]["summary_preview"]
+
+        # 4. 再发新消息时，不应再次触发空闲压缩（仍只保留 1 条 compaction.boundary）。
+        async with live_root(host) as root:
+            in3 = await root.context.require(CHANNEL_INPUT)(
+                "test:bg", "u3", ChannelInboundMessage(
+                    "test", "user", "bg", "short wake", datetime.now(UTC), {},
+                ),
+            )
+        out3 = await asyncio.wait_for(wait_output(in3.seq), 5)
+        assert isinstance(out3.body, Output)
+        snap = log.reader("test:bg").snapshot()
+        assert sum(1 for m in snap if m.source == "compaction") == 1
+

@@ -364,3 +364,78 @@ def test_idle_gap_and_idle_summary_due_respect_turn_boundaries() -> None:
     assert _idle_minutes_for(Config.model_validate({"idle_scope": "off", "idle_sessions": ["s"]}), (u1, a1, u2)) == 0
 
 
+def test_background_idle_due_and_boundary_contract() -> None:
+    """后台空闲扫盘在已结算 Output 静默达标后触发，写入边界后不重复触发。"""
+    from datetime import UTC, datetime, timedelta
+    from plugins.context.contract import background_idle_anchor, background_idle_due
+    from plugins.compaction.plugin import _check_boundary
+    from plugins.ledger.contract import ContentPart, Input, Message, Output
+
+    t0 = datetime(2026, 11, 14, 0, 0, tzinfo=UTC)
+    u1 = Message("u1", "s", 0, t0, "user", "conversation", Input((ContentPart("text", "hi"),)))
+    a1 = Message("a1", "s", 1, t0 + timedelta(minutes=1), "assistant", "conversation",
+                 Output((ContentPart("text", "done"),), "complete"))
+    b1 = Message("b1", "s", 2, t0 + timedelta(minutes=62), "compaction", "compaction",
+                 Output((ContentPart("compaction.boundary", {
+                     "reference": "r1",
+                     "trigger": "idle",
+                     "mode": "background",
+                     "generation": 1,
+                     "tokens_before": 300_000,
+                     "tokens_after": 120_000,
+                 }),), "complete"))
+
+    assert background_idle_anchor((u1,)) is None
+    assert background_idle_anchor((u1, a1)) == "a1"
+    assert not background_idle_due(250_000, (u1, a1), now=t0 + timedelta(minutes=60), idle_minutes=60, idle_tokens=200_000)
+    assert background_idle_due(250_000, (u1, a1), now=t0 + timedelta(minutes=61), idle_minutes=60, idle_tokens=200_000)
+    assert not background_idle_due(199_999, (u1, a1), now=t0 + timedelta(minutes=90), idle_minutes=60, idle_tokens=200_000)
+    assert background_idle_anchor((u1, a1, b1)) is None
+    assert not background_idle_due(250_000, (u1, a1, b1), now=t0 + timedelta(minutes=180), idle_minutes=60, idle_tokens=200_000)
+
+    u2 = Message("u2", "s", 3, t0 + timedelta(minutes=185), "user", "conversation", Input((ContentPart("text", "next"),)))
+    a2 = Message("a2", "s", 4, t0 + timedelta(minutes=186), "assistant", "conversation",
+                 Output((ContentPart("text", "ok"),), "complete"))
+    assert background_idle_anchor((u1, a1, b1, u2)) is None
+    assert background_idle_anchor((u1, a1, b1, u2, a2)) == "a2"
+    assert background_idle_due(250_000, (u1, a1, b1, u2, a2), now=t0 + timedelta(minutes=246), idle_minutes=60, idle_tokens=200_000)
+
+    _ = _check_boundary(ContentPart("compaction.boundary", {
+        "reference": "r1",
+        "trigger": "idle",
+        "mode": "background",
+        "generation": 1,
+        "tokens_before": 300_000,
+        "tokens_after": 120_000,
+    }))
+    with pytest.raises(ValueError):
+        _ = _check_boundary(ContentPart("compaction.boundary", {"reference": "r1"}))
+
+
+def test_background_visible_messages_hides_unfinished_foreign_tails() -> None:
+    """后台扫盘隐藏其他来源未收尾的消息，保留已结算消息。"""
+    from datetime import UTC, datetime, timedelta
+    from plugins.compaction.plugin import _visible_messages
+    from plugins.ledger.contract import ContentPart, Control, Input, Message, Output
+
+    t0 = datetime(2026, 11, 14, 0, 0, tzinfo=UTC)
+    u1 = Message("u1", "s", 0, t0, "user", "conversation", Input((ContentPart("text", "hi"),)))
+    a1 = Message("a1", "s", 1, t0 + timedelta(seconds=1), "assistant", "conversation",
+                 Output((ContentPart("text", "done"),), "complete"))
+    sched_in = Message("s1", "s", 2, t0 + timedelta(seconds=2), "scheduler", "scheduler",
+                       Input((ContentPart("text", "pending"),)))
+    sched_part = Message("s2", "s", 3, t0 + timedelta(seconds=3), "scheduler", "scheduler",
+                         Output((ContentPart("text", "streaming"),), "continue"))
+    watch_done = Message("w1", "s", 4, t0 + timedelta(seconds=4), "watch", "watch",
+                         Output((ContentPart("text", "ok"),), "complete"))
+
+    visible = _visible_messages((u1, a1, sched_in, sched_part, watch_done), "conversation")
+    assert [m.message_id for m in visible] == ["u1", "a1", "w1"]
+    sched_fail = Message("s_fail", "s", 3, t0 + timedelta(seconds=3), "scheduler", "scheduler",
+                         Control("failure", 2, "err"))
+    assert [m.message_id for m in _visible_messages((u1, a1, sched_in, sched_fail), "conversation")] == [
+        "u1", "a1", "s1", "s_fail",
+    ]
+
+
+

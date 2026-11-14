@@ -195,6 +195,8 @@ function CompactionFields({ values, change, status }: FormProps) {
 
   const effectiveMinutes = readNumber(values.idle_trigger_minutes, fallbackMinutes);
   const effectiveTokens = readNumber(values.idle_trigger_tokens, fallbackTokens);
+  const effectiveKeep = readNumber(values.keep_recent_tokens, fallbackKeep);
+  const keepOverlapWarning = scope !== "off" && effectiveMinutes > 0 && effectiveKeep >= effectiveTokens;
 
   const toggleSession = (sessionId: string, checked: boolean) => {
     const next = checked
@@ -217,13 +219,14 @@ function CompactionFields({ values, change, status }: FormProps) {
     if (scope === "off" || effectiveMinutes <= 0) {
       return "当前策略：已关闭空闲预压缩，仅在模型上下文触及 85% 容量软水位时自动压缩。";
     }
-    if (scope === "all") {
-      return `当前策略：对全部对话生效，闲置 ≥ ${effectiveMinutes} 分钟且上下文 ≥ ${effectiveTokens.toLocaleString()} tokens 时自动预压缩。`;
-    }
-    if (boundIds.length === 0) {
-      return "当前策略：绑定对话模式下尚未勾选对话；请从上方列表勾选常聊长对话，或点击「一键勾选常聊长对话」。";
-    }
-    return `当前策略：仅对已绑定的 ${boundIds.length} 个常驻对话，在闲置 ≥ ${effectiveMinutes} 分钟且上下文 ≥ ${effectiveTokens.toLocaleString()} tokens 时自动预压缩。`;
+    const base = scope === "all"
+      ? `当前策略：对全部对话生效，闲置 ≥ ${effectiveMinutes} 分钟且上下文 ≥ ${effectiveTokens.toLocaleString()} tokens 时在后台自动预压缩。`
+      : boundIds.length === 0
+      ? "当前策略：绑定对话模式下尚未勾选对话；请从上方列表勾选常聊长对话，或点击「一键勾选常聊长对话」。"
+      : `当前策略：仅对已绑定的 ${boundIds.length} 个常驻对话，在闲置 ≥ ${effectiveMinutes} 分钟且上下文 ≥ ${effectiveTokens.toLocaleString()} tokens 时在后台自动预压缩。`;
+    return keepOverlapWarning
+      ? `${base} 注意：当前「保留最近原文」（${effectiveKeep.toLocaleString()}）≥「触发上下文体积」（${effectiveTokens.toLocaleString()}），压完仍停在触发线之上，容易反复触发空闲压缩。`
+      : base;
   })();
 
   return (
@@ -252,7 +255,7 @@ function CompactionFields({ values, change, status }: FormProps) {
 
       <div className="config-field">
         <span>空闲预压缩范围</span>
-        <small>对话闲置超过缓存有效期后，赶在下次发消息前先把旧历史压成摘要，避免长上下文冷启动重算</small>
+        <small>对话闲置超过缓存有效期后，在后台先把旧历史压成摘要；若尚未扫盘而你先发了消息，也会在发送前兜底压缩</small>
         <div className="compaction-scope-tabs" role="group" aria-label="空闲预压缩范围">
           {SCOPE_OPTIONS.map((option) => (
             <button
@@ -273,7 +276,7 @@ function CompactionFields({ values, change, status }: FormProps) {
           <PresetNumberField
             label="空闲等待时长"
             name="idle_trigger_minutes"
-            hint="距上一轮回复结束超过此时长（KV 缓存已过期），新发消息时才允许触发预压缩"
+            hint="距上一轮回复结束超过此时长（KV 缓存已过期）后，后台自动执行空闲预压缩"
             unit="分钟"
             min={0}
             step={5}
