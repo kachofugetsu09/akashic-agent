@@ -450,6 +450,8 @@ async def test_background_idle_compaction_writes_boundary_and_avoids_recompact(t
                 await asyncio.sleep(0.05)
 
         boundary = await asyncio.wait_for(wait_boundary(), 5)
+        with closing(sqlite3.connect(tmp_path / "workspace/sessions.db")) as conn:
+            assert conn.execute("SELECT updated_at FROM sessions WHERE key = ?", ("test:bg",)).fetchone()[0] == old_ts
         part = boundary.body.parts[0]
         assert isinstance(part, ContentPart)
         assert part.kind == "compaction.boundary"

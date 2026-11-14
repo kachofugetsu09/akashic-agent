@@ -113,13 +113,14 @@ class MessageWriters:
         update_metadata: Callable[[Body], Mapping[str, object | None]] | None = None,
         check_metadata: Callable[[Mapping[str, object]], None] | None = None,
         part_metadata: bool = False,
+        update_activity: bool = True,
     ) -> Callable[..., MessageWriter]:
         """固定身份、类型和检查器；打开时只选择 Session 和可选 exact call。"""
         if author == Actor.USER:
             raise PermissionError("用户输入只由来源注册表代为绑定；注册来源即声明其输入是用户输入")
         return self._bind(ctx, author=author, source=source, body_types=body_types, content=content,
                           check_call=check_call, update_metadata=update_metadata,
-                          check_metadata=check_metadata, part_metadata=part_metadata)
+                          check_metadata=check_metadata, part_metadata=part_metadata, update_activity=update_activity)
 
     # 授权检查之后的实际绑定；用户输入授权也经此处，身份与元数据规则与其他作者一致。
     def _bind(
@@ -134,6 +135,7 @@ class MessageWriters:
         update_metadata: Callable[[Body], Mapping[str, object | None]] | None = None,
         check_metadata: Callable[[Mapping[str, object]], None] | None = None,
         part_metadata: bool = False,
+        update_activity: bool = True,
     ) -> Callable[..., MessageWriter]:
         log = self._log
         owner = ctx.require_runtime_identity(MESSAGE_WRITERS, self).plugin_id
@@ -167,7 +169,7 @@ class MessageWriters:
                 metadata_keys=metadata_keys,
                 update_metadata=project_metadata if projected else None,
                 message_metadata_keys=frozenset({owner}),
-                check_metadata=check_metadata,
+                check_metadata=check_metadata, update_activity=update_activity,
             )
 
         return open

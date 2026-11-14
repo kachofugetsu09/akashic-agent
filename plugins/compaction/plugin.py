@@ -516,6 +516,7 @@ async def apply(ctx: Context) -> None:
         source=BOUNDARY_SOURCE,
         body_types=(Output,),
         content={BOUNDARY_KIND: _check_boundary},
+        update_activity=False,
     )
 
     session_locks: dict[str, _SessionLock] = {}
@@ -561,6 +562,9 @@ async def apply(ctx: Context) -> None:
         if not snapshot:
             return {}
         session_id = snapshot[0].session_id
+        latest = next((message for message in reversed(snapshot) if message.source == source), None)
+        if source == "conversation" and latest is not None and isinstance(latest.body, Input):
+            await _wait_background_for_turn(session_id, None)
         state = records()
         # 命中与未命中都要读 head 行版本（SQL），恢复在文件线程完成；
         # 只有纯内存命中才值得省 executor 往返，这里不是（评审 #1142）。
@@ -587,8 +591,6 @@ async def apply(ctx: Context) -> None:
                 windows.clear()
             windows[record.reference] = window
         return window
-
-    bg_published_refs: set[str] = set()
 
     async def _compact_core(
         snapshot: tuple[Message, ...],
@@ -642,11 +644,15 @@ async def apply(ctx: Context) -> None:
             soft_due = force or before >= int(window * SUMMARY_SOFT_LIMIT)
         state = records()
         parent = await run_file_io(lambda: state.head(snapshot[0].session_id))
+        ctx_reader = ctx.require(MESSAGE_CATALOG).reader(snapshot[0].session_id)
         current_summary = materials.get("summary")
         if current_summary is not None and not isinstance(current_summary, Mapping):
             raise TypeError("Context 材料摘要必须是对象")
         if (None if parent is None else material(parent)) != current_summary:
-            if parent is not None and parent.reference in bg_published_refs and isinstance(parent, SummaryRecord):
+            boundary = None if parent is None else await run_file_io(
+                lambda: ctx_reader.get(f"compaction-boundary:{parent.reference}"),
+            )
+            if parent is not None and boundary is not None and boundary.source == BOUNDARY_SOURCE and isinstance(parent, SummaryRecord):
                 if not force and not hard_limit:
                     return material(parent), parent
                 materials = {**materials, "summary": material(parent)}
@@ -925,7 +931,7 @@ async def apply(ctx: Context) -> None:
 
     async def _wait_background_for_turn(session_id: str, on_status: ReductionStatus | None) -> None:
         bg_task = active_bg_tasks.get(session_id)
-        if bg_task is None or bg_task.done():
+        if bg_task is None or bg_task is asyncio.current_task() or bg_task.done():
             return
         if on_status is not None:
             await on_status("正在等待后台空闲压缩完成…", False)
@@ -1025,13 +1031,17 @@ async def apply(ctx: Context) -> None:
             latest = tail_page.messages[-1]
             if latest.source == BOUNDARY_SOURCE:
                 return False
-            if latest.source == "conversation":
-                if isinstance(latest.body, Input):
+            if latest.source != "conversation":
+                conversation = await reader.read_async(lambda current: current.read(
+                    source="conversation", after_seq=current.head(source="conversation") - 1, limit=1,
+                ))
+                if not conversation:
                     return False
-                if isinstance(latest.body, Output) and latest.body.finish == "continue":
-                    return False
-                if (datetime.now(UTC) - latest.recorded_at).total_seconds() / 60.0 < config.idle_trigger_minutes:
-                    return False
+                latest = conversation[-1]
+            if not isinstance(latest.body, Output) or latest.body.finish == "continue":
+                return False
+            if (datetime.now(UTC) - latest.recorded_at).total_seconds() / 60.0 < config.idle_trigger_minutes:
+                return False
             raw_snapshot = await run_file_io(lambda: tuple(reader.snapshot()))
             snapshot = _visible_messages(raw_snapshot, "conversation")
             if not snapshot:
@@ -1120,9 +1130,6 @@ async def apply(ctx: Context) -> None:
                     _, record = result
                     attempts.failures = 0
                     resume_idle(session_id, attempts, "压缩成功")
-                    if len(bg_published_refs) >= 256:
-                        bg_published_refs.clear()
-                    bg_published_refs.add(record.reference)
                     return True
             except (RuntimeError, TimeoutError) as error:
                 if not (ModelError.matches(error) or isinstance(error, TimeoutError)):
