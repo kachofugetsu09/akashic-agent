@@ -84,6 +84,8 @@ class TermCache:
             with closing(sqlite3.connect(f"file:{self._path}?mode=ro", uri=True)) as connection:
                 row = connection.execute("SELECT value FROM meta WHERE key='fingerprint'").fetchone()
                 if row is None or row[0] != _fingerprint():
+                    if row is not None:
+                        logger.info("[fallback] Akasha 分词缓存指纹不符，整体作废并现场切分: %s", self._path)
                     return
                 self._known = {
                     key: tuple((term, count) for term, count in json.loads(value))

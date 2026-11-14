@@ -5,6 +5,7 @@ from dataclasses import replace
 import asyncio
 import hashlib
 import importlib.util
+import logging
 import os
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -38,6 +39,10 @@ if TYPE_CHECKING:
     from ..projection import Sample, SessionCursor
     from ..learning import Learning, LearningConfig
 
+
+logger = logging.getLogger(__name__)
+# 投影代码摘要读不全的退化提示，进程内只打一次。
+_CODE_FALLBACK_LOGGED = False
 
 type RestoreEmbeddings = Callable[["LearningConfig", list[str]], Awaitable[list[list[float]]]]
 
@@ -74,6 +79,15 @@ def _projection_code() -> str:
     except (OSError, ImportError, ValueError):
         return ""
     return digest.hexdigest()
+
+
+# 投影代码摘要读失败时本进程不复用续读点，进程内只提示一次。
+def _log_code_fallback(code: str) -> None:
+    global _CODE_FALLBACK_LOGGED
+    if code or _CODE_FALLBACK_LOGGED:
+        return
+    _CODE_FALLBACK_LOGGED = True
+    logger.warning("[fallback] Akasha 投影代码摘要读取失败，本进程不复用也不保存续读点，退化为全量重投影")
 
 
 class _SavedCursors(BaseModel):
@@ -296,10 +310,12 @@ class MessageConsumer:
 
             records = embeddings.bind(learning.text)
             count = 0
+            missing_skipped = 0
             # 投影只读续读点之后的尾部；与图发布共用排空后才取消的后台执行方式。
             # revision 先于投影读取并随续读点保存：投影期间的前缀改写会让下次检查失配。
             revision = await run_memory_job(catalog.prefix_revision)
             code = await run_memory_job(_projection_code)
+            _log_code_fallback(code)
             rule_key = f"{rule.model_dump_json()}|{code}" if code else ""
             cursors = await run_memory_job(partial(self._resume_cursors, learning_binding, rule_key, revision))
             samples, advanced = await run_memory_job(partial(
@@ -323,6 +339,7 @@ class MessageConsumer:
                         count += await run_memory_job(partial(
                             self.skip, sample, reason="missing-embedding",
                         ))
+                        missing_skipped += 1
                         continue
                     vectors = await embed_batch([learning.text(message) for message in missing])
                     if len(vectors) != len(missing) or any(len(vector) != rule.dimension for vector in vectors):
@@ -346,6 +363,8 @@ class MessageConsumer:
                     return applied
 
                 count += await run_memory_job(learn_sample)
+            if missing_skipped:
+                logger.warning("[paused] Akasha 重建时缺固定向量的闭段已永久跳过，不会再补学: %s 段", missing_skipped)
             # 3. 本批学完统一发布一次；批内攒满 PUBLISH_EVERY 已在途中发布。
             await run_memory_job(self.flush)
             # 4. 整批处理并发布后才前进续读点；失败或取消时下次仍从旧续读点重读。
@@ -368,14 +387,28 @@ class MessageConsumer:
         self._cursor_file_read = True
         try:
             saved = _SavedCursors.model_validate_json(self._cursor_path.read_bytes())
-        except (OSError, ValueError):
+        except FileNotFoundError:
+            self._log_cursor_missing()
+            return {}
+        except (OSError, ValueError) as error:
             # 缺失、损坏或旧格式都只是没有续读点；ValidationError 是 ValueError 子类。
+            logger.warning("[fallback] Akasha 续读点文件损坏或不可读，退化为全量重投影: %s: %s",
+                           self._cursor_path, error)
             return {}
         if (saved.learning_rule != rule_key or saved.prefix_revision != revision
                 or not _progress_prefix(saved, self._published)):
+            logger.info("[fallback] Akasha 续读点与当前学习规则、前缀版本或消费进度不符，退化为全量重投影: %s",
+                        self._cursor_path)
             return {}
         return {session: SessionCursor(head, boundaries)
                 for session, (head, boundaries) in saved.cursors.items()}
+
+    # 首次启动没有续读点是正常的；已有学习进度却缺失才是退化。
+    def _log_cursor_missing(self) -> None:
+        if not self._published.applied and not self._published.skipped:
+            logger.info("Akasha 尚无续读点（首次启动），从头投影: %s", self._cursor_path)
+            return
+        logger.warning("[fallback] Akasha 续读点文件缺失，退化为全量重投影: %s", self._cursor_path)
 
     # 只保存已发布进度对应的续读点；重建候选不落盘，节流写入后原子替换。
     def _save_cursors(self) -> None:

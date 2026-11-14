@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 from heapq import heappop, heappush
 from typing import Protocol
@@ -14,6 +15,7 @@ try:
     from . import _push_kernel as kernel
 except ImportError:  # numba 不可用时退回解释器循环，结果相同。
     kernel = None
+    logging.getLogger(__name__).warning("[fallback] numba 扩散内核不可用，改用解释器循环，扩散会明显变慢")
 
 
 Transitions = tuple[tuple[tuple[int, float, int], ...], float]
