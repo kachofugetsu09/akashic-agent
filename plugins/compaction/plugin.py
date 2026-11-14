@@ -274,24 +274,22 @@ async def apply(ctx: Context) -> None:
             return False
         return True
 
-    # 没达标的原因只在确实出现空闲缺口时记录；没有缺口（工具循环、连续对话）不打日志。
+    # 只在停够了时间却没压的时候记原因；连续对话和工具循环里间隔不够是常态，不打日志。
     def log_idle_not_due(snapshot: tuple[Message, ...], estimated: int) -> None:
-        if not snapshot or idle_gap_anchor(snapshot) is None:
+        gap_minutes = idle_gap_minutes(snapshot) if snapshot else None
+        if gap_minutes is None or gap_minutes < max(config.idle_trigger_minutes, 1):
             return
         minutes = _idle_minutes_for(config, snapshot)
         if minutes <= 0 and config.idle_scope == "selected" and config.idle_trigger_minutes > 0:
-            skip_idle(snapshot, "scope", "会话不在空闲预压缩名单内（idle_scope=selected）")
+            skip_idle(snapshot, "scope", "停了 %.0f 分钟，但会话不在空闲预压缩名单内（idle_scope=selected）", gap_minutes)
         elif minutes <= 0:
             skip_idle(snapshot, "off", "空闲预压缩未启用（idle_scope=%s idle_trigger_minutes=%d）",
                       config.idle_scope, config.idle_trigger_minutes)
         elif estimated <= config.keep_recent_tokens:
             skip_idle(snapshot, "recent", "估算 %d tokens 未超过原文保留量 %d", estimated, config.keep_recent_tokens)
         elif estimated < config.idle_trigger_tokens:
-            skip_idle(snapshot, "tokens", "估算 %d tokens 低于 idle_trigger_tokens=%d", estimated, config.idle_trigger_tokens)
-        else:
-            gap_minutes = idle_gap_minutes(snapshot)
-            skip_idle(snapshot, "gap", "空闲间隔 %.1f 分钟不足 idle_trigger_minutes=%d",
-                      0.0 if gap_minutes is None else gap_minutes, minutes)
+            skip_idle(snapshot, "tokens", "停了 %.0f 分钟，但估算 %d tokens 低于 idle_trigger_tokens=%d",
+                      gap_minutes, estimated, config.idle_trigger_tokens)
 
     def records() -> SummaryRecords:
         return SummaryRecords(ctx.require(OWNER_STATE).open(ctx))
