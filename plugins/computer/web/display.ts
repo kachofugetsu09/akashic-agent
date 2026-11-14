@@ -91,6 +91,11 @@ export class ComputerDisplay extends EventTarget {
     this.frame.addEventListener("load", () => this.watch());
     // 获取脚本、iframe 启动和首帧共用一个期限，避免卡在 load 事件之前。
     this.startupTimer = window.setTimeout(() => {
+      // 慢链路上取会话就要几秒，中继期限还没到总期限就先到了：WebRTC 没出画面同样改走 WebSocket，不报错。
+      if (this.mode === "webrtc") {
+        this.fallback();
+        return;
+      }
       const stream = this.stream;
       const reason = !stream?.selkiesTransport && !stream?.selkiesWebRTC
         ? "显示客户端启动超时，请刷新页面或检查浏览器是否阻止了脚本"
