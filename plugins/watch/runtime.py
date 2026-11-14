@@ -270,22 +270,28 @@ class Runtime:
         shown, rest = verdicts[:WAKE_EVENTS], verdicts[WAKE_EVENTS:]
         # 叫醒的事件也记进待看：主 Agent 处理完自己删掉；它这一轮没跑成或中途断了，事情还留在待看里
         await run_file_io(lambda: (_inbox(self.root, now, shown, "已为这件事叫醒你，处理完请删掉这一行"), _inbox(self.root, now, rest, "同批叫醒")))
-        prompt = wake.event_prompt(await self._scene(now), [(verdict.event, verdict.why) for verdict in shown], len(rest))
+        prompt = wake.event_prompt(await self._scene(now), [(verdict.event, verdict.why) for verdict in shown], len(rest), await self._owed(now))
         self.state.wakes = [*recent_wakes, now.isoformat()]
         await self._save()
         _ = await self._run_agent(now, "wake", prompt, "叫醒主 Agent（" + "、".join("#" + verdict.event.id for verdict in shown) + "）")
 
-    # 待看列表不能只等复盘：攒了新条目、主 Agent 又很久没醒，就叫它过一眼。
+    # 上次后台回合之后他说过话、现在已经停了半小时：那段对话还没人收尾。
+    async def _owed(self, now: datetime) -> bool:
+        said = [turn.at for turn in await self._turns(now) if turn.kind == "user"]
+        last = datetime.fromisoformat(self.state.last_agent) if self.state.last_agent else None
+        return bool(said) and (last is None or said[-1] > last) and now - said[-1] >= timedelta(minutes=30)
+
+    # 待看列表和没收尾的对话都不能只等复盘：攒了新条目或他说过话，主 Agent 又很久没醒，就叫它过一眼。
     async def _digest(self, now: datetime) -> None:
         last = datetime.fromisoformat(self.state.last_agent) if self.state.last_agent else None
         if not self.config.digest_hours or (last is not None and now - last < timedelta(hours=self.config.digest_hours)):
             return
         fresh = await run_file_io(lambda: _fresh(self.root / "inbox.md", last))
         recent_wakes = [stamp for stamp in self.state.wakes if datetime.fromisoformat(stamp) > now - timedelta(hours=24)]
-        if not fresh or len(recent_wakes) >= self.config.daily_wakes:
+        if len(recent_wakes) >= self.config.daily_wakes or not (fresh or await self._owed(now)):
             return
         self.state.wakes = [*recent_wakes, now.isoformat()]
-        _ = await self._run_agent(now, "inbox", wake.digest_prompt(await self._scene(now), fresh), "待看列表过一眼")
+        _ = await self._run_agent(now, "inbox", wake.digest_prompt(await self._scene(now), fresh), "待看列表过一眼" if fresh else "对话收尾")
 
     async def _review(self, now: datetime, orders: list[watch_orders.Order]) -> None:
         if self.config.review_at == "off" or self.state.review_day == f"{now:%Y-%m-%d}":
