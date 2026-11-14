@@ -15,13 +15,24 @@ from plugins.ledger.contract import (
     OwnerTransaction,
     PreparedAppend,
 )
-from plugins.ledger.contract import Message, json_value
+from plugins.ledger.contract import json_value
 from plugins.compaction.contract import (
     COMPACTION_SUMMARIES as COMPACTION_SUMMARIES,
 )
 
 Text = Annotated[str, Field(min_length=1)]
 Digest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+
+
+# 与 context.summary_indexes 同一规则：允许跳过未覆盖消息，但不能重排、重复或引用不存在的消息。
+def _source_indexes(message_ids: tuple[str, ...], source_message_ids: tuple[str, ...]) -> tuple[int, ...]:
+    positions = {identity: index for index, identity in enumerate(message_ids)}
+    if not source_message_ids or any(identity not in positions for identity in source_message_ids):
+        raise ValueError("摘要来源缺少实际消息")
+    indexes = tuple(positions[identity] for identity in source_message_ids)
+    if any(left >= right for left, right in zip(indexes, indexes[1:])):
+        raise ValueError("摘要来源必须按实际消息顺序排列且不能重复")
+    return indexes
 
 
 class _SummaryIdentity(BaseModel):
@@ -353,7 +364,6 @@ class SummaryRecords:
 
     async def publish(
         self, record: SummaryRecord, reader: MessageReader, *, parent: StoredSummary | None,
-        summary_indexes: Callable[[tuple[Message, ...], tuple[str, ...]], tuple[int, ...]],
         boundary: PreparedAppend | None = None,
     ) -> SummaryRecord:
         """原子检查 parent 与精确消息覆盖，再只增摘要并推进本 Session 指针。"""
@@ -385,8 +395,8 @@ class SummaryRecords:
 
             _check_lineage(record, self._read_record, record.session_id)
 
-            # 2. 源消息身份与顺序在同一 authority 的事务中校验；读取模块无正文写权。
-            indexes = summary_indexes(tuple(reader.snapshot()), record.source_message_ids)
+            # 2. 源消息身份与顺序在同一 authority 的事务中校验；只读身份序列，不在写锁内解码整段正文。
+            indexes = _source_indexes(reader.message_ids(), record.source_message_ids)
             if record.version == 2 and indexes != tuple(range(indexes[0], indexes[-1] + 1)):
                 raise ValueError("v2 摘要来源必须连续")
             _ = tx.save("summary:" + record.reference,

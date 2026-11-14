@@ -1519,6 +1519,13 @@ class MessageReader:
             ).fetchone()
             return None if row is None else self._log._decode(row)
 
+    def message_ids(self) -> tuple[str, ...]:
+        """按 seq 列出本 Session 全部消息身份；在调用者的读面内执行，不解码正文。"""
+        with self._log._read() as connection:
+            return tuple(row[0] for row in connection.execute(
+                "SELECT id FROM messages WHERE session_key=? ORDER BY seq", (self._session_id,),
+            ))
+
     def covered_window(self, message_ids: Sequence[str]) -> HistoryWindow:
         """按 seq 顺序给出的身份从会话开头连续覆盖到的最后一条 seq（首条就不属于时为 -1），
         与账本前缀版本取自同一读事务；不解码正文。"""

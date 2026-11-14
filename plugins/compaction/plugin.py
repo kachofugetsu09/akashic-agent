@@ -37,7 +37,7 @@ from plugins.context.contract import (
 )
 from plugins.ledger.contract import ARTIFACT_READ, BINDINGS
 from plugins.ledger.contract import MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE
-from plugins.ledger.contract import ContentPart, ContentReferences, Control, HistoryWindow, Input, Message, Output
+from plugins.ledger.contract import ContentPart, ContentReferences, Control, HistoryWindow, Input, Message, MessageReader, Output
 
 from .records import StoredSummary, SummaryLookup, SummaryRecord, SummaryRecords
 from .message_summary import (
@@ -219,6 +219,15 @@ def _idle_minutes_for(config: Config, snapshot: tuple[Message, ...]) -> int:
     return config.idle_trigger_minutes if snapshot[0].session_id in config.idle_sessions else 0
 
 
+# 最后一条 conversation 消息；会话里没有时返回 None，不构造非法的读取起点。
+def _latest_conversation(reader: MessageReader) -> Message | None:
+    head = reader.head(source="conversation")
+    if head < 0:
+        return None
+    found = reader.read(source="conversation", after_seq=head - 1, limit=1)
+    return found[-1] if found else None
+
+
 def _visible_messages(messages: tuple[Message, ...], source: str) -> tuple[Message, ...]:
     """与 reply_program 保持同一隐藏规则：其他来源尚未收尾的尾部消息不进入后台评估与摘要。"""
     finished: set[str] = set()
@@ -325,6 +334,13 @@ async def apply(ctx: Context) -> None:
     idle_attempts: dict[str, _IdleAttempts] = {}
     # 空闲预压缩 [skipped] 日志的去重记录：会话 -> 缺口与原因；有界，满了整体丢弃。
     idle_skip_logged: dict[str, str] = {}
+    # 后台巡检已判定不压缩（或出错）的内容：会话 -> 当时的 head；内容不变就不再全量解码。有界，满了整体丢弃。
+    idle_settled: dict[str, int] = {}
+
+    def settle_idle(session_id: str, head: int) -> None:
+        if len(idle_settled) >= 256:
+            idle_settled.clear()
+        idle_settled[session_id] = head
 
     # 换模型清零连续失败；已试过的缺口不随模型改变。binding 含注册表版本，保存模型设置也清零：
     # 用户刚改过密钥或额度配置时应当再试，代价有上限（每次保存至多再付 3 次）。
@@ -869,7 +885,7 @@ async def apply(ctx: Context) -> None:
                 }),), "complete"),
             )
             _ = await state.publish(
-                record, reader, parent=parent, summary_indexes=context.summary_indexes, boundary=boundary,
+                record, reader, parent=parent, boundary=boundary,
             )
         finally:
             if writer is not None:
@@ -935,7 +951,16 @@ async def apply(ctx: Context) -> None:
             return
         if on_status is not None:
             await on_status("正在等待后台空闲压缩完成…", False)
-        _ = await asyncio.shield(bg_task)
+        try:
+            _ = await asyncio.shield(bg_task)
+        except asyncio.CancelledError:
+            # 后台被取消（停机）也会从 shield 抛出；只有本回合自己被取消才继续向外传。
+            current = asyncio.current_task()
+            if not bg_task.cancelled() or (current is not None and current.cancelling()):
+                raise
+        except Exception:
+            # 后台失败由巡检记录；前台只等它让出会话，本回合照常准备。
+            return
 
     async def reduce(snapshot: tuple[Message, ...], materials: MaterialData, request: ModelRequest,
                      model: BoundChatModel, projection: ContextModel, *, source: str, force: bool,
@@ -1032,25 +1057,29 @@ async def apply(ctx: Context) -> None:
             if latest.source == BOUNDARY_SOURCE:
                 return False
             if latest.source != "conversation":
-                conversation = await reader.read_async(lambda current: current.read(
-                    source="conversation", after_seq=current.head(source="conversation") - 1, limit=1,
-                ))
-                if not conversation:
+                conversation = await reader.read_async(_latest_conversation)
+                if conversation is None:
                     return False
-                latest = conversation[-1]
+                latest = conversation
             if not isinstance(latest.body, Output) or latest.body.finish == "continue":
                 return False
             if (datetime.now(UTC) - latest.recorded_at).total_seconds() / 60.0 < config.idle_trigger_minutes:
                 return False
-            raw_snapshot = await run_file_io(lambda: tuple(reader.snapshot()))
+            # 全量解码前只用索引核对：本静默期已有边界、这个缺口已试过、同一内容已判过，都不读正文。
+            head, boundary_head = await reader.read_async(
+                lambda current: (current.head(), current.head(source=BOUNDARY_SOURCE)),
+            )
+            tried = idle_attempts.get(session_id)
+            if (latest.seq <= boundary_head or idle_settled.get(session_id) == head
+                    or (tried is not None and tried.gap == latest.message_id)):
+                return False
+            # 共享已提交前缀：前台刚读过就直接复用，冷读也不回填解码缓存。
+            raw_snapshot = tuple(await reader.committed_snapshot_async())
             snapshot = _visible_messages(raw_snapshot, "conversation")
-            if not snapshot:
-                return False
-            settled = context.settled_prefixes(snapshot)
-            if not settled or settled[-1] != len(snapshot):
-                return False
+            settled = context.settled_prefixes(snapshot) if snapshot else ()
             anchor = background_idle_anchor(snapshot, source="conversation", boundary_source=BOUNDARY_SOURCE)
-            if anchor is None:
+            if not settled or settled[-1] != len(snapshot) or anchor is None:
+                settle_idle(session_id, head)
                 return False
             metadata = await run_file_io(reader.metadata) or {}
             selection_owner = ctx.require(MODEL_SELECTION)
@@ -1103,6 +1132,7 @@ async def apply(ctx: Context) -> None:
                         idle_tokens=config.idle_trigger_tokens,
                         source="conversation", boundary_source=BOUNDARY_SOURCE,
                     ):
+                        settle_idle(session_id, head)
                         return False
                     attempts.gap = anchor
                     try:
@@ -1168,6 +1198,10 @@ async def apply(ctx: Context) -> None:
             try:
                 if await task:
                     compacted += 1
+            except Exception:
+                # 单个会话出错不拖垮巡检；同一内容不再重试，有新消息再评估。
+                logger.exception("后台空闲预压缩出错，跳过该会话直到有新消息 session=%s", session_id)
+                settle_idle(session_id, await catalog.reader(session_id).head_async())
             finally:
                 if active_bg_tasks.get(session_id) is task:
                     _ = active_bg_tasks.pop(session_id, None)
@@ -1176,7 +1210,10 @@ async def apply(ctx: Context) -> None:
     async def _idle_sweeper() -> None:
         await asyncio.sleep(IDLE_SWEEP_INITIAL_DELAY_SECONDS)
         while read_state is not None:
-            _ = await _sweep_idle_sessions()
+            try:
+                _ = await _sweep_idle_sessions()
+            except Exception:
+                logger.exception("后台空闲预压缩巡检失败，下个周期重试")
             await asyncio.sleep(IDLE_SWEEP_SECONDS)
 
     async def start(_event: object) -> None:
