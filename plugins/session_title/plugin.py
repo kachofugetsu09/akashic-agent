@@ -105,7 +105,7 @@ async def apply(ctx: Context) -> None:
             except (RuntimeError, TimeoutError) as error:
                 if not (ModelError.matches(error) or isinstance(error, TimeoutError)):
                     raise
-                logger.warning("会话 %s 标题生成失败，使用首句: %s", reader.session_id, error)
+                logger.warning("[fallback] 会话 %s 标题生成失败，改用首句作标题: %s", reader.session_id, error)
             title = " ".join((title or text).split())[:config.max_title_chars].rstrip()
             # 3. 不锁住生成过程；存储内一次条件更新保护已经提交的手动改名。
             await admin.set_title_if_unset(reader.session_id, title)

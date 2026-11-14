@@ -570,11 +570,16 @@ class ManagedProcessGenerationHost:
             raise RuntimeError("managed process has no process after spawn")
         url = f"http://127.0.0.1:{port}{entry.definition.readiness_path}"
         deadline = asyncio.get_running_loop().time() + entry.definition.startup_timeout_seconds
+        failures = 0
         while asyncio.get_running_loop().time() < deadline:
             if process.returncode is not None:
                 raise RuntimeError(f"managed process 启动失败: exit={process.returncode}")
             remaining = deadline - asyncio.get_running_loop().time()
-            if await asyncio.to_thread(_url_ready, url, min(0.5, remaining)):
+            ready = await asyncio.to_thread(_url_ready, url, min(0.5, remaining))
+            if not ready:
+                failures += 1
+                _note_not_ready(entry.definition.name, failures)
+            if ready:
                 await asyncio.sleep(0)
                 if process.returncode is not None:
                     raise RuntimeError(f"managed process 启动失败: exit={process.returncode}")
@@ -1045,6 +1050,14 @@ class _RejectReadinessRedirect(HTTPRedirectHandler):
         newurl: str,
     ) -> Request:
         raise URLError(f"managed process readiness redirect rejected: {newurl}")
+
+
+# 就绪探测逐次失败不刷屏：首次 info，之后每连续 10 次 warning。
+def _note_not_ready(name: str, failures: int) -> None:
+    if failures == 1:
+        logger.info("[skipped] 进程 %s 就绪探测尚未通过，继续等待", name)
+    elif failures % 10 == 0:
+        logger.warning("进程 %s 就绪探测已连续失败 %d 次，仍在等待", name, failures)
 
 
 def _url_ready(url: str, timeout: float) -> bool:

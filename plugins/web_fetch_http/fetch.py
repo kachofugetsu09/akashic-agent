@@ -1,6 +1,8 @@
 """HTTP 抓取提供方：直接请求 URL，按格式转换并截断正文。"""
 
+import logging
 from typing import Any
+from urllib.parse import urlsplit
 
 import html2text
 import httpx
@@ -17,6 +19,9 @@ from core.net.http import (
     redact_http_urls,
 )
 
+
+
+logger = logging.getLogger(__name__)
 
 
 class FetchConfig(BaseModel):
@@ -121,7 +126,7 @@ class HttpFetch:
         elif fmt == "markdown" and is_html:
             text = _to_markdown(body.decode(encoding, errors="replace"))
         elif fmt == "text" and is_html:
-            text = _to_text(body)
+            text = _to_text(body, url)
         else:
             # 非 HTML 内容（JSON、纯文本等）直接返回原文
             text = body.decode(encoding, errors="replace")
@@ -168,11 +173,12 @@ def _to_markdown(raw_html: str) -> str:
     return h.handle(raw_html).strip()
 
 
-def _to_text(content: bytes) -> str:
+def _to_text(content: bytes, url: str = "") -> str:
     """HTML → 纯文本，对应 OpenCode Go 的 extractTextFromHTML（goquery）"""
     try:
         doc = lxml_html.fromstring(content)
     except ParserError:
+        logger.warning("[fallback] HTML 解析失败，改按原文输出: %s", urlsplit(url).hostname or "未知主机")
         return content.decode("utf-8", errors="replace")
 
     # 移除噪声标签（对应 OpenCode：script/style/noscript/iframe/object/embed）

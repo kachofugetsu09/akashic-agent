@@ -373,7 +373,7 @@ async def summarize(groups: tuple[tuple[Message, ...], ...], *, previous: str, l
             raise
         if fallback.descriptor.binding_id == model.descriptor.binding_id:
             raise
-        logger.warning("摘要模型 %s 失败，改用已固定的 DEFAULT %s: %s",
+        logger.warning("[fallback] 压缩摘要: 摘要模型 %s 失败，改用已固定的 DEFAULT %s: %s",
                        model.descriptor.model_id, fallback.descriptor.model_id, failure)
         if on_fallback is not None:
             await on_fallback(f"摘要模型 {model.descriptor.model_id} 失败：{failure}；"

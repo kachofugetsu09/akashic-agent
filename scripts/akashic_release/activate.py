@@ -550,6 +550,7 @@ def _start_core_after_limit(*, run: Run, attempts: int = 18) -> None:
         except subprocess.CalledProcessError:
             if index == attempts - 1:
                 raise
+            print(f"回退后启动 Core 失败（start-limit），10 秒后重试 {index + 2}/{attempts}", file=sys.stderr, flush=True)
             time.sleep(10)
 
 

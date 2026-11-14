@@ -138,7 +138,10 @@ def _discover_nvm_node_bins(nvm_dir: Path) -> list[Path]:
     node_root = nvm_dir / "versions" / "node"
     try:
         version_dirs = [path for path in node_root.iterdir() if path.is_dir()]
-    except OSError:
+    except OSError as error:
+        # 没装 nvm 是常态，不记；目录存在却读不出才是悄悄当没有 node。
+        if nvm_dir.exists() and not isinstance(error, (FileNotFoundError, NotADirectoryError)):
+            logger.warning("[fallback] nvm 目录读取失败，按没有 node 处理: %s (%s)", node_root, type(error).__name__)
         return []
     return [
         version_dir / "bin"

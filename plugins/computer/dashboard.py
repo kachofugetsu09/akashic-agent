@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import json
 import time
 from contextlib import suppress
@@ -19,6 +20,9 @@ from agent.plugin_composition import DashboardContext
 from .stream import STREAM_CONFIG, IceServer, StreamAccess, StreamMode, lan_candidate, relay_only, signaling_hello
 
 inject = (STREAM_CONFIG,)
+
+
+logger = logging.getLogger(__name__)
 
 
 def _websocket_url(base_url: str) -> str:
@@ -184,6 +188,7 @@ def register(app: FastAPI, context: DashboardContext) -> httpx.Client:
         # 中继凭据没拿到又没有局域网地址，WebRTC 注定连不上，直接用网页连接。
         webrtc = bool(servers) or (settings.config.lan_address is not None and prefer != "websockets")
         mode: StreamMode = "webrtc" if webrtc else "websockets"
+        _note_stream_mode(forced=settings.webrtc and prefer != "websockets" and not webrtc)
         try:
             if webrtc:
                 await access.relay(relay_only(servers))
@@ -323,10 +328,22 @@ class _View:
     async def close(self) -> None:
         try:
             if self.token:
-                with suppress(httpx.HTTPError):
+                try:
                     await self.access.close(self.token)
+                except httpx.HTTPError as error:
+                    logger.warning("释放画面访问令牌失败: %s", type(error).__name__)
         finally:
             await self.reader.aclose()
+
+
+_STREAM_FALLBACK_STATE: list[bool] = [False]
+
+
+# 无中继凭据又无局域网地址而被迫用 WebSocket 时，状态变化记一次。
+def _note_stream_mode(*, forced: bool) -> None:
+    if forced and not _STREAM_FALLBACK_STATE[0]:
+        logger.warning("[fallback] 画面传输 WebRTC 改用 WebSocket：没有可用的中继凭据，也没有局域网地址")
+    _STREAM_FALLBACK_STATE[0] = forced
 
 
 async def _display_up(view: _View, upstream: ClientConnection) -> None:

@@ -1,11 +1,15 @@
 """WATCH.md：主 Agent 写给值班员的嘱托。一行一条，默认会过期，触发过的一次性嘱托自动归档。"""
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
+logger = logging.getLogger(__name__)
+# 已经报过的坏标记行：值班每 10 分钟读一次嘱托，同一行只报一次
+_reported: set[str] = set()
 TEMPLATE = """# 值班嘱托
 
 写给值班员的话，一行一条，以 "- " 开头。行首可以带方括号标记：
@@ -63,15 +67,26 @@ def parse(content: str) -> list[Order]:
                 try:
                     until = date.fromisoformat(expiry.group(1))
                 except ValueError:
+                    _report_bad_tag(raw, tag)
                     unknown += f"[{tag}] "
             elif tag == "长期":
                 standing = True
             elif _is_time(tag):
                 when = tag
             else:
+                if _ONCE.fullmatch(tag) or _CLOCK.fullmatch(tag) or tag.startswith("到 "):
+                    _report_bad_tag(raw, tag)
                 unknown += f"[{tag}] "
         orders.append(Order(raw, section, unknown + match.group(2).strip(), until, standing, when))
     return orders
+
+
+# 时间或到期标记写坏了：这条嘱托不会按时间触发；同一行内容只报一次。
+def _report_bad_tag(raw: str, tag: str) -> None:
+    if raw in _reported:
+        return
+    _reported.add(raw)
+    logger.warning("[paused] 值班嘱托时间标记无法解析，这条嘱托不会按时间触发：标记=%s 原文=%s", tag[:40], raw[:80])
 
 
 # 时间写错的标记（25:99、不存在的日期）不算查看时间，原样留在正文里给人看。

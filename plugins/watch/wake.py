@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -10,6 +11,7 @@ from plugins.programmatic.contract import AdmitParams, ProgrammaticService, Resu
 
 from .events import Event, clip
 
+logger = logging.getLogger(__name__)
 _HEAD = """[值班唤醒] 这不是用户发来的消息。你在后台被叫醒，用户此刻看不到这个会话里的任何文字。"""
 
 _FREEDOM = """做什么由你决定：
@@ -118,4 +120,5 @@ async def run(programmatic: ProgrammaticService, session_id: str, text: str, *, 
                     return str(result["status"])
                 await asyncio.sleep(3)
     except TimeoutError:
+        logger.warning("[paused] 主 Agent 后台回合超时，不再等待结果：会话=%s 超时=%s 秒", session_id, int(timeout))
         return "timeout"

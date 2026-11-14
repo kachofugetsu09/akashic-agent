@@ -10,6 +10,7 @@ from __future__ import annotations
 import grp
 import os
 import pwd
+import sys
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -72,11 +73,13 @@ def release_to_owner(path: Path, *, uid: int, gid: int) -> None:
 
     if not path.exists() and not path.is_symlink():
         return
+    failed = 0
     for current in (path, *sorted(path.rglob("*"))):
         try:
             os.chown(current, uid, gid, follow_symlinks=False)
         except OSError:
             # 只读挂载或非特权调用：保持现有属主，由后续预检负责报错。
+            failed += 1
             continue
         if current.is_symlink():
             continue
@@ -88,7 +91,10 @@ def release_to_owner(path: Path, *, uid: int, gid: int) -> None:
                 extra = 0o755 if mode & _EXEC_BITS else 0o644
                 os.chmod(current, mode | extra | _READ_BITS)
         except OSError:
+            failed += 1
             continue
+    if failed:
+        print(f"归还属主/权限有 {failed} 项失败，已保持原状: {path}", file=sys.stderr, flush=True)
 
 
 def verify_readable_by(path: Path, *, uid: int) -> None:

@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 from functools import partial
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 import logging
+import time
 from typing import Any, Literal, cast
 from uuid import uuid4
 from weakref import WeakKeyDictionary
@@ -32,7 +33,7 @@ from plugins.tools.contract import TOOL_DISPLAY
 from plugins.context.contract import (
     CONTEXT, IDLE_COMPACT_MINUTES, IDLE_COMPACT_TOKENS, MATERIALS_V4, OUTPUT_RESERVE_TOKENS,
     MaterialData, ReductionStatus, SUMMARY_SOFT_LIMIT, background_idle_anchor, background_idle_due,
-    idle_gap_anchor, idle_summary_due, output_reserve, summary_due,
+    idle_gap_anchor, idle_gap_minutes, idle_summary_due, output_reserve, summary_due,
 )
 from plugins.ledger.contract import ARTIFACT_READ, BINDINGS
 from plugins.ledger.contract import MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE
@@ -168,6 +169,7 @@ class _IdleAttempts:
     binding_id: str
     gap: str | None = None
     failures: int = 0
+    paused: bool = False
 
 
 class Config(BaseModel):
@@ -249,6 +251,18 @@ class _CompactionReader:
         return summary_groups(groups, snapshot)
 
 
+# 回退状态只在变化时记录：键是回退种类，值是回退目标；回退消失后清掉，下次再出现重新记录。
+_fallback_seen: dict[str, str] = {}
+
+
+# 状态变化时才打一条 [fallback]，同一原因持续存在不重复。
+def _note_fallback(kind: str, target: str, message: str, *args: object) -> None:
+    if _fallback_seen.get(kind) == target:
+        return
+    _fallback_seen[kind] = target
+    logger.warning(message, *args)
+
+
 # 摘要模型按插件配置取；回退目标是本轮业务模型与默认模型中与主选不同的那个。
 # 1. 配置的模型取不到（含默认模型窗口未确认）时直接用本轮业务模型，并留下提示。
 # 2. 主选是业务模型时回退默认模型，否则回退业务模型；两者相同则 summarize 不再回退。
@@ -259,16 +273,25 @@ async def summary_models(execution: ModelExecution, business: BoundChatModel, ch
     except (RuntimeError, TimeoutError) as failure:
         if not ModelError.matches(failure, ModelUnavailableError):
             raise
+        _note_fallback("summary_to_business", business.descriptor.model_id,
+                       "[fallback] 压缩摘要: 配置的摘要模型不可用，改用本轮业务模型 %s: %s",
+                       business.descriptor.model_id, ModelError.read(failure))
         await report(f"摘要模型不可用：{ModelError.read(failure)}；改用本轮模型 {business.descriptor.model_id}")
         return business, business
+    _ = _fallback_seen.pop("summary_to_business", None)
     if chosen.descriptor.model_id != business.descriptor.model_id:
         return chosen, business
     try:
-        return chosen, await execution.use(SUMMARY_MODEL, ModelChoice(follow="default"))
+        default = await execution.use(SUMMARY_MODEL, ModelChoice(follow="default"))
     except (RuntimeError, TimeoutError) as failure:
         if not ModelError.matches(failure, ModelUnavailableError):
             raise
+        _note_fallback("default_to_same", chosen.descriptor.model_id,
+                       "[fallback] 压缩摘要: 默认模型不可用，失败时只能重试同一模型 %s: %s",
+                       chosen.descriptor.model_id, ModelError.read(failure))
         return chosen, chosen
+    _ = _fallback_seen.pop("default_to_same", None)
+    return chosen, default
 
 
 async def apply(ctx: Context) -> None:
@@ -286,12 +309,16 @@ async def apply(ctx: Context) -> None:
                              if message.source == source and isinstance(message.body, Input)), None)
         boundary = (snapshot[0].session_id, source, model.descriptor.binding_id, latest_input)
         state = failures.get(task)
+        if state is not None and state.count >= MAX_SUMMARY_FAILURES and state.boundary != boundary:
+            logger.info("[resumed] 上下文压缩: session=%s 新输入或更换模型，重新尝试", snapshot[0].session_id)
         if state is None or state.boundary != boundary:
             state = failures[task] = _SummaryFailures(boundary)
         return state
 
     # 只服务空闲路径，force 与硬水位不读它；有界，满了整体丢弃，代价只是多试一次。
     idle_attempts: dict[str, _IdleAttempts] = {}
+    # 空闲预压缩 [skipped] 日志的去重记录：会话 -> 缺口与原因；有界，满了整体丢弃。
+    idle_skip_logged: dict[str, str] = {}
 
     # 换模型清零连续失败；已试过的缺口不随模型改变。binding 含注册表版本，保存模型设置也清零：
     # 用户刚改过密钥或额度配置时应当再试，代价有上限（每次保存至多再付 3 次）。
@@ -303,16 +330,56 @@ async def apply(ctx: Context) -> None:
             attempts = idle_attempts[session_id] = _IdleAttempts(binding_id)
         elif attempts.binding_id != binding_id:
             attempts.binding_id, attempts.failures = binding_id, 0
+            resume_idle(session_id, attempts, "更换模型或保存模型设置")
         return attempts
+
+    # 只在曾进入暂停时打一条 [resumed]，并清掉暂停标记。
+    def resume_idle(session_id: str, attempts: _IdleAttempts, why: str) -> None:
+        if attempts.paused:
+            attempts.paused = False
+            logger.info("[resumed] 空闲预压缩: session=%s 已恢复（%s）", session_id, why)
+
+    # 同一会话同一缺口上原因没变就不再打；只在确实出现空闲缺口时才会走到这里。
+    def skip_idle(snapshot: tuple[Message, ...], reason: str, message: str, *args: object) -> None:
+        session_id, key = snapshot[0].session_id, f"{idle_gap_anchor(snapshot)}:{reason}"
+        if idle_skip_logged.get(session_id) == key:
+            return
+        if len(idle_skip_logged) >= 256:
+            idle_skip_logged.clear()
+        idle_skip_logged[session_id] = key
+        logger.info("[skipped] 空闲预压缩: session=%s " + message, session_id, *args)
 
     # 门控和缩减共用：范围、缺口与阈值都达标，这个缺口没试过，连续失败也未到上限。
     def idle_due(snapshot: tuple[Message, ...], estimated: int, model: BoundChatModel) -> bool:
         if estimated <= config.keep_recent_tokens or not idle_summary_due(
             estimated, snapshot, idle_minutes=_idle_minutes_for(config, snapshot), idle_tokens=config.idle_trigger_tokens,
         ):
+            log_idle_not_due(snapshot, estimated)
             return False
         attempts = idle_attempts_for(snapshot[0].session_id, model.descriptor.binding_id)
-        return attempts.failures < MAX_SUMMARY_FAILURES and attempts.gap != idle_gap_anchor(snapshot)
+        if attempts.failures >= MAX_SUMMARY_FAILURES:
+            return False
+        if attempts.gap == idle_gap_anchor(snapshot):
+            skip_idle(snapshot, "tried", "同一空闲缺口已试过，不再重试")
+            return False
+        return True
+
+    # 只在停够了时间却没压的时候记原因；连续对话和工具循环里间隔不够是常态，不打日志。
+    def log_idle_not_due(snapshot: tuple[Message, ...], estimated: int) -> None:
+        gap_minutes = idle_gap_minutes(snapshot) if snapshot else None
+        if gap_minutes is None or gap_minutes < max(config.idle_trigger_minutes, 1):
+            return
+        minutes = _idle_minutes_for(config, snapshot)
+        if minutes <= 0 and config.idle_scope == "selected" and config.idle_trigger_minutes > 0:
+            skip_idle(snapshot, "scope", "停了 %.0f 分钟，但会话不在空闲预压缩名单内（idle_scope=selected）", gap_minutes)
+        elif minutes <= 0:
+            skip_idle(snapshot, "off", "空闲预压缩未启用（idle_scope=%s idle_trigger_minutes=%d）",
+                      config.idle_scope, config.idle_trigger_minutes)
+        elif estimated <= config.keep_recent_tokens:
+            skip_idle(snapshot, "recent", "估算 %d tokens 未超过原文保留量 %d", estimated, config.keep_recent_tokens)
+        elif estimated < config.idle_trigger_tokens:
+            skip_idle(snapshot, "tokens", "停了 %.0f 分钟，但估算 %d tokens 低于 idle_trigger_tokens=%d",
+                      gap_minutes, estimated, config.idle_trigger_tokens)
 
     def records() -> SummaryRecords:
         return SummaryRecords(ctx.require(OWNER_STATE).open(ctx))
@@ -612,6 +679,7 @@ async def apply(ctx: Context) -> None:
                         if message.message_id not in parent_ids)
         groups = closed_groups(pending, turns, settled_prefixes=context.settled_prefixes)
         if not soft_due and not groups:
+            skip_idle(snapshot, "no_batch", "没有可摘要的已结算批次")
             return None
         # 没有新的已结算批次时，0 表示只重写父摘要本身。
         sizes = range(len(groups), 0, -1) if groups else range(0 if parent is not None else -1, -1, -1)
@@ -661,6 +729,8 @@ async def apply(ctx: Context) -> None:
         if selected is None:
             if not soft_due:
                 if fallback is None or fallback == 0:
+                    skip_idle(snapshot, "no_cut", "没有合适的切点（估算 %d tokens，原文保留量 %d）",
+                              before, config.keep_recent_tokens)
                     return None
                 selected, retained_tokens = fallback, retained_tokens
             else:
@@ -679,6 +749,9 @@ async def apply(ctx: Context) -> None:
             # 花钱前核对收益：planned 用占位摘要，新摘要至少按父摘要原长算。
             kept = 0 if parent is None else model.estimate_context_tokens(({"role": "user", "content": parent.content},))
             if before - planned_tokens[selected] - kept < before * IDLE_MIN_SAVING:
+                skip_idle(snapshot, "saving", "预估节省 %d tokens 不到 %d%%（估算 %d，门槛 %d）",
+                          before - planned_tokens[selected] - kept, int(IDLE_MIN_SAVING * 100),
+                          before, int(before * IDLE_MIN_SAVING))
                 return None
         inputs = summary_groups(groups[:selected], snapshot)
         if selected and not inputs:
@@ -730,6 +803,7 @@ async def apply(ctx: Context) -> None:
 
         # 三条路径都有总期限，只有阻断回合的硬路径值得等满。
         seconds = SUMMARY_DEADLINE_SECONDS if hard_limit else SOFT_DEADLINE_SECONDS if soft_due else IDLE_DEADLINE_SECONDS
+        started = time.monotonic()
         deadline = asyncio.get_running_loop().time() + seconds
 
         async def generate(groups: tuple[tuple[Message, ...], ...], previous: str, limit: int,
@@ -785,6 +859,12 @@ async def apply(ctx: Context) -> None:
         _ = await state.publish(
             record, reader, parent=parent, summary_indexes=context.summary_indexes,
         )
+        if not soft_due:
+            logger.info("空闲预压缩完成 session=%s 估算 %d -> %d tokens 耗时 %.1fs",
+                        record.session_id, before, after, time.monotonic() - started)
+        if record.omitted_message_ids:
+            logger.warning("[fallback] 压缩摘要: 请求放不下，%d 条更早的消息没有进入摘要 session=%s",
+                           len(record.omitted_message_ids), record.session_id)
         if record.omitted_message_ids and on_status is not None:
             await on_status(f"摘要请求放不下全部历史：{len(record.omitted_message_ids)} 条更早的消息没有进入摘要，"
                             "模型之后看不到它们。", True)
@@ -818,6 +898,10 @@ async def apply(ctx: Context) -> None:
                                     hard_limit=False, on_status=on_status, summary_limit=summary_limit)
         except Exception as error:
             attempts.failures += 1
+            if attempts.failures >= MAX_SUMMARY_FAILURES and not attempts.paused:
+                attempts.paused = True
+                logger.warning("[paused] 空闲预压缩: session=%s 连续失败 %d 次，暂停该会话的空闲预压缩；"
+                               "压缩成功、更换模型或保存模型设置后恢复", snapshot[0].session_id, attempts.failures)
             logger.warning("空闲预压缩失败 session=%s failures=%d: %r", snapshot[0].session_id, attempts.failures, error,
                            exc_info=not isinstance(error, (RuntimeError, TimeoutError, SummaryError)))
             paused = (f"已连续失败 {MAX_SUMMARY_FAILURES} 次，这个对话暂停空闲预压缩；压缩成功、更换模型或保存模型设置后恢复。"
@@ -827,6 +911,7 @@ async def apply(ctx: Context) -> None:
             return None
         if summary is not None:
             attempts.failures = 0
+            resume_idle(snapshot[0].session_id, attempts, "压缩成功")
         return summary
 
     async def _wait_background_for_turn(session_id: str, on_status: ReductionStatus | None) -> None:
@@ -890,6 +975,9 @@ async def apply(ctx: Context) -> None:
                 if not (ModelError.matches(error) or isinstance(error, SummaryError)):
                     raise
                 state.count += 1
+                if state.count == MAX_SUMMARY_FAILURES:
+                    logger.warning("[paused] 上下文压缩: session=%s 本轮连续失败 %d 次，暂停自动压缩；新输入或更换模型后重新尝试",
+                                   session_id, state.count)
                 state.detail = f"上下文压缩失败：{type(error).__name__}: {error}。"
                 state.recovery = _recovery(error)
                 detail = state.detail + budget + "。"
@@ -908,6 +996,7 @@ async def apply(ctx: Context) -> None:
             # 软水位或强制压缩成功同样证明摘要模型可用。
             if summary is not None and session_id in idle_attempts:
                 idle_attempts[session_id].failures = 0
+                resume_idle(session_id, idle_attempts[session_id], "压缩成功")
             return summary
 
     class _NoArtifacts(dict[str, tuple[Mapping[str, object], ...]]):

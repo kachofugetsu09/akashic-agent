@@ -337,6 +337,8 @@ class GoalRuntime:
                 and settlement.coverage != "exact"
                 and goal.remaining_tokens is not None
             ):
+                logger.warning("[paused] 目标用量无法确认，保守暂停目标：session=%s goal=%s 用量覆盖=%s",
+                               session_id, goal.goal_id, settlement.coverage)
                 settlement = RoundSettlement(
                     activity=settlement.activity,
                     tokens=settlement.tokens,
@@ -392,6 +394,8 @@ class GoalRuntime:
                 action,
             )
         except MessageConflict:
+            logger.warning("[paused] 用户停止时目标暂停因写冲突没有落成，目标可能仍在运行：session=%s goal=%s",
+                           session_id, goal.goal_id)
             return
 
     def _last_message(
