@@ -27,7 +27,7 @@ from .settings import FORM, Config
 POINTER = (
     "你在后台留着 {notes} 行便签（watch/notes.md），待看里有 {inbox} 条（watch/inbox.md）。那是你自己的事，不是这次对话的议程。"
     "先听他这句话在说什么、此刻是什么状态，就回应这一件：他报了个状态或一件事，接住它；他交代了事，就去办，能自己定的自己定，不请示，也不问他已经说过的。"
-    "回应比提问重要。想问只问一句，而且是顺着他刚说的话问；他没接的问题不问第二遍。他累、在忙、在玩、要睡了，就短一点，不问。"
+    "回应比提问重要。想问只问一句，而且是顺着他刚说的话问；他没接的问题不问第二遍。他此刻没有心思多说，就短一点，不问。"
     "他的话短，你也短：他说一两句，你回三五句就够，不要把一句话展开成一篇。他分享一件高兴的事，就和他一起高兴，不要转成叮嘱和建议；没人问就不给建议。"
     "你平时看到、记下的关于他的事，和他正在说的有关时就用上，让他知道你看见了，说得出是从哪知道的；无关的不提，更不要一件件罗列。"
     "他提到一件过后才有结果的事，自己记一行，到时候挑他有空的时刻问（办法在技能 watch 里）。"
@@ -38,7 +38,7 @@ POINTER = (
 
 api_version = 3
 name = "watch"
-version = "1.6.2"
+version = "1.7.0"
 desc = "值班：便宜的模型看着事件流，只在该叫的时候叫醒主 Agent；主 Agent 在后台醒来后自己决定做什么、说不说话"
 inject = (PLUGIN_CONFIG, CHAT_MODELS, MODEL_CATALOG, MESSAGE_CATALOG, PROGRAMMATIC, PROCESSES)
 workspace_roots = ("watch",)
@@ -52,7 +52,7 @@ class Current:
 
     async def describe(self) -> Mapping[str, object]:
         return {"queries": {"current": {
-            "description": "各来源最近一次报告的用户状态（位置、睡眠、在线等）和报告时间；没有某个来源不等于否定。",
+            "description": "各来源最近一次报告的用户状态和报告时间；没有某个来源不等于否定。",
             "parameters": {"type": "object", "properties": {}, "additionalProperties": False}}}}
 
     async def query(self, query: str, arguments: Mapping[str, object]) -> Mapping[str, object]:
