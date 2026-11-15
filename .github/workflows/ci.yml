@@ -39,7 +39,7 @@ jobs:
 
       - name: Install Python dependencies
         run: |
-          uv venv .venv --python 3.12
+          uv venv .venv --seed --python 3.12
           uv pip install --python .venv -r requirements-dev.txt -e sdk/python
           echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
 
@@ -114,7 +114,7 @@ jobs:
 
       - name: Build and load plugin web modules
         run: |
-          uv venv .venv --python 3.12
+          uv venv .venv --seed --python 3.12
           uv pip install --python .venv -r requirements.txt -e sdk/python
           npm run build:web-plugins
           .venv/bin/python - <<'PY'
