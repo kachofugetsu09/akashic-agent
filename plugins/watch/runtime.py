@@ -261,7 +261,8 @@ class Runtime:
         turns = await self._turns(now)
         channel, _, chat_id = self.config.target.partition(":")
         return wake.Scene(now, await self._user_state(now), recent.render(turns, now, 4000), recent.stats(turns, now),
-                          count_items(self.root / "inbox.md"), count_notes(self.root / "notes.md"), channel, chat_id)
+                          count_items(self.root / "inbox.md"), count_notes(self.root / "notes.md"), channel, chat_id,
+                          str(self.root.parent))
 
     async def _wake(self, now: datetime, verdicts: list[Verdict]) -> None:
         recent_wakes = [stamp for stamp in self.state.wakes if datetime.fromisoformat(stamp) > now - timedelta(hours=24)]
