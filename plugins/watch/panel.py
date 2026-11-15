@@ -121,13 +121,13 @@ def read_day_usage(
             for round_item in raw_rounds:
                 if not isinstance(round_item, dict):
                     continue
-                messages = _read_tail_messages(reader_for(str(round_item["session"])), 5)
+                messages = read_tail_messages(reader_for(str(round_item["session"])), 5)
                 usage = _collect_usage(messages, call_stats)
                 steps = _read_steps(messages, lambda _binding: "")
                 # 回合收尾时它自己写的那段话就是这一轮的交代；列表里直接给出来，不用点进去才知道做了什么。
                 round_item["said"] = next((step["text"] for step in reversed(steps) if step["kind"] == "text"), "")
                 round_item["steps"] = sum(step["kind"] == "call" for step in steps)
-                round_item["left"] = _read_left(messages)
+                round_item["left"] = read_left(messages)
                 round_item["usage"] = usage
                 models = usage.get("models")
                 if isinstance(models, list):
@@ -167,7 +167,7 @@ def read_talk(reader: MessageReader, day: date, now: datetime) -> list[dict[str,
     return rows
 
 
-def _read_tail_messages(reader: MessageReader, pages: int = 5) -> list[Message]:
+def read_tail_messages(reader: MessageReader, pages: int = 5) -> list[Message]:
     try:
         page = reader.read_tail(limit=200)
     except KeyError:
@@ -208,7 +208,7 @@ def _collect_usage(messages: Iterable[Message], call_stats: Callable[[str], Mode
 def read_round_detail(
     reader: MessageReader, name: Callable[[str], str], call_stats: Callable[[str], ModelCallStats], pages: int = 5,
 ) -> tuple[list[dict[str, str]], dict[str, object]]:
-    messages = _read_tail_messages(reader, pages)
+    messages = read_tail_messages(reader, pages)
     return _read_steps(messages, name), _collect_usage(messages, call_stats)
 
 
@@ -229,7 +229,7 @@ def _read_steps(messages: Iterable[Message], name: Callable[[str], str]) -> list
 
 
 # 一个回合留下了什么：对用户说的话和改过的文件。只看成功的调用，按参数的形状认，不认具体是哪个工具。
-def _read_left(messages: Iterable[Message]) -> list[dict[str, str]]:
+def read_left(messages: Iterable[Message]) -> list[dict[str, str]]:
     calls: dict[tuple[str, int], ToolCall] = {}
     done: list[ToolCall] = []
     for message in messages:

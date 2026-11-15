@@ -17,7 +17,7 @@ from plugins.models.contract import CHAT_MODELS, MODEL_CATALOG, ModelError, Mode
 from plugins.programmatic.contract import PROGRAMMATIC
 
 from . import orders as watch_orders
-from . import recent, scripts, wake
+from . import panel, recent, scripts, trail, wake
 from .events import Event, EventLog, clip, load_places, name_places, normalize, parse_line, read_sources
 from .settings import WAKE_MODEL, Config
 from .watcher import Call, Files, ModelFailure, ModelStats, Outcome, Reply, Verdict, judge
@@ -137,6 +137,7 @@ class Runtime:
     def _clean(self, now: datetime) -> None:
         self.log.prune(now, 14)
         _prune_dated(self.root / "inbox.md", now, 3)
+        _prune_dated(self.root / "trail.md", now, trail.KEPT_DAYS)
         _prune_logs(self.root, now, 14)
 
     async def _ingest(self, now: datetime) -> None:
@@ -262,7 +263,7 @@ class Runtime:
         channel, _, chat_id = self.config.target.partition(":")
         return wake.Scene(now, await self._user_state(now), recent.render(turns, now, 4000), recent.stats(turns, now),
                           count_items(self.root / "inbox.md"), count_notes(self.root / "notes.md"), channel, chat_id,
-                          str(self.root.parent))
+                          str(self.root.parent), await run_file_io(lambda: trail.render(self.root)))
 
     async def _wake(self, now: datetime, verdicts: list[Verdict]) -> None:
         recent_wakes = [stamp for stamp in self.state.wakes if datetime.fromisoformat(stamp) > now - timedelta(hours=24)]
@@ -348,7 +349,17 @@ class Runtime:
                 for mark, line in _changed(memory_before, self.files.text(self.config.memory_file) or ""):
                     file.write(f"- {now:%H:%M} 记忆改动：{mark} {clip(line, 300)}\n")
         await run_file_io(write)
+        await self._leave_trail(now, label, status, session_id)
         return status
+
+    # 这一轮实际去了哪、留下了什么，记一行给下一轮：它是全新的会话，不记得这一轮。
+    async def _leave_trail(self, now: datetime, label: str, status: str, session_id: str) -> None:
+        try:
+            reader = self.ctx.require(MESSAGE_CATALOG).reader(session_id)
+            messages = await run_file_io(lambda: panel.read_tail_messages(reader))
+            await run_file_io(lambda: trail.record(self.root, now, label, status, trail.places(messages), panel.read_left(messages)))
+        except Exception as error:
+            logger.warning("[skipped] 这一轮的足迹没有记下，下一轮看不到它：%s", type(error).__name__)
 
 
 def _format_usage(stat: ModelStats) -> str:
