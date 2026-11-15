@@ -2,8 +2,6 @@ import "./plugin-ui.css";
 
 // 值班面板：只认识“来源”“事件”“回合”，不认识任何一种具体的来源；多一个来源就多一行，画法都一样。
 const ICON = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="8" cy="8" r="5.5"/><path d="M8 5v3l2 1.5"/></svg>';
-const TO = { wake: "叫醒", inbox: "待看", log: "记录" };
-const WHO = { user: "你说", push: "它对你说" };
 const STATUS = { complete: "做完了", timeout: "超时", failed: "失败", error: "出错", cancelled: "被取消" };
 const status = (round) => STATUS[round.status] ?? round.status;
 const FILES = [["WATCH.md", "嘱托"], ["notes.md", "便签"], ["inbox.md", "待看"]];
@@ -15,7 +13,6 @@ function h(tag, className, text, children) {
   for (const child of children ?? []) if (child) node.append(child);
   return node;
 }
-const left = (at) => `${((Number(at.slice(0, 2)) * 60 + Number(at.slice(3, 5))) / 1440 * 100).toFixed(2)}%`;
 const fmt = (value) => value >= 1e9 ? `${(value / 1e9).toFixed(2)}B` : value >= 1e6 ? `${(value / 1e6).toFixed(1)}M`
   : value >= 1e4 ? `${Math.round(value / 1e3)}k` : value >= 1e3 ? `${(value / 1e3).toFixed(1)}k` : String(value);
 const hitRate = (item) => item.cache_reported_calls && item.hit_input_tokens
@@ -38,6 +35,15 @@ function usageList(models) {
 function summary(data) {
   const said = data.talk.filter((row) => row.kind === "push").length;
   return `看了 ${allVerdicts(data).length} 件事，叫醒主 Agent ${allRounds(data).length} 次，对你说了 ${said} 句`;
+}
+
+// 面板顶上的一句话：到你面前的有几句，它动过几处，外面的事有多少只记了一笔。
+function lede(data) {
+  const said = data.talk.filter((row) => row.kind === "push").length;
+  const did = allRounds(data).reduce((total, round) => total + round.left.filter((item) => item.kind !== "said").length, 0);
+  const verdicts = allVerdicts(data);
+  const quiet = verdicts.filter((item) => item.to === "log").length;
+  return `它对你说了 ${said} 句话，自己动了 ${did} 处。外面来了 ${verdicts.length} 件事，${quiet} 件只记了一笔。`;
 }
 
 function button(className, text, onClick, label) {
@@ -90,73 +96,136 @@ function roundBody(data, round, query) {
   ]);
 }
 
-function roundsView(data, query) {
-  const rounds = allRounds(data).reverse();
-  if (!rounds.length) return h("p", "watch-why", "这一天没有叫醒过主 Agent");
-  return h("div", "watch-rounds", null, rounds.map((round) => {
-    const brief = (round.said || status(round)).split("\n")[0];
-    const meta = [round.steps ? `${round.steps} 步` : "", round.tick.memory.length ? "改了记忆" : "", round.status === "complete" ? "" : status(round)].filter(Boolean).join(" · ");
-    const card = h("details", "watch-round", null, [h("summary", null, null, [
-      h("time", null, round.at), h("b", null, round.label), h("span", "watch-brief", brief), h("span", "watch-stat", meta)])]);
-    card.addEventListener("toggle", () => { if (card.open && card.childElementCount === 1) card.append(roundBody(data, round, query)); });
-    return card;
-  }));
+// 行内只认两种记号：`代码` 和 **强调**；其余按原文显示。
+function rich(text) {
+  return String(text).split(/(`[^`]+`)/).filter(Boolean).map((part) => part.startsWith("`") && part.length > 2
+    ? h("code", null, part.slice(1, -1)) : document.createTextNode(part.replaceAll("**", "")));
+}
+const LEFT = { rule: "改了嘱托", note: "记了便签", memory: "改了记忆", file: "改了文件" };
+
+// 一个后台回合一行：它对你说的话直接摆出来，改过的东西逐条列出；点开是当时的状态和每一步。
+function roundRow(data, round, query) {
+  const said = round.left.filter((item) => item.kind === "said");
+  const did = round.left.filter((item) => item.kind !== "said");
+  const to = said.length ? ["对你说", "said"] : did.length ? ["悄悄做了", "did"] : ["没留下什么", ""];
+  const meta = [round.steps ? `${round.steps} 步` : "", round.status === "complete" ? "" : status(round)].filter(Boolean).join(" · ");
+  const row = h("details", "watch-r", null, [h("summary", null, null, [h("time", null, round.at), h("div", null, null, [
+    ...said.map((item) => h("p", "watch-push", null, rich(item.text))),
+    h("p", null, null, [h("span", "watch-who", round.label), document.createTextNode(did.length || said.length ? "" : (round.said || status(round)).split("\n")[0])]),
+    did.length ? h("ul", "watch-left", null, did.map((item) => h("li", null, null, [h("span", null, LEFT[item.kind]),
+      h("span", null, null, item.text ? rich(item.text) : [document.createTextNode(item.path)])]))) : null,
+    meta ? h("p", "watch-sub", meta) : null,
+  ]), h("span", `watch-to watch-to--${to[1]}`, to[0])])]);
+  row.addEventListener("toggle", () => { if (row.open && row.childElementCount === 1) row.append(roundBody(data, round, query)); });
+  return row;
 }
 
-// 每个来源一行，画法相同：竖线落在事件被判断的时刻，越要紧越粗越高。点一行，下面的事件只看这个来源。
-function sourcesView(data, state, redraw) {
-  const groups = new Map();
-  for (const item of allVerdicts(data)) groups.set(item.source, [...(groups.get(item.source) ?? []), item]);
-  const weight = (items) => items.filter((item) => item.to === "wake").length * 1e6 + items.filter((item) => item.to === "inbox").length * 1e3 + items.length;
-  const band = (marks) => h("span", "watch-band", null, marks.map(([at, kind, title]) => {
-    const node = h("i", `watch-mark watch-mark--${kind}`);
-    node.style.left = left(at);
-    node.title = `${at} ${title}`;
-    return node;
-  }));
-  const fixed = (name, marks, count) => h("div", "watch-lane", null, [h("span", "watch-lane-name", name), band(marks), h("span", "watch-stat", count)]);
-  const rows = [...groups].sort((a, b) => weight(b[1]) - weight(a[1])).map(([source, items]) => {
-    const kept = items.filter((item) => item.to !== "log").length;
-    const row = button("watch-lane", null, () => { state.source = state.source === source ? "" : source; redraw(); });
-    row.append(h("span", "watch-lane-name", source), band(items.map((item) => [item.at, item.to, `${TO[item.to]}：${item.title}`])),
-      h("span", "watch-stat", kept ? `${items.length} 条 · ${kept} 条要紧` : `${items.length} 条`));
-    row.setAttribute("aria-pressed", String(state.source === source));
-    row.title = `只看 ${source} 的事件`;
-    return row;
-  });
-  const rounds = allRounds(data);
-  return h("div", "watch-day", null, [
-    h("div", "watch-hours", null, [0, 3, 6, 9, 12, 15, 18, 21, 24].map((hour) => h("span", null, String(hour)))),
-    fixed("你和它的对话", data.talk.map((row) => [row.at, row.kind, `${WHO[row.kind]}：${row.text}`]), `${data.talk.length} 句`),
-    fixed("主 Agent 醒来", rounds.map((round) => [round.at, "wake", round.label]), `${rounds.length} 次`),
-    ...rows,
-    h("p", "watch-legend", null, [["log", "只记录"], ["inbox", "进了待看"], ["wake", "叫醒了主 Agent"], ["push", "它对你说"]]
-      .map(([kind, text]) => h("span", null, null, [h("i", `watch-mark watch-mark--${kind}`), document.createTextNode(text)]))),
-  ]);
+// 只记了一笔的事不逐条占行：两件要紧事之间的折成一行，点开才列出来。
+function quietRow(items) {
+  const count = new Map();
+  for (const item of items) count.set(item.source, (count.get(item.source) ?? 0) + 1);
+  const names = [...count].sort((a, b) => b[1] - a[1]).map(([source, total]) => `${source} ${total}`).join("、");
+  return h("details", "watch-r watch-r--quiet", null, [
+    h("summary", null, null, [h("time"), h("p", "watch-fold", `${items.length} 件只记了一笔：${names}`)]),
+    h("div", "watch-more", null, items.map((item) => {
+      const line = h("div", null, null, [h("time", null, item.at), h("span", null, item.source), h("span", null, item.title)]);
+      line.title = item.why || "值班员没有写理由";
+      return line;
+    }))]);
 }
 
-// 事件流：新的在上。默认只留要紧的（进了待看、叫醒了主 Agent）和你们之间的对话，只记录的收起来。
-function feedView(data, state, redraw) {
-  const verdicts = allVerdicts(data).filter((item) => !state.source || item.source === state.source);
-  const kept = verdicts.filter((item) => item.to !== "log");
-  const shown = state.all ? verdicts : kept;
-  const talk = state.source ? [] : data.talk;
-  const rows = [...shown.map((item) => ({ at: item.at, item })), ...talk.map((row) => ({ at: row.at, row }))]
-    .sort((a, b) => b.at.localeCompare(a.at)).map(({ at, item, row }) => row
-      ? h("div", `watch-row watch-row--${row.kind}`, null, [h("time", null, at), h("span", "watch-key", WHO[row.kind]), h("span", "watch-title", row.text)])
-      : h("details", "watch-row", null, [
-        h("summary", null, null, [h("time", null, at), h("span", "watch-key", item.source), h("span", "watch-title", item.title), h("b", `watch-to watch-to--${item.to}`, TO[item.to])]),
-        h("p", "watch-why", item.why || "值班员没有写理由")]));
-  const pick = (all, text) => {
-    const node = button("watch-pick", text, () => { state.all = all; redraw(); });
-    node.setAttribute("aria-pressed", String(state.all === all));
-    return node;
-  };
-  return h("div", "watch-feed", null, [
-    h("div", "watch-picks", null, [pick(false, `要紧的 ${kept.length}`), pick(true, `全部 ${verdicts.length}`),
-      state.source ? button("watch-pick watch-pick--source", `只看 ${state.source} ×`, () => { state.source = ""; redraw(); }, "取消只看这个来源") : null]),
-    rows.length ? h("div", null, null, rows) : h("p", "watch-why", state.all ? "这一天还没有事件" : "没有要紧的事，其余都只记录了"),
-  ]);
+// 这一天的流水，新的在上：接下来要回来的时刻、你们的对话、后台回合、要紧的事件、各来源报告的状态变化。
+function ledgerView(data, query) {
+  const rows = [];
+  const pushed = allRounds(data).flatMap((round) => round.left.filter((item) => item.kind === "said").map((item) => item.text.slice(0, 40)));
+  for (const round of allRounds(data)) rows.push({ at: round.at, rank: 2, node: roundRow(data, round, query) });
+  for (const row of data.talk) {
+    if (row.kind === "push" && pushed.some((text) => row.text.startsWith(text))) continue;
+    rows.push({ at: row.at, rank: 3, node: h("div", "watch-r", null, [h("time", null, row.at),
+      row.kind === "push" ? h("p", "watch-push", null, rich(row.text)) : h("p", "watch-you", null, [h("span", "watch-who", "你"), document.createTextNode(row.text)]),
+      row.kind === "push" ? h("span", "watch-to watch-to--said", "对你说") : null]) });
+  }
+  for (const lane of data.lanes) for (const segment of lane.segments) {
+    if (segment.at !== "00:00") rows.push({ at: segment.at, rank: 0, node: h("div", "watch-mark", null, [h("time", null, segment.at),
+      h("span", null, segment.text, [h("small", null, lane.source)])]) });
+  }
+  let quiet = [];
+  const flush = (at) => { if (quiet.length) rows.push({ at, rank: 1, node: quietRow(quiet.reverse()) }); quiet = []; };
+  for (const item of allVerdicts(data)) {
+    if (item.to === "log") { quiet.push(item); continue; }
+    flush(quiet.at(-1)?.at);
+    const row = h("details", "watch-r", null, [h("summary", null, null, [h("time", null, item.at),
+      h("p", null, null, [h("span", "watch-who", item.source), document.createTextNode(item.title)]),
+      h("span", `watch-to watch-to--${item.to}`, item.to === "wake" ? "叫醒了它" : "进了待看")]), h("p", "watch-sub watch-why", item.why || "值班员没有写理由")]);
+    rows.push({ at: item.at, rank: 1, node: row });
+  }
+  flush(quiet.at(-1)?.at);
+  rows.sort((a, b) => b.at.localeCompare(a.at) || b.rank - a.rank);
+  const today = data.date === data.today;
+  const next = today ? orders(data.files["WATCH.md"]).wake.filter((item) => item.at?.startsWith(data.date) && item.at.slice(11) > data.now)
+    .sort((a, b) => b.at.localeCompare(a.at)).map((item) => h("div", "watch-r watch-r--next", null, [h("time", null, item.at.slice(11)),
+      h("p", null, null, [h("span", "watch-who", "它会自己回来"), ...rich(item.title)]), h("span", "watch-to", "今天")])) : [];
+  if (!rows.length && !next.length) return h("p", "watch-why", "这一天还没有记录");
+  return h("div", "watch-ledger", null, [...next, today ? h("div", "watch-now", `现在 ${data.now}`) : null, ...rows.map((row) => row.node)]);
+}
+
+// 嘱托文件按它自己的格式读成条目：行首的方括号是到期日、长期和回来的时刻，其余是原话。
+function orders(text) {
+  const groups = { wake: [], care: [] };
+  let current = null;
+  for (const line of String(text ?? "").split("\n")) {
+    if (line.startsWith("## ")) { current = line.includes("叫醒") ? groups.wake : groups.care; continue; }
+    if (!current || !line.startsWith("- ")) continue;
+    let rest = line.slice(2);
+    const tags = [];
+    for (let match; (match = rest.match(/^\[([^\]]+)\]\s*/));) { tags.push(match[1]); rest = rest.slice(match[0].length); }
+    rest = rest.replace(/^到点(叫我|查看|提醒)[：:]\s*/, "");
+    const cut = rest.search(/[：:]/);
+    const short = cut > 0 && cut <= 18;
+    current.push({ title: short ? rest.slice(0, cut) : rest.split(/[，。；（]/)[0], body: short ? rest.slice(cut + 1).trim() : rest,
+      until: tags.find((tag) => tag.startsWith("到 "))?.slice(2), at: tags.find((tag) => /^\d{4}-\d\d-\d\d \d\d:\d\d$/.test(tag)),
+      when: tags.find((tag) => /^(每天|工作日|周末|周.) \d\d:\d\d$/.test(tag)), long: tags.includes("长期") });
+  }
+  return groups;
+}
+
+function ordersView(data, state) {
+  const { wake, care } = orders(data.files["WATCH.md"]);
+  const days = (value) => Math.round((new Date(value.slice(0, 10)) - new Date(data.today)) / 864e5);
+  const ahead = (value) => { const left = days(value); return left < 0 ? "已过" : left === 0 ? "今天" : left === 1 ? "明天" : `${left} 天后`; };
+  const timed = wake.filter((item) => item.at || item.when).sort((a, b) => (a.at ?? "9").localeCompare(b.at ?? "9"));
+  const item = (row) => h("details", "watch-item", null, [h("summary", null, null, [h("span", null, null, rich(row.title)),
+    h("span", `watch-stat${!row.long && row.until && days(row.until) <= 7 ? " watch-soon" : ""}`, row.long ? "一直有效" : row.until ? `${ahead(row.until)}到期` : "")]),
+    h("p", null, null, rich(row.body))]);
+  const list = (rows, empty) => rows.length ? h("div", "watch-list", null, rows.map(item)) : h("p", "watch-why", empty);
+  const raw = button("watch-more", state.raw ? "收起原文" : "查看原文", () => { state.raw = !state.raw; state.redraw(); });
+  raw.setAttribute("aria-expanded", String(Boolean(state.raw)));
+  return [
+    section("到点它会自己回来", `${timed.length} 条`, [timed.length ? h("div", "watch-ledger watch-agenda", null, timed.map((row) =>
+      h("div", "watch-r", null, [h("time", null, row.at ? `${row.at.slice(5, 10)} ${row.at.slice(11)}` : row.when), h("p", null, null, rich(row.body)),
+        h("span", "watch-to", row.at ? ahead(row.at) : "")]))) : h("p", "watch-why", "没有定下回来的时刻")]),
+    section("出了这些事，它会被叫醒", `${wake.length - timed.length} 条`, [list(wake.filter((row) => !row.at && !row.when), "没有叫醒的条件")]),
+    section("这些事不打扰你", `${care.length} 条`, [list(care, "没有留意的条目")]),
+    raw, state.raw ? h("pre", "watch-file", data.files["WATCH.md"] || "（空）") : null,
+  ];
+}
+
+// 便签是它自己写的 Markdown：顶层加粗的一行当小标题，下面的条目各占一行，日期单独一列。
+function notesView(text) {
+  const out = [];
+  let rows = null;
+  const open = (title) => { rows = h("div", "watch-ledger watch-notes"); out.push(section(title, "", [rows])); };
+  for (const line of String(text ?? "").split("\n")) {
+    const item = line.match(/^(\s*)- (.+)/);
+    if (!item) continue;
+    const head = !item[1] && item[2].match(/^\*\*(.+?)\*\*[：:]?\s*(.*)$/);
+    if (head) { open(head[1]); if (!head[2]) continue; }
+    if (!rows) open("便签");
+    const body = head ? head[2] : item[2];
+    const dated = body.match(/^\[?(?:\d{4}-)?(\d\d-\d\d)[^\s\]]*(?: \d\d:\d\d)?\]?\s+(.*)$/);
+    rows.append(h("div", "watch-r", null, [h("time", null, dated ? dated[1] : ""), h("p", null, null, rich(dated ? dated[2] : body))]));
+  }
+  return out.length ? out : [h("p", "watch-why", "便签是空的")];
 }
 
 function usageView(data) {
@@ -166,7 +235,7 @@ function usageView(data) {
 }
 
 function mount(host, context) {
-  const state = { data: null, tab: "today", source: "", all: false, error: "" };
+  const state = { data: null, tab: "today", raw: false, redraw: () => {}, error: "" };
   const shift = (days) => { const day = new Date(`${state.data.date}T00:00:00Z`); day.setUTCDate(day.getUTCDate() + days); load(day.toISOString().slice(0, 10)); };
   function draw() {
     if (state.error) return host.replaceChildren(h("p", "watch-why", state.error));
@@ -180,26 +249,19 @@ function mount(host, context) {
       node.setAttribute("aria-selected", String(state.tab === key));
       return node;
     });
-    // 选来源、切“要紧的/全部”只重画下面两块，上面已经展开的回合不动。
-    const sources = h("div");
-    const feed = h("div");
-    const redraw = () => { sources.replaceChildren(sourcesView(data, state, redraw)); feed.replaceChildren(feedView(data, state, redraw)); };
-    redraw();
-    const body = state.tab === "today" ? [
-      section("主 Agent 做了什么", "点开看它的交代和每一步", [roundsView(data, context.query)]),
-      section("各来源什么时候来了事", "点一行只看这个来源", [sources]),
-      section("事件和值班员的判断", "点一条看理由", [feed]),
-      section("用量", "", [usageView(data)]),
-    ] : [h("pre", "watch-file", data.files[state.tab] || "（空）")];
+    state.redraw = draw;
+    const body = state.tab === "today" ? [h("p", "watch-lede", lede(data)), ledgerView(data, context.query), section("用量", "", [usageView(data)])]
+      : state.tab === "WATCH.md" ? ordersView(data, state)
+      : state.tab === "notes.md" ? notesView(data.files["notes.md"])
+      : [h("pre", "watch-file", data.files[state.tab] || "（空）")];
     host.replaceChildren(h("div", "watch-page", null, [
-      h("header", "watch-head", null, [button("watch-nav", "‹", () => shift(-1), "前一天"), h("b", null, data.date), next, h("span", "watch-line", summary(data))]),
+      h("header", "watch-head", null, [button("watch-nav", "‹", () => shift(-1), "前一天"), h("b", null, data.date), next]),
       h("div", "watch-tabs", null, tabs), ...body]));
   }
   async function load(date) {
     try {
       state.data = await context.query("day", date ? { date } : {}, { cache: "none" });
       state.error = "";
-      state.source = "";
     } catch (error) {
       state.error = `读取失败：${error instanceof Error ? error.message : error}`;
     }
