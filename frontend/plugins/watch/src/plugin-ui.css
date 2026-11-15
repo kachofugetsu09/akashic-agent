@@ -45,6 +45,8 @@
 .watch-r > summary { display: contents; cursor: pointer; list-style: none; }
 .watch-r > summary::-webkit-details-marker, .watch-item > summary::-webkit-details-marker { display: none; }
 .watch-r p { margin: 0; overflow-wrap: anywhere; }
+/* summary 以外的内容在新版 Chrome 里装在 ::details-content 这一个格子里，要把它放到第二行、跨后两列。 */
+.watch-r::details-content { grid-column: 2 / -1; }
 .watch-r > .watch-round-body, .watch-r > .watch-more, .watch-r > .watch-why { grid-column: 2 / 4; margin-top: 6px; }
 .watch-round-body h4 { margin: 10px 0 2px; }
 .watch-who { margin-right: 8px; color: var(--ak-ink-muted); }
@@ -81,6 +83,7 @@
 @media (max-width: 860px) {
   .watch-r, .watch-agenda .watch-r { grid-template-columns: 40px minmax(0, 1fr); }
   .watch-r .watch-to { grid-column: 2; }
+  .watch-r::details-content { grid-column: 1 / -1; }
   .watch-r > .watch-round-body, .watch-r > .watch-more, .watch-r > .watch-why { grid-column: 1 / 3; }
   .watch-more > div { grid-template-columns: 40px minmax(0, 1fr); }
   .watch-more > div > :nth-child(2) { display: none; }
