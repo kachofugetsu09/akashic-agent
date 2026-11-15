@@ -249,6 +249,11 @@ def _read_left(messages: Iterable[Message]) -> list[dict[str, str]]:
     return left
 
 
+# 列表记号和行首的方括号标记是文件的格式，不是内容。
+def _bare(line: str) -> str:
+    return re.sub(r"^\s*(?:[-*#]+\s*)?(?:\[[^\]]*\]\s*)*", "", line)
+
+
 def _left_item(arguments: Mapping[str, object]) -> dict[str, str] | None:
     if isinstance(arguments.get("message"), str) and "target_chat_id" in arguments:
         return {"kind": "said", "text": str(arguments["message"])[:2400]}
@@ -257,11 +262,11 @@ def _left_item(arguments: Mapping[str, object]) -> dict[str, str] | None:
     if not isinstance(path, str) or not isinstance(new, str) or path.endswith("inbox.md"):
         return None
     old = str(arguments.get("old_text") or "").splitlines()
-    added = [line for line in new.splitlines() if line.strip() and line not in old]
-    removed = [line for line in old if line.strip() and line not in new.splitlines()]
+    added = [_bare(line) for line in new.splitlines() if line.strip() and line not in old]
+    removed = [_bare(line) for line in old if line.strip() and line not in new.splitlines()]
     text = "；".join(added[:2]) if added else "删去：" + "；".join(removed[:2]) if removed else ""
     kind = "rule" if path.endswith(("WATCH.md", "cases.md")) else "note" if path.endswith("notes.md") else "memory" if "memory/" in path else "file"
-    return {"kind": kind, "text": clip(text, 240), "path": path.rsplit("/", 1)[-1]}
+    return {"kind": kind, "text": clip(text, 140), "path": path.rsplit("/", 1)[-1]}
 
 
 # 工具结果常是一个 JSON 对象：有 output 字段就只取它，读起来是命令的输出而不是一层包装。

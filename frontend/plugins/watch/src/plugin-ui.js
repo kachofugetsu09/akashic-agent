@@ -214,7 +214,7 @@ function ordersView(data, state) {
 function notesView(text) {
   const out = [];
   let rows = null;
-  const open = (title) => { rows = []; out.push(section(title, "", [h("div", "watch-ledger watch-notes", null, rows)])); };
+  const open = (title) => { rows = h("div", "watch-ledger watch-notes"); out.push(section(title, "", [rows])); };
   for (const line of String(text ?? "").split("\n")) {
     const item = line.match(/^(\s*)- (.+)/);
     if (!item) continue;
@@ -222,8 +222,8 @@ function notesView(text) {
     if (head) { open(head[1]); if (!head[2]) continue; }
     if (!rows) open("便签");
     const body = head ? head[2] : item[2];
-    const dated = body.match(/^(\d\d-\d\d)\S*\s+(.*)$/);
-    rows.push(h("div", "watch-r", null, [h("time", null, dated ? dated[1] : ""), h("p", null, null, rich(dated ? dated[2] : body))]));
+    const dated = body.match(/^\[?(?:\d{4}-)?(\d\d-\d\d)[^\s\]]*(?: \d\d:\d\d)?\]?\s+(.*)$/);
+    rows.append(h("div", "watch-r", null, [h("time", null, dated ? dated[1] : ""), h("p", null, null, rich(dated ? dated[2] : body))]));
   }
   return out.length ? out : [h("p", "watch-why", "便签是空的")];
 }

@@ -14,8 +14,8 @@
 .watch-nav:hover:not(:disabled) { background: var(--ak-paper-raised); }
 .watch-nav:disabled { opacity: 0.35; cursor: default; }
 .watch-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--ak-rule-subtle); }
-.watch-tab { margin-bottom: -1px; padding: 6px 10px 8px; border-bottom: 2px solid transparent; color: var(--ak-ink-muted); }
-.watch-tab[aria-selected="true"] { border-color: var(--ak-rule-focus); color: var(--ak-ink-primary); }
+.watch-page .watch-tab { margin-bottom: -1px; padding: 6px 10px 8px; border-bottom-width: 2px; color: var(--ak-ink-muted); }
+.watch-page .watch-tab[aria-selected="true"] { border-color: var(--ak-rule-focus); color: var(--ak-ink-primary); }
 .watch-sec h3 { display: flex; align-items: baseline; gap: 10px; margin: 22px 0 8px; font-family: var(--ak-type-reading); font-size: 1rem; font-weight: 600; }
 .watch-sec h3 small, .watch-round-body h4 { color: var(--ak-ink-muted); font-family: inherit; font-size: 0.75rem; font-weight: 400; }
 .watch-round-body h4 { margin: 10px 0 2px; }
