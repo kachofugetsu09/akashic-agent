@@ -127,6 +127,7 @@ def read_day_usage(
                 # 回合收尾时它自己写的那段话就是这一轮的交代；列表里直接给出来，不用点进去才知道做了什么。
                 round_item["said"] = next((step["text"] for step in reversed(steps) if step["kind"] == "text"), "")
                 round_item["steps"] = sum(step["kind"] == "call" for step in steps)
+                round_item["left"] = _read_left(messages)
                 round_item["usage"] = usage
                 models = usage.get("models")
                 if isinstance(models, list):
@@ -225,6 +226,42 @@ def _read_steps(messages: Iterable[Message], name: Callable[[str], str]) -> list
             text = _output(" ".join(str(part.value) for part in body.parts if part.kind == "text"))
             steps[-1]["result"] = ("" if body.outcome == "success" else f"[{body.outcome}] ") + clip(" ".join(text.split()), 200)
     return steps
+
+
+# 一个回合留下了什么：对用户说的话和改过的文件。只看成功的调用，按参数的形状认，不认具体是哪个工具。
+def _read_left(messages: Iterable[Message]) -> list[dict[str, str]]:
+    calls: dict[tuple[str, int], ToolCall] = {}
+    done: list[ToolCall] = []
+    for message in messages:
+        body = message.body
+        if isinstance(body, Output):
+            calls.update({(message.message_id, index): part for index, part in enumerate(body.parts) if isinstance(part, ToolCall)})
+        elif isinstance(body, ToolResult) and body.outcome == "success":
+            call = calls.get((body.call_ref.message_id, body.call_ref.part_index))
+            text = " ".join(str(part.value) for part in body.parts if part.kind == "text")
+            if call is not None and not text.startswith("错误"):
+                done.append(call)
+    left: list[dict[str, str]] = []
+    for call in done:
+        item = _left_item(call.arguments)
+        if item is not None and item not in left:
+            left.append(item)
+    return left
+
+
+def _left_item(arguments: Mapping[str, object]) -> dict[str, str] | None:
+    if isinstance(arguments.get("message"), str) and "target_chat_id" in arguments:
+        return {"kind": "said", "text": str(arguments["message"])[:2400]}
+    path = arguments.get("path")
+    new = arguments.get("new_text", arguments.get("content"))
+    if not isinstance(path, str) or not isinstance(new, str) or path.endswith("inbox.md"):
+        return None
+    old = str(arguments.get("old_text") or "").splitlines()
+    added = [line for line in new.splitlines() if line.strip() and line not in old]
+    removed = [line for line in old if line.strip() and line not in new.splitlines()]
+    text = "；".join(added[:2]) if added else "删去：" + "；".join(removed[:2]) if removed else ""
+    kind = "rule" if path.endswith(("WATCH.md", "cases.md")) else "note" if path.endswith("notes.md") else "memory" if "memory/" in path else "file"
+    return {"kind": kind, "text": clip(text, 240), "path": path.rsplit("/", 1)[-1]}
 
 
 # 工具结果常是一个 JSON 对象：有 output 字段就只取它，读起来是命令的输出而不是一层包装。
