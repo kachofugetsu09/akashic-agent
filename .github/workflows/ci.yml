@@ -11,6 +11,8 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+# 三个 job 并行：Python 检查与回归、前端检查与构建、聊天重连。
+# 依赖安装走缓存：Python 用 uv（保留下载过的 wheel），前端按 package-lock.json 整体缓存 node_modules。
 jobs:
   check-and-test:
     runs-on: ubuntu-latest
@@ -25,29 +27,26 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: pip
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
         with:
-          node-version: "22"
-          cache: npm
+          enable-cache: true
+          prune-cache: false
+          cache-dependency-glob: |
+            requirements*.txt
+            sdk/python/pyproject.toml
 
       - name: Install Python dependencies
         run: |
-          python -m venv .venv
-          .venv/bin/python -m pip install --upgrade pip
-          .venv/bin/python -m pip install -r requirements.txt
-          .venv/bin/python -m pip install -r requirements-dev.txt
-          .venv/bin/python -m pip install -e sdk/python
-
-      - name: Add project virtualenv to PATH
-        run: echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+          uv venv .venv --python 3.12
+          uv pip install --python .venv -r requirements-dev.txt -e sdk/python
+          echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
 
       - name: Check Host Bridge generated protocol
         run: |
-          python -m venv /tmp/akashic-protoc
-          /tmp/akashic-protoc/bin/pip install grpcio-tools==1.78.0
+          uv venv /tmp/akashic-protoc --python 3.12
+          uv pip install --python /tmp/akashic-protoc grpcio-tools==1.78.0
           /tmp/akashic-protoc/bin/python scripts/generate_host_bridge_protocol.py --check
 
       - name: Check Python
@@ -62,25 +61,61 @@ jobs:
           cd sdk/python
           ../../.venv/bin/pyright src --level error
 
-      - name: Install Node dependencies
-        run: npm ci
-
-      - name: Check CSS appearance contract
-        run: npm run check:css-tokens
-
       - name: Run Python regressions
         timeout-minutes: 35
         env:
           PYTHONWARNINGS: "ignore:.*AbstractEventLoopPolicy.*:DeprecationWarning"
         run: |
-          .venv/bin/pytest -q tests/
+          .venv/bin/pytest -q -n auto tests/
           .venv/bin/python scripts/runtime_diagnostics_scenario.py
+
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Restore node_modules
+        id: node-modules
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: node-modules-${{ runner.os }}-node22-${{ hashFiles('package-lock.json') }}
+
+      - name: Install Node dependencies
+        if: steps.node-modules.outputs.cache-hit != 'true'
+        run: npm ci
+
+      - name: Check CSS appearance contract
+        run: npm run check:css-tokens
 
       - name: Run frontend typecheck
         run: npm run typecheck
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          prune-cache: false
+          cache-dependency-glob: |
+            requirements*.txt
+            sdk/python/pyproject.toml
+
       - name: Build and load plugin web modules
         run: |
+          uv venv .venv --python 3.12
+          uv pip install --python .venv -r requirements.txt -e sdk/python
           npm run build:web-plugins
           .venv/bin/python - <<'PY'
           from pathlib import Path
@@ -94,6 +129,7 @@ jobs:
   chat-reconnect:
     # 聊天重连行为(短连预算/手动重试/预算重置/stop 帧走新 socket)只能在真实
     # Chromium + 真实 HTTP/WS 下验证,脚本自带 fixture,独立于 check-and-test 单独成job。
+    # 用 runner 镜像自带的 Chrome，不再每次下载 Chromium。
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -104,13 +140,17 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: npm
+
+      - name: Restore node_modules
+        id: node-modules
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: node-modules-${{ runner.os }}-node22-${{ hashFiles('package-lock.json') }}
 
       - name: Install Node dependencies
+        if: steps.node-modules.outputs.cache-hit != 'true'
         run: npm ci
 
-      - name: Install Chromium
-        run: npx playwright-core install --with-deps chromium
-
       - name: Verify chat reconnect scenarios
-        run: CHROMIUM_PATH="$(node -e 'console.log(require("playwright-core").chromium.executablePath())')" node frontend/plugins/akashic_clients/chat/src/verify-reconnect.mjs
+        run: CHROMIUM_PATH="$(command -v google-chrome)" node frontend/plugins/akashic_clients/chat/src/verify-reconnect.mjs
