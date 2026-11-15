@@ -20,7 +20,7 @@ from agent.plugin_composition.tasks import RESTART_GATE
 from plugins.ui.contract import MessagePage
 from plugins.ledger.contract import Message
 from .contract import RpcMethod
-from .errors import RuntimeClosedError, UpdateNotFoundError
+from .errors import UpdateNotFoundError
 from .protocol.errors import JsonRpcError, SERVER_OVERLOADED
 from .runtime_stop import CancelStopParams, StopParams, prepare_stop
 from .service import ControlService

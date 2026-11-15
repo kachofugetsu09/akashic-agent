@@ -15,7 +15,6 @@ from .domain.model import Turn
 from .infrastructure.consumption import Consumption
 from .infrastructure.lexical import tokenize
 from plugins.ledger.contract import MessageCatalog, OwnerStore
-from plugins.ledger.contract import CallRef
 from plugins.ledger.contract import json_value
 
 MaterialData = Mapping[str, object]

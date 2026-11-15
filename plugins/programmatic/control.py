@@ -24,7 +24,7 @@ from plugins.delivery.contract import (
     FinalOutputTurn as FinalOutputTurn,
 )
 
-from .contract import (PROGRAMMATIC, SessionIdParams, AdmitParams, SendParams, PauseParams, ResumeParams, ResultParams)
+from .contract import (SessionIdParams, AdmitParams, SendParams, PauseParams, ResumeParams, ResultParams)
 from .result import TURN_PROJECTION, TurnProjection, read_result, read_result_snapshot
 
 

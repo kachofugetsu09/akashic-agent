@@ -4173,7 +4173,7 @@ def _runtime_identity(
         try:
             sample = _sample_resources(compose, repo, env, milestone=-1)
             break
-        except GateFailure as error:
+        except GateFailure:
             if time.monotonic() >= deadline:
                 raise
             threading.Event().wait(0.05)

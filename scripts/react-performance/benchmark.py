@@ -132,7 +132,6 @@ async def handle(reader, writer):
                 writer.write(b"HTTP/1.1 100 Continue\r\n\r\n")
                 await writer.drain()
             body = await reader.readexactly(int(headers.get("content-length", 0)))
-            request = json.loads(body)
             base.mark("wire_received")
             index = len(WIRE) % 3
             WIRE.append(body)

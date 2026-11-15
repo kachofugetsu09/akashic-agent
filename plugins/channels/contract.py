@@ -21,7 +21,7 @@ from plugins.ledger.contract import (
 
 from agent.plugin_composition.context import Context
 from agent.plugin_composition.requests import RequestContext
-from agent.plugin_composition.credentials import CredentialRef, ProviderClient, ProviderClientFactory
+from agent.plugin_composition.credentials import CredentialRef
 from agent.plugin_composition.model import ServiceKey
 
 

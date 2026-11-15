@@ -20,7 +20,6 @@ from agent.plugin_composition.tasks import Task
 from plugins.ledger.contract import (
     ContentPart,
     ContentReferences,
-    Control,
     Input,
     Message,
     Output,

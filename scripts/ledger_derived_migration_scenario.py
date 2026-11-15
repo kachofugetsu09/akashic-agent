@@ -1,5 +1,4 @@
 """旧制品生成向量，新 Yoyo 复制并核对源库完整性。"""
-import hashlib
 import os
 from pathlib import Path
 import shutil

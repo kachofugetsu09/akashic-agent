@@ -46,12 +46,12 @@ async def test_interrupt_inputs_survive_and_old_output_cannot_commit(tmp_path):
             finally:
                 cancelled.set()
                 await drain.wait()
-        snapshot = reader.snapshot()
+        reader.snapshot()
         return writer.append("answer", Output((ContentPart("text", "answer"),), "complete"),
                              expected_source_head=reader.head(source="conversation"))
     async with source(tmp_path, run) as (conversation, log, writer, program):
         first = await conversation.accept("u1", Input(()))
-        task = await conversation.start(program)
+        await conversation.start(program)
         await entered.wait()
         await conversation.accept("u2", Input(()))
         await cancelled.wait()

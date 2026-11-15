@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 from plugins.host_execution.contract import (
-    DEFAULT_HARD_TIMEOUT_S, DEFAULT_INITIAL_YIELD_TIME_MS, DEFAULT_MAX_OUTPUT_TOKENS, ExecutionCleanupFailure, ExecutionCleanupReport, ExecutionResult, ExecutionState, MAX_WRITE_STDIN_YIELD_TIME_MS, MAX_YIELD_TIME_MS, MIN_EMPTY_YIELD_TIME_MS, MIN_YIELD_TIME_MS, ShellKind, ShellProcessManagerProtocol, UnknownExecutionError, clamp_initial_yield_time, clamp_write_stdin_yield_time
+    ExecutionCleanupFailure, ExecutionCleanupReport, ExecutionResult, ExecutionState, MAX_WRITE_STDIN_YIELD_TIME_MS, MIN_EMPTY_YIELD_TIME_MS, ShellKind, UnknownExecutionError, clamp_initial_yield_time, clamp_write_stdin_yield_time
 )
 
 import asyncio
 import errno
-import json
 import os
 import random
 import signal

@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import asyncio
 from agent.plugin_composition.effect import _join_cleanup
-import os
 import inspect
 import logging
 import socket
 from collections import deque
-from collections.abc import Awaitable, Callable, Iterator, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType

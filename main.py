@@ -297,7 +297,6 @@ def _prepare_startup_migrations(
 
 
 async def inspect_modules(config_path: str, workspace: Path) -> None:
-    import logging
     from bootstrap.cleanup import run_cleanup_steps
     from bootstrap.tools import build_core_runtime
     from core.net.http import SharedHttpResources

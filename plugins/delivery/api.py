@@ -11,7 +11,6 @@ from plugins.delivery.contract import (
     FINAL_OUTPUT_DELIVERY as FINAL_OUTPUT_DELIVERY,
     FinalOutputTurn as FinalOutputTurn,
     FinalOutputWaiter as FinalOutputWaiter,
-    Receipt as SenderResult,
     Sender as Sender,
 )
 

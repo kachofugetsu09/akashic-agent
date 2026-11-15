@@ -26,8 +26,6 @@ from plugins.ledger.contract import (
 from agent.plugin_composition.tasks import TASKS, ExternalRootPermit, Task, TaskAdmission
 from plugins.ledger.contract import (
     CallRef,
-    ContentPart,
-    ContentReferences,
     ToolResult,
     Output,
     ToolCall,
@@ -63,7 +61,6 @@ from .api import (
 )
 from .cleanup import Release, tool_cleanup
 from .execution import ToolExecution
-from .api import CallSource
 from .program import TOOL_PROGRAM, ToolProgramFactory
 
 api_version = 3

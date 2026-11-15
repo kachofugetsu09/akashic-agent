@@ -3,6 +3,9 @@ name: CI
 on:
   workflow_dispatch:
   pull_request:
+  # main 上也跑：既验合并结果，也建缓存——GitHub 只让默认分支的缓存被所有 PR 共享。
+  push:
+    branches: [main]
 
 permissions:
   contents: read
@@ -48,6 +51,9 @@ jobs:
           uv venv /tmp/akashic-protoc --python 3.12
           uv pip install --python /tmp/akashic-protoc grpcio-tools==1.78.0
           /tmp/akashic-protoc/bin/python scripts/generate_host_bridge_protocol.py --check
+
+      - name: Lint Python
+        run: .venv/bin/ruff check --output-format github .
 
       - name: Check Python
         run: |

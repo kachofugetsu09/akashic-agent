@@ -8,7 +8,6 @@ import signal
 import sys
 from typing import Any, cast
 
-from runtime import ROOT
 from agent.config import Config
 from bootstrap.app import AppRuntime
 from plugins.gateway.contract import RpcMethod

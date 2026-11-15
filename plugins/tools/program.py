@@ -15,7 +15,7 @@ from plugins.ledger.contract import (
 from agent.plugin_composition.tasks import ExternalRootPermit
 from plugins.ledger.contract import CallRef, ContentPart, ContentReferences, ToolResult
 from plugins.tools.contract import StartCheck
-from plugins.tools.contract import TOOL_PROGRAM_V2 as TOOL_PROGRAM
+from plugins.tools.contract import TOOL_PROGRAM_V2 as TOOL_PROGRAM  # noqa: F401  再导出给 plugin.py
 
 from .api import Authorize, MessageReply, result_message_id
 

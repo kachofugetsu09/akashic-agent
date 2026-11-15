@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-import math
 
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
@@ -21,7 +20,6 @@ from plugins.models.contract import (
     EmbeddingSpaceDescriptor,
 )
 from plugins.models.contract import (
-    AuthenticationError,
     ModelUnavailableError,
 )
 from plugins.models.contract import (

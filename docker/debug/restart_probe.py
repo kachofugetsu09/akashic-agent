@@ -41,7 +41,6 @@ from docker.debug.programmatic_control_probe import (
     _wait_socket,
     _write_json,
 )
-from infra.persistence.json_store import atomic_write_text
 from plugins.turn_projection.plugin import TurnProjection
 from plugins.ledger.contract import Message
 from plugins.ledger.contract import decode_body

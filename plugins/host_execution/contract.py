@@ -6,7 +6,6 @@ import json
 from dataclasses import asdict, dataclass
 from typing import Any, Literal, Protocol
 from contextlib import AbstractAsyncContextManager
-from collections.abc import Mapping
 from enum import Enum
 import shlex
 from pydantic import BaseModel, ConfigDict

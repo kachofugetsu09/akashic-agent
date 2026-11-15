@@ -38,7 +38,7 @@ from plugins.subagent.inputs import CONTENT, CHECK_ORIGIN, TOOL_BIND_SAVED
 from plugins.subagent.request import PROFILE_TOOLS, Request
 from plugins.subagent.runtime import SUBAGENT_PROGRAM, Subagents
 from plugins.subagent.tools import Prepared, Spawn
-from plugins.tools.execution import Result, ToolExecution
+from plugins.tools.execution import ToolExecution
 from plugins.ledger.log import MessageLog
 
 
@@ -312,7 +312,6 @@ async def run(directory: Path):
     from plugins.models.contract import (
         CapabilitySources, ConnectionDescriptor, ModelCapabilities, ModelCatalogSnapshot, ModelDescriptor,
     )
-    from plugins.subagent.request import SpawnInput
     from plugins.subagent.tools import Manage, list_available_models, select_model
 
     catalog_snapshot = ModelCatalogSnapshot(

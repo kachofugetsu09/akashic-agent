@@ -6,8 +6,7 @@ Protocol；客户端插件不导入 bootstrap、Core runtime 或其他插件实�
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
-from pathlib import Path
+from collections.abc import AsyncGenerator, Callable, Mapping
 from typing import Literal, Protocol, TypeVar, runtime_checkable
 
 from plugins.channels.contract import AttachmentRef, ChannelInboundMessage

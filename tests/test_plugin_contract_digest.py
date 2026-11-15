@@ -1,5 +1,4 @@
 """公共合同摘要按源码内容寻址缓存：未变源码不重复解析 AST,损坏事实当未命中。"""
-import ast
 from pathlib import Path
 
 import pytest

@@ -1,4 +1,4 @@
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Callable, Mapping
 from contextlib import ExitStack
 from functools import partial
 from typing import cast
@@ -38,7 +38,6 @@ from plugins.conversation.contract import (
     CHECK_ORIGIN as CHECK_ORIGIN,
     CONVERSATION_COMPLETE_V2 as CONVERSATION_COMPLETE,
     CONVERSATION_STEER,
-    ConversationCompleteV2 as ConversationComplete,
     input_part_key,
 )
 from plugins.sources.contract import (
@@ -46,7 +45,6 @@ from plugins.sources.contract import (
     SOURCE_SESSION_V4 as SOURCE_SESSION,
     SOURCES_V5 as SOURCES,
     CompletionProgram,
-    SessionFactoryV4 as SessionFactory,
     SourceChangedV3 as SourceChanged,
     GuardedSourceSession as SourceSession,
 )

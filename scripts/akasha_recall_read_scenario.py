@@ -18,7 +18,6 @@ import subprocess
 import sys
 import tempfile
 import time
-from uuid import uuid4
 parser = argparse.ArgumentParser()
 parser.add_argument('--source', type=Path, default=Path(__file__).resolve().parents[1])
 parser.add_argument('--output', type=Path, required=True, help='New JSON evidence file; never overwritten')
@@ -34,7 +33,7 @@ from plugins.tools.contract import durable_call_key
 import plugins.ledger.log as storage
 from plugins.ledger.log import MessageLog
 from plugins.akasha.inspector import RecallInspector
-from plugins.akasha.contract import ContextSource, Hit, ProgramSource, Recall, ToolSource
+from plugins.akasha.contract import ContextSource, Hit, Recall, ToolSource
 from plugins.akasha.recalls import RecallRecords, context_identity
 from plugins.turn_projection.plugin import TurnProjection
 BASE = args.baseline_ref

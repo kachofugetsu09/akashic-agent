@@ -11,7 +11,6 @@ import re
 import shlex
 import shutil
 import signal
-import sys
 import tempfile
 import time
 from contextlib import asynccontextmanager
@@ -44,7 +43,7 @@ from plugins.host_execution.contract import (
     ExecutionCleanupFailure, ExecutionCleanupReport
 )
 from plugins.host_execution.contract import (
-    ExecutionResult, TerminalBackend, UnknownExecutionError, UnknownTerminalError
+    TerminalBackend, UnknownExecutionError, UnknownTerminalError
 )
 from ..process_runtime import ShellProcessManager
 from .egress import HostEgress

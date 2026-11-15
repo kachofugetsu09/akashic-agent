@@ -12,13 +12,12 @@ import secrets
 import sqlite3
 import threading
 from collections import OrderedDict
-from collections.abc import AsyncGenerator, Callable, Generator, Iterable, Iterator, Mapping, Sequence
+from collections.abc import AsyncGenerator, Callable, Generator, Iterable, Mapping, Sequence
 from bisect import bisect_right
 from contextlib import closing, contextmanager
 from datetime import UTC, datetime
 from dataclasses import dataclass, field
-from typing import Literal, TypeVar, cast, overload
-from itertools import islice
+from typing import Literal, TypeVar, cast
 from pathlib import Path
 from types import MappingProxyType
 from weakref import WeakValueDictionary

@@ -283,7 +283,7 @@ class MessageConsumer:
         member 选出路由到本图的 Session；每张图只消费自己的成员。
         """
         from plugins.ledger.contract import Input, Output
-        from ..projection import Sample, applied_source
+        from ..projection import applied_source
 
         from ..learning import AKASHA_LEARNING, LearningConfig
 

@@ -1,7 +1,6 @@
 from __future__ import annotations
 import os
 import subprocess
-import tomllib
 from pathlib import Path
 from agent.plugins.install import finalize_uninstall_plugin
 from agent.plugins.bundles import set_plugin_choice, plugin_choices

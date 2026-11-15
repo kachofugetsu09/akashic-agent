@@ -87,7 +87,6 @@ class MessagePush:
             request = PushInput.model_validate(dict(arguments))
         except ValidationError as error:
             return str(error)
-        ctx = self._ctx
         try:
             binding = self._senders[request.target_channel]
         except KeyError:

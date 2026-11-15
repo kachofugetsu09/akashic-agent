@@ -7,7 +7,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from agent.plugin_composition import CompositionRoot, CredentialRef, ServiceKey
-from plugins.channels.contract import CHANNEL_INPUT_V2 as CHANNEL_INPUT, CHANNELS, ChannelInboundMessage, RawInbound
+from plugins.channels.contract import CHANNELS, ChannelInboundMessage, RawInbound
 from agent.plugin_composition.credentials import CREDENTIALS
 from plugins.ledger.contract import MESSAGE_CATALOG, MESSAGE_WRITERS
 from plugins.ledger.services import MessageWriters

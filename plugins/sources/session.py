@@ -488,13 +488,15 @@ class SourceSession:
                     return await program(task, self._reader, self._source)
                 except Exception as error:
                     # 只有仍持有本来源的任务能记录 failure；旧草稿错误只向上报告。
+                    reason = str(error)
+
                     async def failed(slot: TaskSlot) -> None:
                         if slot.current is task and task.active:
                             head = await self._reader.read_async(lambda reader: reader.head(source=self._source))
                             if slot.current is not task or not task.active:
                                 return
                             _ = await self._controls.append_async(
-                                uuid4().hex, Control("failure", head, str(error)),
+                                uuid4().hex, Control("failure", head, reason),
                                 expected_source_head=head,
                                 on_commit=lambda message, created: self._changed(message, False) if created else None,
                             )
