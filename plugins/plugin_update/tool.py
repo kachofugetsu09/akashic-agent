@@ -97,7 +97,7 @@ class InstallPlugin:
             name, address = route
             try:
                 binding = self._senders[name]
-            except KeyError as error:
+            except KeyError:
                 return f'发起渠道没有可恢复发送者：{name}'
             sink = SinkInput(name=name, binding_id=binding, address=address)
         return Request(install=install, session_id=message.session_id, sink=sink).model_dump(mode="json")

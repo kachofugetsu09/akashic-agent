@@ -7,7 +7,6 @@ from tests.fixtures.plugin_workspace import initialize_plugin_workspace
 from plugins.ledger.contract import BINDINGS
 from agent.plugin_composition import ServiceKey
 from agent.plugins.manager import PluginManager
-from plugins.ledger.attachments import ChannelAttachmentArtifactStore
 from plugins.delivery.records import DeliveryRecords
 from plugins.message_push.tool import message_id
 from plugins.turn_projection.plugin import TurnProjection

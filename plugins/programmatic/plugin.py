@@ -44,7 +44,6 @@ from plugins.sources.contract import (
     SOURCE_CHANGED_V3 as SOURCE_CHANGED,
     SOURCE_SESSION_V4 as SOURCE_SESSION,
     SOURCES_V5 as SOURCES,
-    SessionFactoryV4 as SessionFactory,
     SourceChangedV3 as SourceChanged,
     GuardedSourceSession as SourceSession,
 )

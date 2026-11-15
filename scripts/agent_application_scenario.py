@@ -41,7 +41,6 @@ async def main(path):
     async with application(path, replying=True, extra_sources=configure) as (_, host):
         from datetime import UTC, datetime
         from plugins.channels.contract import CHANNEL_INPUT_V2, ChannelInboundMessage
-        from plugins.ledger.contract import OWNER_STATE
         root=host.live_root
         assert root is not None
         runners=root.context.require(AGENT_RUNNERS)

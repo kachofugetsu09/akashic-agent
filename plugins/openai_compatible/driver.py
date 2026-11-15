@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from plugins.models.contract import stream_text
-from plugins.models.contract import describe_transport_error
 
 from core.common.diagnostic_log import log_timing
 
@@ -18,11 +17,11 @@ import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, cast
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urlsplit
 
 import httpx
 
-from core.net.http import HttpClient, StreamProgress, finish_response, retry_after_time
+from core.net.http import HttpClient, StreamProgress, finish_response
 
 from core.common.frozen_json import freeze_json
 
@@ -44,13 +43,9 @@ from plugins.models.contract import (
 )
 from plugins.models.contract import (
     AuthenticationError,
-    ContentSafetyError,
-    ContextLengthError,
     InvalidRequestError,
     ModelError,
     ModelTimeoutError,
-    QuotaError,
-    RateLimitError,
     TransportError,
 )
 from plugins.models.contract import (
@@ -64,19 +59,14 @@ from plugins.models.contract import (
     check_chat_response_error,
     check_credential_scope as _check_credential_scope,
     credential_bearer_token as _credential_token,
-    describe_transport_error,
-    http_status_error as _status_error,
     is_driver_retryable as _retryable,
     map_driver_error as _map_error,
     mark_unsent_error as _unsent,
     merge_stream_tool_deltas as _merge_tool_deltas,
     normalize_http_base_url as _normalize_base_url,
-    optional_non_negative_int as _optional_int,
     parse_openai_usage as _usage,
     positive_float_config as _positive_float,
     raise_http_status as _raise_status,
-    redact_secret_text as _redact_secret,
-    response_error_message as _response_error_message,
     response_json_object as _json_object,
     message_size,
 )

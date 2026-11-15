@@ -10,7 +10,6 @@ import argparse
 import asyncio
 from contextlib import asynccontextmanager
 from functools import partial
-from datetime import UTC, datetime
 import json
 from pathlib import Path
 import sqlite3
@@ -44,7 +43,7 @@ from plugins.models.contract import (
     ModelCapabilities,
 )
 from agent.plugin_composition.tasks import TASKS, PluginTasks
-from plugins.ledger.contract import ContentPart, ContentReferences, Control, Input, Output
+from plugins.ledger.contract import ContentReferences, Control, Input
 from plugins.content.contract import CONTENT
 from plugins.delivery.contract import (
     DELIVERY_GUARDED_START as DELIVERY,
@@ -69,7 +68,7 @@ from plugins.sources.session import check_source
 from plugins.subagent.request import PROFILE_TOOLS, Request as SubagentRequest
 from plugins.subagent.runtime import SUBAGENT_PROGRAM, Subagents
 from plugins.turn_projection.plugin import TurnProjection
-from plugins.ledger.log import MessageLog, SessionAttributes
+from plugins.ledger.log import MessageLog
 
 
 class TextContent:
@@ -250,8 +249,7 @@ async def check(directory: Path, kind: str, mode: str):
                      runtime=PluginRuntime(kind, kind, directory, directory, directory, {},
                          workspace_roots=("subagent-runs",), workspace_files=("memory/spawn_trace.jsonl",)))
     ctx = contexts[kind]
-    log.save_binding("program", {"version": 1, "service": (
-        SUBAGENT_PROGRAM.name if kind == "subagent" else WAKE_PROGRAM.name), "metadata": {}})
+    log.save_binding("program", {"version": 1, "service": SUBAGENT_PROGRAM.name, "metadata": {}})
     for identity in ("sink", *PROFILE_TOOLS["research"], "screen_content", "share_content", "skip_content"):
         log.save_binding(identity, {"scenario": identity})
     delays = []

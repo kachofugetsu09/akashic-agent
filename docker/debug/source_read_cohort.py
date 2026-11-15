@@ -26,9 +26,9 @@ from plugins.sources.contract import (
     SOURCES_V5,
     SOURCE_CHANGED_V3,
 )
-from plugins.programmatic.control import PROGRAMMATIC, AdmitParams, SendParams, PauseParams, ResumeParams, ResultParams
+from plugins.programmatic.contract import PROGRAMMATIC, AdmitParams, SendParams, PauseParams, ResumeParams, ResultParams
 from plugins.programmatic.result import TURN_PROJECTION, read_result
-from plugins.ledger.contract import Input, Output, ToolResult
+from plugins.ledger.contract import Output
 from tests.test_default_reply import application
 
 

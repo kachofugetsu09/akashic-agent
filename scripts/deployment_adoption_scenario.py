@@ -17,7 +17,7 @@ sys.path.insert(0, str(ROOT))
 from scripts.deployment_composition_scenario import (
     commit, distribution, git, manager, plugin, selected, snapshot, install_legacy_cache,
 )
-from scripts.install_plugin_distribution import install_bundle, ensure_bundle, publish_distribution, _write_receipt, _code_identity
+from scripts.install_plugin_distribution import ensure_bundle, publish_distribution, _write_receipt, _code_identity
 from agent.plugins.artifacts import read_pointers, resolve_pointer
 from agent.plugins.distribution_sources import distribution_sources, distribution_migration_sources
 from agent.plugins.install import install_git_plugin

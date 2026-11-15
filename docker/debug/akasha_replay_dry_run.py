@@ -25,7 +25,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from agent.plugin_composition import ServiceKey
-from plugins.ledger.contract import Message
 from plugins.turn_projection.contract import post_commit_effect
 from plugins.akasha.application.rebuild import rebuild_from_catalog
 from plugins.akasha.domain.model import MemoryConfig

@@ -11,10 +11,11 @@ from plugins.ledger.contract import Bindings
 from plugins.ledger.contract import Message
 from plugins.delivery.contract import (
     DELIVERY_SENDERS as DELIVERY_SENDERS,
+    Receipt as SenderResult,
     SenderDefinition,
 )
 
-from .api import Receipt, Sender, SenderResult, Text
+from .api import Receipt, Sender, Text
 
 Open = Callable[[], AbstractAsyncContextManager[Sender]]
 

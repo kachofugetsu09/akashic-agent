@@ -7,11 +7,8 @@ import os
 import shutil
 import sys
 import tempfile
-from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from types import SimpleNamespace
-from typing import cast
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -21,21 +18,7 @@ from agent.plugin_composition.config_input import save_config
 from agent.plugins.bundles import set_plugin_choice
 from agent.plugins.manager import PluginManager
 from plugins.channels.contract import CHANNEL_INPUT_V2, ChannelInboundMessage
-from plugins.ledger.contract import MESSAGE_CATALOG, ContentPart, Input, Output, ToolCall as LedgerToolCall, ToolResult
-from plugins.models.contract import (
-    CHAT_MODELS, MODEL_CATALOG, BoundModelDescriptor, CapabilitySources,
-    ChatModelSelection, ConnectionDescriptor, LLMResponse, ModelCapabilities,
-    ModelCatalogSnapshot, ModelDescriptor, ToolCall,
-)
-from plugins.models.content import MODEL_CONTENT, ContentOwner
-from plugins.models.projection import (
-    MODEL_CALLS, MODEL_MESSAGE_CHECKS, MODEL_PROJECTION, MessageChecksOwner, ProjectionOwner,
-)
-from plugins.models.selection import MODEL_SELECTION, SelectionOwner
-from plugins.models.settings import MODEL_SETTINGS
-from plugins.models.state import _BoundChat, ModelsState
-from plugins.models.store import ModelsStore
-from plugins.working_directory.contract import WORKING_DIRECTORY
+from plugins.ledger.contract import MESSAGE_CATALOG, Output, ToolResult
 from tests.fixtures.plugin_workspace import initialize_plugin_workspace
 from tests.support.delivery_sources import sources as delivery_sources
 

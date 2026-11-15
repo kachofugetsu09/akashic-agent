@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from plugins.host_execution.contract import (
-    AgentsChain, AgentsChainFailure, AgentsChainFile, DirectoryEntry, PathInfo, PathStatus
+    PathInfo
 )
 
 import codecs
@@ -13,7 +13,6 @@ import os
 from pathlib import Path
 import stat
 from typing import Literal, cast
-from pydantic import BaseModel, ConfigDict
 from .factory import HostBridgeRpcError
 from .factory import build_file_bridge
 

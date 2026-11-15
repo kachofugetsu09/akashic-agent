@@ -21,7 +21,6 @@ from plugins.models.contract import CONTENT_VIEWS, MODEL_CALLS, RenderedContent
 from plugins.tools.contract import CallSource
 from plugins.host_execution.bridge.filesystem import ListDirOperation
 from agent.plugins.manager import PluginManager
-from plugins.ledger.attachments import ChannelAttachmentArtifactStore
 from plugins.content_view.plugin import ReadContent, check_read, prepare_view
 from plugins.models.content import render_content
 from plugins.models.projection import MessageProjection
@@ -29,7 +28,6 @@ from plugins.models.store import ModelsStore
 from plugins.models.views import ContentViews
 from plugins.ledger.log import MessageLog
 from plugins.ui.contract import MESSAGE_DISPLAY
-from plugins.ledger.artifact_store import ArtifactStore
 from tests.test_default_reply import application, live_root
 
 DISPLAY_SAMPLE: Path | None = None

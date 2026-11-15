@@ -31,7 +31,7 @@ from agent.migrations.runner import MigrationRunner
 from agent.plugins.source_resolver import ResolvedPluginSource
 from agent.plugins.source_resolver import scan_plugin_sources
 from agent.plugins.distribution_sources import distribution_sources, distribution_migration_sources, DistributionSources, is_distribution_input, is_distribution_owned, check_distribution_adoption_format
-from agent.plugins.files import encode_tree, sync_directory, tree_entries
+from agent.plugins.files import encode_tree, tree_entries
 from agent.plugin_composition.config_input import CONFIG_INPUT, load_config, save_config
 from agent.migrations.runner import initialize_empty_workspace
 from agent.plugins.artifacts import read_pointers, resolve_pointer
@@ -39,7 +39,7 @@ from agent.plugins.manifest import workspace_plugin_data_dir, ensure_workspace_p
 from agent.plugins.static_manifest import load_static_plugin_manifest
 from agent.plugins.python_environment import ENVIRONMENT_FILE, PythonEnvironments
 from agent.plugins.python_environment import OfflineWheels, preflight_offline_runtime, wheel_tree_sha256
-from agent.plugins.input_preparation import prepare_plugin_input, _source_revision, PLUGIN_INPUT_API
+from agent.plugins.input_preparation import prepare_plugin_input, PLUGIN_INPUT_API
 from agent.plugins.reload_journal import ReloadJournal, PendingPublicationError, check_pending_publication
 from agent.plugins.selection import PluginSelection, SelectionConflictError
 from bootstrap.workspace_lock import PluginPublicationLock, WorkspaceMaintenanceLock
@@ -389,7 +389,7 @@ def extract_core(
     assert isinstance(core_data, dict)
     core = _distribution_file(root, core_data["file"], "Core artifact")
     _check_sha256(core, core_data["sha256"], "Core artifact")
-    names = _tar_names(core)
+    _tar_names(core)
     raw_target = destination.expanduser()
     if raw_target.is_symlink():
         raise FileExistsError(f"Core 目标不能是符号链接: {raw_target}")
@@ -1093,7 +1093,7 @@ def ensure_bundle(
     config_path = config_path.expanduser().resolve(strict=True)
     if not config_path.is_file():
         raise ValueError(f"runtime config 必须是普通文件: {config_path}")
-    report = verify_distribution(distribution)
+    verify_distribution(distribution)
     if not receipt_path.exists():
         selection = PluginSelection(workspace)
         if selection.path.exists() and selection.read() is not None:

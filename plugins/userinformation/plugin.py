@@ -6,7 +6,6 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 import json
 import logging
-from typing import cast
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from agent.plugin_composition import Context

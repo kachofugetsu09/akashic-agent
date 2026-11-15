@@ -83,7 +83,7 @@ class ConnectionRouter:
         # 1. 严格解析 UTF-8 JSON object。
         try:
             payload = json.loads(line.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        except (UnicodeDecodeError, json.JSONDecodeError):
             await self._send(JsonRpcError(-32700, "Parse error").envelope(None))
             return
         if not isinstance(payload, dict):

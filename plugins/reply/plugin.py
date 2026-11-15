@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from time import monotonic
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractContextManager, nullcontext
 from functools import partial
 

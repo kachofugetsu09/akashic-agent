@@ -215,7 +215,6 @@ asyncio.run(run())
     with (root / "seed-preflight.log").open("w") as output:
         subprocess.run(command, env=env, stdout=output, stderr=output, check=True, timeout=60)
     assert snapshot(work.parent) == before
-    selection = PluginSelection(work)
     descriptor = selected(work)["alpha@release"][1]
     code = Path(descriptor["code"])
     # 运行代码和来源证据的损坏都必须被同一个完整归档校验拒绝。
@@ -388,7 +387,7 @@ async def run(args):
     )
     if args.with_wheels:
         prepare_wheels(new)
-    result = ensure_bundle(
+    ensure_bundle(
         new,
         new / "bundles/base.toml",
         workspace=work,
@@ -517,7 +516,7 @@ async def run(args):
         )
     )
     state_before = snapshot(state)
-    pre = publish_distribution(
+    publish_distribution(
         distribution=new,
         workspace=work,
         plugins_home=home,
@@ -623,7 +622,6 @@ step(upgrade)
                    config_path=config, receipt_path=receipt)
     assert "disabled@release" not in selected(work)
     assert selected(work)["outside@thirdparty"][0] == external_before
-    from agent.plugin_composition.config_input import decode_config
     assert load_config(work / "plugin-data/alpha-release")[0]["upgraded"] is True
     with sqlite3.connect(work / "migrations.sqlite3") as ledger:
         assert ledger.execute("SELECT COUNT(*) FROM scenario_alpha_done").fetchone() == (1,)

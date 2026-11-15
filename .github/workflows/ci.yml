@@ -49,6 +49,9 @@ jobs:
           uv pip install --python /tmp/akashic-protoc grpcio-tools==1.78.0
           /tmp/akashic-protoc/bin/python scripts/generate_host_bridge_protocol.py --check
 
+      - name: Lint Python
+        run: .venv/bin/ruff check --output-format github .
+
       - name: Check Python
         run: |
           .venv/bin/pyright --level error

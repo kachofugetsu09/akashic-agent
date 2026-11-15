@@ -6,10 +6,8 @@ import asyncio
 import os
 import signal
 import subprocess
-import sys
 from collections.abc import Collection
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 from agent.plugin_composition.execution import process_group_exists
 

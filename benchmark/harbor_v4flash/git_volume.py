@@ -418,7 +418,7 @@ chmod -R a-w {GIT_MOUNT_PATH}
                 ensure_ascii=False,
                 indent=2,
             )
-            copy_script = f"""
+            copy_script = """
 cp -a /source/bin /target/bin
 cp -a /source/metadata.json /target/metadata.json
 cp -a /source/root /target/root

@@ -31,33 +31,6 @@ def model_digest(workspace: Path) -> str:
     return hashlib.sha256(json.dumps(rows, sort_keys=True).encode()).hexdigest()
 
 
-def add_declared_settings(plugins: Path) -> None:
-    """给隔离实例加入两个真实配置 owner，使用正式声明、读取与提交协议。"""
-    source = """from pydantic import BaseModel, ConfigDict
-from agent.plugin_composition import Context
-from agent.plugin_composition.plugin_config import PLUGIN_CONFIG
-from plugins.plugin_settings.contract import SETTINGS_FORMS, SettingsField, SettingsForm, declare_settings
-api_version = 3
-name = "settings_probe_LABEL"
-version = "1.0.0"
-inject = (SETTINGS_FORMS, PLUGIN_CONFIG)
-class Config(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    note: str = "initial-LABEL"
-    items: list[str] = ["one", "two"]
-    count: int = 7
-    flag: bool = True
-FORM = SettingsForm(title="Settings LABEL", description="Isolated real configuration owner", fields=(SettingsField("note", "Note"), SettingsField("items", "Items", kind="lines"), SettingsField("count", "Count", kind="number"), SettingsField("flag", "Flag", kind="toggle")))
-async def apply(ctx: Context) -> None:
-    await declare_settings(ctx, Config, FORM)
-"""
-    for label in ("a", "b"):
-        target = plugins / f"settings_probe_{label}"
-        target.mkdir()
-        (target / "__init__.py").write_text("")
-        (target / "plugin.py").write_text(source.replace("LABEL", label))
-
-
 def seed_usage(workspace: Path, count: int) -> None:
     """在新 fixture 中写入明确标为 benchmark 的用量记录，不调用外部模型。"""
     from plugins.content.plugin import check_text

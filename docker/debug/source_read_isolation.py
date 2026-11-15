@@ -85,7 +85,7 @@ async def run(directory: Path) -> dict:
         # 1. 原 writer 保存巨大输入、真实 call ref 与完整工具结果；不直接灌 SQL。
         for session, closed in (("open", False), ("closed", True)):
             inputs, outputs, controls = (writer(session, kind) for kind in (Input, Output, Control))
-            target = inputs.append(session + "-input", Input((ContentPart("text", "i" * 1_048_576),)))
+            inputs.append(session + "-input", Input((ContentPart("text", "i" * 1_048_576),)))
             call = outputs.append(session + "-call", Output((ToolCall("tool", {}),), "continue"))
             if closed:
                 outputs.append(session + "-complete", Output((), "complete"))

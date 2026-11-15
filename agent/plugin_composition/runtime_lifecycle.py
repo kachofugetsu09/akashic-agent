@@ -4,7 +4,7 @@ import asyncio
 from dataclasses import dataclass
 from typing import TypeVar
 
-from agent.plugin_composition.events import EmitEventKey, SerialEventKey
+from agent.plugin_composition.events import SerialEventKey
 
 
 @dataclass(frozen=True, slots=True)

@@ -26,12 +26,11 @@ from tests.support.delivery_sources import sources as delivery_sources
 from agent.plugin_composition import ServiceKey
 from plugins.channels.contract import CHANNEL_INPUT_V2 as CHANNEL_INPUT, ChannelInboundMessage
 from plugins.models.contract import BoundModelDescriptor
-from plugins.ledger.log import MessageCatalog, MessageLog, MessageReader, MessageWriter
+from plugins.ledger.log import MessageReader
 from plugins.ledger.contract import (
     ContentPart,
     ContentReferences,
     Input,
-    Message,
     Output,
     ToolResult,
 )
