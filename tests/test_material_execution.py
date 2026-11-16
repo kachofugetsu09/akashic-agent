@@ -3,7 +3,8 @@ import asyncio
 
 import pytest
 
-from agent.plugin_composition import CompositionRoot, PluginRuntime
+from agent.plugin_composition import CompositionRoot, Context, FiberHandle, FiberState, PluginRuntime
+from plugins.context.contract import MATERIALS_V4
 from plugins.context.materials import ContextMaterials
 from plugins.context.api import decode_material
 from plugins.models.settings import UpdateConnection
@@ -250,3 +251,162 @@ async def test_cancelled_material_drains_real_model_binding(tmp_path):
             if not job.done():
                 job.cancel()
             await asyncio.gather(job, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_material_prepare_reuses_bound_scope_while_owner_is_unloading(tmp_path):
+    """Bound material callers can keep preparing across steps while an owner drains."""
+    root = CompositionRoot("material-unloading")
+    services: list[ContextMaterials] = []
+    pointer_contexts: list[Context] = []
+    pointer_fibers: list[FiberHandle] = []
+
+    async def setup(ctx: Context):
+        service = ContextMaterials(ctx, prompt_sources={})
+        services.append(service)
+        await ctx.provide(MATERIALS_V4, service)
+
+    async def watch_apply(ctx: Context):
+        async def register_pointer(child: Context):
+            pointer_contexts.append(child)
+
+            async def prepare(snapshot, source):
+                async with child.runtime_scope():
+                    return {"reminders": ({"name": "watch", "text": "P", "priority": 20},)}
+
+            return await child.require(MATERIALS_V4).register(
+                child, name="watch", kind="context", prepare=prepare,
+            )
+
+        pointer_fibers.append(await ctx.inject((MATERIALS_V4,), register_pointer, name="pointer"))
+
+    await root.mount(
+        setup,
+        name="context",
+        runtime=PluginRuntime("context", "materials", tmp_path, tmp_path, tmp_path, {}),
+    )
+    watch_fiber = await root.mount(
+        watch_apply,
+        name="watch",
+        runtime=PluginRuntime("watch", "materials", tmp_path, tmp_path, tmp_path, {}),
+    )
+    service = services[0]
+    pointer_fiber = pointer_fibers[0]
+    pointer_ctx = pointer_contexts[0]
+    unload: asyncio.Task[None] | None = None
+    try:
+        async with service.bind() as view:
+            first = await view.prepare((), "conversation")
+            assert [item.text for item in decode_material(first).reminders] == ["P"]
+
+            probe = pointer_ctx.capture_runtime_scope()
+            try:
+                unload = asyncio.create_task(watch_fiber.dispose())
+                await asyncio.wait_for(probe.wait_admission_closed(), 2)
+            finally:
+                await probe.close()
+
+            assert pointer_fiber.state is FiberState.UNLOADING
+            assert not unload.done()
+
+            second = await view.prepare((), "conversation")
+            assert [item.text for item in decode_material(second).reminders] == ["P"]
+            assert not unload.done()
+
+        assert unload is not None
+        await asyncio.wait_for(unload, 2)
+        assert pointer_fiber.state is FiberState.DISPOSED
+        assert watch_fiber.state is FiberState.DISPOSED
+    finally:
+        if unload is not None and not unload.done():
+            await asyncio.gather(unload, return_exceptions=True)
+        await root.dispose()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_material_prepare_during_owner_unload_releases_captured_scopes(tmp_path):
+    """Cancelling prepare while an owner is unloading still lets unload finish after bind exits."""
+    root = CompositionRoot("material-unloading-cancel")
+    services: list[ContextMaterials] = []
+    pointer_contexts: list[Context] = []
+    pointer_fibers: list[FiberHandle] = []
+    slow_entered, slow_release = asyncio.Event(), asyncio.Event()
+
+    async def setup(ctx: Context):
+        service = ContextMaterials(ctx, prompt_sources={})
+        services.append(service)
+        await ctx.provide(MATERIALS_V4, service)
+
+    async def watch_apply(ctx: Context):
+        async def register_pointer(child: Context):
+            pointer_contexts.append(child)
+
+            async def prepare(snapshot, source):
+                return {"reminders": ({"name": "watch", "text": "P", "priority": 20},)}
+
+            return await child.require(MATERIALS_V4).register(
+                child, name="watch", kind="context", prepare=prepare,
+            )
+
+        pointer_fibers.append(await ctx.inject((MATERIALS_V4,), register_pointer, name="pointer"))
+
+    async def slow_apply(ctx: Context):
+        async def prepare(snapshot, source):
+            slow_entered.set()
+            await slow_release.wait()
+            return {}
+
+        await ctx.require(MATERIALS_V4).register(ctx, name="slow", kind="recall", prepare=prepare)
+
+    await root.mount(
+        setup,
+        name="context",
+        runtime=PluginRuntime("context", "materials", tmp_path, tmp_path, tmp_path, {}),
+    )
+    watch_fiber = await root.mount(
+        watch_apply,
+        name="watch",
+        runtime=PluginRuntime("watch", "materials", tmp_path, tmp_path, tmp_path, {}),
+    )
+    await root.mount(
+        slow_apply,
+        name="slow",
+        inject=(MATERIALS_V4,),
+        runtime=PluginRuntime("slow", "materials", tmp_path, tmp_path, tmp_path, {}),
+    )
+
+    service = services[0]
+    pointer_fiber = pointer_fibers[0]
+    pointer_ctx = pointer_contexts[0]
+    unload: asyncio.Task[None] | None = None
+
+    async def run_bound():
+        nonlocal unload
+        async with service.bind() as view:
+            probe = pointer_ctx.capture_runtime_scope()
+            try:
+                unload = asyncio.create_task(watch_fiber.dispose())
+                await asyncio.wait_for(probe.wait_admission_closed(), 2)
+            finally:
+                await probe.close()
+            return await view.prepare((), "conversation")
+
+    job = asyncio.create_task(run_bound())
+    try:
+        await asyncio.wait_for(slow_entered.wait(), 2)
+        assert pointer_fiber.state is FiberState.UNLOADING
+        job.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await job
+        assert unload is not None
+        await asyncio.wait_for(unload, 2)
+        assert pointer_fiber.state is FiberState.DISPOSED
+        assert watch_fiber.state is FiberState.DISPOSED
+    finally:
+        slow_release.set()
+        if not job.done():
+            job.cancel()
+        await asyncio.gather(job, return_exceptions=True)
+        if unload is not None and not unload.done():
+            await asyncio.gather(unload, return_exceptions=True)
+        await root.dispose()
