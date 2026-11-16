@@ -210,7 +210,6 @@ class ToolMenu:
         reply = await opened if inspect.isawaitable(opened) else opened
         try:
             request = await run_file_io(reply.request)
-            caller_name = self.name(request.binding_id)
             parent_source = await run_file_io(reply.source)
             parent_key = durable_call_key(call)
             scope = _MenuNestedToolScope(
@@ -226,7 +225,9 @@ class ToolMenu:
                         binding_id=identity,
                     )
                     for name, identity in self._bound.items()
-                    if name != caller_name and (desc := self._descriptions_map.get(name)) is not None
+                    if identity != request.binding_id
+                    and (desc := self._descriptions_map.get(name)) is not None
+                    and desc.get("exclusive_batch") is not True
                 },
                 parallel_names=self._parallel_names,
             )

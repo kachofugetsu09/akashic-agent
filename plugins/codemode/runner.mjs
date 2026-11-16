@@ -2,6 +2,9 @@ import vm from "node:vm";
 import readline from "node:readline";
 
 const logs = [];
+let logChars = 0;
+const MAX_LOG_CHARS = 160_000;
+const MAX_RESULT_JSON_CHARS = 160_000;
 let callsMade = 0;
 
 function formatError(err) {
@@ -20,6 +23,33 @@ function safeFormatArg(v) {
     return JSON.stringify(v);
   } catch {
     return String(v);
+  }
+}
+
+function appendLog(prefix, args) {
+  if (logChars >= MAX_LOG_CHARS) return;
+  const line = prefix + args.map(safeFormatArg).join(" ");
+  const remain = MAX_LOG_CHARS - logChars;
+  if (line.length > remain) {
+    logs.push(line.slice(0, remain) + "... [logs truncated]");
+    logChars = MAX_LOG_CHARS;
+  } else {
+    logs.push(line);
+    logChars += line.length;
+  }
+}
+
+function safeResultForWire(val) {
+  if (val === undefined) return null;
+  try {
+    const serialized = JSON.stringify(val);
+    if (serialized === undefined) return null;
+    if (serialized.length <= MAX_RESULT_JSON_CHARS) {
+      return JSON.parse(serialized);
+    }
+    return serialized.slice(0, MAX_RESULT_JSON_CHARS) + "... [result truncated]";
+  } catch {
+    return String(val).slice(0, MAX_RESULT_JSON_CHARS);
   }
 }
 
@@ -109,7 +139,7 @@ async function run(init) {
     });
   }
 
-  const toolsTarget = {
+  const toolsTarget = Object.assign(Object.create(null), {
     list() {
       return toolsMeta.map((t) => ({
         name: t.name,
@@ -120,24 +150,25 @@ async function run(init) {
     describe(name) {
       return toolsMeta.find((t) => t.name === name) || null;
     },
-  };
+  });
 
   const toolsProxy = new Proxy(toolsTarget, {
     get(target, prop) {
-      if (prop in target) return target[prop];
-      if (typeof prop !== "string") return undefined;
+      if (prop === "then" || typeof prop !== "string") return undefined;
+      if (Object.hasOwn(target, prop)) return target[prop];
       return (args = {}) => callHostTool(prop, args);
     },
   });
 
-  const sandboxConsole = {
-    log: (...args) => logs.push(args.map(safeFormatArg).join(" ")),
-    info: (...args) => logs.push(args.map(safeFormatArg).join(" ")),
-    warn: (...args) => logs.push("[warn] " + args.map(safeFormatArg).join(" ")),
-    error: (...args) => logs.push("[error] " + args.map(safeFormatArg).join(" ")),
-  };
+  const sandboxConsole = Object.assign(Object.create(null), {
+    log: (...args) => appendLog("", args),
+    info: (...args) => appendLog("", args),
+    warn: (...args) => appendLog("[warn] ", args),
+    error: (...args) => appendLog("[error] ", args),
+  });
 
-  const sandbox = {
+  // 不注入宿主 Object/Array/Promise/Function 等内建构造器，由 vm 自身 realm 提供独立内建对象。
+  const sandbox = Object.assign(Object.create(null), {
     tools: toolsProxy,
     console: sandboxConsole,
     sleep: (ms) => new Promise((r) => setTimeout(r, Math.max(0, Math.min(Number(ms) || 0, 30_000)))),
@@ -149,23 +180,7 @@ async function run(init) {
       }
       return false;
     },
-    JSON,
-    Math,
-    Date,
-    RegExp,
-    Promise,
-    Array,
-    Object,
-    Map,
-    Set,
-    Error,
-    TypeError,
-    RangeError,
-    URL,
-    URLSearchParams,
-    TextEncoder,
-    TextDecoder,
-  };
+  });
 
   const context = vm.createContext(sandbox, {
     codeGeneration: { strings: false, wasm: false },
@@ -178,7 +193,7 @@ async function run(init) {
     send({
       op: "done",
       ok: true,
-      result: result === undefined ? null : result,
+      result: safeResultForWire(result),
       logs,
       callsMade,
       collectedArtifacts,
