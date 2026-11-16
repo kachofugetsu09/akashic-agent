@@ -33,6 +33,7 @@ from .worktree import cleanup_worktree, create_worktree, inspect_preserved_workt
 from plugins.models.contract import MODEL_SELECTION
 
 from plugins.working_directory.contract import WORKING_DIRECTORY
+from plugins.context.contract import MATERIALS_V4
 from plugins.jobs.contract import JOB_NOTICES, JobOutcome, JobWatch
 from .contract import SUBAGENT_PROGRAM
 
@@ -84,7 +85,7 @@ class Subagents:
         self._watched_bg: set[str] = set()
         self._watch_batches: dict[str, _BgBatch] = {}
         self._notices_recovered = False
-        self._worktree_notes: dict[str, str] = {}
+        self._worktree_notes: dict[str, str | None] = {}
         self._worktree_locks: dict[str, asyncio.Lock] = {}
 
     def read(self, key: str) -> tuple[OwnerRecord, Request, MessageReader] | None:
@@ -251,37 +252,41 @@ class Subagents:
         if self._batches.get(bkey) is batch:
             del self._batches[bkey]
 
+    @staticmethod
+    def _worktree_target(request: Request) -> tuple[Path, Path, str] | None:
+        if request.isolation != "worktree" or not request.worktree_repo or not request.worktree_branch:
+            return None
+        wt_str = request.worktree_path or request.cwd
+        return None if not wt_str else (Path(request.worktree_repo), Path(wt_str), request.worktree_branch)
+
     def worktree_note(self, request: Request) -> str | None:
+        # 清理后记下结论（含"已回收"的 None），只有重启后没有结论时才回到 git 现场查询。
         if request.job_id in self._worktree_notes:
             return self._worktree_notes[request.job_id]
-        if request.isolation == "worktree" and request.worktree_repo and request.worktree_branch:
-            wt_str = request.worktree_path or request.cwd
-            if wt_str:
-                return inspect_preserved_worktree(Path(request.worktree_repo), Path(wt_str), request.worktree_branch)
-        return None
+        target = self._worktree_target(request)
+        return None if target is None else inspect_preserved_worktree(*target)
 
-    def _worktree_lock(self, job_id: str) -> asyncio.Lock:
-        lock = self._worktree_locks.get(job_id)
-        if lock is None:
-            lock = asyncio.Lock()
-            self._worktree_locks[job_id] = lock
-        return lock
+    # 同一仓库的 worktree 创建与回收串行，避免并发 git 改 ref/worktree 元数据时互相拿不到锁。
+    def _worktree_lock(self, repo: Path) -> asyncio.Lock:
+        return self._worktree_locks.setdefault(str(repo), asyncio.Lock())
+
+    async def _ensure_worktree(self, request: Request) -> bool:
+        target = self._worktree_target(request)
+        if target is None:
+            return False
+        async with self._worktree_lock(target[0]):
+            existed = target[1].exists()
+            await run_file_io(lambda: create_worktree(*target))
+            self._worktree_notes.pop(request.job_id, None)
+            return not existed
 
     async def _cleanup_request_worktree(self, request: Request) -> None:
-        if request.isolation != "worktree" or not request.worktree_repo or not request.worktree_branch:
+        target = self._worktree_target(request)
+        if target is None:
             return
-        wt_str = request.worktree_path or request.cwd
-        if not wt_str:
-            return
-        repo_root = Path(request.worktree_repo)
-        wt_path = Path(wt_str)
-        wt_branch = request.worktree_branch
-        async with self._worktree_lock(request.job_id):
-            _removed, note = await run_file_io(lambda: cleanup_worktree(repo_root, wt_path, wt_branch))
-            if note is None:
-                self._worktree_notes.pop(request.job_id, None)
-            else:
-                self._worktree_notes[request.job_id] = note
+        async with self._worktree_lock(target[0]):
+            _removed, note = await run_file_io(lambda: cleanup_worktree(*target))
+            self._worktree_notes[request.job_id] = note
 
     def _with_worktree_note(self, request: Request, outcome: tuple[str, str]) -> tuple[str, str]:
         note = self.worktree_note(request)
@@ -447,15 +452,7 @@ class Subagents:
                 return "steered"
             if self.active_count_for_root(child_root) >= limit:
                 raise SubagentBusy(f"subagent capacity reached for session tree: max={limit}; resume rejected")
-            if request.isolation == "worktree" and request.worktree_repo and request.worktree_branch:
-                wt_str = request.worktree_path or request.cwd
-                if wt_str:
-                    async with self._worktree_lock(request.job_id):
-                        if not Path(wt_str).exists():
-                            wt_repo = Path(request.worktree_repo)
-                            wt_dir = Path(wt_str)
-                            wt_br = request.worktree_branch
-                            await run_file_io(lambda: create_worktree(wt_repo, wt_dir, wt_br))
+            _ = await self._ensure_worktree(request)
             writer = self.ctx.require(MESSAGE_WRITERS).bind(
                 self.ctx,
                 author="parent",
@@ -565,15 +562,30 @@ class Subagents:
             "messages": items,
         }
 
+    # 父会话已被摘要连续覆盖的前缀不复制：父模型自己也只读窗口之后的原文，长会话分叉不会整段搬运全部历史。
+    async def _fork_window_start(self, request: Request) -> int:
+        assert request.fork_through_seq is not None
+        with self.ctx.borrow(MATERIALS_V4) as materials:
+            if materials is None:
+                return -1
+            covered = await materials.history_start(request.parent_session_id)
+        if covered is None:
+            return -1
+        # 1. 与回复程序取窗一致：当前未闭合的父回合必须完整保留。
+        parent = self.ctx.require(MESSAGE_CATALOG).reader(request.parent_session_id)
+        latest_input = parent.latest_input_seq(request.parent_source, through_seq=request.fork_through_seq)
+        return max(-1, min(covered.after_seq, request.fork_through_seq if latest_input is None else latest_input - 1))
+
     async def _seed_fork_prefix(self, request: Request) -> None:
         if not request.fork or request.fork_through_seq is None:
             return
         catalog = self.ctx.require(MESSAGE_CATALOG)
         parent_reader = catalog.reader(request.parent_session_id)
         child_reader = catalog.reader(request.session_id)
+        after_seq = await self._fork_window_start(request)
         parent_msgs = [
             pm
-            for pm in await parent_reader.snapshot_async(through_seq=request.fork_through_seq)
+            for pm in await parent_reader.committed_snapshot_async(after_seq=after_seq, through_seq=request.fork_through_seq)
             if pm.source == request.parent_source
         ]
         # 1. 若历史上存在未结算但已被 abandon/pause/failure 终止的 Output，不得为其补写伪成功 ToolResult。
@@ -680,17 +692,7 @@ class Subagents:
                     raise SubagentBusy(f"subagent capacity reached for session tree: max={limit}; current spawn rejected")
             _ = await ctx.require(SESSION_ADMISSION).ensure_async(ctx, request.session_id,
                 SessionAttributes(visibility="internal", learning="excluded"))
-            created_wt = False
-            wt_root_path: Path | None = None
-            if request.isolation == "worktree" and request.worktree_repo and request.worktree_branch:
-                wt_str = request.worktree_path or request.cwd
-                if wt_str:
-                    repo_root = Path(request.worktree_repo)
-                    wt_root_path = Path(wt_str)
-                    wt_branch = request.worktree_branch
-                    existed_before = wt_root_path.exists()
-                    await run_file_io(lambda: create_worktree(repo_root, wt_root_path, wt_branch))
-                    created_wt = not existed_before
+            created_wt = await self._ensure_worktree(request)
             if request.cwd is not None:
                 # 2. 子会话的工作目录决定相对路径落在哪：父会话没设目录时 cwd 是还没建的任务目录，先建出来再写。
                 task_dir = ctx.workspace_root("subagent-runs") / request.job_id
@@ -752,11 +754,8 @@ class Subagents:
                         self._watch_background(key, request)
             finally:
                 writer.expire()
-                if not created and created_wt and wt_root_path is not None and request.worktree_repo and request.worktree_branch:
-                    wt_repo = Path(request.worktree_repo)
-                    wt_dir = wt_root_path
-                    wt_br = request.worktree_branch
-                    await run_file_io(lambda: cleanup_worktree(wt_repo, wt_dir, wt_br))
+                if not created and created_wt:
+                    await self._cleanup_request_worktree(request)
                 if created:
                     await self._trace(request, "started")
 
