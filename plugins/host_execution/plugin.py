@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 import hashlib
 import os
 from pathlib import Path
@@ -18,6 +19,7 @@ from plugins.ui.contract import UI, UI_SLOTS, PluginUiDefinition, PluginUiRpcInv
 from .processes import PluginProcesses, PluginTerminals, PluginProcessStreams
 from .files import Files
 from .bridge.boot import claim_host_bridge_boot
+from .deploy_status import read_deploy_snapshot
 from .monitor import HostBridgeStatus, _monitor
 from . import dashboard
 from .controller_access import ControllerAccess, cleanup_workloads_for_boot
@@ -99,7 +101,9 @@ async def start_monitor(ctx: Context) -> None:
 
     await ctx.inject((UI, HOST_STATUS), register_status, name="host-status-ui")
 
-    # 4. 聊天输入框上方的执行状态提示由本插件的界面模块经插件查询读取，宿主不认识这条路由。
+    # 4. 聊天输入框上方的执行/部署状态提示与顶栏版本信息由本插件经插件查询读取，宿主不认识这条路由。
+    started_at = datetime.now(UTC).isoformat()
+
     async def register_notice(child: Context) -> None:
         status = child.require(HOST_STATUS)
 
@@ -107,9 +111,17 @@ async def start_monitor(ctx: Context) -> None:
                         session_id: str | None, turn_id: str | None) -> dict[str, object]:
             if method != "bridge.state" or payload:
                 raise PluginUiRpcInvalidRequest("宿主状态查询不接受参数")
-            return status.snapshot()
+            deploy = await run_file_io(lambda: read_deploy_snapshot(started_at=started_at))
+            return {**status.snapshot(), **deploy}
 
         _ = await child.require(UI_SLOTS).register_plugin_ui(
-            child, PluginUiDefinition(module="plugin_ui.js", slots=("chat.notice",)), query=query)
+            child,
+            PluginUiDefinition(
+                module="plugin_ui.js",
+                stylesheet="plugin_ui.css",
+                slots=("chat.notice", "header.meta"),
+            ),
+            query=query,
+        )
 
     _ = await ctx.inject((UI_SLOTS, HOST_STATUS), register_notice, name="host-status-notice")

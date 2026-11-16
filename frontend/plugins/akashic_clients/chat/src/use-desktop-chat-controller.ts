@@ -737,10 +737,11 @@ export function useDesktopChatController() {
                   setError("");
                 }
                 console.info("[chat-ui] ws connected", current.url);
-                // 就绪前轮询仍在跑（每轮已核对 build），或几秒内刚核对过：跳过这次重复取证（#1556）。
-                // 只有轮询退出且结果已变旧的重连才需要补查——断连期间服务端可能已升级换代。
+                // 就绪前轮询仍在跑（每轮已核对 build），或几秒内刚核对过且这是首个连接：跳过这次重复取证（#1556）。
+                // 重连时不论间隔长短都核对 build，免得容器快速重启换代后漏检。
                 const shellStateStale = Date.now() - shellStateFreshAtRef.current > 5000;
-                if (chatReadyRef.current && shellStateStale) checkPageBuild(() => setPageOutdated(true), () => socketRef.current === current);
+                const isReconnect = current !== firstCatalogSocketRef.current;
+                if (chatReadyRef.current && (isReconnect || shellStateStale)) checkPageBuild(() => setPageOutdated(true), () => socketRef.current === current);
                 const sessionId = activeSessionRef.current;
                 if (sessionId) {
                   if (followAfterRef.current === null) void loadMessagesSafely(sessionId);

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from datetime import UTC, datetime
 import hashlib
 import json
 import os
@@ -29,6 +30,24 @@ def _request_path(root: Path, identity: str) -> Path:
 def _user_environment() -> dict[str, str]:
     # Host Bridge 是系统 service；不能依赖桌面登录注入用户 bus 路径。
     return {**os.environ, "XDG_RUNTIME_DIR": f"/run/user/{os.getuid()}"}
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+def _commit_subject(checkout: Path) -> str | None:
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(checkout), "log", "-1", "--format=%s"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    line = completed.stdout.strip().splitlines()[0].strip() if completed.stdout.strip() else ""
+    return line[:160] if line else None
 
 
 def submit(args: argparse.Namespace) -> dict[str, object]:
@@ -81,7 +100,12 @@ def submit(args: argparse.Namespace) -> dict[str, object]:
                 "targetCommit": args.commit,
                 "notifySession": session,
             }
-        record = {"request": request, "status": "submitting"}
+        record = {
+            "request": request,
+            "status": "submitting",
+            "phase": "submitting",
+            "submittedAt": _utc_now_iso(),
+        }
         write_json(path, record)
         try:
             asyncio.run(_arm_stop(request, current))
@@ -120,6 +144,7 @@ def submit(args: argparse.Namespace) -> dict[str, object]:
             raise RuntimeError(f"部署未接纳：{record['error']}") from error
         # worker 通过同一把锁等待此提交，不覆盖后来阶段。
         record["status"] = "accepted"
+        record["phase"] = "accepted"
         write_json(path, record)
     return {
         "requestId": identity,
@@ -313,6 +338,8 @@ def worker(args: argparse.Namespace) -> dict[str, object]:
             raise RuntimeError("任务未接纳或已执行，不自动重放")
         record["recordPath"] = str(path)
         record["status"] = "running"
+        record.setdefault("phase", "preparing")
+        record.setdefault("startedAt", _utc_now_iso())
         write_json(path, record)
     try:
         request = record["request"]
@@ -328,6 +355,14 @@ def worker(args: argparse.Namespace) -> dict[str, object]:
         origin = "https://github.com/kachofugetsu09/akashic-agent.git"
         if not args.prepared:
             _exec_target(path, request)
+        record["phase"] = "preparing"
+        if "previousCommit" not in record and current.get("AKASHIC_RUNTIME_COMMIT"):
+            record["previousCommit"] = current["AKASHIC_RUNTIME_COMMIT"]
+        if "commitSubject" not in record:
+            subject = _commit_subject(source)
+            if subject:
+                record["commitSubject"] = subject
+        write_json(path, record)
         result = install(
             argparse.Namespace(
                 root=root,
@@ -346,9 +381,19 @@ def worker(args: argparse.Namespace) -> dict[str, object]:
             ),
             self_deploy=record,
         )
-        record.update(status="active", result=result)
+        record.update(
+            status="active",
+            phase="active",
+            finishedAt=_utc_now_iso(),
+            result=result,
+        )
     except Exception as error:
-        record.update(status="failed", error=f"{type(error).__name__}: {error}")
+        record.update(
+            status="failed",
+            phase="failed",
+            finishedAt=_utc_now_iso(),
+            error=f"{type(error).__name__}: {error}",
+        )
         write_json(path, record)
         # 原异常仍让 systemd 记为失败；通知结果单独留在任务记录里。
         record["notice"] = notify_failure(record)

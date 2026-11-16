@@ -2432,7 +2432,8 @@ form.composer:focus-within [data-slot="input-group"] {
   }
 }
 
-.composer-wrap > .error-line {
+.composer-wrap > .error-line,
+.composer-wrap > .update-line {
   margin-block-start: 0.25rem;
 }
 
@@ -2470,6 +2471,36 @@ form.composer:focus-within [data-slot="input-group"] {
   --md-filled-tonal-button-label-text-color: var(--md-sys-color-on-error-container);
   --md-filled-tonal-button-hover-label-text-color: var(--md-sys-color-on-error-container);
   --md-filled-tonal-button-pressed-label-text-color: var(--md-sys-color-on-error-container);
+}
+
+.update-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 8px 8px 0;
+  padding: 6px 10px 6px 12px;
+  border: 1px solid color-mix(in oklab, var(--ak-color-status-success) 32%, var(--ak-rule-subtle));
+  border-radius: var(--ak-radius-md);
+  background: var(--ak-paper-sheet);
+  color: var(--chat-ink);
+  font-size: var(--md-sys-typescale-body-medium-size);
+  line-height: 1.4;
+}
+
+.update-line__body {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.update-line__dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: var(--ak-radius-full);
+  background: var(--ak-color-status-success);
 }
 
 /* 紧凑外壳（抽屉导航）：窄屏，或手机横屏——触屏且高度不足 30rem 时宽度虽超过 820px，常驻侧栏也会把对话挤窄。

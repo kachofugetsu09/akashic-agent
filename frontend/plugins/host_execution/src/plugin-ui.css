@@ -1,0 +1,191 @@
+.host-deploy-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  max-width: 100%;
+  margin: 6px 8px 0;
+  padding: 6px 12px;
+  border: 1px solid var(--ak-rule-subtle);
+  border-radius: var(--ak-radius-md);
+  background: var(--ak-paper-sheet);
+  color: var(--chat-ink);
+  font-size: var(--chat-type-caption, 0.75rem);
+  line-height: 1.4;
+}
+
+.host-deploy-notice[data-tone="live"] {
+  border-color: color-mix(in oklab, var(--ak-color-action-primary) 32%, var(--ak-rule-subtle));
+}
+
+.host-deploy-notice[data-tone="success"] {
+  border-color: color-mix(in oklab, var(--ak-color-status-success) 32%, var(--ak-rule-subtle));
+}
+
+.host-deploy-notice[data-tone="warning"] {
+  border-color: color-mix(in oklab, var(--ak-color-status-warning) 36%, var(--ak-rule-subtle));
+}
+
+.host-deploy-notice[data-tone="error"] {
+  border-color: color-mix(in oklab, var(--ak-color-status-error) 36%, var(--ak-rule-subtle));
+  color: var(--ak-color-status-error);
+}
+
+.host-deploy-notice__dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: var(--ak-radius-full);
+  background: var(--ak-color-action-primary);
+}
+
+.host-deploy-notice[data-tone="success"] .host-deploy-notice__dot {
+  background: var(--ak-color-status-success);
+}
+
+.host-deploy-notice[data-tone="warning"] .host-deploy-notice__dot {
+  background: var(--ak-color-status-warning);
+}
+
+.host-deploy-notice[data-tone="error"] .host-deploy-notice__dot {
+  background: var(--ak-color-status-error);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .host-deploy-notice[data-tone="live"] .host-deploy-notice__dot {
+    animation: host-deploy-pulse 1.8s ease-in-out infinite;
+  }
+}
+
+@keyframes host-deploy-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.35; transform: scale(0.82); }
+}
+
+.host-deploy-notice__main {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.host-deploy-notice__right {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.host-deploy-notice__text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.host-deploy-notice__meta {
+  flex: 0 0 auto;
+  color: var(--chat-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.host-deploy-notice__dismiss {
+  display: inline-grid;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+  place-items: center;
+  margin-inline-end: -4px;
+  border: 0;
+  border-radius: var(--ak-radius-full);
+  padding: 0;
+  background: transparent;
+  color: var(--chat-faint);
+  cursor: pointer;
+}
+
+.host-deploy-notice__dismiss:hover {
+  background: var(--chat-chip);
+  color: var(--chat-ink);
+}
+
+.host-deploy-notice__dismiss:focus-visible {
+  outline: 2px solid var(--ak-rule-focus);
+  outline-offset: 2px;
+}
+
+:where([data-chat-width~="820"], [data-chat-touch]) .host-deploy-notice__dismiss {
+  width: 32px;
+  height: 32px;
+}
+
+.host-deploy-detail {
+  display: grid;
+  gap: 8px;
+  color: var(--chat-muted);
+  font-size: var(--chat-type-caption, 0.75rem);
+  line-height: 1.45;
+}
+
+.host-deploy-detail__row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.host-deploy-detail__label {
+  flex: 0 0 auto;
+  color: var(--chat-faint);
+}
+
+.host-deploy-detail__value {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--chat-ink);
+  text-align: end;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.host-deploy-detail code {
+  font-family: var(--ak-type-technical);
+  font-size: var(--chat-type-caption, 0.75rem);
+}
+
+.host-deploy-detail__subject {
+  margin: 0;
+  color: var(--chat-ink);
+  overflow-wrap: anywhere;
+}
+
+.host-deploy-detail__error {
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: var(--ak-radius-sm);
+  background: color-mix(in oklab, var(--ak-color-status-error) 10%, transparent);
+  color: var(--ak-color-status-error);
+  overflow-wrap: anywhere;
+}
+
+.host-deploy-detail__badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--chat-ink);
+}
+
+.host-deploy-detail__badge[data-status="active"] {
+  color: var(--ak-color-status-success);
+}
+
+.host-deploy-detail__badge[data-status="failed"] {
+  color: var(--ak-color-status-error);
+}
+
+.host-deploy-detail__badge[data-status="running"],
+.host-deploy-detail__badge[data-status="accepted"],
+.host-deploy-detail__badge[data-status="submitting"] {
+  color: var(--ak-color-action-primary);
+}
