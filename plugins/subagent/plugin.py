@@ -50,11 +50,11 @@ from .inputs import (
     TOOLS,
 )
 from .prompts import build_spawn_subagent_prompt
-from .request import PROFILE_TOOLS, Request, SpawnInput
+from .request import DELEGATION_TOOLS, EXCLUDED_ALWAYS_TOOLS, Request, SpawnInput
 from .contract import SUBAGENT_PROGRAM, AGENT_RUNNERS
 from .runners import Runners
 from plugins.jobs.contract import JOB_NOTICES
-from .runtime import DEFAULT_MAX_ACTIVE, DEFAULT_RESULT_CHARS, Subagents
+from .runtime import DEFAULT_MAX_ACTIVE, DEFAULT_MAX_DEPTH, DEFAULT_RESULT_CHARS, Subagents
 from .tools import Manage, ManageInput, Spawn, select_model
 
 api_version = 3
@@ -89,13 +89,14 @@ workspace_files = ("memory/SELF.md", "memory/spawn_trace.jsonl")
 SETTINGS = ServiceKey[Configuration]("subagent.settings.v1")
 # 子任务默认沿用派出它的那轮对话的模型；也可固定跟随默认或指定一个模型。
 SUBAGENT_MODEL = ModelUse("subagent", "子任务", follows=("session", "default"))
-SETTING_FIELDS = ("model", "max_steps", "max_output_tokens", "max_active", "result_chars")
+SETTING_FIELDS = ("model", "max_depth", "max_steps", "max_output_tokens", "max_active", "result_chars")
 
 
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
     # 0 = 不限制总步数，和 ReAct 的 max_steps>0 才生效保持一致；
     # 入口不再硬编码上限，实际值只由设置决定。
+    max_depth: int = Field(default=DEFAULT_MAX_DEPTH, ge=0, le=5)
     max_steps: int = Field(default=0, ge=0)
     max_output_tokens: int | None = Field(default=None, gt=0)
     max_active: int = Field(default=DEFAULT_MAX_ACTIVE, ge=1, le=20)
@@ -114,8 +115,22 @@ async def apply(ctx: Context) -> None:
     await mount_settings(ctx, SETTINGS, ModelSettings(ctx, Config, SETTING_FIELDS,
                                                        status=model_options(ctx, {"model": SUBAGENT_MODEL})))
     watcher: asyncio.Task[None] | None = None
-    jobs = Subagents(ctx, max_active=config.max_active, result_chars=config.result_chars)
-    runners = Runners(ctx, max_active=config.max_active, result_chars=config.result_chars)
+    runners: Runners | None = None
+    jobs = Subagents(
+        ctx,
+        max_active=config.max_active,
+        result_chars=config.result_chars,
+        max_depth=config.max_depth,
+        external_active_for_root=lambda root_id: 0 if runners is None else runners.active_for_root(root_id),
+    )
+    runners = Runners(
+        ctx,
+        max_active=config.max_active,
+        result_chars=config.result_chars,
+        resolve_root=lambda sid: jobs.resolve_lineage(sid)[0],
+        tree_active_count=jobs.active_count_for_root,
+        check_depth=jobs.check_depth,
+    )
     await runners.recover()
     await ctx.provide(AGENT_RUNNERS, runners)
     from plugins.ui.contract import UI_SLOTS
@@ -154,13 +169,13 @@ async def apply(ctx: Context) -> None:
     async def capture(configuration: Mapping[str, object]) -> Mapping[str, object]:
         if configuration:
             raise ValueError("spawn 不接收额外 binding 配置")
-        allowed = {name for names in PROFILE_TOOLS.values() for name in names}
+        excluded = DELEGATION_TOOLS | EXCLUDED_ALWAYS_TOOLS
         refs = ctx.require(ALL_TOOLS)()
         return {
             "tools": {
                 ref.name: await catalog.bind_scoped(ref, ctx.require(BINDINGS))
                 for ref in refs.refs
-                if ref.name in allowed
+                if ref.name not in excluded
             },
             "senders": dict(
                 ctx.require(DELIVERY_SENDERS).bind_all(ctx.require(BINDINGS))
@@ -175,10 +190,9 @@ async def apply(ctx: Context) -> None:
         ctx,
         name="spawn",
         description=(
-            "把有界、多步且可独立完成的任务交给子任务。默认 general（可调研、读写文件、执行命令）；"
-            "research 只读；scripting 读写与命令执行。子任务默认继承父会话工作目录（可通过 cwd 指定初始目录）。"
-            "默认同步返回结果；长任务可用 run_in_background，完成后回传原会话。"
-            "后台结果回报最多串联三层子任务，达到上限后应汇报已有结果并等待用户决定。"
+            "把有界、多步且可独立完成的任务交给子任务。默认继承父会话已授权的工具与工作目录（可通过 cwd 指定初始目录），"
+            "需要只读调研时设 read_only=true。默认同步返回结果；长任务可用 run_in_background，完成后回传原会话。"
+            "所有子任务受统一递归深度上限约束（默认 1 层）。"
             "可通过 model 与 connection 为本次子任务单独指定模型及所属连接渠道（不确定有哪些连接和模型时，先用 spawn_manage(action=\"models\") 查询）；留空时按子任务设置解析。"
             "任务需要用户交互或只是简单操作时直接处理。task 必须包含目标、约束、上下文和预期结果。"
         ),
@@ -201,7 +215,7 @@ async def apply(ctx: Context) -> None:
         task_dir.mkdir(parents=True, exist_ok=True)
         async def authorize(binding_id: str, arguments: Mapping[str, object]) -> Mapping[str, object] | str:
             if binding_id not in request.tools.values():
-                return '工具不属于子任务原 profile'
+                return '工具不属于子任务已固定权限边界'
             return {"source": "subagent", "session_id": reader.session_id}
 
         return await ctx.require(REPLY_EXECUTE)(
@@ -214,7 +228,9 @@ async def apply(ctx: Context) -> None:
                          max_steps=config.max_steps,
                          exclude_material_kinds=frozenset({'recall'}),
                          prompt_hints=(build_spawn_subagent_prompt(
-                             task_dir.parent.parent, task_dir, request.profile, cwd=request.cwd,
+                             task_dir.parent.parent, task_dir, request.profile,
+                             read_only=request.read_only, depth=request.depth,
+                             max_depth=config.max_depth, cwd=request.cwd,
                          ),),
                      )
 

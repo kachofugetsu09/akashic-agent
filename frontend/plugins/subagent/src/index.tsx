@@ -7,7 +7,8 @@ export function activate(ctx: WebHostContextV1) {
     switchable: false,
     fields: ({values, change, status}) => <>
       <ModelField label="子任务模型" name="model" value={values.model} change={change} status={status} hint="跟随当前对话：用派出它的那轮对话所选的模型" />
-      <Field label="同时运行的子任务数" name="max_active" type="number" min={1} max={20} step={1} inputMode="numeric" value={values.max_active} fallback={status.defaults?.max_active ?? "不限"} change={change} hint="1–20；超出时新的子任务会被拒绝" />
+      <Field label="最大委派深度" name="max_depth" type="number" min={0} max={5} step={1} inputMode="numeric" value={values.max_depth} fallback={status.defaults?.max_depth ?? 1} change={change} hint="默认 1（只允许直接子任务）；0 表示禁用子任务" />
+      <Field label="每棵会话树最大并发数" name="max_active" type="number" min={1} max={20} step={1} inputMode="numeric" value={values.max_active} fallback={status.defaults?.max_active ?? 8} change={change} hint="1–20（默认 8，按顶层对话隔离）；超出时新的子任务会被拒绝" />
       <Field label="每个子任务最多步数" name="max_steps" type="number" min={1} step={1} inputMode="numeric" value={values.max_steps} fallback={status.defaults?.max_steps ?? "不限"} change={change} hint="一步是一次模型输出" />
       <Field label="单次输出 token 上限" name="max_output_tokens" type="number" min={1} step={1} inputMode="numeric" value={values.max_output_tokens} fallback={status.defaults?.max_output_tokens ?? "不限"} change={change} hint="留空不额外限制，由模型自身上限决定" />
       <Field label="子任务结果字数上限" name="result_chars" type="number" min={1000} max={1000000} step={1} inputMode="numeric" value={values.result_chars} fallback={status.defaults?.result_chars} change={change} hint="前台子任务交回的结果超出时截断" />

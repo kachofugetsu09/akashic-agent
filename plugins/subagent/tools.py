@@ -12,12 +12,20 @@ from agent.plugin_composition import Context
 from pathlib import Path
 from plugins.ledger.contract import BINDINGS
 from plugins.working_directory.contract import WORKING_DIRECTORY
-from .inputs import CallSource, Result, TOOL_BIND_SAVED
+from .inputs import ALL_TOOLS, CallSource, Result, TOOL_BIND_SAVED, TOOLS
 from plugins.ledger.contract import ContentPart, Input, Message
 from plugins.ledger.contract import json_value
 from plugins.models.contract import ChatModelSelection, ModelCatalogSnapshot
 
-from .request import PROFILE_TOOLS, Request, SpawnInput, SinkInput
+from .request import (
+    DELEGATION_TOOLS,
+    EXCLUDED_ALWAYS_TOOLS,
+    Request,
+    SinkInput,
+    SpawnInput,
+    is_delegation_tool,
+    is_read_only_excluded,
+)
 from .contract import SUBAGENT_PROGRAM
 from .runtime import SubagentBusy, Subagents, completion
 
@@ -199,11 +207,13 @@ class Spawn:
             return '子任务不能为空'
         if source is None:
             return 'spawn 需要已提交的父消息调用'
-        if args.run_in_background:
-            parent = source.messages[-1]
-            rejection = self.jobs.check_background_spawn(parent.session_id, parent.source)
-            if rejection is not None:
-                return rejection
+        parent_session_id = source.messages[-1].session_id
+        rejection = self.jobs.check_depth(parent_session_id)
+        if rejection is not None:
+            return rejection
+        root_session_id, parent_depth = self.jobs.resolve_lineage(parent_session_id)
+        next_depth = parent_depth + 1
+        read_only = args.read_only or args.profile == "research"
         origin = None
         for message in reversed(source.messages):
             if isinstance(message.body, Input):
@@ -221,18 +231,20 @@ class Spawn:
             sink = SinkInput(name=origin["channel"], binding_id=self.senders[origin["channel"]], address=origin["chat_id"])
         job_id = uuid4().hex
         task_dir = self.ctx.workspace_root("subagent-runs") / job_id
-        parent_session_id = source.messages[-1].session_id
         try:
             cwd = await resolve_cwd(self.ctx, parent_session_id, args.cwd, fallback=task_dir)
         except ValueError as error:
             return str(error)
-        names = tuple(name for name in PROFILE_TOOLS[args.profile] if name in self.targets)
-        if not names:
-            return '当前 profile 缺少已安装工具'
+        names = tuple(
+            name for name in self.targets
+            if name not in EXCLUDED_ALWAYS_TOOLS
+            and (not read_only or not is_read_only_excluded(name))
+            and (next_depth < self.jobs.max_depth or not is_delegation_tool(name))
+        )
         bindings = self.ctx.require(BINDINGS)
         fixed: dict[str, str] = {}
         # 2. 目录设置与实际工具实现都在 prepared 时固定，恢复不重选配置。
-        # 参考 DSH：子任务继承父工作目录（或显式 cwd）并在目标目录直接读写执行，不再把 read/write 锁死在 subagent-runs。
+        # 参考 DSH：默认继承父会话工具池（可选 read_only 裁剪）并继承父工作目录，不再切分三套静态 profile。
         for name in names:
             configuration: Mapping[str, object] | None = None
             if name in {"read_file", "list_dir", "write_file", "edit_file"}:
@@ -247,11 +259,21 @@ class Spawn:
                     self.targets[name],
                     configuration=configuration,
                 )
+        if not read_only and next_depth < self.jobs.max_depth:
+            with self.ctx.borrow(ALL_TOOLS) as all_tools, self.ctx.borrow(TOOLS) as tool_catalog:
+                if all_tools is not None and tool_catalog is not None:
+                    for ref in all_tools().refs:
+                        if ref.name in DELEGATION_TOOLS and ref.name not in fixed:
+                            fixed[ref.name] = await tool_catalog.bind_scoped(ref, bindings)
+        if not fixed:
+            return '当前子任务没有可用的已安装工具'
         # 3. 模型在父调用里解析并随请求固定：调用方显式指定 model/connection 优先，否则按设置（如跟随父对话）解析；恢复时不重选。
         model = await self.model(source.messages, args)
         if isinstance(model, str):
             return model
-        request = Request(job_id=job_id, label=(args.label or args.task[:30]).strip(), profile=args.profile,
+        compat_profile: Literal["research", "scripting", "general"] = "research" if read_only else (args.profile or "general")
+        request = Request(job_id=job_id, label=(args.label or args.task[:30]).strip(), profile=compat_profile,
+            read_only=read_only, depth=next_depth, root_session_id=root_session_id,
             background=args.run_in_background, retry_count=args.retry_count,
             parent_session_id=parent_session_id, parent_message_id=source.call_ref.message_id,
             parent_part_index=source.call_ref.part_index,

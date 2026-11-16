@@ -9,78 +9,48 @@ SUBAGENT_DELEGATION_CONTEXT = (
     "在回复中如实说明已完成部分与受限原因，交由主 agent 处理。"
 )
 
-PROFILE_RESEARCH = "research"
-PROFILE_SCRIPTING = "scripting"
-PROFILE_GENERAL = "general"
-
-
-def build_research_subagent_prompt(workspace: Path, task_dir: Path, cwd: str | None = None) -> str:
-    workspace_path = str(workspace.expanduser().resolve())
-    working_dir = cwd or workspace_path
-    return f"""\
-{SUBAGENT_DELEGATION_CONTEXT}
-
-当前模式：research（只读调研，不写入文件、不执行 shell 命令）。
-- 使用 list_dir、read_file 定位与精读文件；使用 web_search、web_fetch 检索外部资料。
-- 多个独立查询可并行发起；直接以文本形式输出调研结论。
-
-工作目录：{working_dir}
-工作区根目录：{workspace_path}
-"""
-
-
-def build_scripting_subagent_prompt(workspace: Path, task_dir: Path, cwd: str | None = None) -> str:
-    workspace_path = str(workspace.expanduser().resolve())
-    task_dir_path = str(task_dir.expanduser().resolve())
-    working_dir = cwd or task_dir_path
-    return f"""\
-{SUBAGENT_DELEGATION_CONTEXT}
-
-当前模式：scripting（文件读写与命令执行）。
-- 可在工作目录（{working_dir}）及任务指定的目标路径读写文件、执行命令；临时产物可放在任务目录（{task_dir_path}）。
-- shell 返回 execution_id 时，用 write_stdin 空 chars 等待输出，放弃前必须调用 task_stop。
-- 若创建或修改了文件，在最终回复中列出文件路径与验证结果。
-
-工作目录：{working_dir}
-专属任务目录：{task_dir_path}
-工作区根目录：{workspace_path}
-"""
-
-
-def build_general_subagent_prompt(workspace: Path, task_dir: Path, cwd: str | None = None) -> str:
-    workspace_path = str(workspace.expanduser().resolve())
-    task_dir_path = str(task_dir.expanduser().resolve())
-    working_dir = cwd or task_dir_path
-    return f"""\
-{SUBAGENT_DELEGATION_CONTEXT}
-
-当前模式：general（调研、文件读写与命令执行）。
-- 可在工作目录（{working_dir}）及任务指定的目标路径调研、修改代码、运行测试或脚本；临时产物可放在任务目录（{task_dir_path}）。
-- shell 返回 execution_id 时，用 write_stdin 空 chars 等待输出，放弃前必须调用 task_stop。
-- 若创建或修改了文件，在最终回复中列出文件路径与验证结果。
-
-工作目录：{working_dir}
-专属任务目录：{task_dir_path}
-工作区根目录：{workspace_path}
-"""
-
-
-_PROFILE_BUILDERS = {
-    PROFILE_RESEARCH: build_research_subagent_prompt,
-    PROFILE_SCRIPTING: build_scripting_subagent_prompt,
-    PROFILE_GENERAL: build_general_subagent_prompt,
-}
-
 
 def build_spawn_subagent_prompt(
     workspace: Path,
     task_dir: Path,
-    profile: str = PROFILE_GENERAL,
+    profile: str = "general",
     *,
+    read_only: bool = False,
+    depth: int = 1,
+    max_depth: int = 1,
     cwd: str | None = None,
 ) -> str:
-    """根据 profile 与工作目录生成简明的子任务上下文提示。"""
-    builder = _PROFILE_BUILDERS.get(profile)
-    if builder is None:
-        raise ValueError(f"未知 subagent profile: {profile!r}")
-    return builder(workspace, task_dir, cwd)
+    """根据只读开关、深度限制与工作目录生成简明的子任务上下文提示。"""
+    workspace_path = str(workspace.expanduser().resolve())
+    task_dir_path = str(task_dir.expanduser().resolve())
+    effective_read_only = read_only or profile == "research"
+    working_dir = cwd or (workspace_path if effective_read_only else task_dir_path)
+    depth_line = f"委派深度：当前第 {depth} 层 / 上限 {max_depth} 层"
+    if depth >= max_depth:
+        depth_line += "（已达上限，请直接完成当前任务，不要再继续派发子任务）"
+
+    if effective_read_only:
+        return f"""\
+{SUBAGENT_DELEGATION_CONTEXT}
+
+当前模式：只读调研（不写入文件、不执行修改类命令）。
+- 优先使用已有只读/检索工具完成定位与核实；多个独立查询可并行发起，直接以文本输出结论。
+- {depth_line}
+
+工作目录：{working_dir}
+工作区根目录：{workspace_path}
+"""
+
+    return f"""\
+{SUBAGENT_DELEGATION_CONTEXT}
+
+当前模式：继承父会话工具（可按所获授工具在目标路径调研、读写文件与执行命令）。
+- 可在工作目录（{working_dir}）及任务指定的目标路径读写文件、运行命令或调用已继承的插件工具；临时产物可放在专属任务目录（{task_dir_path}）。
+- shell 返回 execution_id 时，用 write_stdin 空 chars 等待输出，放弃前必须调用 task_stop。
+- 若创建或修改了文件，在最终回复中列出文件路径与验证结果。
+- {depth_line}
+
+工作目录：{working_dir}
+专属任务目录：{task_dir_path}
+工作区根目录：{workspace_path}
+"""
