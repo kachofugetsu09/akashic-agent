@@ -264,3 +264,7 @@ disabled = true
 [rows."markdown_reader"]
 plugin = "markdown_reader@release"
 disabled = true
+
+[rows."codemode"]
+plugin = "codemode@release"
+disabled = true

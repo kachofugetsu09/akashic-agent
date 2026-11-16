@@ -125,6 +125,77 @@ class ToolExecution:
             raise ValueError("工具调用必须有稳定 key")
         return coerce_result(await self._execute("program:" + key, binding_id, arguments, None))
 
+    async def execute_nested(
+        self,
+        key: str,
+        binding_id: str,
+        arguments: Mapping[str, object],
+        *,
+        source: CallSource | None = None,
+        check_active: Callable[[], None] | None = None,
+    ) -> Result:
+        """在现有父级 ToolCall 作用域内执行一次获授子工具调用，不写入独立消息回执。"""
+        if not isinstance(key, str) or not key:
+            raise ValueError("工具调用必须有稳定 key")
+        if not isinstance(binding_id, str) or not binding_id:
+            raise ValueError("工具调用必须固定 binding")
+        if not isinstance(arguments, Mapping):
+            raise TypeError("工具参数必须是对象")
+        frozen_args = cast(Mapping[str, object], freeze_json(arguments))
+
+        async def run(task: Task) -> Result:
+            async with _MessageToolScope() as stack:
+                try:
+                    tool = await stack.enter_async_context(self._open_tool(binding_id))
+                except Exception as error:
+                    return _tool_failure("工具打开失败，未执行", error)
+                if not task.active:
+                    raise asyncio.CancelledError
+                try:
+                    prepared = await tool.prepare(frozen_args, source)
+                except Exception as error:
+                    return _tool_failure("工具参数准备失败，未执行", error)
+                if isinstance(prepared, str):
+                    return Result("error", (ContentPart("text", prepared),))
+                final = freeze_json(prepared)
+                if not isinstance(final, Mapping):
+                    raise TypeError("工具 prepare 必须返回参数对象")
+                final_arguments = cast(Mapping[str, object], final)
+                try:
+                    permission = await self._authorize(binding_id, final_arguments)
+                except Denied as error:
+                    return Result("denied", (ContentPart("text", str(error)),))
+                except Exception as error:
+                    return _tool_failure("工具授权失败，未执行", error)
+                if isinstance(permission, str):
+                    return Result("denied", (ContentPart("text", permission),))
+                if not task.active:
+                    raise asyncio.CancelledError
+                if check_active is not None:
+                    try:
+                        check_active()
+                    except Denied as error:
+                        return Result("denied", (ContentPart("text", str(error)),))
+                try:
+                    return coerce_result(await tool.invoke(key, final_arguments))
+                except Exception as failure:
+                    return _invocation_failure(failure)
+
+        async def admit(slot: TaskSlot) -> tuple[Task, bool]:
+            current = slot.current
+            if current is not None:
+                return current, False
+            return self._start_task(slot, run, lambda _r: None), True
+
+        task, owned = await self._tasks.admit_async((self._task_key, f"nested:{key}"), admit)
+        try:
+            return coerce_result(cast(Result, await task.join()))
+        except asyncio.CancelledError:
+            if owned:
+                task.cancel()
+                await _drain(task)
+            raise
+
     async def execute_call(
         self, reply: MessageReply, *, commit_after: CommitAfter | None = None,
     ) -> Result:

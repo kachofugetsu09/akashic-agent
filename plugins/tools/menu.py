@@ -1,17 +1,25 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import inspect
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, cast
 
-from plugins.ledger.contract import Bindings
+from plugins.ledger.contract import Bindings, ContentPart
 from plugins.models.contract import ToolCall as ModelToolCall
 from plugins.ledger.contract import CallRef, ToolCall
+from core.common.file_io import run_file_io
 from core.common.frozen_json import freeze_json
-from plugins.tools.contract import CommitAfter as CommitAfter
-from plugins.tools.contract import ToolPresentation as ToolPresentation
+from plugins.tools.contract import (
+    CommitAfter as CommitAfter,
+    NestedToolRef,
+    ToolPresentation as ToolPresentation,
+    durable_call_key,
+    push_nested_tool_scope,
+    reset_nested_tool_scope,
+)
 
 from .execution import MessageReply, Result, ToolExecution
 from .plugin import TOOLS
@@ -111,6 +119,7 @@ class ToolMenu:
 
         self._bound = dict(fixed_bindings)
         descriptions = self._descriptions()
+        self._descriptions_map = descriptions
         self._exclusive_bindings = frozenset(
             self._bound[name] for name, description in descriptions.items()
             if description.get("exclusive_batch") is True
@@ -200,7 +209,32 @@ class ToolMenu:
         opened = self._reply(call)
         reply = await opened if inspect.isawaitable(opened) else opened
         try:
-            return await self._execution.execute_call(reply, commit_after=commit_after)
+            request = await run_file_io(reply.request)
+            caller_name = self.name(request.binding_id)
+            parent_source = await run_file_io(reply.source)
+            parent_key = durable_call_key(call)
+            scope = _MenuNestedToolScope(
+                execution=self._execution,
+                reply=reply,
+                parent_key=parent_key,
+                parent_source=parent_source,
+                tools={
+                    name: NestedToolRef(
+                        name=name,
+                        owner=str(desc.get("owner") or ""),
+                        description=desc,
+                        binding_id=identity,
+                    )
+                    for name, identity in self._bound.items()
+                    if name != caller_name and (desc := self._descriptions_map.get(name)) is not None
+                },
+                parallel_names=self._parallel_names,
+            )
+            token = push_nested_tool_scope(scope)
+            try:
+                return await self._execution.execute_call(reply, commit_after=commit_after)
+            finally:
+                reset_nested_tool_scope(token)
         finally:
             reply.writer.expire()
 
@@ -212,3 +246,56 @@ class ToolMenu:
             return await self._execution.settle_abandoned(reply)
         finally:
             reply.writer.expire()
+
+
+class _MenuNestedToolScope:
+    """将当前菜单获授的非自引用工具安全暴露给嵌套编排工具（如 codemode）。"""
+
+    def __init__(
+        self,
+        *,
+        execution: ToolExecution,
+        reply: MessageReply,
+        parent_key: str,
+        parent_source: object,
+        tools: dict[str, NestedToolRef],
+        parallel_names: frozenset[str],
+    ) -> None:
+        self._execution = execution
+        self._reply = reply
+        self._parent_key = parent_key
+        self._parent_source = parent_source
+        self._tools = tools
+        self._parallel_names = parallel_names
+        self._seq = 0
+        self._serial_lock = asyncio.Lock()
+
+    @property
+    def tools(self) -> Mapping[str, NestedToolRef]:
+        return self._tools
+
+    async def call(self, name: str, arguments: Mapping[str, object]) -> Result:
+        ref = self._tools.get(name)
+        if ref is None:
+            return Result(
+                "error",
+                (ContentPart("text", f"工具不存在或未获授给当前会话: {name}"),),
+            )
+        self._seq += 1
+        nested_key = f"{self._parent_key}:nested:{self._seq}:{name}"
+
+        def check_active() -> None:
+            with self._reply.reader.read_snapshot():
+                self._reply.check_start(None)
+
+        from plugins.tools.contract import CallSource
+
+        src = cast(CallSource, self._parent_source)
+        if name in self._parallel_names:
+            return await self._execution.execute_nested(
+                nested_key, ref.binding_id, arguments, source=src, check_active=check_active,
+            )
+        async with self._serial_lock:
+            return await self._execution.execute_nested(
+                nested_key, ref.binding_id, arguments, source=src, check_active=check_active,
+            )
