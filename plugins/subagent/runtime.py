@@ -454,6 +454,9 @@ class Subagents:
                     "depth": request.depth,
                     "root_session_id": child_root,
                 }
+                if background:
+                    self._watched_bg.discard(key)
+                    self._watch_background(key, request, resumed=True)
             finally:
                 writer.expire()
             return "reopened"
@@ -461,9 +464,6 @@ class Subagents:
         action = await self.ctx.require(TASKS).open(self.ctx).admit_async(("admission",), send_or_reopen)
         if action == "steered":
             return {"job_id": job_id, "mode": "steered", "status": "queued"}
-        if background:
-            self._watched_bg.discard(key)
-            self._watch_background(key, request, resumed=True)
         task = await self.start(key)
         if background:
             return {"job_id": job_id, "mode": "resumed_background", "status": "running"}
@@ -684,6 +684,7 @@ class Subagents:
                     count = await self._drain_steers(request.session_id, task=task)
                     if count > 0:
                         return True
+                self._steers.pop(request.session_id, None)
                 def commit(tx: OwnerTransaction) -> None:
                     nonlocal was_bg, was_resumed
                     row = tx.read(key)
@@ -976,8 +977,8 @@ class Subagents:
                                 record, request, reader = found
                                 if record.value["settled"]:
                                     continue
-                                if request.background:
-                                    self._watch_background(key, request)
+                                if bool(record.value.get("background", request.background)):
+                                    self._watch_background(key, request, resumed=bool(record.value.get("resumed", False)))
                                 parent = self.ctx.require(MESSAGE_CATALOG).reader(request.parent_session_id)
                                 heads = (reader.head(), parent.head())
                                 if attempted.get(key) == heads:
