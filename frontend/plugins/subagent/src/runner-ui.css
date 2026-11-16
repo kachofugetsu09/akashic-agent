@@ -8,3 +8,14 @@
 .agent-runs__notice { margin: 0; color: var(--chat-faint); font-size: 12px; }
 .agent-runs__body ol { margin: 0; padding-inline-start: 20px; }
 .agent-runs__body pre { margin: 0; font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* 时间线展开后的子任务结果卡片。 */
+.subagent-tool-result { display: grid; gap: 8px; }
+.subagent-tool-result__head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 0.75rem; }
+.subagent-tool-result__title { font-weight: 600; color: var(--chat-ink); }
+.subagent-tool-result__badge { padding: 1px 7px; border-radius: var(--ak-radius-full); font-size: 0.6875rem; font-weight: 500;
+  background: var(--ak-paper-sheet); color: var(--chat-muted); }
+.subagent-tool-result__badge.is-done { background: var(--ak-sys-color-success-container); color: var(--ak-sys-color-success); }
+.subagent-tool-result__badge.is-live { background: var(--ak-sys-color-info-container); color: var(--ak-sys-color-info); }
+.subagent-tool-result__badge.is-error { background: var(--md-sys-color-error-container); color: var(--ak-color-status-error); }
+.subagent-tool-result__id { padding: 1px 6px; border-radius: var(--ak-radius-xs); background: var(--ak-paper-sheet); color: var(--chat-faint); font-size: 0.6875rem; }

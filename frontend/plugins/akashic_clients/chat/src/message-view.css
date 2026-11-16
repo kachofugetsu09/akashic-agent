@@ -2737,3 +2737,324 @@ button.tool-step-summary:active {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* 并发委派任务组卡片与单任务卡片（对应设计稿 01 & 02）。 */
+.delegated-group,
+.delegated-card.is-single {
+  min-width: 0;
+  margin: 4px 0;
+  border: 1px solid var(--chat-line);
+  border-radius: var(--ak-radius-md);
+  background: var(--ak-paper-editing);
+  overflow: clip;
+}
+
+.delegated-group.has-error,
+.delegated-card.is-single.is-error {
+  border-color: color-mix(in oklab, var(--ak-color-status-error) 34%, var(--chat-line));
+}
+
+.delegated-group-summary,
+.delegated-row-trigger {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+  border: 0;
+  padding: 10px 12px;
+  background: transparent;
+  color: var(--chat-ink);
+  font-family: var(--ak-type-ui);
+  font-size: 0.75rem;
+  text-align: start;
+  cursor: pointer;
+}
+
+.delegated-row-trigger.is-static {
+  cursor: default;
+}
+
+@media (hover: hover) {
+  .delegated-group-summary:hover,
+  .delegated-row-trigger:not(.is-static):hover {
+    background: color-mix(in oklab, var(--ak-ink-primary) 3%, transparent);
+  }
+}
+
+.delegated-dot-stack {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 3px;
+}
+
+.delegated-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--ak-radius-full);
+  background: var(--ak-ink-muted);
+}
+
+.delegated-dot.is-live {
+  background: var(--ak-sys-color-info);
+}
+
+.delegated-dot.is-done {
+  background: var(--ak-sys-color-success);
+}
+
+.delegated-dot.is-error {
+  background: var(--ak-color-status-error);
+}
+
+.delegated-dot-more {
+  color: var(--chat-faint);
+  font-size: 0.6875rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.delegated-group-title {
+  flex: none;
+  font-weight: 600;
+  color: var(--chat-ink);
+}
+
+.delegated-group-counts {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--chat-muted);
+}
+
+.delegated-group-counts.is-live {
+  color: var(--ak-sys-color-info);
+}
+
+.delegated-group-counts.is-error {
+  color: var(--ak-color-status-error);
+}
+
+.delegated-group-right {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  margin-inline-start: auto;
+  color: var(--chat-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.delegated-group-members {
+  display: grid;
+  border-top: 1px solid var(--chat-line);
+}
+
+.delegated-card.is-member + .delegated-card.is-member {
+  border-top: 1px solid var(--chat-line);
+}
+
+.delegated-row-inner {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+}
+
+.delegated-glyph {
+  display: inline-flex;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--ak-radius-full);
+  background: var(--ak-paper-sheet);
+  color: var(--chat-muted);
+}
+
+.delegated-glyph.is-live {
+  background: var(--ak-sys-color-info-container);
+  color: var(--ak-sys-color-info);
+}
+
+.delegated-glyph.is-done {
+  background: var(--ak-sys-color-success-container);
+  color: var(--ak-sys-color-success);
+}
+
+.delegated-glyph.is-error {
+  background: var(--md-sys-color-error-container);
+  color: var(--ak-color-status-error);
+}
+
+.delegated-row-main {
+  display: grid;
+  flex: 1 1 auto;
+  min-width: 0;
+  gap: 3px;
+}
+
+.delegated-row-top {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.delegated-row-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+  color: var(--chat-ink);
+}
+
+.delegated-tag {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: var(--ak-radius-xs);
+  background: var(--ak-paper-sheet);
+  color: var(--chat-muted);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.delegated-model {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--chat-faint);
+  font-size: 0.6875rem;
+}
+
+.delegated-row-preview {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--chat-muted);
+  font-size: 0.75rem;
+}
+
+.delegated-row-preview.is-live {
+  color: var(--ak-sys-color-info);
+}
+
+.delegated-row-preview.is-error {
+  color: var(--ak-color-status-error);
+}
+
+.delegated-row-meta {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  margin-inline-start: auto;
+  color: var(--chat-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.delegated-state-label.is-live {
+  color: var(--ak-sys-color-info);
+}
+
+.delegated-state-label.is-error {
+  color: var(--ak-color-status-error);
+}
+
+.delegated-detail-surface {
+  border-top: 1px solid var(--chat-line);
+  padding: 10px 12px;
+  background: var(--ak-paper-quiet);
+}
+
+/* 悬停详情浮卡（对应设计稿 02-D SubagentTooltipContent）。 */
+.delegated-hover-card {
+  position: fixed;
+  z-index: 40;
+  transform: translateY(-100%);
+  width: min(328px, calc(100vw - 24px));
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--chat-line);
+  border-radius: var(--ak-radius-md);
+  background: var(--ak-paper-raised);
+  box-shadow: var(--ak-elevation-float);
+  color: var(--chat-ink);
+  font-family: var(--ak-type-ui);
+  font-size: 0.75rem;
+  pointer-events: none;
+}
+
+.delegated-hover-card__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.delegated-hover-card__title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.delegated-hover-card__status {
+  margin-inline-start: auto;
+  flex: none;
+  padding: 1px 6px;
+  border-radius: var(--ak-radius-full);
+  background: var(--ak-paper-sheet);
+  color: var(--chat-muted);
+  font-size: 0.6875rem;
+}
+
+.delegated-hover-card__status.is-live {
+  background: var(--ak-sys-color-info-container);
+  color: var(--ak-sys-color-info);
+}
+
+.delegated-hover-card__status.is-done {
+  background: var(--ak-sys-color-success-container);
+  color: var(--ak-sys-color-success);
+}
+
+.delegated-hover-card__status.is-error {
+  background: var(--md-sys-color-error-container);
+  color: var(--ak-color-status-error);
+}
+
+.delegated-hover-card__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  color: var(--chat-muted);
+  font-size: 0.6875rem;
+}
+
+.delegated-hover-card__cwd {
+  padding: 1px 5px;
+  border-radius: var(--ak-radius-xs);
+  background: var(--ak-paper-sheet);
+  color: var(--chat-faint);
+}
+
+.delegated-hover-card__preview {
+  margin: 0;
+  color: var(--chat-muted);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.delegated-hover-card.is-below { transform: none; }

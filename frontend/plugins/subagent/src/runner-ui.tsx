@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { render, type HeaderMetaItem, type PluginUiContext, type PluginUiDefinition } from "@akashic/chat-ui-v1";
+import { render, ToolText, type HeaderMetaItem, type PluginUiContext, type PluginUiDefinition } from "@akashic/chat-ui-v1";
 import { ICONS, useValue, valueStore, type ValueStore } from "../../../../packages/akashic-plugin-kit/src/meta-store";
 import "./runner-ui.css";
 
@@ -51,6 +51,56 @@ function RunDetail({ store, id, stop }: { store: ValueStore<Run[]>; id: string; 
   </div>;
 }
 
+interface SubagentResultViewModel {
+  title: string;
+  status: string;
+  tone: "done" | "live" | "error";
+  jobId?: string;
+  body: string;
+}
+
+function parseSubagentResult(name: string, value: unknown, error: boolean): SubagentResultViewModel | null {
+  if (typeof value !== "string") return null;
+  if (name !== "spawn" && !name.startsWith("delegate_")) return null;
+  const trimmed = value.trim();
+  const bgMatch = /^已创建后台任务「([^」]+)」[（(]job_id=([a-f0-9]+)[)）]/u.exec(trimmed);
+  if (bgMatch) {
+    return { title: bgMatch[1], status: "后台已接纳", tone: "live", jobId: bgMatch[2], body: trimmed };
+  }
+  const syncMatch = /^\[子任务「([^」]+)」结果\]\n退出原因:\s*([^\n]+)\n*([\s\S]*)$/u.exec(trimmed);
+  if (syncMatch) {
+    const reason = syncMatch[2].trim();
+    const tone = error || reason === "failed" ? "error" : reason === "cancelled" ? "error" : "done";
+    const statusLabel = reason === "completed" ? "已完成" : reason === "cancelled" ? "已取消" : reason === "failed" ? "失败" : reason;
+    return { title: syncMatch[1], status: statusLabel, tone, body: syncMatch[3].trim() || trimmed };
+  }
+  const extMatch = /^外部任务\s+([a-zA-Z0-9_-]+)：([^\n。]+)/u.exec(trimmed);
+  if (extMatch) {
+    const st = extMatch[2].trim();
+    return {
+      title: `外部任务 ${extMatch[1]}`,
+      status: labels[st] ?? st,
+      tone: st === "failed" || st === "interrupted" ? "error" : st === "completed" ? "done" : "live",
+      jobId: extMatch[1],
+      body: trimmed,
+    };
+  }
+  return null;
+}
+
+function SubagentResultCard({ result }: { result: SubagentResultViewModel }) {
+  return (
+    <div className={`subagent-tool-result is-${result.tone}`}>
+      <div className="subagent-tool-result__head">
+        <span className="subagent-tool-result__title">{result.title}</span>
+        <span className={`subagent-tool-result__badge is-${result.tone}`}>{result.status}</span>
+        {result.jobId ? <code className="subagent-tool-result__id">{result.jobId.slice(0, 8)}</code> : null}
+      </div>
+      <ToolText text={result.body} tail={false} className="tool-result" />
+    </div>
+  );
+}
+
 // 不渲染界面：执行状态来自本插件后端的推送，登记到标题下的说明行，过程在宿主的会话信息面板里展开。
 function Runs({ context }: { context: PluginUiContext<"header.meta"> }) {
   const store = useMemo(() => valueStore<Run[]>([]), []);
@@ -70,6 +120,15 @@ function Runs({ context }: { context: PluginUiContext<"header.meta"> }) {
   return null;
 }
 const definition: PluginUiDefinition = {
-  slots: { "header.meta": { mount: (host, context) => render(host, <Runs context={context} />) } },
+  slots: {
+    "header.meta": { mount: (host, context) => render(host, <Runs context={context} />) },
+    "tool.result": {
+      accepts: (block) => parseSubagentResult(block.name, block.value, block.error) !== null,
+      mount(host, context) {
+        const parsed = parseSubagentResult(context.block.name, context.block.value, context.block.error);
+        return parsed ? render(host, <SubagentResultCard result={parsed} />) : undefined;
+      },
+    },
+  },
 };
 export default definition;
