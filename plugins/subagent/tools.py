@@ -29,6 +29,7 @@ from .request import (
 )
 from .contract import SUBAGENT_PROGRAM
 from .runtime import SubagentBusy, Subagents, completion
+from .worktree import git_repo_info
 
 
 class Prepared(BaseModel):
@@ -234,6 +235,23 @@ class Spawn:
             cwd = await resolve_cwd(self.ctx, parent_session_id, args.cwd, fallback=task_dir)
         except ValueError as error:
             return str(error)
+        worktree_repo: str | None = None
+        worktree_path: str | None = None
+        worktree_branch: str | None = None
+        if args.isolation == "worktree":
+            try:
+                repo_info = git_repo_info(Path(cwd))
+            except ValueError as error:
+                return str(error)
+            if repo_info is None:
+                return "isolation='worktree' 需要当前工作目录位于 Git 仓库内"
+            repo_root, rel_subdir = repo_info
+            wt_root = (task_dir / "worktree").resolve()
+            worktree_repo = str(repo_root)
+            worktree_path = str(wt_root)
+            worktree_branch = f"subagent/{job_id[:12]}"
+            cwd = str((wt_root / rel_subdir).resolve())
+        fork_through_seq = source.messages[-1].seq if args.fork else None
         nested_scope = current_nested_tool_scope()
         caller_allowed = None if nested_scope is None else set(nested_scope.tools)
         names = tuple(
@@ -282,14 +300,16 @@ class Spawn:
             parent_session_id=parent_session_id, parent_message_id=source.call_ref.message_id,
             parent_part_index=source.call_ref.part_index,
             origin=origin, sink=sink, program_binding=bindings.bind(SUBAGENT_PROGRAM, {}), tools=fixed,
-            model_id=model.model_id, reasoning_effort=model.reasoning_effort, cwd=cwd)
+            model_id=model.model_id, reasoning_effort=model.reasoning_effort, cwd=cwd,
+            fork=args.fork, fork_through_seq=fork_through_seq,
+            isolation=args.isolation, worktree_repo=worktree_repo, worktree_path=worktree_path, worktree_branch=worktree_branch)
         return Prepared(task=args.task, request=request).model_dump()
 
     async def invoke(self, key: str, arguments: Mapping[str, object]) -> Result:
         prepared = Prepared.model_validate(json_value(arguments))
         try:
             await self.jobs.accept(key, prepared.request, prepared.task)
-        except SubagentBusy as error:
+        except (SubagentBusy, RuntimeError) as error:
             return Result("error", (ContentPart("text", str(error)),))
         if prepared.request.background:
             _ = await self.jobs.start(key)
@@ -322,6 +342,9 @@ class Spawn:
         outcome = await self.jobs.outcome(reader)
         if outcome is None:
             raise ValueError("子任务结算记录缺少消息终态")
+        note = self.jobs.worktree_note(request)
+        if note is not None:
+            outcome = (outcome[0], f"{outcome[1]}\n\n{note}" if outcome[1] else note)
         return Result("success" if outcome[0] == "completed" else "error",
                       (ContentPart("text", completion(request, outcome, limit=self.jobs.result_chars)),))
 

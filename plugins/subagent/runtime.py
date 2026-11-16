@@ -21,13 +21,15 @@ from .inputs import CONVERSATION_COMPLETE
 from .inputs import DELIVERY
 from .inputs import REPLY_PROGRAM
 from plugins.ledger.contract import MessageConflict, MessageReader, OwnerRecord, OwnerTransaction, SessionAttributes
-from plugins.ledger.contract import ContentPart, Control, Input, Message, Output, ToolCall, ToolResult, with_truncated_head
+from plugins.ledger.contract import CallRef, ContentPart, Control, Input, Message, Output, ToolCall, ToolResult, with_truncated_head
 from plugins.ledger.contract import json_value
 from plugins.sources.contract import (
     SourceGuard,
 )
 
+from pathlib import Path
 from .request import Request, check_request
+from .worktree import cleanup_worktree, create_worktree, inspect_preserved_worktree
 from plugins.models.contract import MODEL_SELECTION
 
 from plugins.working_directory.contract import WORKING_DIRECTORY
@@ -38,6 +40,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_MAX_ACTIVE = 8
 DEFAULT_RESULT_CHARS = 100_000
 DEFAULT_MAX_DEPTH = 1
+FORK_TOOL_PLACEHOLDER = "Forked subagent context; parallel tool call omitted to preserve shared KV-cache prefix."
 
 
 
@@ -81,6 +84,8 @@ class Subagents:
         self._watched_bg: set[str] = set()
         self._watch_batches: dict[str, _BgBatch] = {}
         self._notices_recovered = False
+        self._worktree_notes: dict[str, str] = {}
+        self._worktree_locks: dict[str, asyncio.Lock] = {}
 
     def read(self, key: str) -> tuple[OwnerRecord, Request, MessageReader] | None:
         record = self.ctx.require(OWNER_STATE).open(self.ctx).read(key)
@@ -246,6 +251,44 @@ class Subagents:
         if self._batches.get(bkey) is batch:
             del self._batches[bkey]
 
+    def worktree_note(self, request: Request) -> str | None:
+        if request.job_id in self._worktree_notes:
+            return self._worktree_notes[request.job_id]
+        if request.isolation == "worktree" and request.worktree_repo and request.worktree_branch:
+            wt_str = request.worktree_path or request.cwd
+            if wt_str:
+                return inspect_preserved_worktree(Path(request.worktree_repo), Path(wt_str), request.worktree_branch)
+        return None
+
+    def _worktree_lock(self, job_id: str) -> asyncio.Lock:
+        lock = self._worktree_locks.get(job_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._worktree_locks[job_id] = lock
+        return lock
+
+    async def _cleanup_request_worktree(self, request: Request) -> None:
+        if request.isolation != "worktree" or not request.worktree_repo or not request.worktree_branch:
+            return
+        wt_str = request.worktree_path or request.cwd
+        if not wt_str:
+            return
+        repo_root = Path(request.worktree_repo)
+        wt_path = Path(wt_str)
+        wt_branch = request.worktree_branch
+        async with self._worktree_lock(request.job_id):
+            _removed, note = await run_file_io(lambda: cleanup_worktree(repo_root, wt_path, wt_branch))
+            if note is None:
+                self._worktree_notes.pop(request.job_id, None)
+            else:
+                self._worktree_notes[request.job_id] = note
+
+    def _with_worktree_note(self, request: Request, outcome: tuple[str, str]) -> tuple[str, str]:
+        note = self.worktree_note(request)
+        if note is None:
+            return outcome
+        return outcome[0], f"{outcome[1]}\n\n{note}" if outcome[1] else note
+
     def _finish_bg_outcome(
         self,
         key: str,
@@ -254,6 +297,7 @@ class Subagents:
         *,
         resumed: bool = False,
     ) -> None:
+        outcome = self._with_worktree_note(request, outcome)
         fut = self._bg_futures.pop(key, None)
         if fut is not None and not fut.done():
             fut.set_result(outcome)
@@ -403,6 +447,15 @@ class Subagents:
                 return "steered"
             if self.active_count_for_root(child_root) >= limit:
                 raise SubagentBusy(f"subagent capacity reached for session tree: max={limit}; resume rejected")
+            if request.isolation == "worktree" and request.worktree_repo and request.worktree_branch:
+                wt_str = request.worktree_path or request.cwd
+                if wt_str:
+                    async with self._worktree_lock(request.job_id):
+                        if not Path(wt_str).exists():
+                            wt_repo = Path(request.worktree_repo)
+                            wt_dir = Path(wt_str)
+                            wt_br = request.worktree_branch
+                            await run_file_io(lambda: create_worktree(wt_repo, wt_dir, wt_br))
             writer = self.ctx.require(MESSAGE_WRITERS).bind(
                 self.ctx,
                 author="parent",
@@ -448,7 +501,7 @@ class Subagents:
         if task is not None:
             _ = await task.join()
         outcome = await self.outcome(reader)
-        status, text = ("completed", "") if outcome is None else outcome
+        status, text = ("completed", "") if outcome is None else self._with_worktree_note(request, outcome)
         return {"job_id": job_id, "mode": "resumed_sync", "status": status, "result": text[:self.result_chars]}
 
     async def read_child_messages(
@@ -512,6 +565,105 @@ class Subagents:
             "messages": items,
         }
 
+    async def _seed_fork_prefix(self, request: Request) -> None:
+        if not request.fork or request.fork_through_seq is None:
+            return
+        catalog = self.ctx.require(MESSAGE_CATALOG)
+        parent_reader = catalog.reader(request.parent_session_id)
+        child_reader = catalog.reader(request.session_id)
+        parent_msgs = [
+            pm
+            for pm in await parent_reader.snapshot_async(through_seq=request.fork_through_seq)
+            if pm.source == request.parent_source
+        ]
+        # 1. 若历史上存在未结算但已被 abandon/pause/failure 终止的 Output，不得为其补写伪成功 ToolResult。
+        abandoned_outputs: set[str] = set()
+        pending_output_ids: list[str] = []
+        existing_results: dict[tuple[str, int], tuple[Literal["success", "denied", "error", "interrupted"], tuple[ContentPart, ...]]] = {}
+        for pm in parent_msgs:
+            if isinstance(pm.body, ToolResult):
+                txt_parts = tuple(
+                    ContentPart("text", str(p.value))
+                    for p in pm.body.parts
+                    if isinstance(p, ContentPart) and p.kind == "text"
+                )
+                existing_results[(pm.body.call_ref.message_id, pm.body.call_ref.part_index)] = (
+                    pm.body.outcome,
+                    txt_parts or (ContentPart("text", ""),),
+                )
+            elif isinstance(pm.body, Output) and pm.body.finish == "continue":
+                pending_output_ids.append(pm.message_id)
+            elif isinstance(pm.body, Control) and pm.body.action in {"abandon", "pause", "failure"}:
+                abandoned_outputs.update(pending_output_ids)
+                pending_output_ids.clear()
+            elif isinstance(pm.body, Input):
+                pending_output_ids.clear()
+
+        text_check = self.ctx.require(CONTENT).check_text
+        msg_writer = self.ctx.require(MESSAGE_WRITERS).bind(
+            self.ctx,
+            author="subagent",
+            source="subagent",
+            body_types=(Input, Output),
+            content={"text": text_check},
+            check_call=lambda _call: None,
+        )(request.session_id)
+        try:
+            for pm in parent_msgs:
+                if isinstance(pm.body, Input):
+                    in_id = f"fork:{request.job_id}:in:{pm.seq}"
+                    if child_reader.get(in_id) is not None:
+                        continue
+                    tparts = tuple(
+                        ContentPart("text", str(p.value))
+                        for p in pm.body.parts
+                        if isinstance(p, ContentPart) and p.kind == "text"
+                    )
+                    if tparts:
+                        _ = await msg_writer.append_async(in_id, Input(tparts))
+                elif isinstance(pm.body, Output):
+                    if pm.message_id in abandoned_outputs:
+                        continue
+                    copied_parts: list[ContentPart | ToolCall] = []
+                    call_map: list[tuple[int, int]] = []  # (orig_part_idx, new_part_idx)
+                    for orig_idx, p in enumerate(pm.body.parts):
+                        if isinstance(p, ContentPart) and p.kind == "text" and str(p.value):
+                            copied_parts.append(ContentPart("text", str(p.value)))
+                        elif isinstance(p, ToolCall):
+                            # 仅保留已有结果的工具调用，或当前分叉点（parent_message_id）的并行调用槽位
+                            has_res = (pm.message_id, orig_idx) in existing_results
+                            if has_res or pm.message_id == request.parent_message_id:
+                                new_idx = len(copied_parts)
+                                copied_parts.append(ToolCall(p.binding_id, dict(p.arguments)))
+                                call_map.append((orig_idx, new_idx))
+                    if not copied_parts:
+                        continue
+                    out_id = f"fork:{request.job_id}:out:{pm.seq}"
+                    if child_reader.get(out_id) is None:
+                        _ = await msg_writer.append_async(out_id, Output(tuple(copied_parts), pm.body.finish))
+                    for orig_idx, new_idx in call_map:
+                        res_id = f"fork:{request.job_id}:res:{pm.seq}:{new_idx}"
+                        if child_reader.get(res_id) is not None:
+                            continue
+                        cref = CallRef(out_id, new_idx)
+                        outcome, rparts = existing_results.get(
+                            (pm.message_id, orig_idx),
+                            (cast(Literal["success", "denied", "error", "interrupted"], "success"), (ContentPart("text", FORK_TOOL_PLACEHOLDER),)),
+                        )
+                        res_writer = self.ctx.require(MESSAGE_WRITERS).bind(
+                            self.ctx,
+                            author="tool",
+                            source="subagent",
+                            body_types=(ToolResult,),
+                            content={"text": text_check},
+                        )(request.session_id, call_ref=cref)
+                        try:
+                            _ = await res_writer.append_async(res_id, ToolResult(cref, outcome, rparts))
+                        finally:
+                            res_writer.expire()
+        finally:
+            msg_writer.expire()
+
     async def accept(self, key: str, request: Request, text: str) -> None:
         """同一来源准入锁覆盖容量检查与持久提交，重放不再占额。"""
         ctx = self.ctx
@@ -528,6 +680,17 @@ class Subagents:
                     raise SubagentBusy(f"subagent capacity reached for session tree: max={limit}; current spawn rejected")
             _ = await ctx.require(SESSION_ADMISSION).ensure_async(ctx, request.session_id,
                 SessionAttributes(visibility="internal", learning="excluded"))
+            created_wt = False
+            wt_root_path: Path | None = None
+            if request.isolation == "worktree" and request.worktree_repo and request.worktree_branch:
+                wt_str = request.worktree_path or request.cwd
+                if wt_str:
+                    repo_root = Path(request.worktree_repo)
+                    wt_root_path = Path(wt_str)
+                    wt_branch = request.worktree_branch
+                    existed_before = wt_root_path.exists()
+                    await run_file_io(lambda: create_worktree(repo_root, wt_root_path, wt_branch))
+                    created_wt = not existed_before
             if request.cwd is not None:
                 # 2. 子会话的工作目录决定相对路径落在哪：父会话没设目录时 cwd 是还没建的任务目录，先建出来再写。
                 task_dir = ctx.workspace_root("subagent-runs") / request.job_id
@@ -540,6 +703,8 @@ class Subagents:
                             _ = await directories.switch("subagent-init:" + request.job_id, prepared_switch)
                         except Exception:
                             logger.warning("子任务初始工作目录写入失败 job=%s cwd=%s", request.job_id, request.cwd, exc_info=True)
+            if request.fork:
+                await self._seed_fork_prefix(request)
             writer = ctx.require(MESSAGE_WRITERS).bind(ctx, author="subagent", source="subagent",
                 body_types=(Input,), content={"text": ctx.require(CONTENT).check_text,
                     "model.selection": ctx.require(MODEL_SELECTION).check,
@@ -547,7 +712,10 @@ class Subagents:
             # 子回合按原输入里的 model.selection 冻结模型，与会话里手选模型走同一条路径。
             selection = () if request.model_id is None else (ContentPart("model.selection", {
                 "model_id": request.model_id, "reasoning_effort": request.reasoning_effort}),)
-            body = Input((ContentPart("text", text), *selection, ContentPart("subagent.request", request.model_dump())))
+            directive = text
+            if request.fork and request.cwd is not None:
+                directive = f"{text}\n\n[工作目录：{request.cwd}]"
+            body = Input((ContentPart("text", directive), *selection, ContentPart("subagent.request", request.model_dump())))
             created = False
 
             def committed(value: bool) -> None:
@@ -584,6 +752,11 @@ class Subagents:
                         self._watch_background(key, request)
             finally:
                 writer.expire()
+                if not created and created_wt and wt_root_path is not None and request.worktree_repo and request.worktree_branch:
+                    wt_repo = Path(request.worktree_repo)
+                    wt_dir = wt_root_path
+                    wt_br = request.worktree_branch
+                    await run_file_io(lambda: cleanup_worktree(wt_repo, wt_dir, wt_br))
                 if created:
                     await self._trace(request, "started")
 
@@ -682,12 +855,14 @@ class Subagents:
             if not drained_more:
                 break
 
+        await self._cleanup_request_worktree(request)
         if was_bg or key in self._watched_bg:
             self._finish_bg_outcome(key, request, outcome, resumed=was_resumed)
             self._watched_bg.discard(key)
         await self._trace(request, outcome[0])
 
     async def _settle(self, key: str) -> None:
+        found = self.read(key)
         state = self.ctx.require(OWNER_STATE).open(self.ctx)
         def commit(tx: OwnerTransaction) -> None:
             record = tx.read(key)
@@ -695,6 +870,9 @@ class Subagents:
             _ = tx.save(key, {**record.value, "settled": True}, expected_version=record.version)
         await state.transact_async(commit)
         self._release_active(key)
+        if found is not None:
+            _, request, _ = found
+            await self._cleanup_request_worktree(request)
 
     def _release_active(self, key: str) -> None:
         self._active.pop(key, None)
@@ -962,8 +1140,9 @@ class Subagents:
                                     elif notices is not None or request.sink is None:
                                         await self._settle(key)
                                         self._finish_bg_outcome(key, request, outcome, resumed=is_resumed)
-                                    elif await self._announce(key, request, reader, outcome):
+                                    else:
                                         await self._settle(key)
+                                        _ = await self._announce(key, request, reader, self._with_worktree_note(request, outcome))
                 except CompositionError as error:
                     if entered or error.code != "OWNER_UNAVAILABLE":
                         raise

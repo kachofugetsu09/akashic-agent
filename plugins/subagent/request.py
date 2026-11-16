@@ -108,6 +108,14 @@ class SpawnInput(BaseModel):
         description="可选兼容字段；传入 research 等价于 read_only=true",
     )
     cwd: str | None = Field(default=None, description="可选：子任务的初始工作目录（相对路径以父会话当前目录解析，省略时继承父会话工作目录）")
+    fork: bool = Field(
+        default=False,
+        description="可选：分叉模式，继承父会话截至本轮之前的对话前缀（共享 KV-cache，并行工具槽位以统一占位回执对齐）",
+    )
+    isolation: Literal["none", "worktree"] = Field(
+        default="none",
+        description="可选：工作区隔离模式；worktree 为该子任务创建独立 Git worktree 与分支，结束时无改动自动清理、有改动则保留",
+    )
     run_in_background: bool = False
     completion_wake: Literal["always", "settled_only"] = Field(
         default="settled_only",
@@ -147,6 +155,12 @@ class Request(BaseModel):
     reasoning_effort: str | None = Field(default=None, min_length=1)
     # 委派时冻结的子任务初始工作目录；旧请求没有该字段时回退到子任务目录。
     cwd: str | None = Field(default=None, min_length=1)
+    fork: bool = False
+    fork_through_seq: int | None = Field(default=None, ge=0)
+    isolation: Literal["none", "worktree"] = "none"
+    worktree_repo: str | None = Field(default=None, min_length=1)
+    worktree_path: str | None = Field(default=None, min_length=1)
+    worktree_branch: str | None = Field(default=None, min_length=1)
 
     @property
     def session_id(self) -> str:

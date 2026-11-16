@@ -289,7 +289,7 @@ async def apply(ctx: Context) -> None:
                          prompt_hints=(build_spawn_subagent_prompt(
                              task_dir.parent.parent, task_dir, request.profile,
                              read_only=request.read_only, depth=request.depth,
-                             max_depth=config.max_depth, cwd=request.cwd,
+                             max_depth=config.max_depth, cwd=request.cwd, fork=request.fork,
                          ),),
                      )
 
