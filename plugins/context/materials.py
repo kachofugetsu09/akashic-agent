@@ -7,7 +7,7 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, replace
 from typing import TypedDict
 
-from agent.plugin_composition import Context, Effect
+from agent.plugin_composition import CompositionError, Context, Effect, RuntimeScope
 from agent.plugin_composition.model import FiberState
 from plugins.models.contract import ContextModel, ModelRequest
 from plugins.models.contract import BoundChatModel
@@ -84,11 +84,29 @@ class MaterialView:
         references: dict[str, Mapping[str, object]] = {}
         # One preparation owns one deadline, shared by every concurrent contributor.
         deadline = asyncio.get_running_loop().time() + self._prepare_timeout_seconds
-        async def prepare_owner(name: str, owner: _Source) -> Materials | Exception:
+        captured_scopes: list[RuntimeScope | None] = []
+        try:
+            for _, owner in self._sources:
+                try:
+                    captured = owner.context.capture_runtime_scope()
+                except CompositionError as error:
+                    # 仅当调用方并非进入 bind 的 Task 时回退到当场申请 scope；
+                    # 同 Task 调用必须复用 bind 已持有的许可，避免 owner 进入排空期后子任务被拒。
+                    if error.code != "OWNER_CALL_CONTEXT":
+                        raise
+                    captured = None
+                captured_scopes.append(captured)
+        except BaseException:
+            for scope in captured_scopes:
+                if scope is not None:
+                    scope.discard()
+            raise
+
+        async def prepare_owner(name: str, owner: _Source, scope: RuntimeScope | None) -> Materials | Exception:
             """Keep each independent contribution inside its actual owner scope."""
             budget = asyncio.timeout_at(deadline)
             try:
-                async with owner.context.runtime_scope(), budget:
+                async with (owner.context.runtime_scope() if scope is None else scope), budget:
                     return decode_material(await owner.prepare(snapshot, source))
             except TimeoutError as error:
                 if budget.expired():
@@ -101,9 +119,16 @@ class MaterialView:
                 return error
 
         # Preparation may overlap; merging still follows the frozen source order.
-        async with asyncio.TaskGroup() as group:
-            tasks = [group.create_task(prepare_owner(name, owner), context=child_task_context())
-                     for name, owner in self._sources]
+        try:
+            async with asyncio.TaskGroup() as group:
+                tasks = [
+                    group.create_task(prepare_owner(name, owner, scope), context=child_task_context())
+                    for (name, owner), scope in zip(self._sources, captured_scopes, strict=True)
+                ]
+        finally:
+            for scope in captured_scopes:
+                if scope is not None:
+                    scope.discard()
         for (name, owner), task in zip(self._sources, tasks, strict=True):
             material = task.result()
             if isinstance(material, Exception):
