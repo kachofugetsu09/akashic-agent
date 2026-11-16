@@ -5,7 +5,6 @@ import asyncio
 import hashlib
 import json
 import random
-from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import cast
 from agent.plugin_composition import Context
@@ -17,7 +16,7 @@ from agent.plugin_composition import CompositionRoot, PluginRuntime
 from agent.plugin_composition.tasks import TASKS, PluginTasks
 from plugins.content.plugin import Content
 from plugins.conversation.plugin import check_origin
-from plugins.jobs.contract import JOB_NOTICES, JobOutcome, JobWatch
+from plugins.jobs.contract import JOB_NOTICES, JobWatch
 from plugins.ledger.bindings import Bindings
 from plugins.ledger.contract import (
     BINDINGS,
@@ -44,8 +43,8 @@ from plugins.subagent.request import (
 )
 from plugins.subagent.runners import Delegate, Runners
 from plugins.subagent.runtime import DEFAULT_MAX_ACTIVE, DEFAULT_MAX_DEPTH, Subagents
-from plugins.subagent.tools import Prepared, Spawn
-from plugins.tools.contract import ALL_TOOLS, TOOLS, CallRef, CallSource, Result, ToolRef, ToolView
+from plugins.subagent.tools import Spawn
+from plugins.tools.contract import CallRef, CallSource, Result
 
 
 def _dummy_binding_id(name: str) -> str:
