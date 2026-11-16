@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Literal, cast
 
 from fastapi import FastAPI, HTTPException
@@ -11,6 +12,11 @@ from pydantic import BaseModel, ConfigDict
 from agent.plugin_composition import Context, DashboardContext, ServiceKey
 from agent.plugin_composition.plugin_updates import PLUGIN_UPDATES
 from agent.plugin_composition.runtime_catalog import RUNTIME_CATALOG
+from core.common.file_io import run_file_io
+from plugins.host_execution.contract import HOST_STATUS
+from .deploy_status import read_deploy_snapshot
+
+_STARTED_AT = datetime.now(UTC).isoformat()
 
 Phase = Literal["active", "pending", "failed", "disabled", "stopping", "loading"]
 Row = dict[str, object]
@@ -23,6 +29,7 @@ MANAGEMENT_ROOTS = frozenset({"ui", "shell-ui", "akashic_clients"})
 class PluginInventory:
     read: Callable[[], Row]
     set_enabled: Callable[[str, bool], Awaitable[Row]]
+    read_runtime_version: Callable[[], Awaitable[Row]]
 
 
 INVENTORY = ServiceKey[PluginInventory]("shell-ui.plugin_inventory")
@@ -50,7 +57,19 @@ def bind(ctx: Context) -> PluginInventory:
             raise PermissionError("插件管理依赖它，不能停用")
         return await updates.set_enabled(ctx, plugin_id, enabled)
 
-    return PluginInventory(ctx.entrypoint(read), ctx.entrypoint(set_enabled))
+    async def read_runtime_version() -> Row:
+        with ctx.borrow(HOST_STATUS) as host_status:
+            bridge: Row = (
+                dict(host_status.snapshot())
+                if host_status is not None
+                else {"state": "disabled", "failures": 0, "code": None, "checked_at": None, "egress": None}
+            )
+        snapshot = await run_file_io(
+            lambda: read_deploy_snapshot(started_at=_STARTED_AT, history_limit=5)
+        )
+        return {"bridge": bridge, **snapshot}
+
+    return PluginInventory(ctx.entrypoint(read), ctx.entrypoint(set_enabled), ctx.entrypoint(read_runtime_version))
 
 
 # 合并宿主选择与运行目录：一行一个插件，只保留列表需要的事实。
@@ -123,6 +142,10 @@ def register(app: FastAPI, context: DashboardContext) -> None:
     @app.get("/api/dashboard/plugins")
     async def list_plugins() -> Row:
         return context.require(INVENTORY).read()
+
+    @app.get("/api/dashboard/runtime-version")
+    async def runtime_version() -> Row:
+        return await context.require(INVENTORY).read_runtime_version()
 
     @app.post("/api/dashboard/plugins/{plugin_id}/enabled")
     async def set_enabled(plugin_id: str, request: EnabledRequest) -> Row:
