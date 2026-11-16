@@ -557,11 +557,9 @@ async def test_mixed_output_batch_first_rejection_and_nested_parent_source(tmp_p
             assert r_alw.outcome == "success"
             assert watches[-1].source == "subagent"
 
-            # s-1 作为 settled_only 批首个成员因 max_active=1 被拒，仍应提前建批并记录 rejected=1
+            # s-1 作为 settled_only 批首个成员因 max_active=1 被拒；批只按已接纳成员判断，被拒成员不会卡住整批
             p_s1 = await spawn.prepare({"task": "s-1", "label": "s-1", "run_in_background": True, "completion_wake": "settled_only"}, src_s1)
             assert isinstance(p_s1, dict)
-            req_s1 = Request.model_validate(p_s1["request"])
-            assert req_s1.parent_batch_count == 2
             r_s1 = await spawn.invoke("k-s1", p_s1)
             assert r_s1.outcome == "error"
 

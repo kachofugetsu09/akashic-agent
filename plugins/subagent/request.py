@@ -132,6 +132,7 @@ class Request(BaseModel):
     background: bool
     completion_wake: Literal["always", "settled_only"] = "settled_only"
     parent_source: str = Field(default="conversation", min_length=1)
+    # 旧请求兼容字段：批唤醒改为只按已接纳成员判断，不再依赖预估的同批数量。
     parent_batch_count: int = Field(default=1, ge=1)
     retry_count: int = Field(ge=0)
     parent_session_id: str = Field(min_length=1)

@@ -41,16 +41,14 @@ DEFAULT_MAX_DEPTH = 1
 
 
 
+# 同一父 Output 并行派发的 settled_only 后台子任务；只按已接纳成员判断是否到齐，未接纳的调用不会卡住整批。
 @dataclass(slots=True)
 class _BgBatch:
-    parent_session_id: str
-    parent_message_id: str
-    expected: int = 1
-    admitted: set[str] = field(default_factory=set)
-    rejected: int = 0
+    members: dict[str, str] = field(default_factory=dict)
     outcomes: dict[str, tuple[str, tuple[str, str]]] = field(default_factory=dict)
     winner_job_id: str | None = None
     settled_event: asyncio.Event = field(default_factory=asyncio.Event)
+
 
 class SubagentBusy(RuntimeError):
     """现有任务仍占准入名额，当前请求没有被接纳。"""
@@ -81,6 +79,8 @@ class Subagents:
         self._batches: dict[tuple[str, str], _BgBatch] = {}
         self._bg_futures: dict[str, asyncio.Future[tuple[str, str]]] = {}
         self._watched_bg: set[str] = set()
+        self._watch_batches: dict[str, _BgBatch] = {}
+        self._notices_recovered = False
 
     def read(self, key: str) -> tuple[OwnerRecord, Request, MessageReader] | None:
         record = self.ctx.require(OWNER_STATE).open(self.ctx).read(key)
@@ -228,41 +228,23 @@ class Subagents:
 
         return await self.ctx.require(TASKS).open(self.ctx).admit_async(("admission",), _check)
 
-    def _get_batch(self, parent_session_id: str, parent_message_id: str, *, expected_count: int = 1) -> _BgBatch:
-        bkey = (parent_session_id, parent_message_id)
+    def _batch_for(self, request: Request) -> _BgBatch:
+        bkey = (request.parent_session_id, request.parent_message_id)
         batch = self._batches.get(bkey)
         if batch is None:
-            batch = _BgBatch(
-                parent_session_id=parent_session_id,
-                parent_message_id=parent_message_id,
-                expected=max(1, expected_count),
-            )
+            batch = _BgBatch()
             self._batches[bkey] = batch
-        elif expected_count > batch.expected:
-            batch.expected = expected_count
         return batch
 
-    def mark_batch_rejected(self, parent_session_id: str, parent_message_id: str, *, expected_count: int = 1) -> None:
-        batch = self._get_batch(parent_session_id, parent_message_id, expected_count=expected_count)
-        batch.rejected += 1
-        self._maybe_release_batch(batch)
-
-    def _maybe_release_batch(self, batch: _BgBatch) -> None:
-        if batch.settled_event.is_set():
+    # 全部已接纳成员都有结果时由最后结算者代表整批唤醒；释放后立即摘除，迟到成员另起一批而不是被吞掉。
+    def _maybe_release_batch(self, request: Request, batch: _BgBatch) -> None:
+        if batch.settled_event.is_set() or len(batch.outcomes) < len(batch.members):
             return
-        if not batch.admitted:
-            if batch.rejected >= batch.expected:
-                # 全批在准入阶段被拒绝，无后台成员等待；清理批次避免泄漏。
-                self._batches.pop((batch.parent_session_id, batch.parent_message_id), None)
-            return
-        if len(batch.outcomes) < len(batch.admitted):
-            return
-        if len(batch.outcomes) + batch.rejected < batch.expected:
-            return
-        # 最后结算的任务作为合并唤醒的唯一代表。
-        last_job_id = next(reversed(batch.outcomes))
-        batch.winner_job_id = last_job_id
+        batch.winner_job_id = next(reversed(batch.outcomes))
         batch.settled_event.set()
+        bkey = (request.parent_session_id, request.parent_message_id)
+        if self._batches.get(bkey) is batch:
+            del self._batches[bkey]
 
     def _finish_bg_outcome(
         self,
@@ -272,18 +254,40 @@ class Subagents:
         *,
         resumed: bool = False,
     ) -> None:
-        fut = self._bg_futures.get(key)
+        fut = self._bg_futures.pop(key, None)
         if fut is not None and not fut.done():
             fut.set_result(outcome)
-        if not resumed and request.completion_wake == "settled_only":
-            batch = self._get_batch(
-                request.parent_session_id,
-                request.parent_message_id,
-                expected_count=request.parent_batch_count,
-            )
-            batch.admitted.add(request.job_id)
+        batch = self._watch_batches.pop(key, None)
+        if not resumed and batch is not None:
             batch.outcomes[request.job_id] = (request.label, outcome)
-            self._maybe_release_batch(batch)
+            self._maybe_release_batch(request, batch)
+
+    @staticmethod
+    def _batch_summary(batch: _BgBatch) -> JobOutcome:
+        parts: list[str] = []
+        any_failed = False
+        for jid, (label, (st, txt)) in batch.outcomes.items():
+            any_failed = any_failed or st != "completed"
+            snippet = txt.strip()[:2500]
+            if len(txt.strip()) > 2500:
+                snippet += "\n...[已截断，完整输出请用 subagent_read]"
+            parts.append(f"### {label} (`{jid}` · {st})\n{snippet}")
+        return JobOutcome("failed" if any_failed else "completed",
+                          f"本批 {len(batch.outcomes)} 个后台子任务已全部完成：\n\n" + "\n\n".join(parts))
+
+    # 结果已交给 jobs 后清除持久的待通知标记；重启前未交出的结果仍会在下次启动重新登记。
+    async def _clear_notify(self, keys: tuple[str, ...]) -> None:
+        def commit(tx: OwnerTransaction) -> None:
+            for key in keys:
+                row = tx.read(key)
+                if row is not None and row.value.get("notify") is True:
+                    value = {name: item for name, item in row.value.items() if name != "notify"}
+                    _ = tx.save(key, value, expected_version=row.version)
+        try:
+            async with self.ctx.runtime_scope():
+                await self.ctx.require(OWNER_STATE).open(self.ctx).transact_async(commit)
+        except Exception:
+            logger.warning("子任务待通知标记清除失败 keys=%s", keys, exc_info=True)
 
     def _watch_background(self, key: str, request: Request, *, resumed: bool = False) -> None:
         if key in self._watched_bg:
@@ -292,47 +296,28 @@ class Subagents:
             if notices is None:
                 return
             self._watched_bg.add(key)
-            loop = asyncio.get_running_loop()
             fut = self._bg_futures.get(key)
             if fut is None or fut.done():
-                fut = loop.create_future()
+                fut = asyncio.get_running_loop().create_future()
                 self._bg_futures[key] = fut
-            wake_mode = "always" if resumed else request.completion_wake
-            if wake_mode == "settled_only":
-                batch = self._get_batch(
-                    request.parent_session_id,
-                    request.parent_message_id,
-                    expected_count=request.parent_batch_count,
-                )
-                batch.admitted.add(request.job_id)
+            batch: _BgBatch | None = None
+            if not resumed and request.completion_wake == "settled_only":
+                batch = self._batch_for(request)
+                batch.members[request.job_id] = key
+                self._watch_batches[key] = batch
 
             async def settled() -> JobOutcome | None:
-                outcome = await fut
-                if wake_mode == "always":
-                    status, text = outcome
-                    mapped = "completed" if status == "completed" else "failed"
+                status, text = await fut
+                if batch is None:
+                    await self._clear_notify((key,))
                     body = text[:12_000] + ("\n\n结果已截断；完整消息请用 subagent_read 读取。" if len(text) > 12_000 else "")
-                    return JobOutcome(mapped, f"状态：{status}\n\n{body}")
-                batch = self._get_batch(
-                    request.parent_session_id,
-                    request.parent_message_id,
-                    expected_count=request.parent_batch_count,
-                )
+                    return JobOutcome("completed" if status == "completed" else "failed", f"状态：{status}\n\n{body}")
+                # 1. 批对象在登记时固定，赢家摘除批次后其他成员不会再建一份永远等不到的空批。
                 await batch.settled_event.wait()
                 if batch.winner_job_id != request.job_id:
                     return None
-                self._batches.pop((request.parent_session_id, request.parent_message_id), None)
-                parts: list[str] = []
-                any_failed = False
-                for jid, (label, (st, txt)) in batch.outcomes.items():
-                    if st != "completed":
-                        any_failed = True
-                    snippet = txt.strip()[:2500]
-                    if len(txt.strip()) > 2500:
-                        snippet += "\n...[已截断，完整输出请用 subagent_read]"
-                    parts.append(f"### {label} (`{jid}` · {st})\n{snippet}")
-                overall = "failed" if any_failed else "completed"
-                return JobOutcome(overall, f"本批 {len(batch.outcomes)} 个后台子任务已全部完成：\n\n" + "\n\n".join(parts))
+                await self._clear_notify(tuple(batch.members.values()))
+                return self._batch_summary(batch)
 
             notices.watch(JobWatch(
                 session_id=request.parent_session_id,
@@ -377,21 +362,14 @@ class Subagents:
 
         return before_step, wake
 
+    # 索引加载时与每次接纳都会登记 job_id；未登记即不存在，不再全表扫描。
     def _find_by_job_id(self, job_id: str) -> tuple[str, OwnerRecord, Request, MessageReader] | None:
         self._ensure_index()
         key = self._job_keys.get(job_id)
-        if key is not None:
-            found = self.read(key)
-            return None if found is None else (key, *found)
-        for cand_key, _ in self.ctx.require(OWNER_STATE).open(self.ctx).list():
-            try:
-                found = self.read(cand_key)
-            except ValueError:
-                continue
-            if found is not None and found[1].job_id == job_id:
-                self._job_keys[job_id] = cand_key
-                return cand_key, *found
-        return None
+        if key is None:
+            return None
+        found = self.read(key)
+        return None if found is None else (key, *found)
 
     async def send(
         self,
@@ -652,7 +630,7 @@ class Subagents:
         latest_input = reader.latest_input("subagent", through_seq=reader.head())
         task.boundary_hint = admitted.seq if latest_input is None else latest_input.seq
         state = self.ctx.require(OWNER_STATE).open(self.ctx)
-        was_bg = bool((self.read(key) or (None,))[0] and self.read(key)[0].value.get("background", request.background))  # type: ignore[index]
+        was_bg = request.background
         was_resumed = False
         while True:
             try:
@@ -691,9 +669,13 @@ class Subagents:
                     assert row is not None
                     was_bg = bool(row.value.get("background", request.background))
                     was_resumed = bool(row.value.get("resumed", False))
-                    _ = tx.save(key, {**row.value, "settled": True, "background": False}, expected_version=row.version)
+                    # 后台结果交给 jobs 前保留待通知标记，重启后据此重新登记唤醒。
+                    pending = {"notify": True} if was_bg else {}
+                    _ = tx.save(key, {**row.value, "settled": True, "background": False, **pending},
+                                expected_version=row.version)
                 await state.transact_async(commit)
-                self._active.pop(key, None)
+                self._release_active(key)
+                self._wake_events.pop(request.session_id, None)
                 return False
 
             drained_more = await self.ctx.require(TASKS).open(self.ctx).admit_async(("admission",), try_settle_or_drain)
@@ -712,6 +694,9 @@ class Subagents:
             assert record is not None
             _ = tx.save(key, {**record.value, "settled": True}, expected_version=record.version)
         await state.transact_async(commit)
+        self._release_active(key)
+
+    def _release_active(self, key: str) -> None:
         self._active.pop(key, None)
         if not self._index_loaded:
             self._settled_while_loading.add(key)
@@ -758,51 +743,49 @@ class Subagents:
 
     async def cancel(self, job_id: str) -> bool:
         """取消意图先保存，再撤销新决策并等待原效果排空。"""
-        for key, _ in self.ctx.require(OWNER_STATE).open(self.ctx).list():
-            found = self.read(key)
-            assert found is not None
-            record, request, reader = found
-            if request.job_id != job_id:
-                continue
-            stopped: Task | None = None
+        await self.ensure_index()
+        found = self._find_by_job_id(job_id)
+        if found is None:
+            return False
+        key, record, request, reader = found
+        stopped: Task | None = None
 
-            async def cancel(slot: TaskSlot) -> bool:
-                def committed() -> None:
-                    nonlocal stopped
-                    stopped = slot.current
-                    if stopped is not None:
-                        stopped.cancel(interrupt=True)
-
-                # 读期间可能完成；只对检查过的来源前缀提交 pause。
-                while True:
-                    head = reader.head(source="subagent")
-                    outcome = await self.outcome(reader, through_seq=head)
-                    if outcome is not None:
-                        return outcome[0] == "cancelled"
-                    if record.value["settled"]:
-                        raise ValueError("子任务结算记录缺少终态")
-                    try:
-                        await self._control(request, "pause", "用户取消子任务", expected_source_head=head,
-                                            on_commit=committed)
-                    except MessageConflict:
-                        if reader.head(source="subagent") == head:
-                            raise
-                        continue
-                    return True
-
-            try:
-                cancelled = await self.ctx.require(TASKS).open(self.ctx).admit_async(("job", key), cancel)
-            finally:
-                # 即使调用者在提交中取消，真实 pause 也先撤销原 Task 并排空。
+        async def cancel(slot: TaskSlot) -> bool:
+            def committed() -> None:
+                nonlocal stopped
+                stopped = slot.current
                 if stopped is not None:
-                    await drain(stopped)
-            if not cancelled:
-                return False
-            task = await self.start(key)
-            if task is not None:
-                await drain(task)
-            return True
-        return False
+                    stopped.cancel(interrupt=True)
+
+            # 读期间可能完成；只对检查过的来源前缀提交 pause。
+            while True:
+                head = reader.head(source="subagent")
+                outcome = await self.outcome(reader, through_seq=head)
+                if outcome is not None:
+                    return outcome[0] == "cancelled"
+                if record.value["settled"]:
+                    raise ValueError("子任务结算记录缺少终态")
+                try:
+                    await self._control(request, "pause", "用户取消子任务", expected_source_head=head,
+                                        on_commit=committed)
+                except MessageConflict:
+                    if reader.head(source="subagent") == head:
+                        raise
+                    continue
+                return True
+
+        try:
+            cancelled = await self.ctx.require(TASKS).open(self.ctx).admit_async(("job", key), cancel)
+        finally:
+            # 即使调用者在提交中取消，真实 pause 也先撤销原 Task 并排空。
+            if stopped is not None:
+                await drain(stopped)
+        if not cancelled:
+            return False
+        task = await self.start(key)
+        if task is not None:
+            await drain(task)
+        return True
 
     # Save report failure under the child source before releasing the parent lane.
     async def _report_failure(
@@ -917,8 +900,40 @@ class Subagents:
             if root_session_id is None or item.get("root_session_id") == root_session_id
         )
 
+    # 启动时先整体登记所有后台成员（运行中与已结算未通知），再交出已结算结果，保证同批仍合并成一次唤醒。
+    async def _recover_notices(self) -> None:
+        if self._notices_recovered:
+            return
+        self._notices_recovered = True
+        finished: list[tuple[str, Request, MessageReader, bool]] = []
+        for key, _record in self.ctx.require(OWNER_STATE).open(self.ctx).list():
+            try:
+                found = self.read(key)
+            except ValueError:
+                continue
+            if found is None:
+                continue
+            record, request, reader = found
+            settled, resumed = record.value["settled"], bool(record.value.get("resumed", False))
+            if settled and record.value.get("notify") is True:
+                self._watch_background(key, request, resumed=resumed)
+                finished.append((key, request, reader, resumed))
+            elif not settled and bool(record.value.get("background", request.background)):
+                self._watch_background(key, request, resumed=resumed)
+        for key, request, reader, resumed in finished:
+            outcome = await self.outcome(reader) or ("failed", "子任务结算记录缺少消息终态")
+            self._finish_bg_outcome(key, request, outcome, resumed=resumed)
+            self._watched_bg.discard(key)
+
     async def follow(self) -> None:
         """正式生命周期追赶持久输入；短通知不持有工具归档或运行 generation。"""
+        try:
+            async with self.ctx.runtime_scope():
+                await self._recover_notices()
+        except CompositionError as error:
+            if error.code != "OWNER_UNAVAILABLE":
+                raise
+            return
         attempted: dict[str, tuple[int, int]] = {}
         active: dict[str, Task] = {}
         async def wait(key: str, task: Task) -> None:
@@ -1005,11 +1020,11 @@ def _pointer(record: OwnerRecord) -> tuple[str, str, bool]:
     """在存储边界读取同一份子任务恢复指针。"""
     value = record.value
     required = {"session_id", "input_id", "settled"}
-    allowed = required | {"background", "resumed"}
+    allowed = required | {"background", "resumed", "notify"}
     if (not required.issubset(value) or not set(value).issubset(allowed)
             or not isinstance(value["session_id"], str) or not isinstance(value["input_id"], str)
             or type(value["settled"]) is not bool
-            or any(type(value[k]) is not bool for k in ("background", "resumed") if k in value)):
+            or any(type(value[k]) is not bool for k in ("background", "resumed", "notify") if k in value)):
         raise ValueError("子任务恢复指针损坏")
     return value["session_id"], value["input_id"], value["settled"]
 

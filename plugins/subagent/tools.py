@@ -14,7 +14,7 @@ from plugins.ledger.contract import BINDINGS
 from plugins.working_directory.contract import WORKING_DIRECTORY
 from plugins.tools.contract import current_nested_tool_scope
 from .inputs import ALL_TOOLS, CallSource, Result, TOOL_BIND_SAVED, TOOLS
-from plugins.ledger.contract import ContentPart, Input, Message, Output, ToolCall
+from plugins.ledger.contract import ContentPart, Input, Message
 from plugins.ledger.contract import json_value
 from plugins.models.contract import ChatModelSelection, ModelCatalogSnapshot
 
@@ -210,35 +210,12 @@ class Spawn:
             return 'spawn 需要已提交的父消息调用'
         parent_session_id = source.messages[-1].session_id
         parent_source = source.messages[-1].source
-        parent_batch_count = 1
-        if args.run_in_background and args.completion_wake == "settled_only":
-            parent_msg = next((m for m in reversed(source.messages) if m.message_id == source.call_ref.message_id), None)
-            if parent_msg is not None and isinstance(parent_msg.body, Output):
-                parts = parent_msg.body.parts
-                idx = source.call_ref.part_index
-                spawn_bid = parts[idx].binding_id if 0 <= idx < len(parts) and isinstance(parts[idx], ToolCall) else None
-                if spawn_bid is not None:
-                    cnt = sum(
-                        1
-                        for p in parts
-                        if isinstance(p, ToolCall)
-                        and p.binding_id == spawn_bid
-                        and p.arguments.get("run_in_background") is True
-                        and p.arguments.get("completion_wake", "settled_only") == "settled_only"
-                    )
-                    parent_batch_count = max(1, cnt)
-
-        def reject_batch(reason: str) -> str:
-            if args.run_in_background and args.completion_wake == "settled_only":
-                self.jobs.mark_batch_rejected(parent_session_id, source.call_ref.message_id, expected_count=parent_batch_count)
-            return reason
-
         await self.jobs.ensure_index()
         root_session_id, parent_depth = self.jobs.resolve_lineage(parent_session_id)
         if self.jobs.max_depth <= 0:
-            return reject_batch("当前设置已禁用子任务派发（max_depth=0）；请直接完成该任务。")
+            return "当前设置已禁用子任务派发（max_depth=0）；请直接完成该任务。"
         if parent_depth >= self.jobs.max_depth:
-            return reject_batch(f"子任务委派深度已达到上限（当前第 {parent_depth} 层，上限 {self.jobs.max_depth} 层）；请直接处理或汇报已有结果。")
+            return f"子任务委派深度已达到上限（当前第 {parent_depth} 层，上限 {self.jobs.max_depth} 层）；请直接处理或汇报已有结果。"
         next_depth = parent_depth + 1
         read_only = args.read_only or args.profile == "research"
         origin = None
@@ -256,7 +233,7 @@ class Spawn:
         try:
             cwd = await resolve_cwd(self.ctx, parent_session_id, args.cwd, fallback=task_dir)
         except ValueError as error:
-            return reject_batch(str(error))
+            return str(error)
         nested_scope = current_nested_tool_scope()
         caller_allowed = None if nested_scope is None else set(nested_scope.tools)
         names = tuple(
@@ -292,16 +269,16 @@ class Spawn:
                             if caller_allowed is None or ref.name == "spawn" or ref.name in caller_allowed:
                                 fixed[ref.name] = await tool_catalog.bind_scoped(ref, bindings)
         if not fixed:
-            return reject_batch('当前子任务没有可用的已安装工具')
+            return '当前子任务没有可用的已安装工具'
         # 3. 模型在父调用里解析并随请求固定：调用方显式指定 model/connection 优先，否则按设置（如跟随父对话）解析；恢复时不重选。
         model = await self.model(source.messages, args)
         if isinstance(model, str):
-            return reject_batch(model)
+            return model
         compat_profile: Literal["research", "scripting", "general"] = "research" if read_only else (args.profile or "general")
         request = Request(job_id=job_id, label=(args.label or args.task[:30]).strip(), profile=compat_profile,
             read_only=read_only, depth=next_depth, root_session_id=root_session_id,
             background=args.run_in_background, completion_wake=args.completion_wake,
-            parent_source=parent_source, parent_batch_count=parent_batch_count, retry_count=args.retry_count,
+            parent_source=parent_source, retry_count=args.retry_count,
             parent_session_id=parent_session_id, parent_message_id=source.call_ref.message_id,
             parent_part_index=source.call_ref.part_index,
             origin=origin, sink=sink, program_binding=bindings.bind(SUBAGENT_PROGRAM, {}), tools=fixed,
@@ -313,8 +290,6 @@ class Spawn:
         try:
             await self.jobs.accept(key, prepared.request, prepared.task)
         except SubagentBusy as error:
-            if prepared.request.background and prepared.request.completion_wake == 'settled_only':
-                self.jobs.mark_batch_rejected(prepared.request.parent_session_id, prepared.request.parent_message_id, expected_count=prepared.request.parent_batch_count)
             return Result("error", (ContentPart("text", str(error)),))
         if prepared.request.background:
             _ = await self.jobs.start(key)
