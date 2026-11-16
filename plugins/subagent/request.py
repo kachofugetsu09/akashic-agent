@@ -131,6 +131,8 @@ class Request(BaseModel):
     root_session_id: str | None = Field(default=None, min_length=1)
     background: bool
     completion_wake: Literal["always", "settled_only"] = "settled_only"
+    parent_source: str = Field(default="conversation", min_length=1)
+    parent_batch_count: int = Field(default=1, ge=1)
     retry_count: int = Field(ge=0)
     parent_session_id: str = Field(min_length=1)
     parent_message_id: str = Field(min_length=1)

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from functools import partial
 
 import asyncio
 from collections.abc import AsyncGenerator, Mapping
@@ -15,7 +14,7 @@ from agent.plugin_composition import (
     Context,
     stop_spawned,
 )
-from plugins.ledger.contract import BINDINGS
+from plugins.ledger.contract import BINDINGS, OwnerTransaction
 from plugins.ledger.contract import (
     MESSAGE_CATALOG,
     MESSAGE_WRITERS,
@@ -271,10 +270,13 @@ async def apply(ctx: Context) -> None:
                 return '工具不属于子任务已固定权限边界'
             return {"source": "subagent", "session_id": reader.session_id}
 
-        before_step, retry_wake = jobs.steer_binding(reader.session_id)
+        def check_admission(*, transaction: OwnerTransaction | None = None) -> None:
+            ctx.require(SOURCE_CHECK)(task, reader, "subagent", task.boundary_hint, transaction=transaction)
+
+        before_step, retry_wake = jobs.steer_binding(reader.session_id, task=task)
         return await ctx.require(REPLY_EXECUTE)(
                          ctx, task, reader, 'subagent',
-                         check_admission=partial(ctx.require(SOURCE_CHECK), task, reader, "subagent", task.boundary_hint),
+                         check_admission=check_admission,
                          authorize=authorize,
                          tool_view=None,
                          fixed_bindings=fixed_bindings,

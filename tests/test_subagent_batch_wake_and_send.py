@@ -400,3 +400,191 @@ async def test_monkey_parallel_batches_always_and_send_interleaving(tmp_path: Pa
         await tasks.close()
         await root.dispose()
         log.close()
+
+
+@pytest.mark.asyncio
+async def test_steer_updates_boundary_hint_and_drains_at_turn_end(tmp_path: Path):
+    """验证 Steer 写入后推进 task.boundary_hint（不触发 source_changed 误杀）且回合末排队 Steer 不丢。"""
+    log = MessageLog(tmp_path / "sessions.db")
+    root = CompositionRoot("subagent-steer-boundary")
+    tasks = PluginTasks()
+    bindings = Bindings(log, root.context)
+    ctx_holder: list[Context] = []
+    jobs_holder: list[Subagents] = []
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    boundary_hints: list[int] = []
+    turns = 0
+
+    class DummyNotices:
+        def watch(self, job: JobWatch) -> None:
+            return None
+
+        def origin_source(self, session_id: str, source: str) -> str:
+            return source
+
+        async def stop_job(self, session_id: str, job_id: str) -> bool:
+            return False
+
+        async def follow_jobs(self, session_id: str):
+            if False:
+                yield ()
+
+    async def program(task, reader, request: Request):
+        nonlocal turns
+        turns += 1
+        before_step, _wake = jobs_holder[0].steer_binding(reader.session_id, task=task)
+        if turns == 1:
+            entered.set()
+            await release.wait()
+            # 模拟真实 react 步间刷新 Steer，并校验 task.boundary_hint 随新 Input 前移
+            await before_step()
+            boundary_hints.append(task.boundary_hint or -1)
+            assert reader.latest_input("subagent", through_seq=reader.head()).seq == task.boundary_hint
+            # 模拟回合末尾在 program 返回前到达的 Steer（不会再进 before_step）
+            await jobs_holder[0].send("root-sb", request.job_id, "late end-of-turn steer")
+        msgs = await reader.snapshot_async(through_seq=reader.head())
+        inputs = [str(p.value) for m in msgs if isinstance(m.body, Input) for p in m.body.parts if isinstance(p, ContentPart) and p.kind == "text"]
+        writer = ctx_holder[0].require(MESSAGE_WRITERS).bind(
+            ctx_holder[0], author="subagent", source="subagent", body_types=(Output,),
+            content={"text": ctx_holder[0].require(CONTENT).check_text},
+        )(reader.session_id)
+        try:
+            return writer.append(f"sb-out:{turns}:{uuid4().hex[:6]}", Output((ContentPart("text", "|".join(inputs)),), "complete"))
+        finally:
+            writer.expire()
+
+    async def core(ctx):
+        for key, value in [
+            (MESSAGE_CATALOG, log.catalog()),
+            (MESSAGE_WRITERS, MessageWriters(log)),
+            (OWNER_STATE, OwnerState(log)),
+            (SESSION_ADMISSION, SessionAdmission(log)),
+            (TASKS, tasks),
+            (BINDINGS, bindings),
+            (CHECK_ORIGIN, check_origin),
+            (MODEL_SELECTION, SelectionOwner()),
+            (JOB_NOTICES, DummyNotices()),
+            (TOOL_BIND_SAVED, lambda _b, tid, *, configuration=None: asyncio.sleep(0, result=tid)),
+        ]:
+            await ctx.provide(key, value)
+        await ctx.provide(CONTENT, Content(ctx))
+
+    async def subagent_mount(ctx: Context):
+        ctx_holder.append(ctx)
+        await ctx.provide(SUBAGENT_PROGRAM, program)
+
+    await root.mount(core, name="core")
+    await root.mount(
+        subagent_mount, name="subagent",
+        inject=(MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, SESSION_ADMISSION, TASKS, BINDINGS, CONTENT, CHECK_ORIGIN, MODEL_SELECTION, JOB_NOTICES, TOOL_BIND_SAVED),
+        runtime=PluginRuntime("subagent", "fixture", tmp_path, tmp_path / "plugin-data", tmp_path, {}, workspace_roots=("subagent-runs",), workspace_files=("memory/spawn_trace.jsonl",)),
+    )
+    ctx = ctx_holder[0]
+    jobs = Subagents(ctx, max_active=8, max_depth=2)
+    jobs_holder.append(jobs)
+    async with ctx.runtime_scope():
+        prog_binding = bindings.bind(SUBAGENT_PROGRAM, {})
+    tid = _dummy_binding_id("read_file")
+    log.save_binding(tid, {"version": 2, "origins": {"subagent": "fixture"}, "service": "tools.v1", "metadata": {"name": "read_file"}})
+    log.save_binding(prog_binding, {"version": 2, "origins": {"subagent": "fixture"}, "service": SUBAGENT_PROGRAM.name, "metadata": {}})
+    spawn = Spawn(ctx, {"read_file": tid}, {}, jobs, model=lambda _m, _a: asyncio.sleep(0, result=ChatModelSelection()))
+    try:
+        src = _parent_batch_source(log, "root-sb", "sb1", 1)[0]
+        async with ctx.runtime_scope():
+            prep = await spawn.prepare({"task": "turn1 task", "label": "sb", "run_in_background": True}, src)
+            assert isinstance(prep, dict)
+            jid = Request.model_validate(prep["request"]).job_id
+            _ = await spawn.invoke("k-sb", prep)
+            await asyncio.wait_for(entered.wait(), timeout=5)
+            await jobs.send("root-sb", jid, "mid-turn steer")
+            release.set()
+            while jobs.active_count_for_root("root-sb") > 0:
+                await asyncio.sleep(0.02)
+        assert turns == 2
+        assert len(boundary_hints) == 1 and boundary_hints[0] > 0
+        # 验证增量切片方向：after_seq >= 0 从最早未读开始顺序切 [:limit]
+        async with ctx.runtime_scope():
+            inc = await jobs.read_child_messages("root-sb", jid, after_seq=0, limit=2)
+            seqs = [m["seq"] for m in inc["messages"]]  # type: ignore[index]
+            assert seqs == [1, 2]
+            tail = await jobs.read_child_messages("root-sb", jid, after_seq=-1, limit=1)
+            assert "late end-of-turn steer" in json.dumps(tail, ensure_ascii=False)
+    finally:
+        release.set()
+        await tasks.close()
+        await root.dispose()
+        log.close()
+
+
+@pytest.mark.asyncio
+async def test_mixed_output_batch_first_rejection_and_nested_parent_source(tmp_path: Path):
+    """验证混合 Output（shell/always/settled_only）、首个成员满容被拒、以及嵌套 subagent 来源透传。"""
+    (
+        log, root, tasks, ctx, jobs, spawn, _send, _read,
+        entered, releases, watches, watch_outcomes, watch_tasks,
+    ) = await _mount_pr3_fixture(tmp_path, max_active=1)
+    try:
+        # 构造一条包含 shell(run_in_background=True)、spawn(always)、和 2 个 spawn(settled_only) 的混合 Output，source="subagent"
+        win = log.writer("nested-p", author="parent", source="subagent", body_types=(Input,),
+                         content={"text": lambda _: ContentReferences()})
+        in_msg = win.append("np-in", Input((ContentPart("text", "nested go"),)))
+        wout = log.writer("nested-p", author="subagent", source="subagent", body_types=(Output,),
+                          content={"text": lambda _: ContentReferences()}, check_call=lambda _c: None)
+        bid_shell = _dummy_binding_id("shell-mix")
+        bid_spawn = _dummy_binding_id("spawn-mix")
+        log.save_binding(bid_shell, {"version": 2, "origins": {"shell": "fixture"}, "service": "tools.v1", "metadata": {"name": "shell"}})
+        log.save_binding(bid_spawn, {"version": 2, "origins": {"subagent": "fixture"}, "service": "tools.v1", "metadata": {"name": "spawn"}})
+        out_msg = wout.append("np-out", Output((
+            ToolCall(bid_shell, {"command": "echo hi", "run_in_background": True}),
+            ToolCall(bid_spawn, {"task": "always-job", "run_in_background": True, "completion_wake": "always"}),
+            ToolCall(bid_spawn, {"task": "s-1", "label": "s-1", "run_in_background": True, "completion_wake": "settled_only"}),
+            ToolCall(bid_spawn, {"task": "s-2", "label": "s-2", "run_in_background": True, "completion_wake": "settled_only"}),
+        ), "continue"))
+
+        src_always = CallSource(messages=(in_msg, out_msg), call_ref=CallRef(out_msg.message_id, 1))
+        src_s1 = CallSource(messages=(in_msg, out_msg), call_ref=CallRef(out_msg.message_id, 2))
+        src_s2 = CallSource(messages=(in_msg, out_msg), call_ref=CallRef(out_msg.message_id, 3))
+
+        async with ctx.runtime_scope():
+            # 先启动 always 占满 max_active=1
+            p_alw = await spawn.prepare({"task": "always-job", "run_in_background": True, "completion_wake": "always"}, src_always)
+            assert isinstance(p_alw, dict)
+            req_alw = Request.model_validate(p_alw["request"])
+            assert req_alw.parent_source == "subagent"
+            releases[req_alw.job_id] = asyncio.Event()
+            r_alw = await spawn.invoke("k-alw", p_alw)
+            assert r_alw.outcome == "success"
+            assert watches[-1].source == "subagent"
+
+            # s-1 作为 settled_only 批首个成员因 max_active=1 被拒，仍应提前建批并记录 rejected=1
+            p_s1 = await spawn.prepare({"task": "s-1", "label": "s-1", "run_in_background": True, "completion_wake": "settled_only"}, src_s1)
+            assert isinstance(p_s1, dict)
+            req_s1 = Request.model_validate(p_s1["request"])
+            assert req_s1.parent_batch_count == 2
+            r_s1 = await spawn.invoke("k-s1", p_s1)
+            assert r_s1.outcome == "error"
+
+            # 放行 always 后再启动 s-2，settled_only 批仍应顺利合并唤醒（不被 shell 或首条被拒卡死）
+            releases[req_alw.job_id].set()
+            while jobs.active_count_for_root("nested-p") > 0:
+                await asyncio.sleep(0.02)
+
+            p_s2 = await spawn.prepare({"task": "s-2", "label": "s-2", "run_in_background": True, "completion_wake": "settled_only"}, src_s2)
+            assert isinstance(p_s2, dict)
+            req_s2 = Request.model_validate(p_s2["request"])
+            releases[req_s2.job_id] = asyncio.Event()
+            r_s2 = await spawn.invoke("k-s2", p_s2)
+            assert r_s2.outcome == "success"
+            releases[req_s2.job_id].set()
+
+            await asyncio.gather(*watch_tasks)
+            wakes = [out for _, out in watch_outcomes if out is not None]
+            assert len(wakes) == 2
+            assert any("s-2" in w.detail for w in wakes)
+    finally:
+        for ev in releases.values():
+            ev.set()
+        await tasks.close()
+        await root.dispose()
+        log.close()

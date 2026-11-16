@@ -228,37 +228,22 @@ class Subagents:
 
         return await self.ctx.require(TASKS).open(self.ctx).admit_async(("admission",), _check)
 
-    def _expected_bg_in_parent(self, parent_session_id: str, parent_message_id: str) -> int:
-        try:
-            reader = self.ctx.require(MESSAGE_CATALOG).reader(parent_session_id)
-            msg = reader.get(parent_message_id)
-        except Exception:
-            return 1
-        if msg is None or not isinstance(msg.body, Output):
-            return 1
-        count = 0
-        for part in msg.body.parts:
-            if isinstance(part, ToolCall) and part.arguments.get("run_in_background") is True:
-                count += 1
-        return max(1, count)
-
-    def _get_batch(self, request: Request) -> _BgBatch:
-        bkey = (request.parent_session_id, request.parent_message_id)
-        batch = self._batches.get(bkey)
-        if batch is None:
-            batch = _BgBatch(
-                parent_session_id=request.parent_session_id,
-                parent_message_id=request.parent_message_id,
-                expected=self._expected_bg_in_parent(request.parent_session_id, request.parent_message_id),
-            )
-            self._batches[bkey] = batch
-        return batch
-
-    def mark_batch_rejected(self, parent_session_id: str, parent_message_id: str) -> None:
+    def _get_batch(self, parent_session_id: str, parent_message_id: str, *, expected_count: int = 1) -> _BgBatch:
         bkey = (parent_session_id, parent_message_id)
         batch = self._batches.get(bkey)
         if batch is None:
-            return
+            batch = _BgBatch(
+                parent_session_id=parent_session_id,
+                parent_message_id=parent_message_id,
+                expected=max(1, expected_count),
+            )
+            self._batches[bkey] = batch
+        elif expected_count > batch.expected:
+            batch.expected = expected_count
+        return batch
+
+    def mark_batch_rejected(self, parent_session_id: str, parent_message_id: str, *, expected_count: int = 1) -> None:
+        batch = self._get_batch(parent_session_id, parent_message_id, expected_count=expected_count)
         batch.rejected += 1
         self._maybe_release_batch(batch)
 
@@ -266,6 +251,9 @@ class Subagents:
         if batch.settled_event.is_set():
             return
         if not batch.admitted:
+            if batch.rejected >= batch.expected:
+                # 全批在准入阶段被拒绝，无后台成员等待；清理批次避免泄漏。
+                self._batches.pop((batch.parent_session_id, batch.parent_message_id), None)
             return
         if len(batch.outcomes) < len(batch.admitted):
             return
@@ -276,17 +264,28 @@ class Subagents:
         batch.winner_job_id = last_job_id
         batch.settled_event.set()
 
-    def _finish_bg_outcome(self, key: str, request: Request, outcome: tuple[str, str]) -> None:
+    def _finish_bg_outcome(
+        self,
+        key: str,
+        request: Request,
+        outcome: tuple[str, str],
+        *,
+        resumed: bool = False,
+    ) -> None:
         fut = self._bg_futures.get(key)
         if fut is not None and not fut.done():
             fut.set_result(outcome)
-        if request.completion_wake == "settled_only":
-            batch = self._get_batch(request)
+        if not resumed and request.completion_wake == "settled_only":
+            batch = self._get_batch(
+                request.parent_session_id,
+                request.parent_message_id,
+                expected_count=request.parent_batch_count,
+            )
             batch.admitted.add(request.job_id)
             batch.outcomes[request.job_id] = (request.label, outcome)
             self._maybe_release_batch(batch)
 
-    def _watch_background(self, key: str, request: Request) -> None:
+    def _watch_background(self, key: str, request: Request, *, resumed: bool = False) -> None:
         if key in self._watched_bg:
             return
         with self.ctx.borrow(JOB_NOTICES) as notices:
@@ -298,18 +297,27 @@ class Subagents:
             if fut is None or fut.done():
                 fut = loop.create_future()
                 self._bg_futures[key] = fut
-            if request.completion_wake == "settled_only":
-                batch = self._get_batch(request)
+            wake_mode = "always" if resumed else request.completion_wake
+            if wake_mode == "settled_only":
+                batch = self._get_batch(
+                    request.parent_session_id,
+                    request.parent_message_id,
+                    expected_count=request.parent_batch_count,
+                )
                 batch.admitted.add(request.job_id)
 
             async def settled() -> JobOutcome | None:
                 outcome = await fut
-                if request.completion_wake == "always":
+                if wake_mode == "always":
                     status, text = outcome
                     mapped = "completed" if status == "completed" else "failed"
                     body = text[:12_000] + ("\n\n结果已截断；完整消息请用 subagent_read 读取。" if len(text) > 12_000 else "")
                     return JobOutcome(mapped, f"状态：{status}\n\n{body}")
-                batch = self._get_batch(request)
+                batch = self._get_batch(
+                    request.parent_session_id,
+                    request.parent_message_id,
+                    expected_count=request.parent_batch_count,
+                )
                 await batch.settled_event.wait()
                 if batch.winner_job_id != request.job_id:
                     return None
@@ -328,7 +336,7 @@ class Subagents:
 
             notices.watch(JobWatch(
                 session_id=request.parent_session_id,
-                source=notices.origin_source(request.parent_session_id, "conversation"),
+                source=notices.origin_source(request.parent_session_id, request.parent_source),
                 job_id=request.job_id,
                 kind="subagent",
                 label=request.label,
@@ -337,7 +345,27 @@ class Subagents:
                 stop=lambda: self.cancel(request.job_id),
             ))
 
-    def steer_binding(self, session_id: str) -> tuple[Callable[[], Awaitable[None]], asyncio.Event]:
+    async def _drain_steers(self, session_id: str, *, task: Task | None = None) -> int:
+        queued = self._steers.pop(session_id, [])
+        if not queued:
+            return 0
+        writer = self.ctx.require(MESSAGE_WRITERS).bind(
+            self.ctx,
+            author="parent",
+            source="subagent",
+            body_types=(Input,),
+            content={"text": self.ctx.require(CONTENT).check_text},
+        )(session_id)
+        try:
+            for msg_id, text in queued:
+                committed = await writer.append_async(msg_id, Input((ContentPart("text", text),)))
+                if task is not None:
+                    task.boundary_hint = committed.seq
+        finally:
+            writer.expire()
+        return len(queued)
+
+    def steer_binding(self, session_id: str, *, task: Task | None = None) -> tuple[Callable[[], Awaitable[None]], asyncio.Event]:
         wake = self._wake_events.get(session_id)
         if wake is None:
             wake = asyncio.Event()
@@ -345,21 +373,7 @@ class Subagents:
 
         async def before_step() -> None:
             wake.clear()
-            queued = self._steers.pop(session_id, [])
-            if not queued:
-                return
-            writer = self.ctx.require(MESSAGE_WRITERS).bind(
-                self.ctx,
-                author="parent",
-                source="subagent",
-                body_types=(Input,),
-                content={"text": self.ctx.require(CONTENT).check_text},
-            )(session_id)
-            try:
-                for msg_id, text in queued:
-                    _ = await writer.append_async(msg_id, Input((ContentPart("text", text),)))
-            finally:
-                writer.expire()
+            _ = await self._drain_steers(session_id, task=task)
 
         return before_step, wake
 
@@ -392,23 +406,23 @@ class Subagents:
         found = self._find_by_job_id(job_id)
         if found is None:
             raise KeyError(f"未找到子任务: {job_id}")
-        key, record, request, reader = found
+        key, _record, request, reader = found
         child_root = request.root_session_id or self.resolve_lineage(request.session_id)[0]
         if child_root != caller_root_id:
             raise PermissionError("无权向其他会话树的子任务发送消息")
 
-        # 1. 运行中：走 Steer 队列并唤醒退避等待
-        if not record.value["settled"] or key in self._active:
-            wake = self._wake_events.setdefault(request.session_id, asyncio.Event())
-            self._steers.setdefault(request.session_id, []).append((f"steer:{uuid4().hex}", message))
-            wake.set()
-            return {"job_id": job_id, "mode": "steered", "status": "queued"}
-
-        # 2. 已结算/空闲：冷恢复，保留原有上下文与 KV 前缀，在准入锁内恢复占位
         state = self.ctx.require(OWNER_STATE).open(self.ctx)
         limit = self.max_active
 
-        async def reopen(_slot: TaskSlot) -> None:
+        async def send_or_reopen(_slot: TaskSlot) -> str:
+            current = state.read(key)
+            assert current is not None
+            # 1. 在同一准入锁内判断活跃态：未结算或仍在 _active 则入队 Steer，与 _run 末尾排空无竞态
+            if not current.value["settled"] or key in self._active:
+                wake = self._wake_events.setdefault(request.session_id, asyncio.Event())
+                self._steers.setdefault(request.session_id, []).append((f"steer:{uuid4().hex}", message))
+                wake.set()
+                return "steered"
             if self.active_count_for_root(child_root) >= limit:
                 raise SubagentBusy(f"subagent capacity reached for session tree: max={limit}; resume rejected")
             writer = self.ctx.require(MESSAGE_WRITERS).bind(
@@ -423,7 +437,13 @@ class Subagents:
                 def commit(tx: OwnerTransaction) -> None:
                     row = tx.read(key)
                     assert row is not None
-                    _ = tx.save(key, {**row.value, "settled": False}, expected_version=row.version)
+                    if row.value["settled"] is not True:
+                        raise SubagentBusy("子任务状态刚切换为活跃，请重试")
+                    _ = tx.save(
+                        key,
+                        {**row.value, "settled": False, "background": background, "resumed": True},
+                        expected_version=row.version,
+                    )
                     _ = tx.append_prepared(prepared)
                 await state.transact_async(commit)
                 self._active[key] = {
@@ -436,13 +456,14 @@ class Subagents:
                 }
             finally:
                 writer.expire()
+            return "reopened"
 
-        await self.ctx.require(TASKS).open(self.ctx).admit_async(("admission",), reopen)
+        action = await self.ctx.require(TASKS).open(self.ctx).admit_async(("admission",), send_or_reopen)
+        if action == "steered":
+            return {"job_id": job_id, "mode": "steered", "status": "queued"}
         if background:
             self._watched_bg.discard(key)
-            # 恢复运行后使用 always 单独通知（除非原请求同批次）
-            resumed_req = request.model_copy(update={"background": True, "completion_wake": "always"})
-            self._watch_background(key, resumed_req)
+            self._watch_background(key, request, resumed=True)
         task = await self.start(key)
         if background:
             return {"job_id": job_id, "mode": "resumed_background", "status": "running"}
@@ -471,7 +492,10 @@ class Subagents:
             raise PermissionError("无权读取其他会话树的子任务记录")
         all_msgs = await reader.snapshot_async(through_seq=reader.head())
         messages = [m for m in all_msgs if m.seq > after_seq]
-        sliced = messages[-limit:] if limit > 0 and len(messages) > limit else messages
+        if limit > 0 and len(messages) > limit:
+            sliced = messages[-limit:] if after_seq < 0 else messages[:limit]
+        else:
+            sliced = messages
         items: list[dict[str, object]] = []
         for msg in sliced:
             body_kind = type(msg.body).__name__.lower()
@@ -627,31 +651,57 @@ class Subagents:
             raise ValueError("子任务程序缺少同来源的原 Input")
         latest_input = reader.latest_input("subagent", through_seq=reader.head())
         task.boundary_hint = admitted.seq if latest_input is None else latest_input.seq
-        try:
-            # 1. 只有未关闭输入才进入原程序；最终消息或控制足以决定恢复方向。
-            if await self.outcome(reader) is None:
-                async with self.ctx.require(BINDINGS).open(request.program_binding, SUBAGENT_PROGRAM) as (program, _):
-                    _ = await program(task, reader, request)
-        except asyncio.CancelledError as error:
-            if await self.outcome(reader) is None:
-                if not task.active:
+        state = self.ctx.require(OWNER_STATE).open(self.ctx)
+        was_bg = bool((self.read(key) or (None,))[0] and self.read(key)[0].value.get("background", request.background))  # type: ignore[index]
+        was_resumed = False
+        while True:
+            try:
+                # 1. 只有未关闭输入才进入原程序；最终消息或控制足以决定恢复方向。
+                if await self.outcome(reader) is None:
+                    async with self.ctx.require(BINDINGS).open(request.program_binding, SUBAGENT_PROGRAM) as (program, _):
+                        _ = await program(task, reader, request)
+            except asyncio.CancelledError as error:
+                if await self.outcome(reader) is None:
+                    if not task.active:
+                        raise
+                    # 程序自行取消没有撤销 Task，不能伪造用户 pause 或取消父等待者。
+                    await self._control(request, "failure", "子任务程序意外取消：" + (str(error) or type(error).__name__), task=task)
+            except Exception as error:
+                if task.active:
+                    await self._control(request, "failure", str(error) or type(error).__name__, task=task)
+                else:
                     raise
-                # 程序自行取消没有撤销 Task，不能伪造用户 pause 或取消父等待者。
-                await self._control(request, "failure", "子任务程序意外取消：" + (str(error) or type(error).__name__), task=task)
-        except Exception as error:
-            if task.active:
-                await self._control(request, "failure", str(error) or type(error).__name__, task=task)
-            else:
-                raise
-        # 2. 已开始的工具与原程序资源此时已经排空，回传不复制内部推理。
-        outcome = await self.outcome(reader)
-        if outcome is None:
-            raise RuntimeError("子任务程序没有保存终态")
-        if request.background or key in self._watched_bg:
-            await self._settle(key)
-            self._finish_bg_outcome(key, request, outcome)
-        else:
-            await self._settle(key)
+            outcome = await self.outcome(reader)
+            if outcome is None:
+                raise RuntimeError("子任务程序没有保存终态")
+
+            # 2. 在准入锁内检查是否有回合末插话未消费；非用户取消时先排空入账并继续下一轮，否则原子结算。
+            drained_more = False
+
+            async def try_settle_or_drain(_slot: TaskSlot) -> bool:
+                nonlocal was_bg, was_resumed
+                if outcome[0] != "cancelled" and self._steers.get(request.session_id):
+                    count = await self._drain_steers(request.session_id, task=task)
+                    if count > 0:
+                        return True
+                def commit(tx: OwnerTransaction) -> None:
+                    nonlocal was_bg, was_resumed
+                    row = tx.read(key)
+                    assert row is not None
+                    was_bg = bool(row.value.get("background", request.background))
+                    was_resumed = bool(row.value.get("resumed", False))
+                    _ = tx.save(key, {**row.value, "settled": True, "background": False}, expected_version=row.version)
+                await state.transact_async(commit)
+                self._active.pop(key, None)
+                return False
+
+            drained_more = await self.ctx.require(TASKS).open(self.ctx).admit_async(("admission",), try_settle_or_drain)
+            if not drained_more:
+                break
+
+        if was_bg or key in self._watched_bg:
+            self._finish_bg_outcome(key, request, outcome, resumed=was_resumed)
+            self._watched_bg.discard(key)
         await self._trace(request, outcome[0])
 
     async def _settle(self, key: str) -> None:
@@ -888,10 +938,14 @@ class Subagents:
                         if not record.value["settled"]:
                             outcome = await self.outcome(reader)
                             if outcome is not None:
+                                is_bg = bool(record.value.get("background", request.background))
+                                is_resumed = bool(record.value.get("resumed", False))
                                 with self.ctx.borrow(JOB_NOTICES) as notices:
-                                    if notices is not None or request.sink is None:
+                                    if not is_bg:
                                         await self._settle(key)
-                                        self._finish_bg_outcome(key, request, outcome)
+                                    elif notices is not None or request.sink is None:
+                                        await self._settle(key)
+                                        self._finish_bg_outcome(key, request, outcome, resumed=is_resumed)
                                     elif await self._announce(key, request, reader, outcome):
                                         await self._settle(key)
                 except CompositionError as error:
@@ -949,9 +1003,12 @@ class Subagents:
 def _pointer(record: OwnerRecord) -> tuple[str, str, bool]:
     """在存储边界读取同一份子任务恢复指针。"""
     value = record.value
-    if (set(value) != {"session_id", "input_id", "settled"}
+    required = {"session_id", "input_id", "settled"}
+    allowed = required | {"background", "resumed"}
+    if (not required.issubset(value) or not set(value).issubset(allowed)
             or not isinstance(value["session_id"], str) or not isinstance(value["input_id"], str)
-            or type(value["settled"]) is not bool):
+            or type(value["settled"]) is not bool
+            or any(type(value[k]) is not bool for k in ("background", "resumed") if k in value)):
         raise ValueError("子任务恢复指针损坏")
     return value["session_id"], value["input_id"], value["settled"]
 
