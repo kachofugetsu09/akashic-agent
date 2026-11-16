@@ -43,7 +43,8 @@ for(const width of [390,1440]){
  }
  await page.evaluate(r=>window.publish({runs:[{...r,status:'failed',result:'失败原因'}]}),run);
  await page.evaluate(()=>window.expand('run:a'));
- assert.match(await page.locator('#detail').innerText(),/失败原因/);
+ // 展开由 createRoot 异步渲染：等文字出现再断言，不在同一帧读取。
+ await page.waitForFunction(()=>document.getElementById('detail').innerText.includes('失败原因'),null,{timeout:5000});
  assert.equal(await page.evaluate(()=>window.items.find(i=>i.id==='run:a').tone),'alert');
  assert.equal(await page.evaluate(()=>window.items.find(i=>i.id==='runs').text),undefined);
  assert.equal(await page.locator('script').count(),1);
