@@ -255,9 +255,7 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
           <ComposerStatsLine sessionId={activeSessionId} messages={timelineMessages} activities={replyActivities} connected={replyAvailable !== null} status={status} stopping={stopPending} />
           {replyAvailable === false ? <p className="reply-unavailable" role="status">当前未加载回复插件</p> : null}
           {controller.reconnecting ? <p className="reply-unavailable connection-status" role="status">
-            <i aria-hidden="true" />{typeof document !== "undefined" && document.documentElement.dataset.akashicDeploying
-              ? `正在更新重启（${document.documentElement.dataset.akashicDeploying}），连接稍后自动恢复…`
-              : "连接已断开，正在重新连接…"}
+            <i aria-hidden="true" />连接已断开，正在重新连接…
             <button type="button" onClick={retry}>立即重试</button>
           </p> : null}
           {/* 插件的状态提示；聊天连接断开时由上面的连接行统一说明，插件提示让位。 */}
@@ -270,9 +268,15 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
           {controller.pageOutdated ? <div className="update-line" role="status">
             <span className="update-line__body">
               <i className="update-line__dot" aria-hidden="true" />
-              <span>聊天页面已更新，刷新后即可使用新版本。</span>
+              <span>聊天页面已更新{controller.updatedCommit ? `（${controller.updatedCommit.slice(0, 7)}）` : ""}，刷新后即可使用新版本。</span>
             </span>
             <MaterialButton variant="tonal" onClick={() => window.location.reload()}>刷新页面</MaterialButton>
+          </div> : controller.backendUpdatedCommit ? <div className="update-line" role="status">
+            <span className="update-line__body">
+              <i className="update-line__dot" aria-hidden="true" />
+              <span>后端服务已更新至 {controller.backendUpdatedCommit.slice(0, 7)}。</span>
+            </span>
+            <MaterialButton variant="tonal" onClick={controller.dismissBackendUpdate}>知道了</MaterialButton>
           </div> : null}
           {error ? <div className="error-line" role="alert"><span>{error}</span>
             {controller.errorRetry ? <MaterialButton variant="danger" onClick={retry}>重试</MaterialButton> : null}

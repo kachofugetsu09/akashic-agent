@@ -300,12 +300,12 @@ export function SystemVersion({ http, active }: { http: Http; active: boolean })
 
         <dl className="shell-version-grid">
           <div>
-            <dt>当前版本号</dt>
+            <dt>版本号</dt>
             <dd className="shell-version-commit">
               <code title={currentCommit ?? undefined}>{shortSha(currentCommit)}</code>
               {currentCommit ? (
                 <button type="button" className="shell-version-copy" onClick={copyCommit}>
-                  {copied ? "已复制" : "复制完整 SHA"}
+                  {copied ? "已复制" : "复制"}
                 </button>
               ) : null}
             </dd>
@@ -315,7 +315,7 @@ export function SystemVersion({ http, active }: { http: Http; active: boolean })
             <dd>
               <span>{formatDateTime(activeUpdatedAt)}</span>
               {activeRelative ? <span className="shell-version-muted"> · {activeRelative}</span> : null}
-              {activeDuration ? <span className="shell-version-muted"> · 部署耗时 {activeDuration}</span> : null}
+              {activeDuration ? <span className="shell-version-muted"> · 耗时 {activeDuration}</span> : null}
             </dd>
           </div>
           {currentSubject ? (
@@ -324,19 +324,12 @@ export function SystemVersion({ http, active }: { http: Http; active: boolean })
               <dd>{currentSubject}</dd>
             </div>
           ) : null}
-          <div>
-            <dt>本次启动</dt>
-            <dd>
-              <span>{formatDateTime(runtime.startedAt)}</span>
-              {runtime.startedAt ? (
-                <span className="shell-version-muted"> · 已运行 {formatDurationMs(nowMs - (parseMs(runtime.startedAt) ?? nowMs))}</span>
-              ) : null}
-            </dd>
-          </div>
-          <div>
-            <dt>宿主执行</dt>
-            <dd>{bridgeText(bridge)}</dd>
-          </div>
+          {bridge.state !== "healthy" && bridge.state !== "disabled" ? (
+            <div>
+              <dt>宿主执行</dt>
+              <dd>{bridgeText(bridge)}</dd>
+            </div>
+          ) : null}
         </dl>
       </section>
 
@@ -344,7 +337,7 @@ export function SystemVersion({ http, active }: { http: Http; active: boolean })
         <section className="shell-version-callout" data-tone={deploying ? "live" : "error"}>
           <div className="shell-version-callout__top">
             <strong>
-              {deploying ? `进行中：${shortSha(deploy.targetCommit)}` : `失败记录：${shortSha(deploy.targetCommit)}`}
+              {deploying ? `正在更新：${shortSha(deploy.targetCommit)}` : `更新未完成：${shortSha(deploy.targetCommit)}`}
             </strong>
             <span>{phaseText(deploy)}{entryDuration(deploy, nowMs) ? ` · ${entryDuration(deploy, nowMs)}` : ""}</span>
           </div>
@@ -353,14 +346,11 @@ export function SystemVersion({ http, active }: { http: Http; active: boolean })
         </section>
       ) : null}
 
-      <section className="shell-version-history" aria-label="最近更新记录">
-        <div className="shell-version-history__head">
-          <h4>最近更新记录</h4>
-          <span>共 {history.length} 条</span>
-        </div>
-        {history.length === 0 ? (
-          <p className="shell-version-empty">暂无自部署记录。通过对话提交部署后，更新状态和时间会记录在这里。</p>
-        ) : (
+      {history.length > 0 ? (
+        <section className="shell-version-history" aria-label="最近更新记录">
+          <div className="shell-version-history__head">
+            <h4>最近更新</h4>
+          </div>
           <ul className="shell-version-list">
             {history.map((item) => {
               const duration = entryDuration(item, nowMs);
@@ -390,8 +380,8 @@ export function SystemVersion({ http, active }: { http: Http; active: boolean })
               );
             })}
           </ul>
-        )}
-      </section>
+        </section>
+      ) : null}
       {error ? <p className="shell-version-row__error" role="status">{error}</p> : null}
     </div>
   );

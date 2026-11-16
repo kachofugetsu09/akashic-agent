@@ -20,7 +20,7 @@ def register(app: FastAPI, context: RequestContext) -> None:
     @app.get("/api/dashboard/runtime-version")
     async def runtime_version() -> dict[str, object]:
         snapshot = await run_file_io(
-            lambda: read_deploy_snapshot(started_at=_STARTED_AT, history_limit=10)
+            lambda: read_deploy_snapshot(started_at=_STARTED_AT, history_limit=5)
         )
         return {
             "bridge": context.require(HOST_STATUS).snapshot(),
