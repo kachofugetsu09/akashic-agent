@@ -1,5 +1,6 @@
 import { chatPortalRoot } from "./chat-layout";
-import { PluginUiSlot, pluginSlotAccepts, usePluginUiCatalogVersion } from "./plugin-ui-runtime";
+import { PluginUiSlot, pluginSlotAccepts, pluginToolSummary, usePluginUiCatalogVersion } from "./plugin-ui-runtime";
+import type { ToolSummaryFacts, ToolTaskSummary } from "@akashic/chat-ui-v1";
 import { ThinkingPlaceholder } from "./thinking-placeholder";
 import { MentionText } from "./composer-suggest";
 import { usePacedText } from "./stream-pace";
@@ -8,7 +9,7 @@ import {
   Message,
   MessageContent,
 } from "@/components/ai-elements/message";
-import { detectMessageRenderingFeatures, messageNeedsMarkdown, toolDataText } from "@/message-rendering-policy";
+import { detectMessageRenderingFeatures, messageNeedsMarkdown, readToolData, toolDataText } from "@/message-rendering-policy";
 import {
   Reasoning,
   ReasoningTrigger,
@@ -20,7 +21,7 @@ import {
   DialogContent,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { AlertCircle, Bot, Brain, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Download, ExternalLink, Gauge, GitFork, MessagesSquare, Minimize2, Wrench, X, ZoomIn, ZoomOut } from "lucide-react";
+import { AlertCircle, Bot, Brain, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Download, ExternalLink, Gauge, MessagesSquare, Minimize2, Wrench, X, ZoomIn, ZoomOut } from "lucide-react";
 import { useStickToBottomContext } from "use-stick-to-bottom";
 import { MarqueeText } from "./marquee-text";
 import { createPortal } from "react-dom";
@@ -472,12 +473,12 @@ function FlowItemView({ item, onCopyToolDetail, partView }: {
   onCopyToolDetail?: (text: string) => void;
   partView?: FlowPartViewProps;
 }) {
+  const { version } = usePluginUiCatalogVersion();
+  const task = item.kind === "tool" ? toolTaskSummary(item.block, version) : null;
   const content = item.kind === "thinking" ? <ThinkingRow content={item.content} streaming={false} />
-    : item.kind === "tool" ? (
-      isDelegatedToolBlock(item.block)
-        ? <DelegatedToolCard block={item.block} onCopyDetail={onCopyToolDetail} />
-        : <ToolStep block={item.block} active={item.block.status === "input-available"} onCopyDetail={onCopyToolDetail} />
-    )
+    : item.kind === "tool" ? (task
+      ? <TaskCard block={item.block} task={task} onCopyDetail={onCopyToolDetail} />
+      : <ToolStep block={item.block} active={item.block.status === "input-available"} onCopyDetail={onCopyToolDetail} />)
     : item.kind === "notice" ? <ContextNoticeRow text={item.text} />
     : item.kind === "compaction" ? <CompactionBoundaryRow boundary={item.value} />
     : item.kind === "narration" ? <div className="timeline-narration">
@@ -573,31 +574,27 @@ function CollapsedToolGroup({ count, durationMs, findText, children }: {
   );
 }
 
-/** 历史与实时回复共用一条流，过程项继续引用原消息和 part。 */
-type DelegatedToolFlowItem = Extract<FlowItem, { kind: "tool" }>;
-type DelegatedBatchItem = { kind: "delegated-batch"; key: string; origin: TimelineMessage; members: DelegatedToolFlowItem[] };
-type RenderFlowItem = FlowItem | DelegatedBatchItem;
+type ToolFlowItem = Extract<FlowItem, { kind: "tool" }>;
+type TaskFlowMember = { item: ToolFlowItem; task: ToolTaskSummary };
+type TaskBatchItem = { kind: "task-batch"; key: string; origin: TimelineMessage; members: TaskFlowMember[] };
+type RenderFlowItem = FlowItem | TaskBatchItem;
 
-/** 连续 2 个及以上委派任务调用收成一组，保持时间线紧凑。 */
-function groupDelegatedBatches(flow: FlowItem[]): RenderFlowItem[] {
+/** 连续 2 个及以上的委派任务收成一组；单个任务仍是普通流项，照常参与"更早步骤"折叠。 */
+function groupTaskBatches(flow: FlowItem[], version: number): RenderFlowItem[] {
   const result: RenderFlowItem[] = [];
-  let batch: DelegatedToolFlowItem[] = [];
+  let batch: TaskFlowMember[] = [];
   const flush = () => {
     if (batch.length >= 2) {
-      result.push({
-        kind: "delegated-batch",
-        key: `delegated-batch-${batch[0].key}`,
-        origin: batch[0].origin,
-        members: batch,
-      });
-    } else if (batch.length === 1) {
-      result.push(batch[0]);
+      result.push({ kind: "task-batch", key: `task-batch-${batch[0].item.key}`, origin: batch[0].item.origin, members: batch });
+    } else {
+      result.push(...batch.map(({ item }) => item));
     }
     batch = [];
   };
   for (const item of flow) {
-    if (item.kind === "tool" && isDelegatedToolBlock(item.block)) {
-      batch.push(item);
+    const task = item.kind === "tool" ? toolTaskSummary(item.block, version) : null;
+    if (item.kind === "tool" && task) {
+      batch.push({ item, task });
     } else {
       flush();
       result.push(item);
@@ -607,6 +604,7 @@ function groupDelegatedBatches(flow: FlowItem[]): RenderFlowItem[] {
   return result;
 }
 
+/** 历史与实时回复共用一条流，过程项继续引用原消息和 part。 */
 function TimelineProcess({ flow, draftThinking = "", draftThinkingActive = false, draftLead, groupTools = true, beforeReasoning, onCopyToolDetail, partView }: {
   flow: FlowItem[];
   draftThinking?: string;
@@ -623,33 +621,34 @@ function TimelineProcess({ flow, draftThinking = "", draftThinkingActive = false
   // 槽位锚在首个过程项之前；纯文本输出没有过程项时退到流开头，仍由提交消息提供上下文。
   const slotIndex = flow.findIndex((item) => item.kind === "thinking" || item.kind === "tool");
   const slotKey = (slotIndex >= 0 ? flow[slotIndex] : flow[0])?.key ?? null;
-  const batched = groupDelegatedBatches(flow);
+  const { version } = usePluginUiCatalogVersion();
+  const batched = groupTaskBatches(flow, version);
   const grouped = groupTools ? groupProcessSteps(batched, (item) => {
     // 思考也能收：它和工具一样是过程里的一步，展开后照样逐行恢复。
     if (item.kind === "thinking") return { foldable: true };
     if (item.kind === "tool") {
       return { foldable: item.block.status !== "input-available", ms: item.block.durationMs };
     }
-    // 旁白、正文与并发委派组卡片不参与"更早步骤"折行，避免信息重复折叠。
+    // 旁白、正文与委派任务组不是可折叠的步骤：它们切断折叠区间，自己原样留在流里。
     return { foldable: false };
   }) : batched;
   if (!flow.length && !draftThinking && !draftLead) return null;
   return <>
     <div className="process-trace">
-      {grouped.map((item) => "members" in item && !("kind" in item) ? (
+      {grouped.map((item) => !("kind" in item) ? (
         <Fragment key={`toolgroup-${item.members[0].key}`}>
           {item.members.some((member) => member.key === slotKey) ? beforeReasoning?.(item.members[0].origin) : null}
           <CollapsedToolGroup count={item.members.length} durationMs={item.durationMs}
-            findText={() => item.members.map((member) => flowItemFindText(member as FlowItem)).join("\n")}>
-            {item.members.map((member) => (
-              <FlowItemView key={member.key} item={member as FlowItem} onCopyToolDetail={onCopyToolDetail} partView={partView} />
+            findText={() => item.members.map((member) => member.kind === "task-batch" ? "" : flowItemFindText(member)).join("\n")}>
+            {item.members.map((member) => member.kind === "task-batch" ? null : (
+              <FlowItemView key={member.key} item={member} onCopyToolDetail={onCopyToolDetail} partView={partView} />
             ))}
           </CollapsedToolGroup>
         </Fragment>
-      ) : item.kind === "delegated-batch" ? (
+      ) : item.kind === "task-batch" ? (
         <Fragment key={item.key}>
-          {item.members.some((member) => member.key === slotKey) ? beforeReasoning?.(item.origin) : null}
-          <DelegatedBatchCard members={item.members} onCopyToolDetail={onCopyToolDetail} />
+          {item.members.some(({ item: member }) => member.key === slotKey) ? beforeReasoning?.(item.origin) : null}
+          <TaskBatchCard members={item.members} onCopyToolDetail={onCopyToolDetail} />
         </Fragment>
       ) : (
         <Fragment key={item.key}>
@@ -742,8 +741,9 @@ function TurnProcessSummary({ items, durationMs, children }: {
   const thinking = items.filter((item) => item.kind === "thinking").length;
   const tools = items.filter((item) => item.kind === "tool");
   const failed = tools.filter((item) => item.kind === "tool" && item.block.status === "output-error").length;
-  const allDelegated = tools.length > 0 && tools.every((item) => item.kind === "tool" && isDelegatedToolBlock(item.block));
-  const label = [thinking ? `思考 ${thinking} 次` : "", tools.length ? (allDelegated ? `委派 ${tools.length} 个任务` : `调用 ${tools.length} 个工具`) : ""]
+  const { version } = usePluginUiCatalogVersion();
+  const allTasks = tools.length > 0 && tools.every((item) => item.kind === "tool" && toolTaskSummary(item.block, version) !== null);
+  const label = [thinking ? `思考 ${thinking} 次` : "", tools.length ? (allTasks ? `委派 ${tools.length} 个任务` : `调用 ${tools.length} 个工具`) : ""]
     .filter(Boolean).join("，") || "过程记录";
   const Icon = tools.length ? Wrench : Brain;
   return (
@@ -1578,40 +1578,13 @@ const ToolStep = memo(function ToolStep({
   onCopyDetail?: (text: string) => void;
 }) {
   const description = toolDescription(block.input);
-  const resultValue = block.output === undefined ? block.errorText : block.output;
-  const hasResult = toolHasValue(resultValue) || Boolean(block.attachments?.length);
-  const hasDetails = toolHasParameters(block.input) || hasResult;
+  const hasDetails = toolHasDetails(block);
   const { open, sticky, rowRef, disclosureRef, toggle, setOpen, onTransitionEnd } = useStickyDisclosure(block.status === "output-error");
   const [mounted, setMounted] = useState(block.status === "output-error");
   const prefetch = () => setMounted(true);
   const showDetails = mounted || open || sticky;
   const findText = useCallback(() => toolDetailFindText(block), [block]);
   const matches = useFindRegion(rowRef, open, findText, (next) => { setMounted(true); setOpen(next); });
-  const parameters = useMemo(
-    () => showDetails ? toolParameters(block.input) : [],
-    [block.input, showDetails],
-  );
-  const result = useMemo(
-    () => showDetails ? toolDataText(resultValue) : "",
-    [showDetails, resultValue],
-  );
-  const parameterCopyText = useMemo(
-    () => showDetails ? toolParameterCopyText(block.input) : "",
-    [block.input, showDetails],
-  );
-  const [copiedDetail, setCopiedDetail] = useState<{
-    section: "parameters" | "result";
-    text: string;
-  } | null>(null);
-  useEffect(() => {
-    if (copiedDetail === null) return;
-    const timer = window.setTimeout(() => setCopiedDetail(null), 1600);
-    return () => window.clearTimeout(timer);
-  }, [copiedDetail]);
-  const copyDetail = (section: "parameters" | "result", text: string) => {
-    onCopyDetail?.(text);
-    setCopiedDetail({ section, text });
-  };
   // 成功是默认结果，不再逐行写"完成"；只有运行中、失败和耗时值得占位。
   const stateLabel = block.status === "input-available"
     ? "运行中"
@@ -1661,43 +1634,70 @@ const ToolStep = memo(function ToolStep({
         )}
         {hasDetails ? (
           <Disclosure open={open} disclosureRef={disclosureRef} onTransitionEnd={onTransitionEnd}>
-            {showDetails ? <div className="tool-detail-surface">
-                {parameters.length > 0 ? (
-                  <section className="tool-detail-section" aria-label="工具参数">
-                    <ToolDetailHeading
-                      label="参数"
-                      copied={copiedDetail?.section === "parameters" && copiedDetail.text === parameterCopyText}
-                      onCopy={onCopyDetail ? () => copyDetail("parameters", parameterCopyText) : undefined}
-                    />
-                    <dl className="tool-parameter-list">
-                      {parameters.map(([name, value]) => (
-                        <div className="tool-parameter" key={name}>
-                          <dt>{name}</dt>
-                          <dd>{value}</dd>
-                        </div>
-                      ))}
-                    </dl>
-                  </section>
-                ) : null}
-                {hasResult ? (
-                  <section className={`tool-detail-section${block.status === "output-error" ? " is-error" : ""}`} aria-label={block.status === "output-error" ? "工具错误" : "工具结果"}>
-                    <ToolDetailHeading
-                      label={block.status === "output-error" ? "错误" : "结果"}
-                      copied={copiedDetail?.section === "result" && copiedDetail.text === result}
-                      onCopy={onCopyDetail ? () => copyDetail("result", result) : undefined}
-                    />
-                    {toolHasValue(resultValue) ? <ToolResultContent value={resultValue} error={block.status === "output-error"}
-                      tool={{ owner: block.owner, name: block.name, arguments: block.input }} /> : null}
-                    {block.attachments?.length ? <SentAttachments items={block.attachments} /> : null}
-                  </section>
-                ) : null}
-            </div> : null}
+            {showDetails ? <ToolDetailSurface block={block} open={showDetails} onCopyDetail={onCopyDetail} /> : null}
           </Disclosure>
         ) : null}
       </div>
     </div>
   );
 });
+
+function toolHasDetails(block: ToolBlock): boolean {
+  const resultValue = block.output === undefined ? block.errorText : block.output;
+  return toolHasParameters(block.input) || toolHasValue(resultValue) || Boolean(block.attachments?.length);
+}
+
+// 展开后的参数与结果：工具行与任务卡共用；收起时不计算参数与结果文字。
+function ToolDetailSurface({ block, open, onCopyDetail, className = "" }: {
+  block: ToolBlock;
+  open: boolean;
+  onCopyDetail?: (text: string) => void;
+  className?: string;
+}) {
+  const resultValue = block.output === undefined ? block.errorText : block.output;
+  const hasResult = toolHasValue(resultValue) || Boolean(block.attachments?.length);
+  const parameters = useMemo(() => open ? toolParameters(block.input) : [], [block.input, open]);
+  const result = useMemo(() => open ? toolDataText(resultValue) : "", [open, resultValue]);
+  const parameterCopyText = useMemo(() => open ? toolParameterCopyText(block.input) : "", [block.input, open]);
+  const [copiedDetail, setCopiedDetail] = useState<{ section: "parameters" | "result"; text: string } | null>(null);
+  useEffect(() => {
+    if (copiedDetail === null) return;
+    const timer = window.setTimeout(() => setCopiedDetail(null), 1600);
+    return () => window.clearTimeout(timer);
+  }, [copiedDetail]);
+  const copy = (section: "parameters" | "result", text: string) => onCopyDetail ? () => {
+    onCopyDetail(text);
+    setCopiedDetail({ section, text });
+  } : undefined;
+  const error = block.status === "output-error";
+  return (
+    <div className={`tool-detail-surface${className ? ` ${className}` : ""}`}>
+      {parameters.length > 0 ? (
+        <section className="tool-detail-section" aria-label="工具参数">
+          <ToolDetailHeading label="参数" onCopy={copy("parameters", parameterCopyText)}
+            copied={copiedDetail?.section === "parameters" && copiedDetail.text === parameterCopyText} />
+          <dl className="tool-parameter-list">
+            {parameters.map(([name, value]) => (
+              <div className="tool-parameter" key={name}>
+                <dt>{name}</dt>
+                <dd>{value}</dd>
+              </div>
+            ))}
+          </dl>
+        </section>
+      ) : null}
+      {open && hasResult ? (
+        <section className={`tool-detail-section${error ? " is-error" : ""}`} aria-label={error ? "工具错误" : "工具结果"}>
+          <ToolDetailHeading label={error ? "错误" : "结果"} onCopy={copy("result", result)}
+            copied={copiedDetail?.section === "result" && copiedDetail.text === result} />
+          {toolHasValue(resultValue) ? <ToolResultContent value={resultValue} error={error}
+            tool={{ owner: block.owner, name: block.name, arguments: block.input }} /> : null}
+          {block.attachments?.length ? <SentAttachments items={block.attachments} /> : null}
+        </section>
+      ) : null}
+    </div>
+  );
+}
 
 function ToolDetailHeading({
   label,
@@ -1784,348 +1784,299 @@ function toolDescription(input: unknown): ToolDescription {
   const args = input as Record<string, unknown>;
   const text = (name: string) => typeof args[name] === "string" ? (args[name] as string).trim() : "";
   if (text("description")) return { kind: "text", text: text("description") };
-  if (text("label")) return { kind: "text", text: text("label") };
-  if (text("task")) return { kind: "text", text: text("task").split("\n").find((line) => line.trim())?.trim() ?? "" };
-  if (text("title")) return { kind: "text", text: text("title") };
   if (text("path")) return { kind: "path", text: text("path").split(/[\\/]/u).filter(Boolean).slice(-3).join("/"), full: text("path") };
   if (text("url")) return { kind: "text", text: text("url").replace(/^https?:\/\//u, "") };
   if (text("query")) return { kind: "text", text: text("query") };
+  if (text("label")) return { kind: "text", text: text("label") };
+  if (text("title")) return { kind: "text", text: text("title") };
+  if (text("task")) return { kind: "text", text: firstLine(text("task")) };
   return { kind: "text", text: text("command").split("\n")[0] ?? "" };
 }
 
-function isDelegatedToolBlock(block: ToolBlock): boolean {
-  if (typeof block.input !== "object" || block.input === null || Array.isArray(block.input)) return false;
-  const task = (block.input as Record<string, unknown>).task;
-  return typeof task === "string" && task.trim().length > 0;
+const SUMMARY_STATUS: Record<ToolBlock["status"], ToolSummaryFacts["status"]> = {
+  "input-available": "running",
+  "output-available": "done",
+  "output-error": "error",
+  "output-unknown": "unknown",
+};
+
+// 同一次调用只在状态、结果或插件目录变化时重新询问 owner；参数对象来自消息，渲染之间保持同一引用。
+const taskSummaryCache = new WeakMap<object, { status: ToolBlock["status"]; raw: unknown; version: number; task: ToolTaskSummary | null }>();
+
+/** 工具 owner 把这次调用描述成委派任务时返回摘要；其他调用（含没有 owner 的归档调用）返回 null。 */
+function toolTaskSummary(block: ToolBlock, version: number): ToolTaskSummary | null {
+  if (!block.owner || typeof block.input !== "object" || block.input === null) return null;
+  const raw = block.output === undefined ? block.errorText : block.output;
+  const hit = taskSummaryCache.get(block.input);
+  if (hit && hit.status === block.status && hit.raw === raw && hit.version === version) return hit.task;
+  const task = pluginToolSummary({
+    name: block.name, arguments: block.input, status: SUMMARY_STATUS[block.status], value: readToolData(raw),
+  }, block.owner);
+  taskSummaryCache.set(block.input, { status: block.status, raw, version, task });
+  return task;
 }
 
-type DelegatedStatusTone = "live" | "done" | "error" | "idle";
+type TaskTone = "live" | "done" | "error" | "idle";
 
-interface DelegatedMeta {
+interface TaskView {
   title: string;
-  tags: string[];
-  modelLine: string;
+  tags: readonly string[];
+  detail: string;
   cwd: string;
   preview: string;
-  statusTone: DelegatedStatusTone;
-  statusLabel: string;
-  forked: boolean;
+  tone: TaskTone;
+  stateLabel: string;
 }
 
-function delegatedPreviewText(block: ToolBlock): string {
-  if (block.status === "input-available") return "正在执行…";
-  if (block.status === "output-unknown") return "状态未知";
-  const raw = toolDataText(block.output === undefined ? block.errorText : block.output).trim();
-  if (!raw) return block.status === "output-error" ? "执行失败" : "";
-  const lines = raw.split("\n").map((line) => line.trim()).filter(Boolean);
-  const meaningful = lines.find((line) => (
-    !line.startsWith("[子任务「")
-    && !line.startsWith("[外部任务")
-    && !line.startsWith("退出原因:")
-    && !line.startsWith("状态:")
-  ));
-  return (meaningful ?? lines[0] ?? "").slice(0, 140);
-}
-
-function delegatedMeta(block: ToolBlock): DelegatedMeta {
-  const args = (typeof block.input === "object" && block.input !== null && !Array.isArray(block.input))
-    ? (block.input as Record<string, unknown>)
-    : {};
-  const str = (key: string) => typeof args[key] === "string" ? (args[key] as string).trim() : "";
-  const title = str("label") || str("task").split("\n").find((l) => l.trim())?.trim() || block.name;
-  const tags: string[] = [];
-  const forked = args.fork === true;
-  if (forked) tags.push("fork");
-  if (args.isolation === "worktree") tags.push("worktree");
-  if (args.read_only === true || str("profile") === "research") tags.push("只读");
-  if (args.run_in_background === true) tags.push("后台");
-  const modelLine = [str("connection"), str("model"), str("reasoning_effort")].filter(Boolean).join(" · ");
-  const cwd = str("cwd");
-  const statusTone: DelegatedStatusTone = block.status === "input-available" ? "live"
+// 插件只给文字；状态缺省按调用回执，预览缺省取结果首行。
+function taskView(block: ToolBlock, task: ToolTaskSummary): TaskView {
+  const tone: TaskTone = task.state?.tone ?? (block.status === "input-available" ? "live"
     : block.status === "output-error" ? "error"
     : block.status === "output-available" ? "done"
-    : "idle";
-  const statusLabel = statusTone === "live" ? "运行中"
-    : statusTone === "error" ? "失败"
-    : statusTone === "done" ? (block.durationMs !== undefined ? formatToolDuration(block.durationMs) : "完成")
-    : "未知";
-  const preview = delegatedPreviewText(block);
-  return { title, tags, modelLine, cwd, preview, statusTone, statusLabel, forked };
+    : "idle");
+  const stateLabel = task.state?.label ?? (block.status === "input-available" ? "运行中"
+    : block.status === "output-error" ? "失败"
+    : block.status === "output-available" ? (block.durationMs !== undefined ? formatToolDuration(block.durationMs) : "完成")
+    : "状态未知");
+  // 插件给了预览就不再读结果：长结果在流式期间每帧都会重新渲染。
+  const preview = task.preview?.trim() || (block.status === "input-available" ? "正在执行…"
+    : firstLine(toolDataText(block.output === undefined ? block.errorText : block.output))
+      || (block.status === "output-error" ? "执行失败" : ""));
+  return {
+    title: task.title.trim(),
+    tags: task.tags ?? [],
+    detail: task.detail?.trim() ?? "",
+    cwd: task.cwd?.trim() ?? "",
+    preview: preview.slice(0, 140),
+    tone,
+    stateLabel,
+  };
 }
 
-function DelegatedStatusGlyph({ tone, forked }: { tone: DelegatedStatusTone; forked: boolean }) {
+function firstLine(text: string): string {
+  for (let start = 0; start < text.length;) {
+    const end = text.indexOf("\n", start);
+    const line = text.slice(start, end < 0 ? text.length : end).trim();
+    if (line) return line;
+    if (end < 0) break;
+    start = end + 1;
+  }
+  return "";
+}
+
+function TaskGlyph({ tone }: { tone: TaskTone }) {
   return (
     <span className={`delegated-glyph is-${tone}`} aria-hidden="true">
-      {tone === "error" ? <AlertCircle size={12} />
-        : tone === "done" ? <Check size={12} />
-        : forked ? <GitFork size={12} />
-        : <Bot size={12} />}
+      {tone === "error" ? <AlertCircle size={12} /> : tone === "done" ? <Check size={12} /> : <Bot size={12} />}
     </span>
   );
 }
 
-function DelegatedHoverCard({ id, meta, anchor }: { id: string; meta: DelegatedMeta; anchor: DOMRect }) {
+// 同一时刻只留一张浮卡：鼠标停在一行、键盘焦点在另一行时，后出现的替换先出现的。
+let activeHoverCard: ((anchor: DOMRect | null) => void) | null = null;
+const HOVER_OPEN_MS = 280;
+const HOVER_CLOSE_MS = 120;
+
+// 悬停或键盘聚焦一段时间后浮出详情；指针可以移进浮卡，Esc、滚动、缩放窗口与离开都会收起。
+function useTaskHoverCard() {
+  const [anchor, setAnchor] = useState<DOMRect | null>(null);
+  const timer = useRef<number | null>(null);
+  const cancel = useCallback(() => {
+    if (timer.current !== null) window.clearTimeout(timer.current);
+    timer.current = null;
+  }, []);
+  const hide = useCallback(() => {
+    cancel();
+    if (activeHoverCard === setAnchor) activeHoverCard = null;
+    setAnchor(null);
+  }, [cancel]);
+  const show = useCallback((el: HTMLElement) => {
+    cancel();
+    timer.current = window.setTimeout(() => {
+      timer.current = null;
+      if (!el.isConnected) return;
+      if (activeHoverCard !== setAnchor) activeHoverCard?.(null);
+      activeHoverCard = setAnchor;
+      // 1. 在出现的这一刻量锚点：等待期间的滚动或布局变化不留下过期坐标
+      setAnchor(el.getBoundingClientRect());
+    }, HOVER_OPEN_MS);
+  }, [cancel]);
+  const leave = useCallback(() => {
+    cancel();
+    timer.current = window.setTimeout(hide, HOVER_CLOSE_MS);
+  }, [cancel, hide]);
+  useEffect(() => hide, [hide]);
+  useEffect(() => {
+    if (!anchor) return;
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") hide(); };
+    window.addEventListener("scroll", hide, true);
+    window.addEventListener("resize", hide);
+    document.addEventListener("keydown", onKeyDown, true);
+    return () => {
+      window.removeEventListener("scroll", hide, true);
+      window.removeEventListener("resize", hide);
+      document.removeEventListener("keydown", onKeyDown, true);
+    };
+  }, [anchor, hide]);
+  return { anchor, show, hide, leave, cancel };
+}
+
+function TaskHoverCard({ id, view, anchor, onPointerEnter, onPointerLeave }: {
+  id: string;
+  view: TaskView;
+  anchor: DOMRect;
+  onPointerEnter: () => void;
+  onPointerLeave: () => void;
+}) {
   const cardRef = useRef<HTMLDivElement | null>(null);
   const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
   useLayoutEffect(() => {
     const el = cardRef.current;
     if (!el) return;
+    // 1. 优先放在行上方；放不下时放到下方，并整体压回视口内
     const box = el.getBoundingClientRect();
     const edge = 8;
-    const gap = 8;
-    const aboveTop = anchor.top - box.height - gap;
-    const belowTop = Math.min(window.innerHeight - box.height - edge, anchor.bottom + gap);
-    const top = aboveTop >= edge ? aboveTop : Math.max(edge, belowTop);
+    const above = anchor.top - box.height - edge;
+    const below = Math.min(window.innerHeight - box.height - edge, anchor.bottom + edge);
     const left = Math.min(Math.max(12, anchor.left + 16), Math.max(12, window.innerWidth - box.width - 12));
-    setPos({ top, left });
-  }, [anchor, meta]);
+    setPos({ top: above >= edge ? above : Math.max(edge, below), left });
+  }, [anchor]);
   return createPortal(
-    <div
-      ref={cardRef}
-      id={id}
-      className="delegated-hover-card"
-      role="tooltip"
-      style={pos ? { top: pos.top, left: pos.left, visibility: "visible" } : { top: 0, left: 0, visibility: "hidden" }}
-    >
+    <div ref={cardRef} id={id} className="delegated-hover-card" role="tooltip"
+      onPointerEnter={onPointerEnter} onPointerLeave={onPointerLeave}
+      style={pos ? { top: pos.top, left: pos.left } : { top: 0, left: 0, visibility: "hidden" }}>
       <div className="delegated-hover-card__head">
-        <DelegatedStatusGlyph tone={meta.statusTone} forked={meta.forked} />
-        <span className="delegated-hover-card__title">{meta.title}</span>
-        <span className={`delegated-hover-card__status is-${meta.statusTone}`}>{meta.statusLabel}</span>
+        <TaskGlyph tone={view.tone} />
+        <span className="delegated-hover-card__title">{view.title}</span>
+        <span className={`delegated-hover-card__status is-${view.tone}`}>{view.stateLabel}</span>
       </div>
-      {(meta.modelLine || meta.cwd || meta.tags.length > 0) ? (
+      {view.detail || view.cwd || view.tags.length ? (
         <div className="delegated-hover-card__meta">
-          {meta.tags.map((tag) => <span key={tag} className="delegated-tag">{tag}</span>)}
-          {meta.modelLine ? <span>{meta.modelLine}</span> : null}
-          {meta.cwd ? <code className="delegated-hover-card__cwd">{meta.cwd}</code> : null}
+          {view.tags.map((tag) => <span key={tag} className="delegated-tag">{tag}</span>)}
+          {view.detail ? <span>{view.detail}</span> : null}
+          {view.cwd ? <code className="delegated-hover-card__cwd">{view.cwd}</code> : null}
         </div>
       ) : null}
-      {meta.preview ? <p className="delegated-hover-card__preview">{meta.preview}</p> : null}
+      {view.preview ? <p className="delegated-hover-card__preview">{view.preview}</p> : null}
     </div>,
     chatPortalRoot(),
   );
 }
 
-const DelegatedToolCard = memo(function DelegatedToolCard({
-  block,
-  compact = false,
-  onCopyDetail,
-}: {
-  block: ToolBlock;
-  compact?: boolean;
-  onCopyDetail?: (text: string) => void;
-}) {
-  const meta = useMemo(() => delegatedMeta(block), [block]);
-  const resultValue = block.output === undefined ? block.errorText : block.output;
-  const hasResult = toolHasValue(resultValue) || Boolean(block.attachments?.length);
-  const hasDetails = toolHasParameters(block.input) || hasResult;
-  const { open, instant, rowRef, toggle, setOpen } = useStickyDisclosure(block.status === "output-error");
-  const findText = useCallback(() => toolDetailFindText(block), [block]);
-  const matches = useFindRegion(rowRef, open, findText, setOpen);
-  const parameters = useMemo(() => open ? toolParameters(block.input) : [], [block.input, open]);
-  const result = useMemo(() => open ? toolDataText(resultValue) : "", [open, resultValue]);
-  const parameterCopyText = useMemo(() => open ? toolParameterCopyText(block.input) : "", [block.input, open]);
-  const [copiedDetail, setCopiedDetail] = useState<{ section: "parameters" | "result"; text: string } | null>(null);
-  const tooltipId = useId();
-  const [hoverRect, setHoverRect] = useState<DOMRect | null>(null);
-  const hoverTimerRef = useRef<number | null>(null);
-  const clearHover = useCallback(() => {
-    if (hoverTimerRef.current !== null) {
-      window.clearTimeout(hoverTimerRef.current);
-      hoverTimerRef.current = null;
-    }
-    setHoverRect(null);
-  }, []);
-  useEffect(() => clearHover, [clearHover]);
-  useEffect(() => {
-    if (!hoverRect) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") clearHover();
-    };
-    window.addEventListener("scroll", clearHover, true);
-    window.addEventListener("resize", clearHover);
-    document.addEventListener("keydown", onKeyDown, true);
-    return () => {
-      window.removeEventListener("scroll", clearHover, true);
-      window.removeEventListener("resize", clearHover);
-      document.removeEventListener("keydown", onKeyDown, true);
-    };
-  }, [hoverRect, clearHover]);
-  const startHover = useCallback((el: HTMLElement) => {
-    clearHover();
-    hoverTimerRef.current = window.setTimeout(() => {
-      if (el.isConnected) setHoverRect(el.getBoundingClientRect());
-    }, 280);
-  }, [clearHover]);
-  useEffect(() => {
-    if (copiedDetail === null) return;
-    const timer = window.setTimeout(() => setCopiedDetail(null), 1600);
-    return () => window.clearTimeout(timer);
-  }, [copiedDetail]);
-  const copyDetail = (section: "parameters" | "result", text: string) => {
-    onCopyDetail?.(text);
-    setCopiedDetail({ section, text });
-  };
-
-  const summaryContent = (
+function TaskRowContent({ view, open, expandable, matches }: { view: TaskView; open: boolean; expandable: boolean; matches: number }) {
+  return (
     <span className="delegated-row-inner">
-      <DelegatedStatusGlyph tone={meta.statusTone} forked={meta.forked} />
+      <TaskGlyph tone={view.tone} />
       <span className="delegated-row-main">
         <span className="delegated-row-top">
-          <span className="delegated-row-title">{meta.title}</span>
-          {meta.tags.map((tag) => <span key={tag} className="delegated-tag">{tag}</span>)}
-          {meta.modelLine ? <span className="delegated-model">{meta.modelLine}</span> : null}
+          <span className="delegated-row-title">{view.title}</span>
+          {view.tags.map((tag) => <span key={tag} className="delegated-tag">{tag}</span>)}
+          {view.detail ? <span className="delegated-model">{view.detail}</span> : null}
         </span>
-        {meta.preview ? <span className={`delegated-row-preview is-${meta.statusTone}`}>{meta.preview}</span> : null}
+        {view.preview ? <span className={`delegated-row-preview is-${view.tone}`}>{view.preview}</span> : null}
       </span>
       <span className="delegated-row-meta">
         <FindRegionCount count={matches} />
-        <span className={`delegated-state-label is-${meta.statusTone}`}>{meta.statusLabel}</span>
-        {hasDetails ? <ChevronDown className={`tool-step-chevron ${open ? "open" : ""}`} size={13} aria-hidden="true" /> : null}
+        <span className={`delegated-state-label is-${view.tone}`}>{view.stateLabel}</span>
+        {expandable ? <ChevronDown className={`tool-step-chevron ${open ? "open" : ""}`} size={13} aria-hidden="true" /> : null}
       </span>
     </span>
   );
+}
 
+const TaskCard = memo(function TaskCard({ block, task, member = false, onCopyDetail }: {
+  block: ToolBlock;
+  task: ToolTaskSummary;
+  member?: boolean;
+  onCopyDetail?: (text: string) => void;
+}) {
+  const view = taskView(block, task);
+  const hasDetails = toolHasDetails(block);
+  const { open, sticky, rowRef, disclosureRef, toggle, setOpen, onTransitionEnd } = useStickyDisclosure(block.status === "output-error");
+  const findText = useCallback(() => toolDetailFindText(block), [block]);
+  const matches = useFindRegion(rowRef, open, findText, setOpen);
+  const tooltipId = useId();
+  const hover = useTaskHoverCard();
+  // 展开后详情已经在眼前，不再浮出摘要。
+  const hoverProps = {
+    onPointerEnter: (event: ReactPointerEvent<HTMLElement>) => { if (event.pointerType === "mouse" && !open) hover.show(event.currentTarget); },
+    onPointerLeave: hover.leave,
+  };
+  const content = <TaskRowContent view={view} open={open} expandable={hasDetails} matches={matches} />;
   return (
-    <div className={`delegated-card${compact ? " is-member" : " is-single"}${meta.statusTone === "error" ? " is-error" : ""}`}>
+    <div className={`delegated-card${member ? " is-member" : " is-single"}${view.tone === "error" ? " is-error" : ""}`}>
       {hasDetails ? (
-        <div ref={rowRef} className={`tool-step-sticky${open ? " is-open" : ""}`}>
-          <button
-            type="button"
-            className="delegated-row-trigger"
-            aria-expanded={open}
-            aria-describedby={hoverRect ? tooltipId : undefined}
-            onPointerEnter={(e) => { if (e.pointerType === "mouse" && !open) startHover(e.currentTarget); }}
-            onPointerLeave={clearHover}
-            onFocus={(e) => { if (e.currentTarget.matches(":focus-visible") && !open) startHover(e.currentTarget); }}
-            onBlur={clearHover}
-            onClick={() => { clearHover(); toggle(); }}
-          >
-            {summaryContent}
+        <div ref={rowRef} className={`tool-step-sticky${sticky ? " is-open" : ""}`}>
+          <button type="button" className="delegated-row-trigger" aria-expanded={open}
+            aria-describedby={hover.anchor ? tooltipId : undefined} {...hoverProps}
+            onFocus={(event) => { if (!open && event.currentTarget.matches(":focus-visible")) hover.show(event.currentTarget); }}
+            onBlur={hover.hide}
+            onClick={() => { hover.hide(); toggle(); }}>
+            {content}
           </button>
         </div>
-      ) : (
-        <div
-          className="delegated-row-trigger is-static"
-          onPointerEnter={(e) => { if (e.pointerType === "mouse") startHover(e.currentTarget); }}
-          onPointerLeave={clearHover}
-        >
-          {summaryContent}
-        </div>
-      )}
-      {hoverRect ? <DelegatedHoverCard id={tooltipId} meta={meta} anchor={hoverRect} /> : null}
+      ) : <div className="delegated-row-trigger is-static" {...hoverProps}>{content}</div>}
+      {hover.anchor ? <TaskHoverCard id={tooltipId} view={view} anchor={hover.anchor}
+        onPointerEnter={hover.cancel} onPointerLeave={hover.leave} /> : null}
       {hasDetails ? (
-        <Disclosure open={open} instant={instant}>
-          <div className="tool-detail-surface delegated-detail-surface">
-            {parameters.length > 0 ? (
-              <section className="tool-detail-section" aria-label="工具参数">
-                <ToolDetailHeading
-                  label="参数"
-                  copied={copiedDetail?.section === "parameters" && copiedDetail.text === parameterCopyText}
-                  onCopy={onCopyDetail ? () => copyDetail("parameters", parameterCopyText) : undefined}
-                />
-                <dl className="tool-parameter-list">
-                  {parameters.map(([name, value]) => (
-                    <div className="tool-parameter" key={name}>
-                      <dt>{name}</dt>
-                      <dd>{value}</dd>
-                    </div>
-                  ))}
-                </dl>
-              </section>
-            ) : null}
-            {open && hasResult ? (
-              <section className={`tool-detail-section${block.status === "output-error" ? " is-error" : ""}`}
-                aria-label={block.status === "output-error" ? "工具错误" : "工具结果"}>
-                <ToolDetailHeading
-                  label={block.status === "output-error" ? "错误" : "结果"}
-                  copied={copiedDetail?.section === "result" && copiedDetail.text === result}
-                  onCopy={onCopyDetail ? () => copyDetail("result", result) : undefined}
-                />
-                {toolHasValue(resultValue) ? <ToolResultContent value={resultValue} error={block.status === "output-error"}
-                  tool={{ owner: block.owner, name: block.name, arguments: block.input }} /> : null}
-                {block.attachments?.length ? <SentAttachments items={block.attachments} /> : null}
-              </section>
-            ) : null}
-          </div>
+        <Disclosure open={open} disclosureRef={disclosureRef} onTransitionEnd={onTransitionEnd}>
+          <ToolDetailSurface block={block} open={open || sticky} onCopyDetail={onCopyDetail} className="delegated-detail-surface" />
         </Disclosure>
       ) : null}
     </div>
   );
 });
 
-function DelegatedBatchCard({
-  members,
-  onCopyToolDetail,
-}: {
-  members: DelegatedToolFlowItem[];
+// 组头的计数按运行中、失败、完成、其他排列；运行中与完成用固定说法，失败与其他按卡片上的状态文字（如"已取消"）分别计数。
+function taskBatchCounts(views: TaskView[]): { summary: string; live: number; failed: number } {
+  const counts = new Map<string, number>();
+  for (const tone of ["live", "error", "done", "idle"] as const) {
+    for (const view of views.filter((item) => item.tone === tone)) {
+      const label = tone === "live" ? "运行中" : tone === "done" ? "完成" : view.stateLabel;
+      counts.set(label, (counts.get(label) ?? 0) + 1);
+    }
+  }
+  return {
+    summary: [...counts].map(([label, count]) => `${count} ${label}`).join(" · "),
+    live: views.filter((view) => view.tone === "live").length,
+    failed: views.filter((view) => view.tone === "error").length,
+  };
+}
+
+function TaskBatchCard({ members, onCopyToolDetail }: {
+  members: TaskFlowMember[];
   onCopyToolDetail?: (text: string) => void;
 }) {
-  const counts = useMemo(() => {
-    let live = 0;
-    let failed = 0;
-    let done = 0;
-    let unknown = 0;
-    for (const m of members) {
-      if (m.block.status === "input-available") live += 1;
-      else if (m.block.status === "output-error") failed += 1;
-      else if (m.block.status === "output-available") done += 1;
-      else unknown += 1;
-    }
-    const summary = [
-      live ? `${live} 运行中` : "",
-      failed ? `${failed} 失败` : "",
-      done ? `${done} 完成` : "",
-      unknown ? `${unknown} 未知` : "",
-    ].filter(Boolean).join(" · ");
-    return { live, failed, done, summary, active: live > 0 || failed > 0 };
-  }, [members]);
-
-  const { open, instant, rowRef, toggle, setOpen } = useStickyDisclosure(counts.active);
-  const [mounted, setMounted] = useState(counts.active);
+  const views = members.map(({ item, task }) => taskView(item.block, task));
+  const counts = taskBatchCounts(views);
+  // 有任务在跑或失败时默认展开；之后的开合只由读者决定，状态变化不把组弹开或收起。
+  const { open, sticky, rowRef, disclosureRef, toggle, setOpen, onTransitionEnd } = useStickyDisclosure(counts.live > 0 || counts.failed > 0);
+  const [mounted, setMounted] = useState(open);
   const prefetch = () => setMounted(true);
-  const findText = useCallback(() => members.map(flowItemFindText).join("\n"), [members]);
+  const findText = useCallback(() => members.map(({ item }) => flowItemFindText(item)).join("\n"), [members]);
   const matches = useFindRegion(rowRef, open, findText, (next) => { setMounted(true); setOpen(next); });
-
-  const allTimed = members.every((m) => m.block.durationMs !== undefined);
-  const totalMs = allTimed ? members.reduce((sum, m) => sum + (m.block.durationMs ?? 0), 0) : undefined;
-
   return (
-    <div className={`delegated-group${open ? " is-open" : ""}${counts.failed ? " has-error" : ""}`}>
-      <div ref={rowRef} className={`tool-step-sticky${open ? " is-open" : ""}`}>
-        <button
-          type="button"
-          className="delegated-group-summary"
-          aria-expanded={open}
-          onPointerEnter={prefetch}
-          onFocus={prefetch}
-          onClick={() => { setMounted(true); toggle(); }}
-        >
+    <div className={`delegated-group${sticky ? " is-open" : ""}${counts.failed ? " has-error" : ""}`}>
+      <div ref={rowRef} className={`tool-step-sticky${sticky ? " is-open" : ""}`}>
+        <button type="button" className="delegated-group-summary" aria-expanded={open}
+          onPointerEnter={prefetch} onFocus={prefetch} onClick={() => { setMounted(true); toggle(); }}>
           <span className="delegated-dot-stack" aria-hidden="true">
-            {members.slice(0, 3).map((m) => {
-              const tone = m.block.status === "input-available" ? "live"
-                : m.block.status === "output-error" ? "error"
-                : m.block.status === "output-available" ? "done"
-                : "idle";
-              return <span key={m.key} className={`delegated-dot is-${tone}`} />;
-            })}
+            {views.slice(0, 3).map((view, index) => <span key={members[index].item.key} className={`delegated-dot is-${view.tone}`} />)}
             {members.length > 3 ? <span className="delegated-dot-more">+{members.length - 3}</span> : null}
           </span>
           <span className="delegated-group-title">{members.length} 个委派任务</span>
-          <span className={`delegated-group-counts${counts.live ? " is-live" : counts.failed ? " is-error" : ""}`}>
-            {counts.summary}
-          </span>
+          <span className={`delegated-group-counts${counts.live ? " is-live" : counts.failed ? " is-error" : ""}`}>{counts.summary}</span>
           <span className="delegated-group-right">
             <FindRegionCount count={matches} />
-            {totalMs !== undefined ? <span className="delegated-group-duration">{formatToolDuration(totalMs)}</span> : null}
             <ChevronDown className={`tool-group-caret ${open ? "open" : ""}`} size={13} aria-hidden="true" />
           </span>
         </button>
       </div>
-      <Disclosure open={open} instant={instant}>
+      <Disclosure open={open} disclosureRef={disclosureRef} onTransitionEnd={onTransitionEnd}>
         {mounted ? (
           <div className="delegated-group-members">
-            {members.map((member) => (
-              <DelegatedToolCard key={member.key} block={member.block} compact onCopyDetail={onCopyToolDetail} />
+            {members.map(({ item, task }) => (
+              <TaskCard key={item.key} block={item.block} task={task} member onCopyDetail={onCopyToolDetail} />
             ))}
           </div>
         ) : null}

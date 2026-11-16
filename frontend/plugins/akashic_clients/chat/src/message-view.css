@@ -2738,7 +2738,12 @@ button.tool-step-summary:active {
   white-space: nowrap;
 }
 
-/* 并发委派任务组卡片与单任务卡片（对应设计稿 01 & 02）。 */
+/* 委派任务组与单任务卡片：文字由工具 owner 经 tool.summary 给出，样式与交互归宿主。
+   --delegated-head-h 是组头的固定高度，组内展开的任务行吸顶时让出这一行。 */
+.delegated-group {
+  --delegated-head-h: 40px;
+}
+
 .delegated-group,
 .delegated-card.is-single {
   min-width: 0;
@@ -2769,6 +2774,11 @@ button.tool-step-summary:active {
   font-size: 0.75rem;
   text-align: start;
   cursor: pointer;
+}
+
+.delegated-group-summary {
+  height: var(--delegated-head-h);
+  padding-block: 0;
 }
 
 .delegated-row-trigger.is-static {
@@ -2915,6 +2925,14 @@ button.tool-step-summary:active {
   color: var(--chat-ink);
 }
 
+/* 透明描边只在强制颜色下显形，底色被系统色替换后标签与圆标仍有边界。 */
+.delegated-tag,
+.delegated-glyph,
+.delegated-hover-card__status {
+  outline: 1px solid transparent;
+  outline-offset: -1px;
+}
+
 .delegated-tag {
   flex: none;
   padding: 1px 6px;
@@ -2981,12 +2999,30 @@ button.tool-step-summary:active {
 }
 
 .delegated-group.is-open .delegated-card.is-member > .tool-step-sticky.is-open {
-  top: calc(var(--heading-cover, 0px) + 40px);
+  top: calc(var(--heading-cover, 0px) + var(--delegated-head-h));
   z-index: 3;
 }
 
 .turn-process.is-open .turn-process-items .delegated-group.is-open .delegated-card.is-member > .tool-step-sticky.is-open {
-  top: calc(var(--heading-cover, 0px) + var(--tool-sticky-h) + 40px);
+  top: calc(var(--heading-cover, 0px) + var(--tool-sticky-h) + var(--delegated-head-h));
+}
+
+@media (pointer: coarse) {
+  .delegated-group {
+    --delegated-head-h: 44px;
+  }
+}
+
+/* 强制颜色会把底色换成 Canvas，只靠底色画的状态圆点会消失：改用系统前景色画。 */
+@media (forced-colors: active) {
+  .delegated-dot {
+    forced-color-adjust: none;
+    background: CanvasText;
+  }
+
+  .delegated-dot.is-idle {
+    background: GrayText;
+  }
 }
 
 .delegated-detail-surface {
@@ -3011,20 +3047,18 @@ button.tool-step-summary:active {
   color: var(--chat-ink);
   font-family: var(--ak-type-ui);
   font-size: 0.75rem;
-  pointer-events: none;
 }
 
 .delegated-hover-card__head {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
 }
 
+/* 行里放不下的任务名在浮卡里完整显示。 */
 .delegated-hover-card__title {
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
   font-weight: 600;
 }
 
@@ -3063,6 +3097,8 @@ button.tool-step-summary:active {
 }
 
 .delegated-hover-card__cwd {
+  max-width: 100%;
+  overflow-wrap: anywhere;
   padding: 1px 5px;
   border-radius: var(--ak-radius-xs);
   background: var(--ak-paper-sheet);

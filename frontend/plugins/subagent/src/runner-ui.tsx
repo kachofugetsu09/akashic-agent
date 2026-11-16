@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { render, ToolText, type HeaderMetaItem, type PluginUiContext, type PluginUiDefinition } from "@akashic/chat-ui-v1";
+import { render, ToolText, type HeaderMetaItem, type PluginUiContext, type PluginUiDefinition, type ToolSummaryFacts, type ToolTaskSummary } from "@akashic/chat-ui-v1";
 import { ICONS, useValue, valueStore, type ValueStore } from "../../../../packages/akashic-plugin-kit/src/meta-store";
 import "./runner-ui.css";
 
@@ -51,54 +51,63 @@ function RunDetail({ store, id, stop }: { store: ValueStore<Run[]>; id: string; 
   </div>;
 }
 
-interface SubagentResultViewModel {
-  title: string;
-  status: string;
-  tone: "done" | "live" | "error";
+// spawn 回执的写法与 plugins/subagent 的 tools.query / runtime.completion 一致。
+const GUIDANCE = ["最多重试一次；已有完整结果则直接向用户汇报。", "已经重试一次，请直接汇报已有结果。"];
+const EXIT_STATES: Record<string, ToolTaskSummary["state"]> = {
+  cancelled: { label: "已取消", tone: "error" },
+};
+
+interface SpawnResult {
   jobId?: string;
+  reason?: string;
   body: string;
 }
 
-function parseSubagentResult(name: string, value: unknown, error: boolean): SubagentResultViewModel | null {
+// 后台接纳只回 job_id；同步结算带退出原因，末尾给模型的重试提示不展示给读者；其他文字（例如并发已满）原样。
+function parseSpawnResult(value: unknown): SpawnResult | null {
   if (typeof value !== "string") return null;
-  if (name !== "spawn" && !name.startsWith("delegate_")) return null;
-  const trimmed = value.trim();
-  const bgMatch = /^已创建后台任务「(.+)」[（(]job_id=([a-f0-9]+)[)）]/u.exec(trimmed);
-  if (bgMatch) {
-    return { title: bgMatch[1], status: "后台已接纳", tone: "live", jobId: bgMatch[2], body: trimmed };
-  }
-  const syncMatch = /^\[子任务「([^」]+)」结果\]\n退出原因:\s*([^\n]+)\n*([\s\S]*)$/u.exec(trimmed);
-  if (syncMatch) {
-    const reason = syncMatch[2].trim();
-    const tone = error || reason === "failed" ? "error" : reason === "cancelled" ? "error" : "done";
-    const statusLabel = reason === "completed" ? "已完成" : reason === "cancelled" ? "已取消" : reason === "failed" ? "失败" : reason;
-    return { title: syncMatch[1], status: statusLabel, tone, body: syncMatch[3].trim() || trimmed };
-  }
-  const extMatch = /^外部任务\s+([a-zA-Z0-9_-]+)：([^\n。]+)/u.exec(trimmed);
-  if (extMatch) {
-    const st = extMatch[2].trim();
-    return {
-      title: `外部任务 ${extMatch[1]}`,
-      status: labels[st] ?? st,
-      tone: st === "failed" || st === "interrupted" ? "error" : st === "completed" ? "done" : "live",
-      jobId: extMatch[1],
-      body: trimmed,
-    };
-  }
-  return null;
+  const text = value.trim();
+  const background = /^已创建后台任务「[\s\S]*」[（(]job_id=([a-f0-9]+)[)）]/u.exec(text);
+  if (background) return { jobId: background[1], body: text };
+  const settled = /^\[子任务「[\s\S]*?」结果\]\n退出原因:\s*([^\n]+)\n*([\s\S]*)$/u.exec(text);
+  if (!settled) return { body: text };
+  let body = settled[2].trimEnd();
+  for (const line of GUIDANCE) if (body.endsWith(line)) body = body.slice(0, -line.length).trimEnd();
+  return { reason: settled[1].trim(), body };
 }
 
-function SubagentResultCard({ result }: { result: SubagentResultViewModel }) {
-  return (
-    <div className={`subagent-tool-result is-${result.tone}`}>
-      <div className="subagent-tool-result__head">
-        <span className="subagent-tool-result__title">{result.title}</span>
-        <span className={`subagent-tool-result__badge is-${result.tone}`}>{result.status}</span>
-        {result.jobId ? <code className="subagent-tool-result__id">{result.jobId.slice(0, 8)}</code> : null}
-      </div>
-      <ToolText text={result.body} tail={false} className="tool-result" />
-    </div>
-  );
+function firstLine(text: string): string {
+  return text.split("\n", 64).map((line) => line.trim()).find(Boolean) ?? "";
+}
+
+// 时间线任务卡的文字：标题、标签、模型与工作目录来自调用参数，状态与预览来自回执。
+function describeSpawn(block: ToolSummaryFacts): ToolTaskSummary | null {
+  const args = block.arguments;
+  if (block.name !== "spawn" || typeof args !== "object" || args === null || Array.isArray(args)) return null;
+  const field = (name: string) => {
+    const value = (args as Record<string, unknown>)[name];
+    return typeof value === "string" ? value.trim() : "";
+  };
+  const title = field("label") || firstLine(field("task"));
+  if (!title) return null;
+  const background = (args as Record<string, unknown>).run_in_background === true;
+  const tags = [...(background ? ["后台"] : []), ...(field("profile") === "research" ? ["只读"] : [])];
+  const result = block.status === "running" ? null : parseSpawnResult(block.value);
+  const summary: ToolTaskSummary = {
+    kind: "task", title, tags,
+    detail: [field("connection"), field("model"), field("reasoning_effort")].filter(Boolean).join(" · "),
+    cwd: field("cwd") || undefined,
+  };
+  if (result?.jobId) return { ...summary, preview: "完成后会回传当前会话", state: { label: "已转后台", tone: "idle" } };
+  if (!result) return summary;
+  return { ...summary, preview: firstLine(result.body) || undefined, state: result.reason ? EXIT_STATES[result.reason] : undefined };
+}
+
+// 展开后的结果：任务名与状态已经在任务卡上，这里只放正文；后台任务给出 job_id 便于查询或取消。
+function SpawnResultView({ result }: { result: SpawnResult }) {
+  return result.jobId ? (
+    <p className="subagent-tool-result">后台任务 <code>{result.jobId}</code>，完成后会回传当前会话。</p>
+  ) : <ToolText text={result.body || "子任务没有输出文字。"} tail={false} className="tool-result" />;
 }
 
 // 不渲染界面：执行状态来自本插件后端的推送，登记到标题下的说明行，过程在宿主的会话信息面板里展开。
@@ -123,12 +132,13 @@ const definition: PluginUiDefinition = {
   slots: {
     "header.meta": { mount: (host, context) => render(host, <Runs context={context} />) },
     "tool.result": {
-      accepts: (block) => parseSubagentResult(block.name, block.value, block.error) !== null,
+      accepts: (block) => block.name === "spawn" && parseSpawnResult(block.value) !== null,
       mount(host, context) {
-        const parsed = parseSubagentResult(context.block.name, context.block.value, context.block.error);
-        return parsed ? render(host, <SubagentResultCard result={parsed} />) : undefined;
+        const parsed = parseSpawnResult(context.block.value);
+        return parsed ? render(host, <SpawnResultView result={parsed} />) : undefined;
       },
     },
+    "tool.summary": { describe: describeSpawn },
   },
 };
 export default definition;
