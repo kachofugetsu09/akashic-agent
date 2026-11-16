@@ -251,8 +251,22 @@ try {
     assert.ok(interrupt.xs[3] < -5, '关闭途中抽屉应正在向左退出');
     assert.equal(Math.round(interrupt.xs.at(-1)), 0, '打断重开后应回到 left=0');
 
-    await page.keyboard.press('Escape');
-    await drawer.waitFor({ state: 'detached' });
+    // 退场要等位移走完才卸载：透明度先结束（180ms）不能把还在走的位移（220ms）截断。
+    const exit = await page.evaluate(async () => {
+      const el = document.querySelector('.compact-navigation-dialog');
+      const width = el.getBoundingClientRect().width;
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      const xs = [];
+      for (let i = 0; i < 40 && el.isConnected; i += 1) {
+        xs.push(Math.round(el.getBoundingClientRect().left * 100) / 100);
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+      }
+      return { width, xs, detached: !el.isConnected };
+    });
+    console.log('[2c] Compact drawer exit lefts until unmount:', JSON.stringify(exit));
+    assert.ok(exit.detached, '退场结束后抽屉应卸载');
+    assert.ok(exit.xs.at(-1) < -exit.width / 2, `卸载前抽屉应已退到屏外一侧，最后一帧 left=${exit.xs.at(-1)}`);
+    assert.ok(Math.abs(exit.xs.at(-1) - exit.xs.at(-2)) < 0.5, `卸载前位移应已收敛，最后两帧 ${exit.xs.slice(-2)}`);
 
     assert.deepEqual(errors, []);
     await context.close();

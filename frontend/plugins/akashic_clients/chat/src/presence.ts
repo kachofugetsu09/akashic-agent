@@ -8,7 +8,7 @@ export interface ExitPresence {
   open: boolean;
   /** 正在播放退场过渡。 */
   closing: boolean;
-  /** 挂在过渡根节点上，退场过渡结束立即卸载，不等兜底定时器。 */
+  /** 挂在过渡根节点上，退场的全部过渡结束立即卸载，不等兜底定时器。 */
   onTransitionEnd: (event: TransitionEvent<HTMLElement>) => void;
 }
 
@@ -46,11 +46,13 @@ export function useExitPresence(open: boolean, fallbackMs = 240): ExitPresence {
     return () => window.clearTimeout(timer);
   }, [closing, fallbackMs]);
 
+  // 各属性退场时长不同（如透明度 180ms、位移 220ms），先结束的那条不能把还在走的位移截断。
   const onTransitionEnd = useCallback((event: TransitionEvent<HTMLElement>) => {
-    if (event.target === event.currentTarget && !open) {
-      setMounted(false);
-      setClosing(false);
-    }
+    const element = event.currentTarget;
+    if (event.target !== element || open) return;
+    if (element.getAnimations().some((animation) => animation instanceof CSSTransition && animation.playState === "running")) return;
+    setMounted(false);
+    setClosing(false);
   }, [open]);
 
   return { present: open || mounted, open, closing, onTransitionEnd };

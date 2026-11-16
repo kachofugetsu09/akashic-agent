@@ -4,7 +4,7 @@ import type { NavigationControls, NavigationForm, NavigationFormControls, Naviga
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { NavigationRowMenu, type NavigationRowAction } from "./navigation-row-menu";
 import { IconSwap } from "./icon-swap";
-import { SessionStatusMark, summarizeStatus, type SessionStatus } from "./session-status-mark";
+import { SessionStatusLabel, SessionStatusMark, summarizeStatus, type SessionStatus } from "./session-status-mark";
 import { MarqueeText } from "./marquee-text";
 import { NavigationGroupMount, PluginUiSlot, navigationGroupSources, navigationGroupsPending, usePluginUiCatalogVersion, type NavigationGroupSource } from "./plugin-ui-runtime";
 import { createScopeFields } from "./scope-fields";
@@ -286,6 +286,9 @@ export function GroupNavigationRow({
 }) {
   // 折叠时分组行汇总会话状态，展开后状态回到各自的会话前。
   const collapsedStatus = open ? undefined : summarizeStatus(items.map((item) => item.status));
+  // 状态消失时图标还要淡出：退场期间 b 槽沿用上一个状态，不立刻变空。
+  const [lastStatus, setLastStatus] = useState<SessionStatus | undefined>(collapsedStatus);
+  if (collapsedStatus && collapsedStatus !== lastStatus) setLastStatus(collapsedStatus);
   // 只有用户显式点按开合（非初始挂载、非搜索驱动）才播 200ms 展开 / 120ms 收起动画；
   // 初始就是展开态、搜索打开或从无结果搜索恢复挂载时首帧带 is-instant 瞬时落位，并在下一帧恢复过渡能力。
   const [wasOpen, setWasOpen] = useState(open);
@@ -341,7 +344,8 @@ export function GroupNavigationRow({
         aria-expanded={open} aria-disabled={searching || undefined}
         title={`${open ? "收起" : "展开"} ${group.label}${group.detail ? ` · ${group.detail}` : ""}`}>
         <IconSwap state={Boolean(collapsedStatus)} a={<FolderMark />}
-          b={<span className="navigation-group__icon"><SessionStatusMark status={collapsedStatus} /></span>} />
+          b={<span className="navigation-group__icon"><SessionStatusMark status={collapsedStatus ?? lastStatus} /></span>} />
+        <SessionStatusLabel status={collapsedStatus} />
         <span className="navigation-group__name"><MarqueeText>{group.label}</MarqueeText></span>
         {/* 其他插件给这个取值的短标签，例如记忆范围；只放文字，没有插件时不占位。 */}
         <PluginUiSlot name="scope.badge" scope={{ dimension: groupRef.dimension, value: groupRef.id }} quiet />

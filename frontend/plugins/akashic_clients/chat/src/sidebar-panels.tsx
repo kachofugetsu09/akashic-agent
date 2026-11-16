@@ -176,6 +176,17 @@ function PanelSurface({ open, current, sources, statuses: shown, sessionId, onTr
       document.removeEventListener("keydown", onKey);
     };
   }, [open, current.anchor, current.sheet, expanded]);
+  // 退场途中重开不会重挂子树，菜单/面板挂载时的聚焦不再执行：在这里补一次。
+  const wasOpen = useRef(open);
+  useEffect(() => {
+    const reopened = open && !wasOpen.current;
+    wasOpen.current = open;
+    const root = rootRef.current;
+    if (!reopened || !root || root.contains(document.activeElement)) return;
+    const target = root.querySelector<HTMLElement>(".sidebar-panels__menu input, .sidebar-panels__menu button")
+      ?? root.querySelector<HTMLElement>(".sidebar-panels__head button");
+    target?.focus({ preventScroll: true });
+  }, [open]);
   const style = current.sheet || expanded ? undefined : anchorStyle(current.anchor);
   const state = open ? "open" : "closed";
   return <>

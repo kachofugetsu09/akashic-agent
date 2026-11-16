@@ -9,7 +9,7 @@ const GAP_PX = 9;
 const EDGE_PX = 8;
 
 type Hint = { text: string; rect: DOMRect };
-type Placed = { style: CSSProperties; place: "above" | "below" };
+type Placed = { style: CSSProperties; place: "above" | "below"; hint: Hint };
 
 /**
  * 纸气泡提示：控件上写 `data-tip="文案"` 即可，不需要包一层 DOM。
@@ -98,6 +98,7 @@ export function PaperTooltipLayer() {
       Math.max(half + EDGE_PX, window.innerWidth - half - EDGE_PX),
     );
     setPlaced({
+      hint,
       place: above ? "above" : "below",
       style: {
         top: above ? hint.rect.top - box.height - GAP_PX : hint.rect.bottom + GAP_PX,
@@ -107,8 +108,9 @@ export function PaperTooltipLayer() {
     });
   }, [hint]);
 
+  // 打开时只用为这条提示量出的位置（新提示首帧不带旧位置量尺寸）；退场时沿用最后一次。
   const activeHint = hint ?? (presence.present ? lastHint : null);
-  const activePlaced = placed ?? (presence.present ? lastPlaced : null);
+  const activePlaced = hint ? (placed?.hint === hint ? placed : null) : (presence.present ? lastPlaced : null);
   if (!presence.present || !activeHint) return null;
 
   return (

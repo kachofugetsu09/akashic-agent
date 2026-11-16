@@ -85,7 +85,8 @@
     top var(--ak-sys-duration-expand, 200ms) var(--ak-sys-motion-emphasized),
     left var(--ak-sys-duration-expand, 200ms) var(--ak-sys-motion-emphasized),
     width var(--ak-sys-duration-expand, 200ms) var(--ak-sys-motion-emphasized),
-    height var(--ak-sys-duration-expand, 200ms) var(--ak-sys-motion-emphasized);
+    height var(--ak-sys-duration-expand, 200ms) var(--ak-sys-motion-emphasized),
+    max-height var(--ak-sys-duration-expand, 200ms) var(--ak-sys-motion-emphasized);
 }
 
 .sidebar-panels[data-state="open"] {
@@ -97,6 +98,7 @@
     var(--ak-sys-duration-short, 150ms),
     var(--ak-sys-duration-short, 150ms),
     var(--ak-sys-duration-short, 150ms),
+    var(--ak-sys-duration-expand, 200ms),
     var(--ak-sys-duration-expand, 200ms),
     var(--ak-sys-duration-expand, 200ms),
     var(--ak-sys-duration-expand, 200ms),
@@ -114,7 +116,8 @@
   left: max(24px, calc((100vw - 72rem) / 2));
   width: min(72rem, calc(100vw - 48px));
   height: calc(100dvh - 64px);
-  max-height: none;
+  /* 用具体长度而不是 none：收起时 max-height 才能跟着高度一起过渡，不在第一帧截断。 */
+  max-height: calc(100dvh - 64px);
 }
 
 /* 手机：底部抽屉，中档约半屏，高档留出顶部状态栏。 */
