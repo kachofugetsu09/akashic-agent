@@ -12,12 +12,26 @@ export class ComputerLifecycle {
   transition = null;
   child = null;
 
-  constructor({ start, stop, abandon, idleMs, onChange = () => {} }) {
+  constructor({
+    start,
+    stop,
+    abandon,
+    idleMs,
+    onChange = () => {},
+    runtimeCommand = "/opt/computer/start.sh",
+    runtimeArgs = ["--runtime"],
+    stopWaitMs = 15000,
+    killWaitMs = 5000,
+  }) {
     this.changed = onChange;
     this.startDriver = start;
     this.stopDriver = stop;
     this.abandonDriver = abandon;
     this.idleMs = idleMs;
+    this.runtimeCommand = runtimeCommand;
+    this.runtimeArgs = runtimeArgs;
+    this.stopWaitMs = stopWaitMs;
+    this.killWaitMs = killWaitMs;
     this.timer = setInterval(
       () => {
         if (
@@ -98,8 +112,8 @@ export class ComputerLifecycle {
   /** 先确认真正就绪；启动失败也必须结束旧进程才能再次使用 profile。 */
   async start() {
     const child = spawn(
-      "/opt/computer/start.sh",
-      ["--runtime"],
+      this.runtimeCommand,
+      this.runtimeArgs,
       {
         detached: true,
         stdio: "inherit",
@@ -130,7 +144,7 @@ export class ComputerLifecycle {
     } catch (error) {
       this.state = "stopping";
       try {
-        await this.stopRuntime();
+        await this.stopRuntime({ terminate: true });
       } catch (cleanupError) {
         this.fail(new AggregateError([error, cleanupError],
           `Computer startup failed: ${error.message}; cleanup failed: ${cleanupError.message}`));
@@ -163,26 +177,50 @@ export class ComputerLifecycle {
     await this.transition;
   }
 
-  async stopRuntime() {
+  async stopRuntime({ terminate = false } = {}) {
+    let driverError = null;
     try {
       await this.stopDriver();
+    } catch (error) {
+      driverError = error;
     } finally {
-      if (this.child?.pid) await this.stopProcess();
-      else this.child = null;
+      if (this.child?.pid) {
+        await this.stopProcess({ sendTerm: terminate || Boolean(driverError) });
+      } else {
+        this.child = null;
+      }
     }
+    if (driverError) throw driverError;
   }
 
-  async stopProcess() {
+  async stopProcess({ sendTerm = false } = {}) {
     const child = this.child;
     if (child.exitCode === null && child.signalCode === null) {
-      // Driver 已发送 Browser.close；等待浏览器落盘，再由 shell 关闭桌面。
-      const exited = await Promise.race([
-        this.exited.then(() => true),
-        sleep(15000).then(() => false),
-      ]);
-      if (!exited) {
-        process.kill(-child.pid, "SIGKILL");
-        await this.exited;
+      let exited = false;
+      if (sendTerm) {
+        terminateProcess(child.pid);
+        exited = await Promise.race([
+          this.exited.then(() => true),
+          sleep(this.stopWaitMs).then(() => false),
+        ]);
+      } else {
+        // Driver 已发送 Browser.close；先等待浏览器落盘，超期再发 SIGTERM 让 shell 收尾。
+        const graceMs = Math.min(this.stopWaitMs, Math.max(1, Math.floor(this.stopWaitMs / 3)));
+        exited = await Promise.race([
+          this.exited.then(() => true),
+          sleep(graceMs).then(() => false),
+        ]);
+        if (!exited && child.exitCode === null && child.signalCode === null) {
+          terminateProcess(child.pid);
+          const restMs = Math.max(0, this.stopWaitMs - graceMs);
+          exited = restMs > 0 && await Promise.race([
+            this.exited.then(() => true),
+            sleep(restMs).then(() => false),
+          ]);
+        }
+      }
+      if (!exited && child.exitCode === null && child.signalCode === null) {
+        await killProcessGroup(child.pid, this.exited, this.killWaitMs);
         this.child = null;
         throw new Error(
           "Computer runtime required SIGKILL; profile flush was not confirmed",
@@ -190,7 +228,7 @@ export class ComputerLifecycle {
       }
     }
     this.child = null;
-    if (child.signalCode)
+    if (child.signalCode && !(sendTerm && child.signalCode === "SIGTERM"))
       throw new Error(`Computer runtime exited by ${child.signalCode}; profile flush was not confirmed`);
   }
 
@@ -229,24 +267,36 @@ export class ComputerLifecycle {
   async killRuntime() {
     const child = this.child;
     if (!child?.pid) return;
-    try {
-      process.kill(-child.pid, "SIGKILL");
-    } catch (error) {
-      if (error.code !== "ESRCH") throw error;
-    }
-    await this.exited;
-    const deadline = performance.now() + 5000;
-    while (groupAlive(child.pid)) {
-      if (performance.now() > deadline)
-        throw new Error("Computer runtime processes did not exit after SIGKILL");
-      await sleep(50);
-    }
+    await killProcessGroup(child.pid, this.exited, this.killWaitMs);
     this.child = null;
   }
 
   async close() {
     clearInterval(this.timer);
     await this.stop();
+  }
+}
+
+function terminateProcess(pid) {
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch (error) {
+    if (error.code !== "ESRCH") throw error;
+  }
+}
+
+async function killProcessGroup(pid, exited, killWaitMs) {
+  try {
+    process.kill(-pid, "SIGKILL");
+  } catch (error) {
+    if (error.code !== "ESRCH") throw error;
+  }
+  await exited;
+  const deadline = performance.now() + killWaitMs;
+  while (groupAlive(pid)) {
+    if (performance.now() > deadline)
+      throw new Error("Computer runtime processes did not exit after SIGKILL");
+    await sleep(50);
   }
 }
 

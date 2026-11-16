@@ -41,9 +41,14 @@ mkdir -p \
   /data/profile \
   /data/state
 
+# Lifecycle guarantees no previous runtime owner remains before --runtime starts;
+# clean up host-named Chromium singleton links if an earlier runtime took SIGKILL.
+rm -f \
+  /data/profile/SingletonCookie \
+  /data/profile/SingletonLock \
+  /data/profile/SingletonSocket
 
-cleanup() {
-  trap - TERM INT EXIT
+cleanup_children() {
   kill -TERM "${browser_pid:-}" 2>/dev/null || true
   wait "${browser_pid:-}" 2>/dev/null || true
   # 编码服务先释放 XShm 和输入连接，X server 仍在时才能完成清理。
@@ -53,7 +58,19 @@ cleanup() {
   kill -TERM "${xvnc_pid:-}" 2>/dev/null || true
   wait 2>/dev/null || true
 }
-trap cleanup TERM INT EXIT
+on_signal() {
+  trap - TERM INT EXIT
+  cleanup_children
+  exit 0
+}
+cleanup() {
+  rc=$?
+  trap - TERM INT EXIT
+  cleanup_children
+  exit "$rc"
+}
+trap on_signal TERM INT
+trap cleanup EXIT
 
 # 屏幕尺寸跟随观看面板（selkies 按 RandR 调整），这里只是还没人看时的初始值。
 rm -f /tmp/.X11-unix/X99 /tmp/.X99-lock
@@ -85,7 +102,7 @@ mkdir -p -m 700 "$(dirname "$COMPUTER_RTC_FILE")"
 [ -f "$COMPUTER_RTC_FILE" ] || (umask 077 && echo '{"iceServers": []}' > "$COMPUTER_RTC_FILE")
 /opt/computer/stream-venv/bin/python -m selkies \
   --addr 0.0.0.0 --port 6081 --mode websockets \
-  --master-token "$COMPUTER_STREAM_TOKEN" \
+  --master-token="$COMPUTER_STREAM_TOKEN" \
   --webrtc-udp-mux-port 30000 --rtc-config-json "$COMPUTER_RTC_FILE" \
   --web-root /opt/computer/stream-web \
   --encoder h264enc --gpu-id=-1 \
