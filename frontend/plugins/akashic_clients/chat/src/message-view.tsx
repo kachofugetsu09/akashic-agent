@@ -179,12 +179,17 @@ function RetryStatus({ text, attempt, onStop }: { text: string; attempt?: ModelA
 
 /** 重试中的尝试：草稿上方一行小字，持续到这次尝试结束；原始错误折叠起来。 */
 function AttemptStatus({ attempt, onStop }: { attempt: ModelAttempt; onStop?: () => void }) {
+  const [open, setOpen] = useState(false);
   const now = useClock(15000);
   return <div className="attempt-status" role="status">
-    <details>
-      <summary>上游不稳定 · 第 {attemptLabel(attempt)} 次尝试 · {elapsedLabel(now / 1000 - attempt.failing_since)} · 上次：{attempt.last_failure}</summary>
-      {attempt.detail ? <code>{attempt.detail}</code> : null}
-    </details>
+    <div className="attempt-status__details">
+      <button type="button" className="attempt-status__trigger" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
+        上游不稳定 · 第 {attemptLabel(attempt)} 次尝试 · {elapsedLabel(now / 1000 - attempt.failing_since)} · 上次：{attempt.last_failure}
+      </button>
+      <Disclosure open={open}>
+        {attempt.detail ? <code>{attempt.detail}</code> : null}
+      </Disclosure>
+    </div>
     {onStop ? <button type="button" onClick={onStop}>停止</button> : null}
   </div>;
 }

@@ -43,7 +43,15 @@
 }
 /* 没有预览可开的文件（PDF、压缩包）只是一张信息卡。 */
 .ak-attachment__surface[data-static] { cursor: default; }
-.ak-attachment.is-media .ak-attachment__surface { padding: 0; background: var(--ak-paper-sheet); cursor: zoom-in; }
+.ak-attachment.is-media .ak-attachment__surface { position: relative; padding: 0; background: var(--ak-paper-sheet); cursor: zoom-in; }
+.ak-attachment.is-media .ak-attachment__surface::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow: inset 0 0 0 1px var(--ak-color-image-outline);
+  pointer-events: none;
+}
 
 .ak-attachment__image {
   width: 100%;

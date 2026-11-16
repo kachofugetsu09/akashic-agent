@@ -1961,6 +1961,7 @@ input {
   font-weight: 500;
   letter-spacing: -0.01em;
   line-height: 1.25;
+  text-wrap: balance;
 }
 
 .home-state__ready span {
@@ -1968,6 +1969,7 @@ input {
   color: var(--chat-muted, var(--md-sys-color-on-surface-variant));
   font-size: 0.875rem;
   line-height: 1.5;
+  text-wrap: pretty;
 }
 
 /* 空态 hero：时段问候小字 + 任务口吻主标题，两行即止。 */
@@ -1993,6 +1995,7 @@ input {
   font-weight: 500;
   letter-spacing: -0.01em;
   line-height: 1.25;
+  text-wrap: balance;
 }
 
 .home-state h1 {
@@ -2002,6 +2005,7 @@ input {
   font-size: clamp(1.25rem, 2.4vw, 1.6rem);
   font-weight: 600;
   line-height: 1.25;
+  text-wrap: balance;
 }
 
 .model-connection-state {
@@ -2027,6 +2031,7 @@ input {
   margin: 0;
   color: var(--ak-color-text-secondary);
   line-height: 1.7;
+  text-wrap: pretty;
 }
 
 .model-connection-state a {
@@ -2792,7 +2797,7 @@ form.composer:focus-within [data-slot="input-group"] {
   z-index: 95;
   max-inline-size: 22rem;
   padding: 5px 10px;
-  border: 1px solid var(--ak-rule-default);
+  border: 0;
   border-radius: var(--ak-radius-sm);
   background: var(--ak-paper-raised);
   color: var(--ak-ink-primary);
@@ -2804,7 +2809,7 @@ form.composer:focus-within [data-slot="input-group"] {
   visibility: hidden;
   transform: translateX(-50%);
   pointer-events: none;
-  box-shadow: var(--ak-elevation-float);
+  box-shadow: 0 0 0 1px var(--ak-rule-default), var(--ak-elevation-float);
   opacity: 0;
   translate: 0 3px;
   transition:
@@ -3307,7 +3312,7 @@ form.composer:focus-within [data-slot="input-group"] {
 }
 .header-marker__trigger[data-alert] { color: var(--ak-color-status-error); }
 .header-marker__trigger:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 2px; }
-.header-marker__panel { position: absolute; z-index: 20; inset-block-start: calc(100% + 4px); inset-inline-end: 0; display: grid; gap: 8px; inline-size: min(26rem, calc(100vw - 32px)); padding: 12px; border: 1px solid var(--chat-line); border-radius: var(--ak-radius-md); background: var(--ak-paper-canvas); box-shadow: var(--ak-elevation-float); color: var(--chat-muted); line-height: 1.5; }
+.header-marker__panel { position: absolute; z-index: 20; inset-block-start: calc(100% + 4px); inset-inline-end: 0; display: grid; gap: 8px; inline-size: min(26rem, calc(100vw - 32px)); padding: 12px; border: 0; border-radius: var(--ak-radius-md); background: var(--ak-paper-canvas); box-shadow: 0 0 0 1px var(--ak-rule-subtle), var(--ak-elevation-float); color: var(--chat-muted); line-height: 1.5; }
 .header-marker__panel p { margin: 0; text-wrap: pretty; }
 .header-marker__panel [data-tone="error"] { color: var(--ak-color-status-error); overflow-wrap: anywhere; }
 .header-marker__panel code { overflow-wrap: anywhere; font-family: var(--ak-type-technical); font-size: var(--chat-type-control); display: block; padding: 6px 8px; border-radius: var(--ak-radius-sm); background: var(--chat-chip); color: var(--chat-ink); }
@@ -3376,10 +3381,10 @@ form.composer:focus-within [data-slot="input-group"] {
   width: 340px;
   max-width: 70vw;
   overflow: hidden;
-  border: 0.5px solid var(--ak-rule-default);
+  border: 0;
   border-radius: var(--ak-radius-full);
   background: var(--ak-paper-sheet);
-  box-shadow: var(--ak-elevation-float);
+  box-shadow: 0 0 0 1px var(--ak-rule-default), var(--ak-elevation-float);
   color: var(--chat-ink);
 }
 .thread-find__row { display: flex; align-items: center; gap: 8px; height: 44px; padding-inline-start: 14px; }
@@ -3390,7 +3395,8 @@ form.composer:focus-within [data-slot="input-group"] {
 .thread-find input::placeholder { color: var(--chat-faint); }
 .thread-find__close { display: flex; align-items: center; height: 44px; padding-inline-end: 10px; }
 .thread-find__sep { width: 1px; height: 16px; margin-inline: 6px; background: var(--ak-rule-default); }
-.thread-find button { display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: var(--ak-radius-sm); background: transparent; color: var(--chat-muted); cursor: pointer; }
+.thread-find button { display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: var(--ak-radius-sm); background: transparent; color: var(--chat-muted); cursor: pointer; transition: background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard), color var(--ak-sys-duration-short) var(--ak-sys-motion-standard), scale 60ms var(--ak-sys-motion-standard); }
+.thread-find button:active:not(:disabled) { scale: 0.94; }
 .thread-find button:disabled { opacity: 0.35; cursor: default; }
 .thread-find button:focus-visible { outline: 2px solid var(--md-sys-color-primary); outline-offset: -2px; }
 @media (hover: hover) { .thread-find button:not(:disabled):hover { color: var(--chat-ink); background: color-mix(in oklab, var(--md-sys-color-on-surface) 6%, transparent); } }

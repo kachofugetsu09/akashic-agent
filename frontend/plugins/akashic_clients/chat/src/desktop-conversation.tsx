@@ -9,6 +9,7 @@ import { MessageReplyReference, SharedMessageActions } from "./message-actions";
 import { PluginUiSlot } from "./plugin-ui-runtime";
 import type { ChatMessage } from "./chat-message";
 import { ChatMessageView, TimelineMessageView } from "./message-view";
+import { Disclosure } from "./tool-result-view";
 import { StreamProjectionStore } from "./stream-projection";
 import type { ChatStatus } from "./web-chat-status";
 import { chatLayout } from "./chat-layout";
@@ -504,6 +505,7 @@ function FailureRetry({ inputId, earlier = [], disabled, onRetry }: {
   onRetry: (inputId: string) => Promise<void>;
 }) {
   const [pending, setPending] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
   if (!inputId && !earlier.length) return null;
   return <>
     {inputId ? <div className="timeline-failure-actions">
@@ -512,13 +514,16 @@ function FailureRetry({ inputId, earlier = [], disabled, onRetry }: {
         {pending ? "正在重试…" : "重试"}
       </button>
     </div> : null}
-    {earlier.length ? <details className="timeline-failure-history">
-      <summary>此前失败 {earlier.length} 次</summary>
-      <ol>{earlier.map((item) => <li key={item.id}>
-        <time dateTime={item.timestamp}>{formatMessageTime(item.timestamp)}</time>
-        {item.body.kind === "control" ? item.body.reason?.split("\n")[0] : null}
-      </li>)}</ol>
-    </details> : null}
+    {earlier.length ? <div className="timeline-failure-history">
+      <button type="button" className="timeline-failure-history__trigger" aria-expanded={historyOpen}
+        onClick={() => setHistoryOpen((value) => !value)}>此前失败 {earlier.length} 次</button>
+      <Disclosure open={historyOpen}>
+        <ol>{earlier.map((item) => <li key={item.id}>
+          <time dateTime={item.timestamp}>{formatMessageTime(item.timestamp)}</time>
+          {item.body.kind === "control" ? item.body.reason?.split("\n")[0] : null}
+        </li>)}</ol>
+      </Disclosure>
+    </div> : null}
   </>;
 }
 
