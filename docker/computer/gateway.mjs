@@ -13,7 +13,7 @@ import { promisify } from "node:util";
 
 const exec = promisify(execFile);
 // 流服务的主令牌只在容器里生成；Dashboard 经网关取得后签发观看令牌、切换输入权限和传输方式。
-process.env.COMPUTER_STREAM_TOKEN ||= randomBytes(24).toString("base64url");
+process.env.COMPUTER_STREAM_TOKEN ||= randomBytes(24).toString("hex");
 // WebRTC 的 ICE 服务器（远程用的 TURN）由 Dashboard 写入，流服务监视这个文件、新连接即生效。
 process.env.COMPUTER_RTC_FILE ||= "/tmp/computer-stream/rtc.json";
 let driver;
