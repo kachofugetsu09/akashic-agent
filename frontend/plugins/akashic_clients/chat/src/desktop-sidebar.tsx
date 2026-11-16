@@ -958,7 +958,9 @@ function SidebarRailResizer({ rail, sidebarRef }: {
   sidebarRef: RefObject<HTMLElement | null>;
 }) {
   const [dragging, setDragging] = useState(false);
-  const draggingRef = useRef(false);
+  // 一次拖拽只有一套 window 监听；抬起、取消、丢失 capture、卸载都走这一个收尾。
+  const finishDrag = useRef<(() => void) | null>(null);
+  useEffect(() => () => finishDrag.current?.(), []);
   const [nowRem, setNowRem] = useState(SIDEBAR_RAIL_MIN_REM);
   useLayoutEffect(() => {
     const aside = sidebarRef.current;
@@ -980,57 +982,36 @@ function SidebarRailResizer({ rail, sidebarRef }: {
     onPointerDown={(event) => {
       if (!event.isPrimary || event.button !== 0) return;
       event.preventDefault();
-      try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* headless fallback */ }
-      draggingRef.current = true;
-      rail.dragStart(event.clientX, widthPx(), event.currentTarget);
-      setDragging(true);
+      finishDrag.current?.();
       const target = event.currentTarget;
+      const pointerId = event.pointerId;
+      // capture 只为保持拖拽光标；移动与收尾由 window 监听负责，capture 设不上（合成事件）也照常工作。
+      try { target.setPointerCapture(pointerId); } catch { /* 没有活动指针时 capture 不可用 */ }
+      rail.dragStart(event.clientX, widthPx(), target);
+      setDragging(true);
+      // 拖拽中宽度不经过 React state（见 use-sidebar-rail），aria-valuenow 直写保持同步。
       const move = (moveEvent: PointerEvent) => {
-        if (!draggingRef.current) return;
+        if (moveEvent.pointerId !== pointerId) return;
         const next = rail.dragTo(moveEvent.clientX);
         if (next !== null) target.setAttribute("aria-valuenow", String(Math.round(next * 2) / 2));
       };
+      const end = (endEvent: PointerEvent) => { if (endEvent.pointerId === pointerId) finish(); };
       const finish = () => {
         window.removeEventListener("pointermove", move);
-        window.removeEventListener("pointerup", finish);
-        window.removeEventListener("pointercancel", finish);
-        if (!draggingRef.current) return;
-        draggingRef.current = false;
+        window.removeEventListener("pointerup", end);
+        window.removeEventListener("pointercancel", end);
+        finishDrag.current = null;
+        if (target.hasPointerCapture(pointerId)) target.releasePointerCapture(pointerId);
         setDragging(false);
         rail.dragEnd();
       };
       window.addEventListener("pointermove", move);
-      window.addEventListener("pointerup", finish);
-      window.addEventListener("pointercancel", finish);
+      window.addEventListener("pointerup", end);
+      window.addEventListener("pointercancel", end);
+      finishDrag.current = finish;
     }}
-    onPointerMove={(event) => {
-      if (!draggingRef.current) return;
-      // 拖拽中宽度不经过 React state（见 use-sidebar-rail），aria-valuenow 直写保持同步。
-      const next = rail.dragTo(event.clientX);
-      if (next !== null) event.currentTarget.setAttribute("aria-valuenow", String(Math.round(next * 2) / 2));
-    }}
-    onPointerUp={(event) => {
-      if (!draggingRef.current) return;
-      draggingRef.current = false;
-      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-        event.currentTarget.releasePointerCapture(event.pointerId);
-      }
-      setDragging(false);
-      rail.dragEnd();
-    }}
-    onPointerCancel={() => {
-      draggingRef.current = false;
-      setDragging(false);
-      rail.dragEnd();
-    }}
-    // capture 丢失而 pointerup/pointercancel 没到时兜底：清掉直写列宽，按最后位置收尾。
-    onLostPointerCapture={() => {
-      if (draggingRef.current) {
-        draggingRef.current = false;
-        setDragging(false);
-        rail.dragEnd();
-      }
-    }}
+    // capture 丢失而 pointerup/pointercancel 没到时兜底：按最后位置收尾并清掉直写列宽。
+    onLostPointerCapture={() => finishDrag.current?.()}
     onDoubleClick={(event) => {
       event.preventDefault();
       rail.reset();

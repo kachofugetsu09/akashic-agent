@@ -219,7 +219,33 @@ try {
   assert.equal(snapAndDwellCheck.afterDwellSnapped, null, "停顿 380ms (>320ms) 后应自动解锁磁吸（移除 data-snapped）");
   assert.ok(snapAndDwellCheck.afterDwellFineWidth > 320, `解锁后右移应允许离开 320px 进行微调，实际：${snapAndDwellCheck.afterDwellFineWidth}`);
 
-  report.snappy = { learnedSnapPx, snapAndDwellCheck };
+  // 每个 pointermove 只处理一次：分隔条上只有一套 window 监听，aria-valuenow 每步只写一次。
+  const moveSteps = 6;
+  await page.evaluate(() => {
+    const el = document.querySelector(".chat-sidebar__resizer");
+    window.__valueWrites = 0;
+    window.__valueObserver = new MutationObserver((records) => {
+      window.__valueWrites += records.filter((r) => r.attributeName === "aria-valuenow").length;
+    });
+    window.__valueObserver.observe(el, { attributes: true });
+  });
+  {
+    const box = await resizer.boundingBox();
+    const startX = box.x + box.width / 2;
+    const startY = box.y + box.height / 2;
+    await page.mouse.move(startX, startY);
+    await page.mouse.down();
+    await page.mouse.move(startX + 60, startY, { steps: moveSteps });
+    await page.mouse.up();
+  }
+  const valueWrites = await page.evaluate(() => {
+    window.__valueObserver.disconnect();
+    return window.__valueWrites;
+  });
+  assert.ok(valueWrites <= moveSteps + 1, `${moveSteps} 次移动应最多 ${moveSteps + 1} 次 aria-valuenow 写入（含松手重渲染），实际 ${valueWrites}：移动被处理了两遍`);
+  assert.equal(await resizer.getAttribute("data-dragging"), null, "松手后分隔条应退出拖拽态");
+
+  report.snappy = { learnedSnapPx, snapAndDwellCheck, valueWrites };
 
   // 2. 验证 SessionDeleteNotice 的 pathLength=1 倒计时环与悬停暂停
   const notice = page.locator(".session-delete-notice");
@@ -242,7 +268,14 @@ try {
     return bar ? getComputedStyle(bar).animationPlayState : null;
   });
   assert.equal(ringOnHover, "paused", "鼠标悬停撤销条时倒计时动画应暂停 (paused)");
-  report.deleteNotice = { ringBeforeHover, ringOnHover };
+  const ringCap = await page.evaluate(() => getComputedStyle(document.querySelector(".session-delete-notice__ring-bar")).strokeLinecap);
+  assert.equal(ringCap, "butt", "倒计时环须用平头端点：圆头在 dash 归零时会留一粒残点");
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  const ringReduced = await page.evaluate(() => getComputedStyle(document.querySelector(".session-delete-notice__ring")).display);
+  assert.equal(ringReduced, "none", "减弱动效下不画不会动的满环");
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await page.waitForTimeout(300); // 切回后追逐环透明度有一段过渡
+  report.deleteNotice = { ringBeforeHover, ringOnHover, ringCap, ringReduced };
 
   // 3. 验证停止按钮的无缝追逐环与排版属性
   const chaseMetrics = await page.evaluate(() => {

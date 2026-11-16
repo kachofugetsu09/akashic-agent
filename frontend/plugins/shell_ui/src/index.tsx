@@ -257,21 +257,27 @@ function Shell({ pages, railActions, settings, settingsPlugins, http, inventory 
   useLayoutEffect(() => {
     const bar = settingsTabsRef.current;
     if (!bar) return;
+    let frame = 0;
+    // 对话框未 show 或已关闭时量到 0：不写位置并撤掉 ready，下次可量时直接就位，不从 0 拉伸。
     const measure = () => {
       const current = bar.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]');
-      if (current) {
-        bar.style.setProperty("--shell-tabs-x", `${current.offsetLeft}px`);
-        bar.style.setProperty("--shell-tabs-w", `${current.offsetWidth}px`);
-      } else {
-        bar.style.setProperty("--shell-tabs-w", "0px");
+      cancelAnimationFrame(frame);
+      if (!current || current.offsetWidth === 0) {
+        delete bar.dataset.ready;
+        return;
       }
-      requestAnimationFrame(() => { bar.dataset.ready = "true"; });
+      bar.style.setProperty("--shell-tabs-x", `${current.offsetLeft}px`);
+      bar.style.setProperty("--shell-tabs-w", `${current.offsetWidth}px`);
+      if (!bar.dataset.ready) frame = requestAnimationFrame(() => { bar.dataset.ready = "true"; });
     };
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(bar);
     bar.querySelectorAll<HTMLElement>('[role="tab"]').forEach((tab) => observer.observe(tab));
-    return () => observer.disconnect();
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
   }, [pluginsTab, settingsOpen, currentTarget]);
   // 插件列表是只读页：首次进入后保活，离开只隐藏，再进不重建也保留搜索与展开状态。
   const inventoryVisible = settingsOpen && currentTarget?.kind === "plugins" && currentTarget.memberId === null && pluginsTab === "list";

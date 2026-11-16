@@ -167,8 +167,6 @@ function rootFontPx(): number {
 export interface SidebarRailControl {
   /** 用户覆盖值（rem）；null 表示回到 CSS 的 clamp 默认。 */
   widthRem: number | null;
-  /** 当前是否处于习惯宽度磁吸态（用于分隔线焦点刻度反馈）。 */
-  snapped: boolean;
   /** 已学习的习惯磁吸宽度（px），未达到共识门槛时为 null。 */
   snapPointPx: number | null;
   /** 静置写入点：grid 容器上的 --chat-rail-width。 */
@@ -189,7 +187,6 @@ export interface SidebarRailControl {
 export function useSidebarRail(shellRef: RefObject<HTMLDivElement | null>): SidebarRailControl {
   const [widthRem, setWidthRem] = useState<number | null>(readRailWidth);
   const [samples, setSamples] = useState<RailSample[]>(readRailSamples);
-  const [snapped, setSnapped] = useState(false);
   const favourite = useMemo(() => favouriteRailWidth(samples), [samples]);
   const drag = useRef<{
     x: number;
@@ -274,12 +271,13 @@ export function useSidebarRail(shellRef: RefObject<HTMLDivElement | null>): Side
     const fontPx = rootFontPx();
     const minPx = SIDEBAR_RAIL_MIN_REM * fontPx;
     const maxPx = SIDEBAR_RAIL_MAX_REM * fontPx;
-    const rawPx = Math.min(maxPx, Math.max(minPx, start.widthPx + clientX - start.x));
+    const unclampedPx = start.widthPx + clientX - start.x;
+    const rawPx = Math.min(maxPx, Math.max(minPx, unclampedPx));
     const snapTarget = favourite?.widthPx ?? null;
 
-    // 悬停解锁后的精细微调：从吸附点按手移动增量 1:1 跟随，无跳变。
+    // 悬停解锁后的精细微调：从吸附点按手移动增量跟随（仍落在侧栏 0.25rem 档上），位移取未钳制值，两端拖得到边界。
     if (start.freeFromPx !== null && snapTarget !== null) {
-      const finePx = Math.min(maxPx, Math.max(minPx, snapTarget + (rawPx - start.freeFromPx)));
+      const finePx = Math.min(maxPx, Math.max(minPx, snapTarget + (unclampedPx - start.freeFromPx)));
       const next = snapRail(finePx / fontPx);
       start.next = next;
       start.edgePx = next * fontPx;
@@ -316,7 +314,7 @@ export function useSidebarRail(shellRef: RefObject<HTMLDivElement | null>): Side
       start.dwellTimer = window.setTimeout(() => {
         const active = drag.current;
         if (!active || !active.holding) return;
-        active.freeFromPx = rawPx;
+        active.freeFromPx = unclampedPx;
         active.holding = false;
         active.dwellTimer = 0;
         setDirectSnapped(active.resizerEl, false);
@@ -346,7 +344,6 @@ export function useSidebarRail(shellRef: RefObject<HTMLDivElement | null>): Side
   const reset = useCallback(() => {
     if (drag.current?.dwellTimer) window.clearTimeout(drag.current.dwellTimer);
     drag.current = null;
-    setSnapped(false);
     clearDirect();
     commit(null);
   }, [commit, clearDirect]);
@@ -355,5 +352,5 @@ export function useSidebarRail(shellRef: RefObject<HTMLDivElement | null>): Side
     ? undefined
     : { "--chat-rail-width": `${widthRem}rem` } as CSSProperties, [widthRem]);
 
-  return { widthRem, snapped, snapPointPx: favourite?.widthPx ?? null, style, dragStart, dragTo, dragEnd, stepBy, reset };
+  return { widthRem, snapPointPx: favourite?.widthPx ?? null, style, dragStart, dragTo, dragEnd, stepBy, reset };
 }

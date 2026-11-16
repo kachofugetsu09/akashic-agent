@@ -506,6 +506,9 @@ input {
   transition: transform var(--chat-mode-duration, 175ms) cubic-bezier(0.22, 1, 0.36, 1);
   pointer-events: none;
 }
+.theme-menu__modes:dir(rtl) .theme-menu__mode-pill {
+  transform: translateX(calc(var(--chat-mode-index, 0) * -1 * (100% + 2px)));
+}
 @media (prefers-reduced-motion: reduce) {
   .theme-menu__mode-pill { transition: none; }
 }
@@ -949,12 +952,16 @@ input {
   pointer-events: none;
 }
 
+/* 平头端点：圆头在 dash 长度归零时仍会画出一个圆点，倒计时结束会在起点留一粒残点。
+   圆角跟随 --ak-radius-sm（外扩 1px 后减半个描边），不写死像素。 */
 .session-delete-notice__ring-bar {
   width: calc(100% - 1px);
   height: calc(100% - 1px);
+  rx: calc(var(--ak-radius-sm) - 0.5px);
+  ry: calc(var(--ak-radius-sm) - 0.5px);
   stroke: var(--ak-rule-focus);
   stroke-width: 1.25;
-  stroke-linecap: round;
+  stroke-linecap: butt;
   stroke-dasharray: 1 1;
   stroke-dashoffset: 0;
   opacity: 0.65;
@@ -1011,7 +1018,8 @@ input {
 /* 减弱动效：留着「这里多了一行」的淡入，去掉位移与缩放。 */
 @media (prefers-reduced-motion: reduce) {
   .session-delete-notice { animation-name: ak-notice-in-plain; }
-  .session-delete-notice__ring-bar { animation: none; }
+  /* 不动的满环只是一道多余的强调框，不如不画；倒计时靠撤销按钮本身表达。 */
+  .session-delete-notice__ring { display: none; }
 }
 
 @keyframes ak-notice-in-plain {

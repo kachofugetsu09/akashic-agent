@@ -432,10 +432,12 @@ function connectSplitter(root, splitter, sizing) {
   splitter.addEventListener("pointermove", (event) => {
     if (!root.classList.contains("is-resizing")) return;
     const rtl = getComputedStyle(root).direction === "rtl";
-    const raw = Math.min(sizing.maximum(), Math.max(MIN_PANEL_WIDTH, dragStartWidth + (dragStartX - event.clientX) * (rtl ? -1 : 1)));
+    const unclamped = dragStartWidth + (dragStartX - event.clientX) * (rtl ? -1 : 1);
+    const raw = Math.min(sizing.maximum(), Math.max(MIN_PANEL_WIDTH, unclamped));
     const snapTarget = sizing.snapPoint();
+    // 解锁后从磁吸点按手的位移 1:1 跟随；位移取未钳制值，两端仍拖得到边界。
     if (freeFrom !== null && snapTarget !== null) {
-      sizing.set(snapTarget + (raw - freeFrom));
+      sizing.set(snapTarget + (unclamped - freeFrom));
       return;
     }
     const wasHolding = holding;
@@ -446,14 +448,14 @@ function connectSplitter(root, splitter, sizing) {
       sizing.set(raw);
       return;
     }
-    splitter.setAttribute("data-snapped", "");
+    if (!wasHolding) splitter.setAttribute("data-snapped", "");
     sizing.set(snapTarget);
     if (!wasHolding || Math.abs(raw - stillWidth) > SNAP_TUNING.snap / 6) {
       stillWidth = raw;
       if (dwellTimer) window.clearTimeout(dwellTimer);
       dwellTimer = window.setTimeout(() => {
         if (!root.classList.contains("is-resizing") || !holding) return;
-        freeFrom = raw;
+        freeFrom = unclamped;
         holding = false;
         dwellTimer = 0;
         splitter.removeAttribute("data-snapped");
@@ -516,6 +518,8 @@ function connectDivider(panel, divider) {
 function createSizing(root, splitter) {
   const saved = storedWidth();
   let samples = storedSamples();
+  // 磁吸点只随样本变：拖动每帧都要问，KDE 全量重算放在初始化和记样本时。
+  let favourite = favouriteWidth(samples);
   const state = { width: saved ?? 0, preferred: saved ?? 0, useDefault: saved === null };
   const maximum = () => Math.max(MIN_PANEL_WIDTH, root.clientWidth - MIN_CHAT_WIDTH);
   const set = (value, persist = false) => {
@@ -531,13 +535,10 @@ function createSizing(root, splitter) {
   };
   const recordSample = (width) => {
     samples = recordWidthSample(samples, Math.round(width), Date.now());
+    favourite = favouriteWidth(samples);
     saveSamples(samples);
   };
-  const snapPoint = () => {
-    const fav = favouriteWidth(samples);
-    if (!fav) return null;
-    return Math.min(maximum(), Math.max(MIN_PANEL_WIDTH, fav.width));
-  };
+  const snapPoint = () => (favourite ? Math.min(maximum(), Math.max(MIN_PANEL_WIDTH, favourite.width)) : null);
   const fit = () => set(state.useDefault ? root.clientWidth * DEFAULT_WIDTH_RATIO : state.preferred);
   const reset = () => {
     state.useDefault = true;
