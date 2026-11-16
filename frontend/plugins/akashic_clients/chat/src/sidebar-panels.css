@@ -185,7 +185,6 @@
   padding-inline: 6px;
   font-weight: 600;
   text-overflow: ellipsis;
-  text-wrap: balance;
   white-space: nowrap;
 }
 .sidebar-panels__icon {
@@ -200,7 +199,7 @@
   background: transparent;
   color: var(--chat-muted);
   cursor: pointer;
-  transition: background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard), color var(--ak-sys-duration-short) var(--ak-sys-motion-standard), scale 60ms var(--ak-sys-motion-standard);
+  transition: background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard), color var(--ak-sys-duration-short) var(--ak-sys-motion-standard), scale var(--ak-sys-duration-instant) var(--ak-sys-motion-standard);
 }
 .sidebar-panels__icon:active:not(:disabled) { scale: 0.96; }
 .sidebar-panels[data-sheet] .sidebar-panels__icon { width: 44px; height: 44px; }
@@ -236,7 +235,7 @@
   font: inherit;
   text-align: start;
   cursor: pointer;
-  transition: background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard), scale 60ms var(--ak-sys-motion-standard);
+  transition: background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard), scale var(--ak-sys-duration-instant) var(--ak-sys-motion-standard);
 }
 .sidebar-panels__item:active:not(:disabled) { scale: 0.99; }
 .sidebar-panels[data-sheet] .sidebar-panels__item { min-height: 48px; }

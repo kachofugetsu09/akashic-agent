@@ -447,12 +447,12 @@
   .shell-inventory-group h4 span,
   .shell-inventory-sub-head > span:not(.shell-inventory-chevron) { margin-inline-start: 4px; font-weight: 400; color: var(--ak-ink-muted); font-variant-numeric: tabular-nums; }
   /* 插件列表同样收进分组卡：名称下一行是说明，展开的详情就地出现在行内。 */
-  .shell-inventory-rows { margin: 0; padding: 0; overflow: hidden; list-style: none; border: 0; border-radius: var(--ak-radius-md); background: var(--ak-paper-sheet); box-shadow: 0 0 0 1px var(--ak-rule-subtle); }
+  .shell-inventory-rows { margin: 0; padding: 0; overflow: hidden; list-style: none; border: 1px solid var(--ak-rule-subtle); border-radius: var(--ak-radius-md); background: var(--ak-paper-sheet); }
   .shell-inventory-row + .shell-inventory-row { border-block-start: 1px solid var(--ak-rule-subtle); }
   .shell-inventory-name { display: grid; flex: 1 1 auto; min-width: 0; gap: 1px; padding-block: 8px; }
   .shell-inventory-name small { overflow: hidden; font-size: 13px; line-height: 18px; color: var(--ak-ink-muted); text-overflow: ellipsis; white-space: nowrap; }
   .shell-inventory-head,
-  .shell-inventory-sub-head { display: flex; width: 100%; min-height: 44px; align-items: center; gap: 10px; padding: 0; font: inherit; text-align: start; border: 0; background: transparent; color: inherit; cursor: pointer; transition: background-color 150ms ease; }
+  .shell-inventory-sub-head { display: flex; width: 100%; min-height: 44px; align-items: center; gap: 10px; padding: 0; font: inherit; text-align: start; border: 0; background: transparent; color: inherit; cursor: pointer; transition: background-color var(--ak-sys-duration-short, 150ms) var(--ak-sys-motion-standard, cubic-bezier(0.2, 0, 0, 1)); }
   .shell-inventory-head { padding-inline: 16px; }
   .shell-inventory-head:hover { background: color-mix(in oklab, var(--ak-ink-primary) 4%, transparent); }
   .shell-inventory-head:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: -2px; }

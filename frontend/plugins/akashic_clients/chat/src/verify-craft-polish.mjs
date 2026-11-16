@@ -1,7 +1,7 @@
 /**
  * 界面细节打磨与 shell_ui 折叠的真实浏览器验收（PR 3）：
  *   1. 正文图片 1px 透明内描边（outline: 1px solid ...; outline-offset: -1px）与媒体附件卡片 ::after 内描边
- *   2. 浮层阴影替代实线边框（border-width: 0px + box-shadow 含 1px 透明描边环）
+ *   2. 浮层阴影替代实线边框（border-width: 0px + box-shadow 含 1px 描边环）；插件分组卡保留真实边框
  *   3. 标题 text-wrap: balance、正文 text-wrap: pretty、动态数字 tabular-nums
  *   4. shell_ui 插件库存折叠（ShellDisclosure）双向 0fr <-> 1fr 平滑过渡（含「技术信息」嵌套）
  */
@@ -292,18 +292,20 @@ try {
 
     const shellStyles = await page.evaluate(() => {
       const card = document.querySelector('.shell-inventory-rows');
+      const cards = [...document.querySelectorAll('.shell-inventory-rows')];
       const name = document.querySelector('.shell-inventory-head strong');
       const status = document.querySelector('.shell-inventory-status');
       return {
         cardBorder: getComputedStyle(card).borderTopWidth,
-        cardShadow: getComputedStyle(card).boxShadow,
+        // 卡片会放进 overflow:clip 的折叠容器（基础组件），外扩阴影会被裁掉，所以用真实边框。
+        cardBorders: cards.map((item) => getComputedStyle(item).borderTopWidth),
         nameWrap: getComputedStyle(name).textWrap,
         statusTabular: status ? getComputedStyle(status).fontVariantNumeric : null,
       };
     });
     console.log('[2d] shell_ui craft styles:', JSON.stringify(shellStyles));
-    assert.equal(shellStyles.cardBorder, '0px');
-    assert.notEqual(shellStyles.cardShadow, 'none');
+    assert.equal(shellStyles.cardBorder, '1px');
+    assert.ok(shellStyles.cardBorders.every((width) => width === '1px'), `所有分组卡都应有 1px 边框，实际：${shellStyles.cardBorders}`);
     assert.equal(shellStyles.nameWrap, 'balance');
 
     assert.deepEqual(errors, []);

@@ -227,7 +227,7 @@
   border-block-end: 0;
 }
 
-/* 正文与附件图片统一走 1px 透明内描边（--ak-color-image-outline），高光贴边也不融入纸底。 */
+/* 正文与附件图片统一走 1px 内描边（--ak-color-image-outline，与 .media-preview__media 同一 token），高光贴边也不融入纸底。 */
 .agent-content img,
 .process-markdown img {
   display: block;
@@ -2647,7 +2647,7 @@ button.tool-step-summary:active {
   cursor: pointer;
   translate: -50% -100%;
   opacity: 1;
-  transition: opacity var(--ak-sys-duration-short) var(--ak-sys-motion-standard), scale 60ms var(--ak-sys-motion-standard);
+  transition: opacity var(--ak-sys-duration-short) var(--ak-sys-motion-standard), scale var(--ak-sys-duration-instant) var(--ak-sys-motion-standard);
   @starting-style { opacity: 0; }
 }
 .selection-quote:active { scale: 0.97; }
