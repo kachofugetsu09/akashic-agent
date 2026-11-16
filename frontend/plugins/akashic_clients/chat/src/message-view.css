@@ -2970,7 +2970,27 @@ button.tool-step-summary:active {
   color: var(--ak-color-status-error);
 }
 
+.delegated-group > .tool-step-sticky.is-open,
+.delegated-card > .tool-step-sticky.is-open {
+  height: auto;
+  background: var(--ak-paper-editing);
+}
+
+.delegated-group > .tool-step-sticky.is-open {
+  z-index: 4;
+}
+
+.delegated-group.is-open .delegated-card.is-member > .tool-step-sticky.is-open {
+  top: calc(var(--heading-cover, 0px) + 40px);
+  z-index: 3;
+}
+
+.turn-process.is-open .turn-process-items .delegated-group.is-open .delegated-card.is-member > .tool-step-sticky.is-open {
+  top: calc(var(--heading-cover, 0px) + var(--tool-sticky-h) + 40px);
+}
+
 .delegated-detail-surface {
+  margin-top: 0;
   border-top: 1px solid var(--chat-line);
   padding: 10px 12px;
   background: var(--ak-paper-quiet);
@@ -2980,7 +3000,6 @@ button.tool-step-summary:active {
 .delegated-hover-card {
   position: fixed;
   z-index: 40;
-  transform: translateY(-100%);
   width: min(328px, calc(100vw - 24px));
   display: grid;
   gap: 6px;
@@ -3057,4 +3076,3 @@ button.tool-step-summary:active {
   overflow-wrap: anywhere;
 }
 
-.delegated-hover-card.is-below { transform: none; }

@@ -198,12 +198,23 @@ try {
   const tipText = await page.locator('.delegated-hover-card').innerText();
   assert.match(tipText, /调研后端架构/);
   assert.match(tipText, /deepseek-chat/);
+  const tipBox = await page.locator('.delegated-hover-card').boundingBox();
+  assert.ok(tipBox && tipBox.y >= 4 && tipBox.y + tipBox.height <= 820, '悬停浮卡不得被视口上下裁切');
+  await page.keyboard.press('Escape');
+  await page.locator('.delegated-hover-card').waitFor({ state: 'detached', timeout: 3000 });
 
   // Click 3rd member (completed) to expand and verify plugins/subagent tool.result card mounts
   await page.locator('.delegated-card.is-member .delegated-row-trigger').nth(2).click();
   await page.waitForFunction(() => document.querySelectorAll('.subagent-tool-result__badge').length >= 2);
   const badges = (await page.locator('.subagent-tool-result__badge').allInnerTexts()).map(t => t.trim());
   assert.deepEqual(badges, ['失败', '已完成']);
+  const stickyMetrics = await page.evaluate(() => {
+    const sticky = document.querySelector('.delegated-card.is-member .tool-step-sticky.is-open');
+    const btn = sticky?.querySelector('.delegated-row-trigger');
+    if (!sticky || !btn) return null;
+    return { stickyH: sticky.getBoundingClientRect().height, btnH: btn.getBoundingClientRect().height };
+  });
+  assert.ok(stickyMetrics && stickyMetrics.stickyH >= stickyMetrics.btnH - 1, '展开后吸顶容器不得把委派行压扁裁切');
 
   await page.screenshot({ path: root + '/desktop-subagent-cards.png', animations: 'disabled' });
 

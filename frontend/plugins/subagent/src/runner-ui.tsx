@@ -63,7 +63,7 @@ function parseSubagentResult(name: string, value: unknown, error: boolean): Suba
   if (typeof value !== "string") return null;
   if (name !== "spawn" && !name.startsWith("delegate_")) return null;
   const trimmed = value.trim();
-  const bgMatch = /^已创建后台任务「([^」]+)」[（(]job_id=([a-f0-9]+)[)）]/u.exec(trimmed);
+  const bgMatch = /^已创建后台任务「(.+)」[（(]job_id=([a-f0-9]+)[)）]/u.exec(trimmed);
   if (bgMatch) {
     return { title: bgMatch[1], status: "后台已接纳", tone: "live", jobId: bgMatch[2], body: trimmed };
   }

@@ -1,3 +1,4 @@
+import { chatPortalRoot } from "./chat-layout";
 import { PluginUiSlot, pluginSlotAccepts, usePluginUiCatalogVersion } from "./plugin-ui-runtime";
 import { ThinkingPlaceholder } from "./thinking-placeholder";
 import { MentionText } from "./composer-suggest";
@@ -33,6 +34,7 @@ import {
   type ReactNode,
   type TransitionEvent,
   useEffect,
+  useId,
   useLayoutEffect,
   useRef,
   useCallback,
@@ -638,12 +640,10 @@ function TimelineProcess({ flow, draftThinking = "", draftThinkingActive = false
         <Fragment key={`toolgroup-${item.members[0].key}`}>
           {item.members.some((member) => member.key === slotKey) ? beforeReasoning?.(item.members[0].origin) : null}
           <CollapsedToolGroup count={item.members.length} durationMs={item.durationMs}
-            findText={() => item.members.map((member) => member.kind === "delegated-batch"
-              ? member.members.map(flowItemFindText).join("\n")
-              : flowItemFindText(member)).join("\n")}>
-            {item.members.map((member) => member.kind === "delegated-batch"
-              ? <DelegatedBatchCard key={member.key} members={member.members} onCopyToolDetail={onCopyToolDetail} />
-              : <FlowItemView key={member.key} item={member} onCopyToolDetail={onCopyToolDetail} partView={partView} />)}
+            findText={() => item.members.map((member) => flowItemFindText(member as FlowItem)).join("\n")}>
+            {item.members.map((member) => (
+              <FlowItemView key={member.key} item={member as FlowItem} onCopyToolDetail={onCopyToolDetail} partView={partView} />
+            ))}
           </CollapsedToolGroup>
         </Fragment>
       ) : item.kind === "delegated-batch" ? (
@@ -1809,7 +1809,6 @@ interface DelegatedMeta {
   preview: string;
   statusTone: DelegatedStatusTone;
   statusLabel: string;
-  tooltip: string;
   forked: boolean;
 }
 
@@ -1819,7 +1818,12 @@ function delegatedPreviewText(block: ToolBlock): string {
   const raw = toolDataText(block.output === undefined ? block.errorText : block.output).trim();
   if (!raw) return block.status === "output-error" ? "执行失败" : "";
   const lines = raw.split("\n").map((line) => line.trim()).filter(Boolean);
-  const meaningful = lines.find((line) => !line.startsWith("[") && !line.startsWith("退出原因:") && !line.startsWith("状态:"));
+  const meaningful = lines.find((line) => (
+    !line.startsWith("[子任务「")
+    && !line.startsWith("[外部任务")
+    && !line.startsWith("退出原因:")
+    && !line.startsWith("状态:")
+  ));
   return (meaningful ?? lines[0] ?? "").slice(0, 140);
 }
 
@@ -1846,14 +1850,7 @@ function delegatedMeta(block: ToolBlock): DelegatedMeta {
     : statusTone === "done" ? (block.durationMs !== undefined ? formatToolDuration(block.durationMs) : "完成")
     : "未知";
   const preview = delegatedPreviewText(block);
-  const tooltip = [
-    title,
-    modelLine || undefined,
-    cwd ? `目录: ${cwd}` : undefined,
-    `状态: ${statusLabel}`,
-    preview || undefined,
-  ].filter(Boolean).join(" · ");
-  return { title, tags, modelLine, cwd, preview, statusTone, statusLabel, tooltip, forked };
+  return { title, tags, modelLine, cwd, preview, statusTone, statusLabel, forked };
 }
 
 function DelegatedStatusGlyph({ tone, forked }: { tone: DelegatedStatusTone; forked: boolean }) {
@@ -1867,15 +1864,28 @@ function DelegatedStatusGlyph({ tone, forked }: { tone: DelegatedStatusTone; for
   );
 }
 
-function DelegatedHoverCard({ meta, anchor }: { meta: DelegatedMeta; anchor: DOMRect }) {
-  const placeBelow = anchor.top < 140;
-  const top = placeBelow ? Math.min(window.innerHeight - 16, anchor.bottom + 8) : Math.max(8, anchor.top - 8);
-  const left = Math.min(Math.max(12, anchor.left + 16), Math.max(12, window.innerWidth - 340));
+function DelegatedHoverCard({ id, meta, anchor }: { id: string; meta: DelegatedMeta; anchor: DOMRect }) {
+  const cardRef = useRef<HTMLDivElement | null>(null);
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
+  useLayoutEffect(() => {
+    const el = cardRef.current;
+    if (!el) return;
+    const box = el.getBoundingClientRect();
+    const edge = 8;
+    const gap = 8;
+    const aboveTop = anchor.top - box.height - gap;
+    const belowTop = Math.min(window.innerHeight - box.height - edge, anchor.bottom + gap);
+    const top = aboveTop >= edge ? aboveTop : Math.max(edge, belowTop);
+    const left = Math.min(Math.max(12, anchor.left + 16), Math.max(12, window.innerWidth - box.width - 12));
+    setPos({ top, left });
+  }, [anchor, meta]);
   return createPortal(
     <div
-      className={`delegated-hover-card${placeBelow ? " is-below" : ""}`}
+      ref={cardRef}
+      id={id}
+      className="delegated-hover-card"
       role="tooltip"
-      style={{ top, left }}
+      style={pos ? { top: pos.top, left: pos.left, visibility: "visible" } : { top: 0, left: 0, visibility: "hidden" }}
     >
       <div className="delegated-hover-card__head">
         <DelegatedStatusGlyph tone={meta.statusTone} forked={meta.forked} />
@@ -1891,7 +1901,7 @@ function DelegatedHoverCard({ meta, anchor }: { meta: DelegatedMeta; anchor: DOM
       ) : null}
       {meta.preview ? <p className="delegated-hover-card__preview">{meta.preview}</p> : null}
     </div>,
-    document.body,
+    chatPortalRoot(),
   );
 }
 
@@ -1915,6 +1925,7 @@ const DelegatedToolCard = memo(function DelegatedToolCard({
   const result = useMemo(() => open ? toolDataText(resultValue) : "", [open, resultValue]);
   const parameterCopyText = useMemo(() => open ? toolParameterCopyText(block.input) : "", [block.input, open]);
   const [copiedDetail, setCopiedDetail] = useState<{ section: "parameters" | "result"; text: string } | null>(null);
+  const tooltipId = useId();
   const [hoverRect, setHoverRect] = useState<DOMRect | null>(null);
   const hoverTimerRef = useRef<number | null>(null);
   const clearHover = useCallback(() => {
@@ -1925,10 +1936,25 @@ const DelegatedToolCard = memo(function DelegatedToolCard({
     setHoverRect(null);
   }, []);
   useEffect(() => clearHover, [clearHover]);
+  useEffect(() => {
+    if (!hoverRect) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") clearHover();
+    };
+    window.addEventListener("scroll", clearHover, true);
+    window.addEventListener("resize", clearHover);
+    document.addEventListener("keydown", onKeyDown, true);
+    return () => {
+      window.removeEventListener("scroll", clearHover, true);
+      window.removeEventListener("resize", clearHover);
+      document.removeEventListener("keydown", onKeyDown, true);
+    };
+  }, [hoverRect, clearHover]);
   const startHover = useCallback((el: HTMLElement) => {
     clearHover();
-    const rect = el.getBoundingClientRect();
-    hoverTimerRef.current = window.setTimeout(() => setHoverRect(rect), 280);
+    hoverTimerRef.current = window.setTimeout(() => {
+      if (el.isConnected) setHoverRect(el.getBoundingClientRect());
+    }, 280);
   }, [clearHover]);
   useEffect(() => {
     if (copiedDetail === null) return;
@@ -1967,6 +1993,7 @@ const DelegatedToolCard = memo(function DelegatedToolCard({
             type="button"
             className="delegated-row-trigger"
             aria-expanded={open}
+            aria-describedby={hoverRect ? tooltipId : undefined}
             onPointerEnter={(e) => { if (e.pointerType === "mouse" && !open) startHover(e.currentTarget); }}
             onPointerLeave={clearHover}
             onFocus={(e) => { if (e.currentTarget.matches(":focus-visible") && !open) startHover(e.currentTarget); }}
@@ -1985,7 +2012,7 @@ const DelegatedToolCard = memo(function DelegatedToolCard({
           {summaryContent}
         </div>
       )}
-      {hoverRect ? <DelegatedHoverCard meta={meta} anchor={hoverRect} /> : null}
+      {hoverRect ? <DelegatedHoverCard id={tooltipId} meta={meta} anchor={hoverRect} /> : null}
       {hasDetails ? (
         <Disclosure open={open} instant={instant}>
           <div className="tool-detail-surface delegated-detail-surface">
