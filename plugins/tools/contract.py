@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextvars import ContextVar, Token
 import json
 from copy import deepcopy
 from collections.abc import Awaitable, Callable, Mapping
@@ -394,6 +395,43 @@ _TOOL_TYPE_MAP: dict[str, type[object] | tuple[type[object], ...]] = {
     "array": list,
     "object": dict,
 }
+
+
+@dataclass(frozen=True, slots=True)
+class NestedToolRef:
+    """在当前活跃工具调用作用域内可由受信任编排工具（如 codemode）调用的获授工具描述。"""
+
+    name: str
+    owner: str
+    description: Mapping[str, object]
+    binding_id: str
+
+
+@runtime_checkable
+class NestedToolScope(Protocol):
+    """当前工具调用期间获授的嵌套调用能力，严格限定于当前菜单已绑定的工具集合。"""
+
+    @property
+    def tools(self) -> Mapping[str, NestedToolRef]: ...
+
+    async def call(self, name: str, arguments: Mapping[str, object]) -> Result: ...
+
+
+_ACTIVE_NESTED_SCOPE: ContextVar[NestedToolScope | None] = ContextVar(
+    "akashic_tools_nested_scope", default=None,
+)
+
+
+def current_nested_tool_scope() -> NestedToolScope | None:
+    return _ACTIVE_NESTED_SCOPE.get()
+
+
+def push_nested_tool_scope(scope: NestedToolScope) -> Token[NestedToolScope | None]:
+    return _ACTIVE_NESTED_SCOPE.set(scope)
+
+
+def reset_nested_tool_scope(token: Token[NestedToolScope | None]) -> None:
+    _ACTIVE_NESTED_SCOPE.reset(token)
 
 
 def validate_tool_parameters(

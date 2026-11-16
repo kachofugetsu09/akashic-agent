@@ -89,6 +89,9 @@ plugin = "tools@release"
 [rows."tool_search"]
 plugin = "tool_search@release"
 
+[rows."codemode"]
+plugin = "codemode@release"
+
 [rows."assets"]
 plugin = "assets@release"
 

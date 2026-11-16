@@ -367,16 +367,23 @@ class ToolCatalog:
         async def authorize_binding(
             binding_id: str, arguments: Mapping[str, object]
         ) -> Mapping[str, object] | str:
-            async with bindings.open(binding_id, TOOLS) as (catalog, metadata):
-                refusal = await catalog.authorize(metadata, arguments)
-                if refusal is not None:
-                    return refusal
+            async with self._ctx.runtime_scope():
+                async with bindings.open(binding_id, TOOLS) as (catalog, metadata):
+                    refusal = await catalog.authorize(metadata, arguments)
+                    if refusal is not None:
+                        return refusal
             return await authorize(binding_id, arguments)
+
+        @asynccontextmanager
+        async def open_scoped_tool(identity: str) -> AsyncIterator[BoundTool]:
+            async with self._ctx.runtime_scope():
+                async with open_tool(bindings, identity) as target:
+                    yield target
 
         return ToolExecution(
             self._ctx.require(OWNER_STATE).open(self._ctx),
             self._ctx.require(TASKS).open(self._ctx),
-            lambda identity: open_tool(bindings, identity),
+            open_scoped_tool,
             authorize_binding,
             task_key="effects",
             child_permit=child_permit,
