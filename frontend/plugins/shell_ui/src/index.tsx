@@ -182,6 +182,7 @@ function Shell({ pages, railActions, settings, settingsPlugins, http, inventory 
   const pageHosts = useRef(new Map<string, HTMLElement>());
   const settingsDialog = useRef<HTMLDialogElement>(null);
   const settingsContent = useRef<HTMLDivElement>(null);
+  const settingsTabsRef = useRef<HTMLDivElement>(null);
   const bandTrack = useRef<HTMLDivElement>(null);
   const focusAfterNavigation = useRef(false);
 
@@ -252,6 +253,26 @@ function Shell({ pages, railActions, settings, settingsPlugins, http, inventory 
   const [settingsPane, setSettingsPane] = useState<"nav" | "content">("content");
   // 插件分节的两个 tab：插件列表管理启停，插件配置是成员自己的设置表单。
   const [pluginsTab, setPluginsTab] = useState<"list" | "config">("list");
+  // 插件分节 tab 的滑动底线：测量当前选中 tab 的位置与宽度，与顶栏指示器保持同一连续过渡体验。
+  useLayoutEffect(() => {
+    const bar = settingsTabsRef.current;
+    if (!bar) return;
+    const measure = () => {
+      const current = bar.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]');
+      if (current) {
+        bar.style.setProperty("--shell-tabs-x", `${current.offsetLeft}px`);
+        bar.style.setProperty("--shell-tabs-w", `${current.offsetWidth}px`);
+      } else {
+        bar.style.setProperty("--shell-tabs-w", "0px");
+      }
+      requestAnimationFrame(() => { bar.dataset.ready = "true"; });
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(bar);
+    bar.querySelectorAll<HTMLElement>('[role="tab"]').forEach((tab) => observer.observe(tab));
+    return () => observer.disconnect();
+  }, [pluginsTab, settingsOpen, currentTarget]);
   // 插件列表是只读页：首次进入后保活，离开只隐藏，再进不重建也保留搜索与展开状态。
   const inventoryVisible = settingsOpen && currentTarget?.kind === "plugins" && currentTarget.memberId === null && pluginsTab === "list";
   const inventoryKept = useRef(false);
@@ -624,9 +645,10 @@ function Shell({ pages, railActions, settings, settingsPlugins, http, inventory 
             back={() => openSettings({ kind: "plugins", memberId: null })}
           />
           {currentTarget?.kind === "plugins" && currentTarget.memberId === null && <>
-            <div className="shell-settings-tabs" role="tablist" aria-label="插件">
+            <div ref={settingsTabsRef} className="shell-settings-tabs" role="tablist" aria-label="插件">
               <button type="button" role="tab" aria-selected={pluginsTab === "list"} onClick={() => setPluginsTab("list")}>插件列表</button>
               <button type="button" role="tab" aria-selected={pluginsTab === "config"} onClick={() => setPluginsTab("config")}>插件配置</button>
+              <div className="shell-settings-tabs__indicator" aria-hidden="true" />
             </div>
             {pluginsTab === "list" ? null : pluginCards.length === 0
               ? <p className="shell-inventory-empty">已启用的插件都没有设置项</p> : <PluginCardList

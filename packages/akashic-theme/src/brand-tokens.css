@@ -77,3 +77,24 @@
   animation-duration: var(--ak-sys-duration-medium);
   animation-timing-function: var(--ak-sys-motion-standard);
 }
+
+/* 连续曲率圆角（超椭圆）渐进增强（Chromium 139+）：消除圆弧与直边的生硬折痕；胶囊与圆形保持正圆。 */
+@supports (corner-shape: superellipse(1.25)) {
+  :where(
+    .user-bubble,
+    .theme-menu,
+    .theme-menu__modes,
+    .theme-menu__mode-pill,
+    .theme-menu__mode,
+    .theme-menu__family,
+    .sidebar-panels:not([data-sheet]),
+    .session-delete-notice,
+    .shell-settings-dialog,
+    .shell-plugin-cards,
+    .shell-inventory-rows,
+    .chat-sidebar__search,
+    .conversation-session
+  ) {
+    corner-shape: superellipse(1.25);
+  }
+}

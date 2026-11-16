@@ -16,6 +16,9 @@
   font-size: 0.9375rem;
   line-height: var(--chat-user-leading, calc(20 / 15));
   overflow-wrap: break-word;
+  text-autospace: normal;
+  text-wrap: pretty;
+  line-break: strict;
 }
 
 /* 视口外的占位行与完整行同高：用户气泡占位同样收在 12 行，升级时不塌陷。 */
@@ -78,6 +81,9 @@
   font-size: var(--chat-type-body, 0.9375rem);
   line-height: var(--chat-response-leading, 1.55);
   overflow-wrap: break-word;
+  text-autospace: normal;
+  text-wrap: pretty;
+  line-break: strict;
   user-select: text;
 }
 

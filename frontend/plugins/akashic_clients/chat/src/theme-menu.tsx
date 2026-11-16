@@ -1,6 +1,6 @@
 import * as DropdownMenuPrimitive from "@radix-ui/react-dropdown-menu";
 import { Check, Moon, Sun, SunMoon, type LucideIcon } from "lucide-react";
-import type { CSSProperties } from "react";
+import { useRef, useState, type CSSProperties } from "react";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuSeparator, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
@@ -23,9 +23,16 @@ export function ThemeMenu() {
   const theme = useTheme();
   const families = themeFamilies();
   const family = families.find((item) => item.id === selection.family);
-  const mode = MODES.find((item) => item.mode === selection.mode) ?? MODES[0];
+  const modeIndex = Math.max(0, MODES.findIndex((item) => item.mode === selection.mode));
+  const prevIndexRef = useRef(modeIndex);
+  const [modeDurationMs, setModeDurationMs] = useState(175);
+  const mode = MODES[modeIndex] ?? MODES[0];
   const label = family?.label ?? theme.label;
   const ModeIcon = mode.icon;
+  const modeStyle = {
+    "--chat-mode-index": modeIndex,
+    "--chat-mode-duration": `${modeDurationMs}ms`,
+  } as CSSProperties;
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -36,8 +43,15 @@ export function ThemeMenu() {
       </DropdownMenuTrigger>
       <DropdownMenuContent side="top" align="end" collisionPadding={8} className="theme-menu">
         <DropdownMenuLabel className="theme-menu__label">明暗</DropdownMenuLabel>
-        <DropdownMenuRadioGroup className="theme-menu__modes" value={selection.mode}
-          onValueChange={(value) => setThemePreference(selection.family, value as ThemeMode)}>
+        <DropdownMenuRadioGroup className="theme-menu__modes" value={selection.mode} style={modeStyle}
+          onValueChange={(value) => {
+            const nextIdx = Math.max(0, MODES.findIndex((item) => item.mode === value));
+            const dist = Math.max(1, Math.abs(nextIdx - prevIndexRef.current));
+            prevIndexRef.current = nextIdx;
+            setModeDurationMs(130 + dist * 45);
+            setThemePreference(selection.family, value as ThemeMode);
+          }}>
+          <span className="theme-menu__mode-pill" aria-hidden="true" />
           {MODES.map(({ mode: value, label: text, icon: Icon }) => (
             <DropdownMenuPrimitive.RadioItem key={value} value={value} className="theme-menu__mode" onSelect={keepOpen}>
               <Icon size={16} aria-hidden="true" />
