@@ -178,15 +178,14 @@ function pageBuildOutdated(state: WebShellState): boolean {
   return Boolean(pageBuild && state.build && state.build !== pageBuild);
 }
 
-// 服务端升级后旧页面的展示合同可能已过期：每次连上都对照页面自带的版本，变了就提示刷新。
+// 服务端升级后旧页面的展示合同或后端代码可能已更新：每次连上都对照页面自带的版本与首次见到的 commit。
 // 读取失败（重启中的短暂 503 等）按退避有限重试；live 为假时本次连接已结束，不再重试。
-function checkPageBuild(outdated: () => void, live: () => boolean, attempt = 0) {
-  if (!pageBuild) return;
+function checkRuntimeState(onState: (state: WebShellState) => void, live: () => boolean, attempt = 0) {
   void fetchChatJson<unknown>("/api/shell/state").then(webShellState).then((state) => {
-    if (pageBuildOutdated(state)) outdated();
+    onState(state);
   }).catch(() => {
     const delay = PAGE_BUILD_RETRY_MS[attempt];
-    if (delay !== undefined) window.setTimeout(() => { if (live()) checkPageBuild(outdated, live, attempt + 1); }, delay);
+    if (delay !== undefined) window.setTimeout(() => { if (live()) checkRuntimeState(onState, live, attempt + 1); }, delay);
   });
 }
 
@@ -286,10 +285,13 @@ export function useDesktopChatController() {
   const [errorFromSend, setErrorFromSend] = useState(false);
   const [connectionError, setConnectionError] = useState("");
   const [pageOutdated, setPageOutdated] = useState(false);
+  const [updatedCommit, setUpdatedCommit] = useState<string | null>(null);
+  const [backendUpdatedCommit, setBackendUpdatedCommit] = useState<string | null>(null);
   const [shellState, setShellState] = useState<WebShellState | null>(null);
   // 就绪轮询是否已见到 chatReady、最近一次拿到 shell state 的时刻（onopen 据此去重 build 核对，见下）。
   const chatReadyRef = useRef(false);
   const shellStateFreshAtRef = useRef(0);
+  const initialCommitRef = useRef<string | null>(null);
   const [replyTarget, setReplyTarget] = useState<TimelineReply | null>(null);
   // 引用目标与草稿一样按会话保留：切去别的会话查点东西再回来，引用条还在。
   const replyTargetsRef = useRef(new Map<string, TimelineReply>());
@@ -737,10 +739,22 @@ export function useDesktopChatController() {
                   setError("");
                 }
                 console.info("[chat-ui] ws connected", current.url);
-                // 就绪前轮询仍在跑（每轮已核对 build），或几秒内刚核对过：跳过这次重复取证（#1556）。
-                // 只有轮询退出且结果已变旧的重连才需要补查——断连期间服务端可能已升级换代。
+                // 就绪前轮询仍在跑（每轮已核对 build），或几秒内刚核对过且这是首个连接：跳过这次重复取证（#1556）。
+                // 重连时不论间隔长短都核对版本，免得容器快速重启换代后漏检前后端更新。
                 const shellStateStale = Date.now() - shellStateFreshAtRef.current > 5000;
-                if (chatReadyRef.current && shellStateStale) checkPageBuild(() => setPageOutdated(true), () => socketRef.current === current);
+                const isReconnect = current !== firstCatalogSocketRef.current;
+                if (chatReadyRef.current && (pageBuild || initialCommitRef.current) && (isReconnect || shellStateStale)) {
+                  checkRuntimeState((state) => {
+                    if (initialCommitRef.current === null && state.commit) initialCommitRef.current = state.commit;
+                    if (pageBuildOutdated(state)) {
+                      setPageOutdated(true);
+                      setUpdatedCommit(state.commit);
+                      setBackendUpdatedCommit(null);
+                    } else if (initialCommitRef.current && state.commit && state.commit !== initialCommitRef.current) {
+                      setBackendUpdatedCommit(state.commit);
+                    }
+                  }, () => socketRef.current === current);
+                }
                 const sessionId = activeSessionRef.current;
                 if (sessionId) {
                   if (followAfterRef.current === null) void loadMessagesSafely(sessionId);
@@ -823,7 +837,14 @@ export function useDesktopChatController() {
           const next = await fetchChatJson<unknown>("/api/shell/state", { signal: controller.signal }).then(webShellState);
           setShellState(next);
           shellStateFreshAtRef.current = Date.now();
-          if (pageBuildOutdated(next)) setPageOutdated(true);
+          if (initialCommitRef.current === null && next.commit) initialCommitRef.current = next.commit;
+          if (pageBuildOutdated(next)) {
+            setPageOutdated(true);
+            setUpdatedCommit(next.commit);
+            setBackendUpdatedCommit(null);
+          } else if (initialCommitRef.current && next.commit && next.commit !== initialCommitRef.current) {
+            setBackendUpdatedCommit(next.commit);
+          }
           if (next?.chatReady === true) {
             chatReadyRef.current = true;
             return;
@@ -1406,7 +1427,11 @@ export function useDesktopChatController() {
     activeSessionDeleted, deletedNotice, restoringSessionIds, deleteSession, restoreSession, dismissDeletedNotice, renameSession,
     // 自动重连是会自己恢复的临时状态，单独给视图一个安静的状态行；重连失败等才走错误行。
     reconnecting: !error && connectionError === RECONNECTING_NOTICE,
-    connectionLost: connectionError !== "", pageOutdated,
+    connectionLost: connectionError !== "", pageOutdated, updatedCommit, backendUpdatedCommit,
+    dismissBackendUpdate: useCallback(() => {
+      if (backendUpdatedCommit) initialCommitRef.current = backendUpdatedCommit;
+      setBackendUpdatedCommit(null);
+    }, [backendUpdatedCommit]),
     replyTarget, error: error || (connectionError === RECONNECTING_NOTICE ? "" : connectionError),
     // 发送失败时"重试"（重连并重新加载）不会重新发送，反而误导；发送钮就是重试入口，横幅不再给按钮。
     errorRetry: !error || !errorFromSend,

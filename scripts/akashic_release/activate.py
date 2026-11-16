@@ -429,6 +429,7 @@ def activate_release(
     write_json(attempt_path, attempt)
     if self_deploy is not None:
         self_deploy["activationAttempt"] = str(attempt_path)
+        self_deploy["phase"] = "waiting_for_turn"
         write_json(Path(str(self_deploy["recordPath"])), self_deploy)
     # 预热有界等待放在关闭准入之前：旧服务等它时仍照常接纳工作。
     if warmer is not None:
@@ -445,6 +446,9 @@ def activate_release(
             raise
     attempt["phase"] = "stopping"
     write_json(attempt_path, attempt)
+    if self_deploy is not None:
+        self_deploy["phase"] = "restarting"
+        write_json(Path(str(self_deploy["recordPath"])), self_deploy)
     # 2. 从停机开始保留失败现场；安装、迁移、Root CAS 由目标镜像统一执行。
     try:
         with measure("release.stop"):

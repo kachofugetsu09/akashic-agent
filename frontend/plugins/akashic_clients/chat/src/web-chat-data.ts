@@ -31,6 +31,8 @@ export interface WebShellState {
   chatReady: boolean;
   /** 服务端当前前端的版本；与页面自带的版本不同时页面已过期。 */
   build: string | null;
+  /** 服务端当前运行提交；与页面首次连入时不同时说明后端已更新。 */
+  commit: string | null;
 }
 
 export interface UploadedFile {
@@ -251,7 +253,8 @@ export function webShellState(payload: unknown): WebShellState {
     throw new Error("/api/shell/state 返回了无效状态");
   }
   return { status: body.status, configured: body.configured, chatReady: body.chatReady,
-    build: typeof body.build === "string" ? body.build : null };
+    build: typeof body.build === "string" ? body.build : null,
+    commit: typeof body.commit === "string" && body.commit.trim() ? body.commit.trim() : null };
 }
 
 /** 软删/恢复是显式数据管理操作；返回值校验 key 与结果标记一致，防止对错会话生效。 */

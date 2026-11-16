@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import "./style.css";
 import { akashicBrandIcon, markup } from "./brand";
 import { PluginInventory, inventoryResource, type InventoryResource } from "./plugin-inventory";
+import { SystemVersion } from "./system-version";
 import type {
   WebEntry,
   WebHostContextV1,
@@ -31,6 +32,11 @@ const SETTINGS_PLUGINS_MOUNT = "shell.settings-plugins.v1";
 const SETTINGS_PLUGINS_ORDER = 40;
 const SETTINGS_PLUGINS_LABEL = "插件";
 const SETTINGS_PLUGINS_ROUTE = "plugins";
+/** “版本与更新”展示当前运行提交、上次更新时间与最近部署记录，位置在新手引导（90）之前。 */
+const SETTINGS_VERSION_ORDER = 80;
+const SETTINGS_VERSION_LABEL = "版本与更新";
+const SETTINGS_VERSION_ROUTE = "version";
+const SETTINGS_VERSION_ICON = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>';
 const CHEVRON_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>';
 const BACK_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>';
 const CLOSE_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>';
@@ -40,14 +46,16 @@ const SETTINGS_PLUGINS_ICON = '<svg xmlns="http://www.w3.org/2000/svg" width="24
 
 const SETTINGS_ICON = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>';
 
-/** 设置工作区的当前位置：顶层分节、插件列表（memberId 为 null），或某个插件的详情页。 */
+/** 设置工作区的当前位置：顶层分节、插件列表（memberId 为 null）、插件详情页，或系统版本与更新页。 */
 type SettingsTarget =
   | { kind: "section"; id: string }
-  | { kind: "plugins"; memberId: string | null };
+  | { kind: "plugins"; memberId: string | null }
+  | { kind: "version" };
 
 type SettingsNavItem =
   | { kind: "section"; entry: ShellSettingsSection }
-  | { kind: "plugins" };
+  | { kind: "plugins" }
+  | { kind: "version" };
 
 /** 插件列表里的一张卡片：单个成员，或 ≥2 个成员声明同一 family 合成的组合卡。 */
 type PluginCard = { id: string; label: string; description: string; entries: ShellSettingsPlugin[] };
@@ -86,6 +94,7 @@ function settingsTargetForRoute(
   const member = plugins.find((entry) => entry.route === route);
   if (member) return { kind: "plugins", memberId: member.id };
   if (route === SETTINGS_PLUGINS_ROUTE) return { kind: "plugins", memberId: null };
+  if (route === SETTINGS_VERSION_ROUTE) return { kind: "version" };
   return undefined;
 }
 
@@ -144,17 +153,20 @@ function Shell({ pages, railActions, settings, settingsPlugins, http, inventory 
   const pluginEntries = useMemo(() => checkSettingsPlugins(settingsPlugins.entries), [settingsPlugins.entries]);
   // 三个目录共用同一个 hash 路由命名空间，跨目录撞 route 是合同错误。
   useMemo(() => {
-    const routes = [...bandEntries, ...sectionEntries, ...pluginEntries].map((entry) => entry.route).concat(SETTINGS_PLUGINS_ROUTE);
+    const routes = [...bandEntries, ...sectionEntries, ...pluginEntries]
+      .map((entry) => entry.route)
+      .concat(SETTINGS_PLUGINS_ROUTE, SETTINGS_VERSION_ROUTE);
     if (new Set(routes).size !== routes.length) throw new Error("Shell 页面与设置分节的 route 不能重复");
   }, [bandEntries, sectionEntries, pluginEntries]);
 
-  // 左栏导航是顶层分节按 order 排列；插件分节常驻，停用全部配置成员后仍要能从列表里启用。
+  // 左栏导航是顶层分节按 order 排列；插件与版本与更新分节常驻。
   const settingsNav = useMemo(() => {
     const items: { order: number; item: SettingsNavItem }[] = sectionEntries.map((entry) => ({
       order: typeof entry.order === "number" ? entry.order : 0,
       item: { kind: "section", entry },
     }));
     items.push({ order: SETTINGS_PLUGINS_ORDER, item: { kind: "plugins" } });
+    items.push({ order: SETTINGS_VERSION_ORDER, item: { kind: "version" } });
     return items.sort((left, right) => left.order - right.order).map(({ item }) => item);
   }, [sectionEntries]);
   const pluginCards = useMemo(() => buildPluginCards(pluginEntries), [pluginEntries]);
@@ -219,12 +231,13 @@ function Shell({ pages, railActions, settings, settingsPlugins, http, inventory 
   const firstTarget = useMemo<SettingsTarget | undefined>(() => {
     const first = settingsNav[0];
     if (!first) return undefined;
-    return first.kind === "section"
-      ? { kind: "section", id: first.entry.id }
-      : { kind: "plugins", memberId: null };
+    if (first.kind === "section") return { kind: "section", id: first.entry.id };
+    if (first.kind === "version") return { kind: "version" };
+    return { kind: "plugins", memberId: null };
   }, [settingsNav]);
   const currentTarget = useMemo<SettingsTarget | undefined>(() => {
     if (settingsTarget?.kind === "section" && sectionEntries.some((entry) => entry.id === settingsTarget.id)) return settingsTarget;
+    if (settingsTarget?.kind === "version") return settingsTarget;
     if (settingsTarget?.kind === "plugins"
       && (settingsTarget.memberId === null || pluginEntries.some((entry) => entry.id === settingsTarget.memberId))) return settingsTarget;
     return firstTarget;
@@ -243,6 +256,9 @@ function Shell({ pages, railActions, settings, settingsPlugins, http, inventory 
   const inventoryVisible = settingsOpen && currentTarget?.kind === "plugins" && currentTarget.memberId === null && pluginsTab === "list";
   const inventoryKept = useRef(false);
   if (inventoryVisible) inventoryKept.current = true;
+  const versionVisible = settingsOpen && currentTarget?.kind === "version";
+  const versionKept = useRef(false);
+  if (versionVisible) versionKept.current = true;
 
   const openPage = useCallback((entry: ShellPage): void => {
     if (entry.id === activeId) { setWithdrawn(false); setSettingsOpen(false); return; }
@@ -268,7 +284,9 @@ function Shell({ pages, railActions, settings, settingsPlugins, http, inventory 
     if (!next) return;
     const route = next.kind === "section"
       ? sectionEntries.find((entry) => entry.id === next.id)?.route
-      : next.memberId === null ? SETTINGS_PLUGINS_ROUTE : pluginEntries.find((entry) => entry.id === next.memberId)?.route;
+      : next.kind === "version"
+        ? SETTINGS_VERSION_ROUTE
+        : next.memberId === null ? SETTINGS_PLUGINS_ROUTE : pluginEntries.find((entry) => entry.id === next.memberId)?.route;
     const go = () => {
       setSettingsTarget(next);
       // 窄屏从入口打开先给分节列表；点了具体分节或深链接时直接进内容。
@@ -387,7 +405,7 @@ function Shell({ pages, railActions, settings, settingsPlugins, http, inventory 
       });
       return () => queueMicrotask(() => { dispose(); host.remove(); });
     }
-    if (settingsMembers.length === 0) return;
+    if (currentTarget.kind !== "plugins" || settingsMembers.length === 0) return;
     const mounts = settingsMembers.map((entry) => {
       const wrapper = document.createElement(settingsMembers.length > 1 ? "section" : "div");
       wrapper.className = settingsMembers.length > 1 ? "shell-settings-family-member" : "shell-settings-entry";
@@ -561,15 +579,27 @@ function Shell({ pages, railActions, settings, settingsPlugins, http, inventory 
         <h2>功能设置</h2>
         {settingsNav.map((item) => {
           const plugins = item.kind === "plugins";
-          const current = plugins ? currentTarget?.kind === "plugins" : currentTarget?.kind === "section" && currentTarget.id === item.entry.id;
+          const version = item.kind === "version";
+          const current = plugins
+            ? currentTarget?.kind === "plugins"
+            : version
+              ? currentTarget?.kind === "version"
+              : currentTarget?.kind === "section" && currentTarget.id === item.entry.id;
+          const nextTarget: SettingsTarget = plugins
+            ? { kind: "plugins", memberId: null }
+            : version
+              ? { kind: "version" }
+              : { kind: "section", id: item.entry.id };
+          const icon = plugins ? SETTINGS_PLUGINS_ICON : version ? SETTINGS_VERSION_ICON : item.entry.iconSvg;
+          const label = plugins ? SETTINGS_PLUGINS_LABEL : version ? SETTINGS_VERSION_LABEL : item.entry.label;
           return <button
-            key={plugins ? "plugins" : item.entry.id}
+            key={plugins ? "plugins" : version ? "version" : item.entry.id}
             type="button"
             aria-current={current ? "true" : undefined}
-            onClick={() => openSettings(plugins ? { kind: "plugins", memberId: null } : { kind: "section", id: item.entry.id })}
+            onClick={() => openSettings(nextTarget)}
           >
-            <span className="shell-page-icon" aria-hidden="true" dangerouslySetInnerHTML={markup(plugins ? SETTINGS_PLUGINS_ICON : item.entry.iconSvg)} />
-            <span className="shell-settings-nav-label">{plugins ? SETTINGS_PLUGINS_LABEL : item.entry.label}</span>
+            <span className="shell-page-icon" aria-hidden="true" dangerouslySetInnerHTML={markup(icon)} />
+            <span className="shell-settings-nav-label">{label}</span>
             <span className="shell-settings-nav-chevron" aria-hidden="true" dangerouslySetInnerHTML={markup(CHEVRON_ICON)} />
           </button>;
         })}
@@ -609,6 +639,9 @@ function Shell({ pages, railActions, settings, settingsPlugins, http, inventory 
           {inventoryKept.current && <div hidden={!inventoryVisible}>
             <PluginInventory http={http} inventory={inventory} active={inventoryVisible} />
           </div>}
+          {versionKept.current && <div hidden={!versionVisible}>
+            <SystemVersion http={http} active={versionVisible} />
+          </div>}
           <div ref={settingsContent} className="shell-settings-mount" />
         </div>
       </div>
@@ -638,6 +671,9 @@ function SettingsHeading({ target, sections, card, back }: {
   if (target.kind === "section") {
     const entry = sections.find((item) => item.id === target.id);
     return <header className="shell-settings-heading"><h3>{entry?.label}</h3></header>;
+  }
+  if (target.kind === "version") {
+    return <header className="shell-settings-heading"><h3>{SETTINGS_VERSION_LABEL}</h3></header>;
   }
   if (!card) return <header className="shell-settings-heading"><h3>{SETTINGS_PLUGINS_LABEL}</h3></header>;
   return <header className="shell-settings-heading">

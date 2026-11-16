@@ -265,9 +265,18 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
             <span>没能读取这段对话的完整记录：{controller.historyFailure}</span>
             <MaterialButton variant="danger" onClick={controller.retryHistory}>重试</MaterialButton>
           </div> : null}
-          {controller.pageOutdated ? <div className="error-line" role="alert">
-            <span>聊天页面已更新，刷新后才能完整显示新的回复。</span>
-            <MaterialButton variant="danger" onClick={() => window.location.reload()}>刷新页面</MaterialButton>
+          {controller.pageOutdated ? <div className="update-line" role="status">
+            <span className="update-line__body">
+              <i className="update-line__dot" aria-hidden="true" />
+              <span>聊天页面已更新{controller.updatedCommit ? `（${controller.updatedCommit.slice(0, 7)}）` : ""}，刷新后即可使用新版本。</span>
+            </span>
+            <MaterialButton variant="tonal" onClick={() => window.location.reload()}>刷新页面</MaterialButton>
+          </div> : controller.backendUpdatedCommit ? <div className="update-line" role="status">
+            <span className="update-line__body">
+              <i className="update-line__dot" aria-hidden="true" />
+              <span>后端服务已更新至 {controller.backendUpdatedCommit.slice(0, 7)}。</span>
+            </span>
+            <MaterialButton variant="tonal" onClick={controller.dismissBackendUpdate}>知道了</MaterialButton>
           </div> : null}
           {error ? <div className="error-line" role="alert"><span>{error}</span>
             {controller.errorRetry ? <MaterialButton variant="danger" onClick={retry}>重试</MaterialButton> : null}

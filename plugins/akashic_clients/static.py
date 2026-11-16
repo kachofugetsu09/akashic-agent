@@ -1,10 +1,16 @@
 """聊天制品只属于客户端插件；读取和缓存不改变业务事实。"""
+from collections.abc import Mapping
+import json
+import os
 from pathlib import Path
 import re
+from typing import cast
 from fastapi import FastAPI, Request
 from fastapi.responses import RedirectResponse
 from core.common.file_io import run_file_io
 from plugins.ui.contract import CompressedStaticFiles
+
+_DEFAULT_RUNTIME_INFO = Path("/opt/akashic/runtime-info.json")
 
 # Vite 产物文件名内嵌内容哈希，命中后才允许永久缓存。
 _HASHED_ASSET = re.compile(r"/assets/[^/]*-[\w-]{8}\.[\w]+$")
@@ -29,6 +35,23 @@ async def current_chat_build(static_dir: Path) -> str | None:
     except FileNotFoundError:
         return None
     return build.strip() or None
+
+
+def _read_runtime_commit(runtime_info_path: Path = _DEFAULT_RUNTIME_INFO) -> str | None:
+    try:
+        raw = json.loads(runtime_info_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raw = None
+    if isinstance(raw, Mapping):
+        value = cast(Mapping[str, object], raw).get("sourceCommit")
+        if isinstance(value, str) and value.strip():
+            return value.strip().lower()
+    env_value = os.environ.get("AKASHIC_RUNTIME_COMMIT", "").strip().lower()
+    return env_value or None
+
+
+async def current_runtime_commit() -> str | None:
+    return await run_file_io(_read_runtime_commit)
 
 
 def register_chat_assets(app: FastAPI, static_dir: Path) -> None:

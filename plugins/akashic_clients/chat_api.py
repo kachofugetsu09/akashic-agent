@@ -17,7 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from core.common.file_io import run_file_io
 
-from .static import current_chat_build, register_chat_assets
+from .static import current_chat_build, current_runtime_commit, register_chat_assets
 from plugins.ui.contract import PluginUiSlot, accepts_gzip_header, read_message_rows, session_row
 from .navigation import NavigationPreferences, PinUpdate, session_pin_row
 from .notifications import NotificationFeed, NotificationRequest, notification_events
@@ -194,7 +194,9 @@ def create_chat_app(
         except RuntimeError:
             ready = False
         return {"status": "ready" if ready else "unavailable",
-                "configured": True, "chatReady": ready, "build": await current_chat_build(static_dir)}
+                "configured": True, "chatReady": ready,
+                "build": await current_chat_build(static_dir),
+                "commit": await current_runtime_commit()}
 
     @app.get("/api/chat/health")
     async def chat_health() -> dict[str, str]:
