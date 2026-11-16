@@ -40,11 +40,12 @@ from plugins.subagent.request import (
     READ_ONLY_EXCLUDED_TOOLS,
     Request,
     check_request,
+    is_read_only_excluded,
 )
 from plugins.subagent.runners import Delegate, Runners
 from plugins.subagent.runtime import DEFAULT_MAX_ACTIVE, DEFAULT_MAX_DEPTH, Subagents
 from plugins.subagent.tools import Spawn
-from plugins.tools.contract import CallRef, CallSource, Result
+from plugins.tools.contract import CallRef, CallSource, NestedToolRef, Result, push_nested_tool_scope, reset_nested_tool_scope
 
 
 def _dummy_binding_id(name: str) -> str:
@@ -163,6 +164,8 @@ async def _mount_fixture(tmp_path: Path, *, max_active: int = DEFAULT_MAX_ACTIVE
             resolve_root=lambda sid: jobs.resolve_lineage(sid)[0],
             tree_active_count=jobs.active_count_for_root,
             check_depth=jobs.check_depth,
+            ensure_index=jobs.ensure_index,
+            admit_external=jobs.admit_external,
         )
         prog_binding = bindings.bind(SUBAGENT_PROGRAM, {})
     tool_names = (
@@ -441,6 +444,220 @@ async def test_monkey_concurrent_trees_capacity_and_cancellation_invariants(tmp_
         async with ctx.runtime_scope():
             for rname in roots:
                 assert jobs.active_count_for_root(rname) == 0
+    finally:
+        for ev in releases.values():
+            ev.set()
+        if waiters:
+            await asyncio.gather(*waiters, return_exceptions=True)
+        await tasks.close()
+        await root.dispose()
+        log.close()
+
+
+@pytest.mark.asyncio
+async def test_review_fixes_exclusions_nested_scope_and_manage_filtering(tmp_path: Path):
+    log, root, tasks, ctx, jobs, runners, spawn, entered, releases, _seen = await _mount_fixture(
+        tmp_path, max_active=2, max_depth=2
+    )
+    from plugins.subagent.tools import Manage
+
+    # 给 spawn.targets 增加需要过滤的危险/写副作用工具
+    extra_tools = {}
+    for name in ("agent_restart", "computer", "codemode", "memorize", "schedule", "create_goal", "design_render", "design_get_jsx"):
+        tid = _dummy_binding_id(name)
+        log.save_binding(tid, {"version": 2, "origins": {"subagent": "fixture"}, "service": "tools.v1", "metadata": {"name": name}})
+        extra_tools[name] = tid
+    spawn_full = Spawn(
+        ctx,
+        {**spawn.targets, **extra_tools},
+        spawn.senders,
+        jobs,
+        model=spawn.model,
+    )
+
+    class FakeNestedScope:
+        def __init__(self, names: set[str]):
+            self.tools = {
+                n: NestedToolRef(name=n, owner="fixture", description={"name": n}, binding_id=spawn_full.targets[n])
+                for n in names if n in spawn_full.targets
+            }
+
+        async def call(self, name: str, arguments):
+            raise NotImplementedError
+
+    try:
+        src_a = _parent_source(log, "root-a", "ra")
+        src_b = _parent_source(log, "root-b", "rb")
+        async with ctx.runtime_scope():
+            # 1. agent_restart 永不继承（无论 read_only True/False）
+            prep_rw = await spawn_full.prepare({"task": "rw", "read_only": False}, src_a)
+            assert isinstance(prep_rw, dict)
+            req_rw = Request.model_validate(prep_rw["request"])
+            assert "agent_restart" not in req_rw.tools
+            assert "computer" in req_rw.tools and "memorize" in req_rw.tools
+
+            # 2. read_only=True 排除 computer / codemode / memorize / schedule / create_goal / design_render，保留 design_get_jsx 与只读工具
+            prep_ro = await spawn_full.prepare({"task": "ro", "read_only": True}, src_a)
+            assert isinstance(prep_ro, dict)
+            req_ro = Request.model_validate(prep_ro["request"])
+            for blocked in ("agent_restart", "computer", "codemode", "memorize", "schedule", "create_goal", "design_render"):
+                assert blocked not in req_ro.tools
+                assert is_read_only_excluded(blocked)
+            assert "design_get_jsx" in req_ro.tools and "read_file" in req_ro.tools
+
+            # 3. 调用方裁剪（如 scheduler 去掉 memorize）不可被 spawn 绕过
+            token = push_nested_tool_scope(FakeNestedScope(set(spawn_full.targets) - {"memorize", "computer"}))
+            try:
+                prep_sched = await spawn_full.prepare({"task": "sched-sub", "read_only": False}, src_a)
+            finally:
+                reset_nested_tool_scope(token)
+            assert isinstance(prep_sched, dict)
+            req_sched = Request.model_validate(prep_sched["request"])
+            assert "memorize" not in req_sched.tools and "computer" not in req_sched.tools
+            assert "read_file" in req_sched.tools
+
+            # 4. 损坏历史记录不阻塞新派发
+            state = ctx.require(OWNER_STATE).open(ctx)
+            state.transact(lambda tx: tx.save("corrupt-legacy-key", {"session_id": "subagent:missing", "input_id": "nope", "settled": True}, expected_version=None))
+            jobs._index_loaded = False
+            await jobs.ensure_index()
+            assert jobs.resolve_lineage("root-a") == ("root-a", 0)
+
+            # 5. Manage(action="list") 按 root_session_id 隔离，并包含同一根树下的外部 runner
+            prep_a = await spawn_full.prepare({"task": "hold-a", "label": "hold-a"}, src_a)
+            prep_b = await spawn_full.prepare({"task": "hold-b", "label": "hold-b"}, src_b)
+            assert isinstance(prep_a, dict) and isinstance(prep_b, dict)
+            jid_a = Request.model_validate(prep_a["request"]).job_id
+            jid_b = Request.model_validate(prep_b["request"]).job_id
+            releases[jid_a] = asyncio.Event()
+            releases[jid_b] = asyncio.Event()
+
+            async def run_spawn(k, p_dict):
+                async with ctx.runtime_scope():
+                    return await spawn_full.invoke(k, p_dict)
+
+            ta = asyncio.create_task(run_spawn("list-ka", prep_a))
+            tb = asyncio.create_task(run_spawn("list-kb", prep_b))
+            await asyncio.wait_for(entered.setdefault(jid_a, asyncio.Event()).wait(), timeout=5)
+            await asyncio.wait_for(entered.setdefault(jid_b, asyncio.Event()).wait(), timeout=5)
+
+            ext_rel = asyncio.Event()
+            ext_ent = asyncio.Event()
+
+            async def run_ext(task, activity):
+                ext_ent.set()
+                await ext_rel.wait()
+                return AgentResult("completed", "ok")
+
+            runner = AgentRunner("codex", "codex", True, "read-only", run_ext)
+            delegate = Delegate(runners, ctx, runner)
+            ext_p = await delegate.prepare({"task": "ext-a", "label": "ext-a"}, src_a)
+            assert isinstance(ext_p, dict)
+            await delegate.invoke("ext-list-a", ext_p)
+            await asyncio.wait_for(ext_ent.wait(), timeout=5)
+
+            manage = Manage(jobs, external_jobs=runners.active_jobs)
+            mp_a = await manage.prepare({"action": "list"}, src_a)
+            assert isinstance(mp_a, dict)
+            res_a = await manage.invoke("m-a", mp_a)
+            listed_a = json.loads(str(res_a.parts[0].value))
+            labels_a = {item["label"] for item in listed_a["jobs"]}
+            assert labels_a == {"hold-a", "ext-a"}
+
+            # 6. 此时 root-a 已占 2/2 (1 local + 1 external)，并发冲刺竞争最后一个槽位也绝不超过 max_active=2
+            ext_p2 = await delegate.prepare({"task": "ext-a2", "label": "ext-a2"}, src_a)
+            assert isinstance(ext_p2, dict)
+            overflow_ext = await delegate.invoke("ext-list-a2", ext_p2)
+            assert overflow_ext.outcome == "error"
+
+            releases[jid_a].set()
+            releases[jid_b].set()
+            ext_rel.set()
+            await asyncio.gather(ta, tb)
+            while runners.active:
+                await asyncio.sleep(0.02)
+    finally:
+        for ev in releases.values():
+            ev.set()
+        await tasks.close()
+        await root.dispose()
+        log.close()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_spawn_and_external_race_at_capacity_boundary(tmp_path: Path):
+    """并发压测：同一根树已有 max_active-1 占槽时，spawn 与 delegate_* 同时抢最后一个名额，最多只有 1 个成功。"""
+    log, root, tasks, ctx, jobs, runners, spawn, entered, releases, _seen = await _mount_fixture(
+        tmp_path, max_active=3, max_depth=1
+    )
+    waiters: list[asyncio.Task[Result]] = []
+    try:
+        src = _parent_source(log, "race-root", "r-in")
+        async with ctx.runtime_scope():
+            # 先占满 2 个（max_active - 1）
+            pre_jids = []
+            for i in range(2):
+                prep = await spawn.prepare({"task": f"pre-{i}", "label": f"pre-{i}"}, src)
+                assert isinstance(prep, dict)
+                jid = Request.model_validate(prep["request"]).job_id
+                pre_jids.append(jid)
+                releases[jid] = asyncio.Event()
+
+                async def _go(k=f"pre-{i}", d=prep):
+                    async with ctx.runtime_scope():
+                        return await spawn.invoke(k, d)
+
+                waiters.append(asyncio.create_task(_go()))
+                await asyncio.wait_for(entered.setdefault(jid, asyncio.Event()).wait(), timeout=5)
+
+            ext_rel = asyncio.Event()
+
+            async def run_ext(task, activity):
+                await ext_rel.wait()
+                return AgentResult("completed", "ok")
+
+            runner = AgentRunner("codex", "codex", True, "read-only", run_ext)
+            delegate = Delegate(runners, ctx, runner)
+
+            # 同时发起 2 个本地 spawn + 2 个外部 delegate_codex 抢第 3 个槽位
+            race_preps = []
+            for i in range(2):
+                sp = await spawn.prepare({"task": f"race-s-{i}", "label": f"rs-{i}"}, src)
+                assert isinstance(sp, dict)
+                s_jid = Request.model_validate(sp["request"]).job_id
+                releases[s_jid] = asyncio.Event()
+                releases[s_jid].set()
+                race_preps.append(("spawn", f"rs-{i}", sp))
+                dp = await delegate.prepare({"task": f"race-d-{i}", "label": f"rd-{i}"}, src)
+                assert isinstance(dp, dict)
+                race_preps.append(("ext", f"rd-{i}", dp))
+
+            async def _race(kind: str, k: str, d: dict):
+                async with ctx.runtime_scope():
+                    if kind == "spawn":
+                        return await spawn.invoke(k, d)
+                    return await delegate.invoke(k, d)
+
+            # 保持 pre 任务不释放期间全部竞争；注意只有第 1 个赢家占槽，若赢家立刻结束可能释放，
+            # 所以让 race spawn 也等待 release 直到统计完！
+            for kind, k, d in race_preps:
+                if kind == "spawn":
+                    releases[Request.model_validate(d["request"]).job_id].clear()
+
+            race_tasks = [asyncio.create_task(_race(knd, k, d)) for knd, k, d in race_preps]
+            await asyncio.sleep(0.15)
+            assert jobs.active_count_for_root("race-root") <= 3
+
+            for ev in releases.values():
+                ev.set()
+            ext_rel.set()
+            race_results = await asyncio.gather(*race_tasks)
+            await asyncio.gather(*waiters)
+            while runners.active:
+                await asyncio.sleep(0.02)
+            assert jobs.active_count_for_root("race-root") == 0
+            # 确认确有竞争者因满容被拒绝（本地或外部）
+            assert any(r.outcome == "error" for r in race_results)
     finally:
         for ev in releases.values():
             ev.set()

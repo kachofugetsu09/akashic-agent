@@ -21,6 +21,8 @@ EXCLUDED_ALWAYS_TOOLS: frozenset[str] = frozenset({
     "plugin_update",
     "plugin_uninstall",
     "deploy_akashic",
+    "agent_restart",
+    "load_tools",
 })
 
 DELEGATION_TOOLS: frozenset[str] = frozenset({"spawn", "spawn_manage"})
@@ -32,9 +34,46 @@ READ_ONLY_EXCLUDED_TOOLS: frozenset[str] = frozenset({
     "write_stdin",
     "task_stop",
     "set_working_directory",
+    "computer",
+    "codemode",
+    "memorize",
+    "remember_memory",
+    "forget_memory",
+    "akasha_reindex",
+    "schedule",
+    "cancel_schedule",
+    "create_goal",
+    "update_goal",
+    "pause_goal",
+    "resume_goal",
+    "cancel_goal",
+    "design_show_html",
     "spawn",
     "spawn_manage",
-})
+}) | EXCLUDED_ALWAYS_TOOLS
+
+_READ_ONLY_DESIGN_TOOLS: frozenset[str] = frozenset({"design_get_jsx", "design_describe"})
+_SIDE_EFFECT_PREFIXES: tuple[str, ...] = (
+    "delegate_",
+    "plugin_",
+    "write_",
+    "edit_",
+    "create_",
+    "update_",
+    "delete_",
+    "remove_",
+    "cancel_",
+    "set_",
+    "run_",
+    "exec_",
+    "send_",
+    "post_",
+    "push_",
+    "deploy_",
+    "install_",
+    "uninstall_",
+    "restart_",
+)
 
 
 def is_delegation_tool(name: str) -> bool:
@@ -42,7 +81,11 @@ def is_delegation_tool(name: str) -> bool:
 
 
 def is_read_only_excluded(name: str) -> bool:
-    return name in READ_ONLY_EXCLUDED_TOOLS or name.startswith("delegate_")
+    if name in READ_ONLY_EXCLUDED_TOOLS:
+        return True
+    if name.startswith("design_") and name not in _READ_ONLY_DESIGN_TOOLS:
+        return True
+    return name.startswith(_SIDE_EFFECT_PREFIXES)
 
 
 class SinkInput(TypedDict):

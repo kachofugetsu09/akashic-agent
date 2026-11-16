@@ -38,6 +38,7 @@ from plugins.models.contract import (
 )
 from plugins.ui.contract import Configuration, ModelSettings, mount_settings
 
+from plugins.tools.contract import TOOL_LOADING_PRESENTATION, ToolView
 from .inputs import (
     ALL_TOOLS,
     CHECK_ORIGIN,
@@ -130,6 +131,8 @@ async def apply(ctx: Context) -> None:
         resolve_root=lambda sid: jobs.resolve_lineage(sid)[0],
         tree_active_count=jobs.active_count_for_root,
         check_depth=jobs.check_depth,
+        ensure_index=jobs.ensure_index,
+        admit_external=jobs.admit_external,
     )
     await runners.recover()
     await ctx.provide(AGENT_RUNNERS, runners)
@@ -184,7 +187,11 @@ async def apply(ctx: Context) -> None:
 
     @asynccontextmanager
     async def open_manage(_state: Mapping[str, object]) -> AsyncGenerator[Manage]:
-        yield Manage(jobs, catalog=ctx.require(MODEL_CATALOG).snapshot)
+        yield Manage(
+            jobs,
+            catalog=ctx.require(MODEL_CATALOG).snapshot,
+            external_jobs=None if runners is None else runners.active_jobs,
+        )
 
     _ = await catalog.register(
         ctx,
@@ -213,17 +220,37 @@ async def apply(ctx: Context) -> None:
     async def program(task: Task, reader: MessageReader, request: Request) -> Message:
         task_dir = ctx.workspace_root("subagent-runs") / request.job_id
         task_dir.mkdir(parents=True, exist_ok=True)
+        bindings = ctx.require(BINDINGS)
+        tool_view: ToolView | None = None
+        presentation = None
+        fixed_bindings: Mapping[str, str] | None = request.tools
+        allowed_names = set(request.tools)
+        with ctx.borrow(TOOL_LOADING_PRESENTATION) as present:
+            if present is not None:
+                available_refs = {ref.name: ref for ref in ctx.require(ALL_TOOLS)().refs}
+                if set(request.tools).issubset(available_refs):
+                    selected_view = ToolView(tuple(available_refs[name] for name in request.tools))
+                    tool_view, presentation = present(selected_view)
+                    fixed_bindings = None
+                    allowed_names = set(request.tools) | {"load_tools"}
+
         async def authorize(binding_id: str, arguments: Mapping[str, object]) -> Mapping[str, object] | str:
-            if binding_id not in request.tools.values():
-                return '工具不属于子任务已固定权限边界'
+            if tool_view is None:
+                if binding_id not in request.tools.values():
+                    return '工具不属于子任务已固定权限边界'
+            else:
+                tool = cast(Mapping[str, object], bindings.describe(binding_id, TOOLS)["tool"])
+                if tool["name"] not in allowed_names:
+                    return '工具不属于子任务已固定权限边界'
             return {"source": "subagent", "session_id": reader.session_id}
 
         return await ctx.require(REPLY_EXECUTE)(
                          ctx, task, reader, 'subagent',
                          check_admission=partial(ctx.require(SOURCE_CHECK), task, reader, "subagent", task.boundary_hint),
                          authorize=authorize,
-                         tool_view=None,
-                         fixed_bindings=request.tools,
+                         tool_view=tool_view,
+                         fixed_bindings=fixed_bindings,
+                         presentation=presentation,
                          max_output_tokens=config.max_output_tokens,
                          max_steps=config.max_steps,
                          exclude_material_kinds=frozenset({'recall'}),
