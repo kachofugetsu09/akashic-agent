@@ -891,6 +891,26 @@ function UserTextClamp({ enabled, children }: { enabled: boolean; children: Reac
   const pendingRef = useRef<{ height: number; expanding: boolean } | null>(null);
   const collapseFrameRef = useRef(0);
   const collapseTimerRef = useRef(0);
+  const settleTimerRef = useRef(0);
+
+  // 过渡中（内联 max-height）或展开态测不出“收起后是否溢出”，只在静止的收起态更新，否则收起途中按钮会闪退。
+  const measureClamp = useCallback(() => {
+    const element = box.current;
+    if (!element || element.style.maxHeight || element.dataset.state === "open") return;
+    setOverflowing(element.scrollHeight - element.clientHeight > 1);
+    collapsedHeightRef.current = element.getBoundingClientRect().height;
+  }, []);
+
+  // 过渡收尾：清掉内联高度，回到 CSS 控制后重测一次溢出。
+  const settleClamp = useCallback(() => {
+    window.clearTimeout(settleTimerRef.current);
+    settleTimerRef.current = 0;
+    const element = box.current;
+    if (!element) return;
+    element.style.maxHeight = "";
+    element.style.transition = "";
+    measureClamp();
+  }, [measureClamp]);
 
   const stopCollapseAnchor = useCallback(() => {
     window.cancelAnimationFrame(collapseFrameRef.current);
@@ -899,7 +919,10 @@ function UserTextClamp({ enabled, children }: { enabled: boolean; children: Reac
     collapseTimerRef.current = 0;
   }, []);
 
-  useEffect(() => stopCollapseAnchor, [stopCollapseAnchor]);
+  useEffect(() => () => {
+    stopCollapseAnchor();
+    window.clearTimeout(settleTimerRef.current);
+  }, [stopCollapseAnchor]);
 
   useLayoutEffect(() => {
     const element = box.current;
@@ -908,16 +931,11 @@ function UserTextClamp({ enabled, children }: { enabled: boolean; children: Reac
     // 明显不到 12 行的短输入不读几何、不挂观察器：补载历史时这些消息多在跳过渲染的区域里，逐条读 scrollHeight
     // 会逐条强制布局；历史消息带 content-visibility:auto，逐条观察会让长会话滚动多跑布局。
     if (!mayExceedClamp(element)) return;
-    const measure = () => {
-      const next = element.scrollHeight - element.clientHeight > 1;
-      setOverflowing(next);
-      if (!element.style.maxHeight) collapsedHeightRef.current = element.getBoundingClientRect().height;
-    };
-    const observer = new ResizeObserver(measure);
+    const observer = new ResizeObserver(measureClamp);
     observer.observe(element);
     observer.observe(inner);
     return () => observer.disconnect();
-  }, [enabled, expanded]);
+  }, [enabled, expanded, measureClamp]);
 
   useLayoutEffect(() => {
     const element = box.current;
@@ -937,9 +955,16 @@ function UserTextClamp({ enabled, children }: { enabled: boolean; children: Reac
     element.style.transition = "none";
     element.style.maxHeight = `${before.height}px`;
     void element.offsetHeight;
+    if (Math.abs(targetHeight - before.height) < 1) {
+      settleClamp();
+      return;
+    }
     element.style.transition = `max-height ${before.expanding ? "var(--ak-sys-duration-expand)" : "var(--ak-sys-duration-snap)"} var(--ak-sys-motion-standard)`;
     element.style.maxHeight = `${targetHeight}px`;
-  }, [expanded]);
+    // transitionend 可能不来（节点被隐藏、过渡被样式打断），到点兜底归位。
+    window.clearTimeout(settleTimerRef.current);
+    settleTimerRef.current = window.setTimeout(settleClamp, 400);
+  }, [expanded, settleClamp]);
 
   if (!enabled) return <>{children}</>;
   const onToggle = () => {
@@ -963,10 +988,7 @@ function UserTextClamp({ enabled, children }: { enabled: boolean; children: Reac
   const onTransitionEnd = (event: TransitionEvent<HTMLDivElement>) => {
     if (event.target !== event.currentTarget || event.propertyName !== "max-height") return;
     stopCollapseAnchor();
-    if (box.current) {
-      box.current.style.maxHeight = "";
-      box.current.style.transition = "";
-    }
+    settleClamp();
   };
   return <>
     <div ref={box} className="user-text-clamp" data-state={expanded ? "open" : overflowing ? "clamped" : undefined} onTransitionEnd={onTransitionEnd}>
@@ -1421,7 +1443,8 @@ const ThinkingRow = memo(function ThinkingRow({
   return (
     // 流式时只在标题行滚动最新一句，不自动展开：展开会与标题行重复同一句，结束时行重挂载又会瞬间收起。
     // Render ordinary Markdown right away; math and code still need the rich renderer.
-    <Reasoning className="thinking-row" isStreaming={streaming} open={open}
+    // defaultOpen={false} 不能省：Reasoning 只凭它判断“显式关闭”，省了流式时会在渲染期自动展开。
+    <Reasoning className="thinking-row" isStreaming={streaming} defaultOpen={false} open={open}
       onOpenChange={(next) => { setMounted(true); setOpen(next); }}
       data-sticky={sticky ? "true" : undefined} duration={duration}>
       <ThinkingRowTrigger content={streaming ? content : ""} findText={content} rowRef={rowRef}

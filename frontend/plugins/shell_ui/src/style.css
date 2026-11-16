@@ -471,9 +471,9 @@
   .shell-inventory-body dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 16px; margin: 8px 0 0; }
   .shell-inventory-body dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
   .shell-disclosure { display: grid; grid-template-rows: 0fr; transition: grid-template-rows var(--ak-sys-duration-snap, 120ms) var(--ak-sys-motion-standard); }
-  .shell-disclosure.open { grid-template-rows: 1fr; transition-duration: var(--ak-sys-duration-expand, 200ms); @starting-style { grid-template-rows: 0fr; } }
+  .shell-disclosure.open { grid-template-rows: 1fr; transition-duration: var(--ak-sys-duration-expand, 200ms); }
   .shell-disclosure__inner { min-width: 0; min-height: 0; overflow: clip; opacity: 0; translate: 0 -4px; transition: opacity var(--ak-sys-duration-snap, 120ms) ease-out, translate var(--ak-sys-duration-snap, 120ms) var(--ak-sys-motion-standard); }
-  .shell-disclosure.open > .shell-disclosure__inner { opacity: 1; translate: 0 0; transition-duration: var(--ak-sys-duration-expand, 200ms), var(--ak-sys-duration-expand, 200ms); @starting-style { opacity: 0; translate: 0 -4px; } }
+  .shell-disclosure.open > .shell-disclosure__inner { opacity: 1; translate: 0 0; transition-duration: var(--ak-sys-duration-expand, 200ms), var(--ak-sys-duration-expand, 200ms); }
   .shell-disclosure.is-instant,
   .shell-disclosure.is-instant > .shell-disclosure__inner { transition: none; }
   .shell-inventory-empty { display: grid; justify-items: start; gap: 4px; font-size: 13px; color: var(--ak-ink-muted); }

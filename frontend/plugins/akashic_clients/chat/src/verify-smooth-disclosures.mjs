@@ -1,6 +1,6 @@
 /**
  * 折叠/展开平滑动效的真实浏览器验收（PR 1）：
- *   1. 未悬停直接首次点击展开（@starting-style 生效，不直接跳高）
+ *   1. 未悬停直接首次点击展开（容器常驻，切 class 即过渡，不直接跳高）
  *   2. 吸顶状态点击「收起」（不再走 is-instant 瞬关，中间帧 > 0 且标题行留在原位）
  *   3. 单个工具详情（ToolStep）展开与收起均有中间帧（参数/结果在收起期间不提前卸载）
  *   4. 思考行（ThinkingRow）展开与收起均有中间帧
@@ -163,7 +163,7 @@ async function sampleBoxHeight(page, triggerSelector, targetSelector, frames = 2
   return page.evaluate(async ({ triggerSelector, targetSelector, frames }) => {
     const trigger = document.querySelector(triggerSelector);
     const target = document.querySelector(targetSelector);
-    console.log("CLICKING", trigger.getAttribute("aria-expanded")); trigger.click(); console.log("CLICKED", trigger.getAttribute("aria-expanded"));
+    trigger.click();
     const heights = [];
     for (let i = 0; i < frames; i += 1) {
       await new Promise((resolve) => requestAnimationFrame(resolve));
@@ -191,7 +191,7 @@ try {
   await page.locator('.turn-process-summary').waitFor();
   await page.waitForTimeout(200);
 
-  // 1. 直接点开 TurnProcessSummary（不先 hover）：@starting-style 应让首次展开产生中间帧
+  // 1. 直接点开 TurnProcessSummary（不先 hover）：首次展开也应有中间帧
   const firstExpand = await sampleBoxHeight(page, '.turn-process-summary', '.turn-process .tool-step-disclosure');
   console.log('[1] direct first expand TurnProcessSummary:', JSON.stringify(firstExpand));
   assert.ok(middles(firstExpand) >= 1, `未悬停首次展开应有中间过渡帧，实际：${firstExpand}`);
@@ -288,11 +288,24 @@ try {
   console.log('[6a] UserTextClamp expand:', JSON.stringify(userExpand));
   assert.ok(middles(userExpand) >= 1, `长提问展开应有中间帧，实际：${userExpand}`);
 
-  const userCollapse = await sampleBoxHeight(page, '.user-text-toggle', '.user-text-clamp');
+  const userCollapse = await page.evaluate(async () => {
+    document.querySelector('.user-text-toggle').click();
+    const heights = [];
+    const toggles = [];
+    for (let i = 0; i < 22; i += 1) {
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      heights.push(Math.round(document.querySelector('.user-text-clamp').getBoundingClientRect().height * 100) / 100);
+      toggles.push(document.querySelector('.user-text-toggle') !== null);
+    }
+    return { heights, toggles, state: document.querySelector('.user-text-clamp').dataset.state, inline: document.querySelector('.user-text-clamp').style.maxHeight };
+  });
   console.log('[6b] UserTextClamp collapse:', JSON.stringify(userCollapse));
-  assert.ok(middles(userCollapse) >= 1, `长提问收起应有中间帧，实际：${userCollapse}`);
+  assert.ok(middles(userCollapse.heights) >= 1, `长提问收起应有中间帧，实际：${userCollapse.heights}`);
+  assert.ok(userCollapse.toggles.every(Boolean), `收起途中按钮不应闪退，实际：${userCollapse.toggles}`);
+  assert.equal(userCollapse.state, 'clamped', '收起完成后应回到截断态并保留渐隐');
+  assert.equal(userCollapse.inline, '', '收起完成后内联 max-height 应清掉');
 
-  // 7. CompactionBoundaryRow & ContextNoticeRow 展开与收起均有中间帧
+  // 7. CompactionBoundaryRow 展开与收起均有中间帧（ContextNoticeRow 共用同一 Disclosure）
   const compactExpand = await sampleBoxHeight(page, '.compaction-boundary__trigger', '.compaction-boundary .tool-step-disclosure');
   console.log('[7a] CompactionBoundaryRow expand:', JSON.stringify(compactExpand));
   assert.ok(middles(compactExpand) >= 1, `压缩边界展开应有中间帧，实际：${compactExpand}`);

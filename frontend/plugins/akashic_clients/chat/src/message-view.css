@@ -1537,7 +1537,8 @@ button.tool-step-summary:active {
   color: var(--ak-color-status-error);
 }
 
-/* 展开区：grid 行过渡高度，内层淡入并下移 4px，带 @starting-style 保证未预挂载时首次展开也有动画。
+/* 展开区：grid 行过渡高度，内层淡入并下移 4px。容器常驻 DOM，开合只切 class，首次点开也有过渡；
+   不加 @starting-style：它只会让“挂载即展开”的行（如历史里出错的工具步骤）在切会话时多播一次展开。
    展开比收起慢：展开是「我要读」，用 --ak-sys-duration-expand（200ms）走完全程；
    收起是「读完了」，用 --ak-sys-duration-snap（120ms）迅速让位，与桌面端同一不对称口径。
    内层只能用 overflow: clip，hidden 会建立滚动容器，让嵌套行的 sticky 失效。 */
@@ -1550,9 +1551,6 @@ button.tool-step-summary:active {
 .tool-step-disclosure.open {
   grid-template-rows: 1fr;
   transition-duration: var(--ak-sys-duration-expand);
-  @starting-style {
-    grid-template-rows: 0fr;
-  }
 }
 
 /* grid 子项默认 min-width:auto 会被不折行的 diff 撑开（实测一行 1500 字撑到 1 万多像素）；归零后横滚留在结果区内。 */
@@ -1575,10 +1573,6 @@ button.tool-step-summary:active {
   opacity: 1;
   translate: 0 0;
   transition-duration: var(--ak-sys-duration-expand), var(--ak-sys-duration-expand);
-  @starting-style {
-    opacity: 0;
-    translate: 0 -4px;
-  }
 }
 
 /* 展开的工具行吸在消息列表顶部，读到哪都能收起；嵌在工具组里的行让出一行组标题的高度。
