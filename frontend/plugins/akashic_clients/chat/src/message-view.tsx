@@ -13,7 +13,6 @@ import {
   ReasoningTrigger,
   useReasoning,
 } from "@/components/ai-elements/reasoning";
-import { CollapsibleContent } from "@/components/ui/collapsible";
 import {
   Dialog,
   DialogClose,
@@ -29,9 +28,9 @@ import {
   memo,
   Suspense,
   type ComponentType,
-  type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
+  type TransitionEvent,
   useEffect,
   useLayoutEffect,
   useRef,
@@ -50,7 +49,7 @@ import { userInput, timelineReply, timelineTruncated, timelineToolOutput, histor
 import { MessageReplyReference } from "./message-actions";
 import { StaticMessageResponse, richRendererFallback } from "./static-message-response";
 import type { MessageResponseProps } from "@/components/ai-elements/message-response";
-import { Disclosure, formatToolDuration, ToolResultContent, useStickyDisclosure } from "./tool-result-view";
+import { Disclosure, formatToolDuration, keepAt, prefersReducedMotion, ToolResultContent, useStickyDisclosure } from "./tool-result-view";
 import { FindRegionCount, useFindRegion } from "./thread-find";
 
 const LazyMessageResponse = lazy<ComponentType<MessageResponseProps>>(() =>
@@ -383,6 +382,7 @@ function CompactionBoundaryRow({ boundary, standalone = false }: {
   boundary: CompactionBoundaryValue;
   standalone?: boolean;
 }) {
+  const [open, setOpen] = useState(false);
   const saved = Math.max(0, boundary.tokens_before - boundary.tokens_after);
   const verb = boundary.mode === "background" ? "已后台自动压缩" : "已压缩会话";
   const label = saved > 0
@@ -393,52 +393,62 @@ function CompactionBoundaryRow({ boundary, standalone = false }: {
   const triggerLabel = boundary.mode === "background"
     ? "后台空闲自动压缩"
     : (COMPACTION_TRIGGER_LABELS[boundary.trigger] ?? "自动压缩");
-  return <details className={`compaction-boundary${standalone ? " is-standalone" : ""}`}>
-    <summary className="compaction-boundary__trigger">
+  return <div className={`compaction-boundary${standalone ? " is-standalone" : ""}`} data-disclosure-root="" data-open={open || undefined}>
+    <button type="button" className="compaction-boundary__trigger" data-disclosure-trigger="" aria-expanded={open}
+      onClick={() => setOpen((current) => !current)}>
       <span className="compaction-boundary__pill">
         <Minimize2 className="compaction-boundary__icon" size={12} aria-hidden="true" />
         <span className="compaction-boundary__label">{label}</span>
         <ChevronDown className="compaction-boundary__chevron" size={12} aria-hidden="true" />
       </span>
-    </summary>
-    <div className="compaction-boundary__detail" role="status">
-      <p className="compaction-boundary__meta">
-        {triggerLabel} · {boundary.tokens_before.toLocaleString()} → {boundary.tokens_after.toLocaleString()} tokens · 第 {boundary.generation} 代摘要
-      </p>
-      {boundary.summary_preview ? (
-        <pre className="compaction-boundary__preview">{boundary.summary_preview}</pre>
-      ) : null}
-    </div>
-  </details>;
+    </button>
+    <Disclosure open={open}>
+      <div className="compaction-boundary__detail" role="status">
+        <p className="compaction-boundary__meta">
+          {triggerLabel} · {boundary.tokens_before.toLocaleString()} → {boundary.tokens_after.toLocaleString()} tokens · 第 {boundary.generation} 代摘要
+        </p>
+        {boundary.summary_preview ? (
+          <pre className="compaction-boundary__preview">{boundary.summary_preview}</pre>
+        ) : null}
+      </div>
+    </Disclosure>
+  </div>;
 }
 
 /** 上下文提示是本轮请求的诊断，与思考行同级：收起时一行摘要，展开看全文；压缩完成提示复用分隔条视觉。 */
 function ContextNoticeRow({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
   if (text.startsWith("已压缩会话")) {
     const paren = text.indexOf("（");
     const headline = paren > 0 ? text.slice(0, paren) : text;
     const detail = paren > 0 && text.endsWith("）") ? text.slice(paren + 1, -1) : text;
-    return <details className="compaction-boundary">
-      <summary className="compaction-boundary__trigger">
+    return <div className="compaction-boundary" data-disclosure-root="" data-open={open || undefined}>
+      <button type="button" className="compaction-boundary__trigger" data-disclosure-trigger="" aria-expanded={open}
+        onClick={() => setOpen((current) => !current)}>
         <span className="compaction-boundary__pill">
           <Minimize2 className="compaction-boundary__icon" size={12} aria-hidden="true" />
           <span className="compaction-boundary__label">{headline}</span>
           <ChevronDown className="compaction-boundary__chevron" size={12} aria-hidden="true" />
         </span>
-      </summary>
-      <div className="compaction-boundary__detail" role="status">
-        <p className="compaction-boundary__meta">{detail}</p>
-      </div>
-    </details>;
+      </button>
+      <Disclosure open={open}>
+        <div className="compaction-boundary__detail" role="status">
+          <p className="compaction-boundary__meta">{detail}</p>
+        </div>
+      </Disclosure>
+    </div>;
   }
-  return <details className="context-notice">
-    <summary className="process-trigger">
+  return <div className="context-notice" data-disclosure-root="" data-open={open || undefined}>
+    <button type="button" className="process-trigger" data-disclosure-trigger="" aria-expanded={open}
+      onClick={() => setOpen((current) => !current)}>
       <Gauge className="process-trigger-icon" size={13} aria-hidden="true" />
       <span className="process-trigger-summary">{text}</span>
-      <ChevronDown className="process-chevron" size={13} aria-hidden="true" />
-    </summary>
-    <p className="process-content process-text" role="status">{text}</p>
-  </details>;
+      <ChevronDown className={`process-chevron${open ? " open" : ""}`} size={13} aria-hidden="true" />
+    </button>
+    <Disclosure open={open}>
+      <p className="process-content process-text" role="status">{text}</p>
+    </Disclosure>
+  </div>;
 }
 
 interface FlowPartViewProps {
@@ -515,16 +525,14 @@ function CollapsedToolGroup({ count, durationMs, findText, children }: {
   findText: () => string;
   children: ReactNode;
 }) {
-  const { open, instant, rowRef, toggle, setOpen } = useStickyDisclosure();
-  // 成员要先进 DOM 才有 0fr 的起始高度可过渡：等到点击那一帧再挂载，首帧就已经是 1fr，
-  // 高度是直接跳上去的。悬停或聚焦时就先挂进来（此时还是 0fr、inert），点下去就有得动。
-  // 触屏没有悬停，首次点开仍是直接到位——按 3.16，点击引起的布局变化本就在 click 之后提交。
+  const { open, sticky, rowRef, disclosureRef, toggle, setOpen, onTransitionEnd } = useStickyDisclosure();
+  // 成员先进 DOM 或由 @starting-style 提供起始帧；悬停/聚焦提前挂载可省去点击当帧创建子树的开销。
   const [mounted, setMounted] = useState(false);
   const prefetch = () => setMounted(true);
   const matches = useFindRegion(rowRef, open, findText, (next) => { setMounted(true); setOpen(next); });
   return (
-    <div className={`tool-group${open ? " is-open" : ""}`}>
-      <div ref={rowRef} className={`tool-step-sticky${open ? " is-open" : ""}`}>
+    <div className={`tool-group${sticky ? " is-open" : ""}`}>
+      <div ref={rowRef} className={`tool-step-sticky${sticky ? " is-open" : ""}`}>
         <button
           type="button"
           className="tool-step-summary tool-group-summary"
@@ -546,7 +554,7 @@ function CollapsedToolGroup({ count, durationMs, findText, children }: {
           </span>
         </button>
       </div>
-      <Disclosure open={open} instant={instant}>
+      <Disclosure open={open} disclosureRef={disclosureRef} onTransitionEnd={onTransitionEnd}>
         {mounted ? <div className="tool-group-items">{children}</div> : null}
       </Disclosure>
     </div>
@@ -672,8 +680,8 @@ function TurnProcessSummary({ items, durationMs, children }: {
   durationMs?: number;
   children: ReactNode;
 }) {
-  const { open, instant, rowRef, toggle, setOpen } = useStickyDisclosure();
-  // 同 CollapsedToolGroup：先挂进来才有 0fr 起始高度，否则首次展开是直接跳高。
+  const { open, sticky, rowRef, disclosureRef, toggle, setOpen, onTransitionEnd } = useStickyDisclosure();
+  // 成员先进 DOM 或由 @starting-style 提供起始帧；悬停/聚焦提前挂载可省去点击当帧创建子树的开销。
   const [mounted, setMounted] = useState(false);
   const prefetch = () => setMounted(true);
   const findText = useCallback(() => items.map(flowItemFindText).join("\n"), [items]);
@@ -685,8 +693,8 @@ function TurnProcessSummary({ items, durationMs, children }: {
     .filter(Boolean).join("，") || "过程记录";
   const Icon = tools.length ? Wrench : Brain;
   return (
-    <div className={`turn-process${open ? " is-open" : ""}`}>
-      <div ref={rowRef} className={`tool-step-sticky${open ? " is-open" : ""}`}>
+    <div className={`turn-process${sticky ? " is-open" : ""}`}>
+      <div ref={rowRef} className={`tool-step-sticky${sticky ? " is-open" : ""}`}>
         <button type="button" className="tool-step-summary turn-process-summary" aria-expanded={open}
           onPointerEnter={prefetch} onFocus={prefetch}
           onClick={() => { setMounted(true); toggle(); }}>
@@ -704,7 +712,7 @@ function TurnProcessSummary({ items, durationMs, children }: {
           </span>
         </button>
       </div>
-      <Disclosure open={open} instant={instant}>
+      <Disclosure open={open} disclosureRef={disclosureRef} onTransitionEnd={onTransitionEnd}>
         {mounted ? <div className="turn-process-items">{children}</div> : null}
       </Disclosure>
     </div>
@@ -716,19 +724,26 @@ function InlineReplyProcess({ messages, toolResults, beforeReasoning }: {
   messages: TimelineMessage[]; toolResults: ReadonlyMap<string, TimelineMessage>;
   beforeReasoning?: (message: TimelineMessage) => ReactNode;
 }) {
+  const [open, setOpen] = useState(false);
+  const [mounted, setMounted] = useState(false);
   const flow = timelineFlow(messages, undefined, toolResults).filter(item => item.kind === "tool" || item.kind === "thinking");
   const running = flow.filter(item => item.kind === "tool" && item.block.status === "input-available");
   const settled = flow.filter(item => !running.includes(item));
   const count = settled.filter(item => item.kind === "tool").length;
   return <div className="inline-reply-process">
-    {settled.length ? <details className="context-notice"><summary className="process-trigger">
-      {count ? <Wrench className="process-trigger-icon" size={13} aria-hidden="true" />
-        : <Brain className="process-trigger-icon" size={13} aria-hidden="true" />}
-      <span className="process-trigger-summary">{count ? `思考并调用 ${count} 个工具` : "思考过程"}</span>
-      <ChevronDown className="process-chevron" size={13} aria-hidden="true" />
-    </summary>
-      <TimelineProcess flow={settled} beforeReasoning={beforeReasoning} />
-    </details> : null}
+    {settled.length ? <div className="context-notice inline-reply-notice" data-disclosure-root="" data-open={open || undefined}>
+      <button type="button" className="process-trigger" data-disclosure-trigger="" aria-expanded={open}
+        onPointerEnter={() => setMounted(true)} onFocus={() => setMounted(true)}
+        onClick={() => { setMounted(true); setOpen((current) => !current); }}>
+        {count ? <Wrench className="process-trigger-icon" size={13} aria-hidden="true" />
+          : <Brain className="process-trigger-icon" size={13} aria-hidden="true" />}
+        <span className="process-trigger-summary">{count ? `思考并调用 ${count} 个工具` : "思考过程"}</span>
+        <ChevronDown className={`process-chevron${open ? " open" : ""}`} size={13} aria-hidden="true" />
+      </button>
+      <Disclosure open={open}>
+        {mounted ? <TimelineProcess flow={settled} beforeReasoning={beforeReasoning} /> : null}
+      </Disclosure>
+    </div> : null}
     <TimelineProcess flow={running} beforeReasoning={beforeReasoning} />
   </div>;
 }
@@ -872,6 +887,20 @@ function UserTextClamp({ enabled, children }: { enabled: boolean; children: Reac
   const box = useRef<HTMLDivElement>(null);
   const content = useRef<HTMLDivElement>(null);
   const toggle = useRef<HTMLButtonElement>(null);
+  const collapsedHeightRef = useRef<number | null>(null);
+  const pendingRef = useRef<{ height: number; expanding: boolean } | null>(null);
+  const collapseFrameRef = useRef(0);
+  const collapseTimerRef = useRef(0);
+
+  const stopCollapseAnchor = useCallback(() => {
+    window.cancelAnimationFrame(collapseFrameRef.current);
+    window.clearTimeout(collapseTimerRef.current);
+    collapseFrameRef.current = 0;
+    collapseTimerRef.current = 0;
+  }, []);
+
+  useEffect(() => stopCollapseAnchor, [stopCollapseAnchor]);
+
   useLayoutEffect(() => {
     const element = box.current;
     const inner = content.current;
@@ -880,27 +909,67 @@ function UserTextClamp({ enabled, children }: { enabled: boolean; children: Reac
     // 会逐条强制布局；历史消息带 content-visibility:auto，逐条观察会让长会话滚动多跑布局。
     if (!mayExceedClamp(element)) return;
     const measure = () => {
-      setOverflowing(element.scrollHeight - element.clientHeight > 1);
+      const next = element.scrollHeight - element.clientHeight > 1;
+      setOverflowing(next);
+      if (!element.style.maxHeight) collapsedHeightRef.current = element.getBoundingClientRect().height;
     };
-    // 首帧的裁剪由 CSS 无条件保证（.user-text-clamp:not([data-state="open"]) 恒裁 12 行），
-    // 本处只决定“展开全部”按钮与末两行渐隐，所以不在注册时同步测量：ResizeObserver 回调在
-    // 布局之后、绘制之前跑，此时读 scrollHeight 不再强制重排（design.md 3.18），零强制布局且首帧完成。
-    // 曾经同步测量，切入长会话时可见区每条长提问一次，实测占切换 CPU 的 ~19%（measure，CPU×4）。
-    // 可能超出的这一小部分观察折叠框与里面不限高的内容层：窗口变宽变窄、字体换用、图片加载、富渲染逐步换出
-    // （源码→高亮代码块）都会改内容层高度。只看框不够：恰好 12 行的正文再晚到一张图，框仍是 12 行高，变的只有内容。
     const observer = new ResizeObserver(measure);
     observer.observe(element);
     observer.observe(inner);
     return () => observer.disconnect();
   }, [enabled, expanded]);
+
+  useLayoutEffect(() => {
+    const element = box.current;
+    const inner = content.current;
+    const before = pendingRef.current;
+    if (!element || !inner || !before) return;
+    pendingRef.current = null;
+    if (prefersReducedMotion()) {
+      element.style.maxHeight = "";
+      element.style.transition = "";
+      if (!before.expanding) toggle.current?.scrollIntoView({ block: "nearest" });
+      return;
+    }
+    const targetHeight = before.expanding
+      ? inner.getBoundingClientRect().height
+      : (collapsedHeightRef.current ?? Math.min(before.height, Math.ceil((parseFloat(getComputedStyle(element).lineHeight) || 20) * 12)));
+    element.style.transition = "none";
+    element.style.maxHeight = `${before.height}px`;
+    void element.offsetHeight;
+    element.style.transition = `max-height ${before.expanding ? "var(--ak-sys-duration-expand)" : "var(--ak-sys-duration-snap)"} var(--ak-sys-motion-standard)`;
+    element.style.maxHeight = `${targetHeight}px`;
+  }, [expanded]);
+
   if (!enabled) return <>{children}</>;
   const onToggle = () => {
-    setExpanded((value) => !value);
-    // 收起时上方内容变短，把按钮留在视口里，读者不会被甩到别处。
-    if (expanded) requestAnimationFrame(() => toggle.current?.scrollIntoView({ block: "nearest" }));
+    const element = box.current;
+    const currentHeight = element?.getBoundingClientRect().height ?? 0;
+    if (!expanded && element && !element.style.maxHeight) collapsedHeightRef.current = currentHeight;
+    const nextExpanded = !expanded;
+    pendingRef.current = { height: currentHeight, expanding: nextExpanded };
+    stopCollapseAnchor();
+    if (!nextExpanded && !prefersReducedMotion()) {
+      const toggleBefore = toggle.current?.getBoundingClientRect().top ?? null;
+      const tick = () => {
+        if (toggleBefore !== null) keepAt(toggle.current, toggleBefore);
+        collapseFrameRef.current = window.requestAnimationFrame(tick);
+      };
+      collapseFrameRef.current = window.requestAnimationFrame(tick);
+      collapseTimerRef.current = window.setTimeout(stopCollapseAnchor, 220);
+    }
+    setExpanded(nextExpanded);
+  };
+  const onTransitionEnd = (event: TransitionEvent<HTMLDivElement>) => {
+    if (event.target !== event.currentTarget || event.propertyName !== "max-height") return;
+    stopCollapseAnchor();
+    if (box.current) {
+      box.current.style.maxHeight = "";
+      box.current.style.transition = "";
+    }
   };
   return <>
-    <div ref={box} className="user-text-clamp" data-state={expanded ? "open" : overflowing ? "clamped" : undefined}>
+    <div ref={box} className="user-text-clamp" data-state={expanded ? "open" : overflowing ? "clamped" : undefined} onTransitionEnd={onTransitionEnd}>
       <div ref={content}>{children}</div>
     </div>
     {overflowing || expanded ? <button ref={toggle} type="button" className="user-text-toggle"
@@ -1000,11 +1069,22 @@ function TimelinePartView({ part, toolResult = false, userInput = false, attachm
         <span>引用 {sessions.length} 个会话：{sessions.map((item) => item.title || item.session_id).join("、")}</span>
       </div>;
     }
-    case "tool_call": return <details className="timeline-details timeline-tool-call">
-      <summary>工具调用 · {part.name}</summary>
-      <pre tabIndex={0}>{JSON.stringify(part.arguments, null, 2)}</pre>
-    </details>;
+    case "tool_call": return <TimelineToolCallRow name={part.name} arguments={part.arguments} />;
   }
+}
+
+function TimelineToolCallRow({ name, arguments: args }: { name: string; arguments: unknown }) {
+  const [open, setOpen] = useState(false);
+  return <div className="timeline-details timeline-tool-call" data-disclosure-root="" data-open={open || undefined}>
+    <button type="button" className="timeline-details__trigger" data-disclosure-trigger="" aria-expanded={open}
+      onClick={() => setOpen((current) => !current)}>
+      <ChevronDown className={`timeline-details__chevron${open ? " open" : ""}`} size={13} aria-hidden="true" />
+      <span>工具调用 · {name}</span>
+    </button>
+    <Disclosure open={open}>
+      <pre tabIndex={0}>{JSON.stringify(args, null, 2)}</pre>
+    </Disclosure>
+  </div>;
 }
 
 /** 将归档转换成既有过程组件的展示块，原日志不变。 */
@@ -1329,40 +1409,50 @@ const ThinkingRow = memo(function ThinkingRow({
   streaming: boolean;
   duration?: number;
 }) {
+  const { open, sticky, rowRef, disclosureRef, setOpen, onTransitionEnd } = useStickyDisclosure(false);
+  const [mounted, setMounted] = useState(false);
+  const prefetch = () => setMounted(true);
   const features = streaming ? null : detectMessageRenderingFeatures(content);
   const needsRichContent = streaming || features?.math || features?.code;
+  const setFindOpen = useCallback((next: boolean) => {
+    setMounted(true);
+    setOpen(next);
+  }, [setOpen]);
   return (
     // 流式时只在标题行滚动最新一句，不自动展开：展开会与标题行重复同一句，结束时行重挂载又会瞬间收起。
     // Render ordinary Markdown right away; math and code still need the rich renderer.
-    <Reasoning className="thinking-row" isStreaming={streaming} defaultOpen={false} duration={duration}>
-      <ThinkingRowTrigger content={streaming ? content : ""} findText={content} />
-      <CollapsibleContent className="process-content">
-        <div className="process-text process-markdown">
-          {needsRichContent ? <Suspense fallback={<span className="process-markdown-fallback">{content}</span>}>
-            <LazyMessageResponse isAnimating={streaming}>{content}</LazyMessageResponse>
-          </Suspense> : <StaticMessageResponse>{content}</StaticMessageResponse>}
-        </div>
-      </CollapsibleContent>
+    <Reasoning className="thinking-row" isStreaming={streaming} open={open}
+      onOpenChange={(next) => { setMounted(true); setOpen(next); }}
+      data-sticky={sticky ? "true" : undefined} duration={duration}>
+      <ThinkingRowTrigger content={streaming ? content : ""} findText={content} rowRef={rowRef}
+        onPrefetch={prefetch} onFindOpen={setFindOpen} />
+      <Disclosure open={open} disclosureRef={disclosureRef} onTransitionEnd={onTransitionEnd}>
+        {mounted ? <div className="process-content" data-state={open ? "open" : "closed"}>
+          <div className="process-text process-markdown">
+            {needsRichContent ? <Suspense fallback={<span className="process-markdown-fallback">{content}</span>}>
+              <LazyMessageResponse isAnimating={streaming}>{content}</LazyMessageResponse>
+            </Suspense> : <StaticMessageResponse>{content}</StaticMessageResponse>}
+          </div>
+        </div> : null}
+      </Disclosure>
     </Reasoning>
   );
 });
 
-function ThinkingRowTrigger({ content, findText }: { content: string; findText: string }) {
-  const { isOpen, isStreaming, duration, setIsOpen } = useReasoning();
-  const rowRef = useRef<HTMLDivElement>(null);
+function ThinkingRowTrigger({ content, findText, rowRef, onPrefetch, onFindOpen }: {
+  content: string;
+  findText: string;
+  rowRef: React.RefObject<HTMLDivElement | null>;
+  onPrefetch: () => void;
+  onFindOpen: (open: boolean) => void;
+}) {
+  const { isOpen, isStreaming, duration } = useReasoning();
   const text = useCallback(() => findText, [findText]);
-  const matches = useFindRegion(rowRef, isOpen, text, setIsOpen);
-  // 收起长内容后视口可能跳离原位；结束后把行滚回最近可见位置。
-  const handleClick = (event: ReactMouseEvent<HTMLButtonElement>) => {
-    if (!isOpen) return;
-    const row = event.currentTarget.closest<HTMLElement>(".thinking-row");
-    requestAnimationFrame(() => requestAnimationFrame(() => {
-      row?.scrollIntoView({ block: "nearest" });
-    }));
-  };
+  const matches = useFindRegion(rowRef, isOpen, text, onFindOpen);
   return (
     <div ref={rowRef} className="process-trigger-sticky">
-      <ReasoningTrigger className={`process-trigger ${isStreaming ? "is-streaming" : ""}`} onClick={handleClick}>
+      <ReasoningTrigger className={`process-trigger ${isStreaming ? "is-streaming" : ""}`}
+        onPointerEnter={onPrefetch} onFocus={onPrefetch}>
         <Brain className="process-trigger-icon" size={13} aria-hidden="true" />
         <span className="process-trigger-label">
           {isStreaming ? "正在思考" : duration ? `已思考 ${duration}s` : "已思考"}
@@ -1414,20 +1504,23 @@ const ToolStep = memo(function ToolStep({
   const resultValue = block.output === undefined ? block.errorText : block.output;
   const hasResult = toolHasValue(resultValue) || Boolean(block.attachments?.length);
   const hasDetails = toolHasParameters(block.input) || hasResult;
-  const { open, instant, rowRef, toggle, setOpen } = useStickyDisclosure(block.status === "output-error");
+  const { open, sticky, rowRef, disclosureRef, toggle, setOpen, onTransitionEnd } = useStickyDisclosure(block.status === "output-error");
+  const [mounted, setMounted] = useState(block.status === "output-error");
+  const prefetch = () => setMounted(true);
+  const showDetails = mounted || open || sticky;
   const findText = useCallback(() => toolDetailFindText(block), [block]);
-  const matches = useFindRegion(rowRef, open, findText, setOpen);
+  const matches = useFindRegion(rowRef, open, findText, (next) => { setMounted(true); setOpen(next); });
   const parameters = useMemo(
-    () => open ? toolParameters(block.input) : [],
-    [block.input, open],
+    () => showDetails ? toolParameters(block.input) : [],
+    [block.input, showDetails],
   );
   const result = useMemo(
-    () => open ? toolDataText(resultValue) : "",
-    [open, resultValue],
+    () => showDetails ? toolDataText(resultValue) : "",
+    [showDetails, resultValue],
   );
   const parameterCopyText = useMemo(
-    () => open ? toolParameterCopyText(block.input) : "",
-    [block.input, open],
+    () => showDetails ? toolParameterCopyText(block.input) : "",
+    [block.input, showDetails],
   );
   const [copiedDetail, setCopiedDetail] = useState<{
     section: "parameters" | "result";
@@ -1459,12 +1552,14 @@ const ToolStep = memo(function ToolStep({
     >
       <div className="tool-step-body">
         {hasDetails ? (
-          <div ref={rowRef} className={`tool-step-sticky${open ? " is-open" : ""}`}>
+          <div ref={rowRef} className={`tool-step-sticky${sticky ? " is-open" : ""}`}>
             <button
               className="tool-step-summary"
               type="button"
               aria-expanded={open}
-              onClick={toggle}
+              onPointerEnter={prefetch}
+              onFocus={prefetch}
+              onClick={() => { setMounted(true); toggle(); }}
             >
               <ToolStepSummary
                 block={block}
@@ -1488,8 +1583,8 @@ const ToolStep = memo(function ToolStep({
           </div>
         )}
         {hasDetails ? (
-          <Disclosure open={open} instant={instant}>
-            <div className="tool-detail-surface">
+          <Disclosure open={open} disclosureRef={disclosureRef} onTransitionEnd={onTransitionEnd}>
+            {showDetails ? <div className="tool-detail-surface">
                 {parameters.length > 0 ? (
                   <section className="tool-detail-section" aria-label="工具参数">
                     <ToolDetailHeading
@@ -1507,7 +1602,7 @@ const ToolStep = memo(function ToolStep({
                     </dl>
                   </section>
                 ) : null}
-                {open && hasResult ? (
+                {hasResult ? (
                   <section className={`tool-detail-section${block.status === "output-error" ? " is-error" : ""}`} aria-label={block.status === "output-error" ? "工具错误" : "工具结果"}>
                     <ToolDetailHeading
                       label={block.status === "output-error" ? "错误" : "结果"}
@@ -1519,7 +1614,7 @@ const ToolStep = memo(function ToolStep({
                     {block.attachments?.length ? <SentAttachments items={block.attachments} /> : null}
                   </section>
                 ) : null}
-            </div>
+            </div> : null}
           </Disclosure>
         ) : null}
       </div>
@@ -1556,7 +1651,9 @@ function ToolDetailHeading({
 
 // 展开后行尾提示可收起；吸顶时这一行就是随时可点的收起入口。
 function CollapseHint({ open, lead = true }: { open: boolean; lead?: boolean }) {
-  return open ? <span className="tool-step-collapse-hint">{lead ? " · 收起" : "收起"}</span> : null;
+  return <span className={`tool-step-collapse-hint${open ? " is-open" : ""}`} aria-hidden="true">
+    <span>{lead ? " · 收起" : "收起"}</span>
+  </span>;
 }
 
 function ToolStepSummary({

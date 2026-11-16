@@ -119,6 +119,8 @@ export function focusMessagePart(element: HTMLElement, messageId: string, partIn
     const target = find() ?? element;
     const disclosure = target.closest("details");
     if (disclosure) disclosure.open = true;
+    const customDisclosure = target.closest("[data-disclosure-root]");
+    customDisclosure?.querySelector<HTMLButtonElement>('[data-disclosure-trigger][aria-expanded="false"]')?.click();
     target.focus({ preventScroll: true });
     target.scrollIntoView({ block: "center", behavior: "instant" });
   };
