@@ -329,14 +329,16 @@ export function ThreadFind({ session, snapshot, openFind }: ReturnType<typeof us
         <span className="thread-find__sep" aria-hidden="true" />
         <button type="button" aria-label="关闭查找" data-tip="关闭（Esc）" onClick={close}><X size={16} aria-hidden="true" /></button>
       </div>
-      <div className="thread-find__meta" aria-hidden={!hasQuery}>
-        <button type="button" aria-label="上一个结果" disabled={!snapshot.count} onClick={() => session.step(-1)}>
-          <ChevronUp size={14} aria-hidden="true" />
-        </button>
-        <button type="button" aria-label="下一个结果" disabled={!snapshot.count} onClick={() => session.step(1)}>
-          <ChevronDown size={14} aria-hidden="true" />
-        </button>
-        <span className="thread-find__count" aria-live="polite">{hasQuery && !pending ? label : ""}</span>
+      <div className="thread-find__meta-wrap" aria-hidden={!hasQuery}>
+        <div className="thread-find__meta">
+          <button type="button" aria-label="上一个结果" disabled={!snapshot.count} onClick={() => session.step(-1)}>
+            <ChevronUp size={14} aria-hidden="true" />
+          </button>
+          <button type="button" aria-label="下一个结果" disabled={!snapshot.count} onClick={() => session.step(1)}>
+            <ChevronDown size={14} aria-hidden="true" />
+          </button>
+          <span className="thread-find__count" aria-live="polite">{hasQuery && !pending ? label : ""}</span>
+        </div>
       </div>
     </div>
   );

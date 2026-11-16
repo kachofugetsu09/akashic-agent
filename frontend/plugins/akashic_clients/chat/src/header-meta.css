@@ -32,10 +32,24 @@
 .header-meta-panel { position: fixed; z-index: 60; display: grid; gap: 2px; inline-size: min(26rem, calc(100vw - 32px));
   max-block-size: min(28rem, calc(100dvh - 8rem)); overflow: auto; padding: 4px 6px 8px; border: 1px solid var(--chat-line);
   border-radius: var(--ak-radius-md); background: var(--ak-paper-canvas); box-shadow: var(--ak-elevation-float);
-  color: var(--chat-muted); font-size: var(--chat-type-control, 0.875rem); }
+  color: var(--chat-muted); font-size: var(--chat-type-control, 0.875rem);
+  opacity: 0; transform: translateY(-4px) scale(0.985); filter: blur(3px); pointer-events: none;
+  transition: opacity var(--ak-sys-duration-snap, 120ms) var(--ak-sys-motion-standard), transform var(--ak-sys-duration-snap, 120ms) var(--ak-sys-motion-standard), filter var(--ak-sys-duration-snap, 120ms) var(--ak-sys-motion-standard); }
+.header-meta-panel[data-state="open"] { opacity: 1; transform: none; filter: blur(0); pointer-events: auto;
+  transition-duration: var(--ak-sys-duration-short, 150ms);
+  @starting-style { opacity: 0; transform: translateY(-4px) scale(0.985); filter: blur(0); } }
 .header-meta-panel[data-sheet] { inset: auto 0 0; inline-size: auto; max-block-size: 78dvh;
-  padding: 8px 8px max(16px, env(safe-area-inset-bottom, 0px)); border-radius: var(--ak-radius-lg) var(--ak-radius-lg) 0 0; }
-.header-meta-scrim { position: fixed; z-index: 59; inset: 0; background: color-mix(in oklab, var(--ak-ink-primary) 20%, transparent); }
+  padding: 8px 8px max(16px, env(safe-area-inset-bottom, 0px)); border-radius: var(--ak-radius-lg) var(--ak-radius-lg) 0 0;
+  transform: translateY(16px); filter: none;
+  transition: opacity var(--ak-sys-duration-snap, 120ms) var(--ak-sys-motion-standard), transform var(--ak-sys-duration-snap, 120ms) var(--ak-sys-motion-emphasized); }
+.header-meta-panel[data-sheet][data-state="open"] { transform: translateY(0);
+  transition-duration: var(--ak-sys-duration-expand, 200ms);
+  @starting-style { opacity: 0; transform: translateY(20px); } }
+.header-meta-scrim { position: fixed; z-index: 59; inset: 0; background: color-mix(in oklab, var(--ak-ink-primary) 20%, transparent);
+  opacity: 0; pointer-events: none; transition: opacity var(--ak-sys-duration-snap, 120ms) var(--ak-sys-motion-standard); }
+.header-meta-scrim[data-state="open"] { opacity: 1; pointer-events: auto;
+  transition-duration: var(--ak-sys-duration-short, 150ms);
+  @starting-style { opacity: 0; } }
 .header-meta-panel__scope { display: flex; align-items: baseline; gap: 6px; margin: 0; padding: 10px 10px 4px; color: var(--chat-faint);
   font-size: var(--chat-type-caption, 0.75rem); font-weight: 600; }
 .header-meta-panel__scope b { color: var(--chat-muted); font-weight: 600; }
@@ -57,7 +71,12 @@
 .header-meta-node[data-tone="alert"] > .header-meta-node__row { color: var(--ak-color-status-error); }
 .header-meta-node[data-tone="alert"] > .header-meta-node__row .header-meta-node__value { color: var(--ak-color-status-error); }
 .header-meta-node__detail { margin-block: 2px 8px; margin-inline: calc(34px + var(--depth, 0) * 18px) 10px; color: var(--chat-muted);
-  font-size: var(--chat-type-caption, 0.75rem); line-height: 1.6; overflow-wrap: anywhere; }
+  font-size: var(--chat-type-caption, 0.75rem); line-height: 1.6; overflow-wrap: anywhere;
+  opacity: 1; translate: 0 0; transition: opacity var(--ak-sys-duration-short, 150ms) var(--ak-sys-motion-standard), translate var(--ak-sys-duration-short, 150ms) var(--ak-sys-motion-standard);
+  @starting-style { opacity: 0; translate: 0 -2px; } }
+@media (prefers-reduced-motion: reduce) {
+  .header-meta-panel, .header-meta-scrim, .header-meta-node__detail { transition: none; filter: none; }
+}
 .header-meta-node__detail:empty { display: none; }
 
 /* 紧凑外壳：说明行的热区放大到能点中，标题行仍是 44px 按钮的高度。 */

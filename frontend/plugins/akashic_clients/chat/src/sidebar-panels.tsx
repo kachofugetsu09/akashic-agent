@@ -4,7 +4,9 @@ import { createPortal } from "react-dom";
 import type { SidebarPanelControls, SidebarPanelStatus } from "@akashic/chat-ui-v1";
 
 import { chatPortalRoot } from "./chat-layout";
+import { IconSwap } from "./icon-swap";
 import { onPageShown, SidebarPanelMount, sidebarPanelSources, usePluginUiCatalogVersion, type SidebarPanelSource } from "./plugin-ui-runtime";
+import { useExitPresence } from "./presence";
 import { reportShellOverlay } from "./shell-rail-actions";
 import "./sidebar-panels.css";
 
@@ -99,7 +101,11 @@ export function SidebarPanelLauncher({ sheet, onOpenSheet }: {
 /** 页面里唯一的面板外框；随会话、一轮回答结束与页面重新可见重读各面板短值。 */
 export function SidebarPanelHost({ sessionId, refreshToken }: { sessionId?: string; refreshToken?: string }) {
   const { sources, statuses: shown, surface: current } = useSidebarPanels();
-  const open = current !== null;
+  const open = current !== null && sources.length > 0;
+  const presence = useExitPresence(open, 200);
+  const [lastSurface, setLastSurface] = useState<Surface | null>(current);
+  if (current !== null && current !== lastSurface) setLastSurface(current);
+  const shownSurface = current ?? (presence.present ? lastSurface : null);
   useEffect(() => {
     refreshStatuses(sources, sessionId);
   }, [sources, sessionId, refreshToken, open]);
@@ -126,31 +132,33 @@ export function SidebarPanelHost({ sessionId, refreshToken }: { sessionId?: stri
     reportShellOverlay(true);
     return () => reportShellOverlay(false);
   }, [open]);
-  if (!current || !sources.length) return null;
-  return createPortal(<PanelSurface current={current} sources={sources} statuses={shown} sessionId={sessionId} />, chatPortalRoot());
+  if (!presence.present || !shownSurface || !sources.length) return null;
+  return createPortal(<PanelSurface open={open} current={shownSurface} sources={sources} statuses={shown} sessionId={sessionId} onTransitionEnd={presence.onTransitionEnd} />, chatPortalRoot());
 }
 
 // 1. 菜单与面板共用一个外框，返回键回到菜单；2. 点外部、Esc 关闭并把焦点还给启动器；
 // 3. 展开态与手机抽屉带遮罩，浮层态不挡页面。
-function PanelSurface({ current, sources, statuses: shown, sessionId }: {
+function PanelSurface({ open, current, sources, statuses: shown, sessionId, onTransitionEnd }: {
+  open: boolean;
   current: Surface;
   sources: readonly SidebarPanelSource[];
   statuses: ReadonlyMap<string, SidebarPanelStatus | null>;
   sessionId?: string;
+  onTransitionEnd: (event: React.TransitionEvent<HTMLElement>) => void;
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const source = sources.find((item) => item.key === current.key) ?? null;
   const expanded = current.size === "expanded";
-  // 关闭时焦点还给启动器（手机上是导航按钮）；布局阶段的清理在节点移除前运行，还能判断焦点是否在面板里。
+  // 关闭时立刻把焦点还给启动器（退场期间面板会标 inert）。
   useLayoutEffect(() => {
+    if (open) return;
     const root = rootRef.current;
     const returnTo = current.anchor ?? document.querySelector<HTMLElement>(".compact-navigation-trigger");
-    return () => {
-      const active = document.activeElement;
-      if (!surface && returnTo?.isConnected && (active === document.body || root?.contains(active))) returnTo.focus({ preventScroll: true });
-    };
-  }, [current.anchor]);
+    const active = document.activeElement;
+    if (returnTo?.isConnected && (active === document.body || root?.contains(active))) returnTo.focus({ preventScroll: true });
+  }, [open, current.anchor]);
   useEffect(() => {
+    if (!open) return;
     const onPointer = (event: PointerEvent) => {
       const target = event.target as Node;
       if (!rootRef.current?.contains(target) && !current.anchor?.contains(target) && !current.sheet && !expanded) publish(null);
@@ -167,13 +175,15 @@ function PanelSurface({ current, sources, statuses: shown, sessionId }: {
       document.removeEventListener("pointerdown", onPointer);
       document.removeEventListener("keydown", onKey);
     };
-  }, [current.anchor, current.sheet, expanded]);
+  }, [open, current.anchor, current.sheet, expanded]);
   const style = current.sheet || expanded ? undefined : anchorStyle(current.anchor);
+  const state = open ? "open" : "closed";
   return <>
-    {current.sheet || expanded ? <div className="sidebar-panels-scrim" onClick={() => publish(null)} /> : null}
+    {current.sheet || expanded ? <div className="sidebar-panels-scrim" data-state={state} onClick={() => publish(null)} /> : null}
     <div ref={rootRef} className="sidebar-panels" role="dialog" aria-label={source?.provider.label ?? "插件面板"}
       aria-modal={current.sheet || expanded || undefined}
-      data-size={current.size} data-sheet={current.sheet || undefined} data-escape-layer="" style={style}>
+      data-state={state} data-size={current.size} data-sheet={current.sheet || undefined} data-escape-layer=""
+      inert={!open ? true : undefined} style={style} onTransitionEnd={onTransitionEnd}>
       {current.sheet ? <button type="button" className="sidebar-panels__grab" aria-label={expanded ? "降低" : "拉高"}
         onClick={() => publish({ ...current, size: expanded ? "compact" : "expanded" })}><i /></button> : null}
       <PanelHead current={current} source={source} />
@@ -210,7 +220,7 @@ function PanelHead({ current, source }: { current: Surface; source: SidebarPanel
     <span className="sidebar-panels__title">{source?.provider.label ?? "插件面板"}</span>
     {source && !current.sheet ? <button type="button" className="sidebar-panels__icon" aria-label={expanded ? "收起" : "展开"}
       title={expanded ? "收起" : "展开"} onClick={() => publish({ ...current, size: expanded ? "compact" : "expanded" })}>
-      {expanded ? <Minimize2 size={15} aria-hidden="true" /> : <Maximize2 size={15} aria-hidden="true" />}
+      <IconSwap state={expanded} a={<Maximize2 size={15} aria-hidden="true" />} b={<Minimize2 size={15} aria-hidden="true" />} />
     </button> : null}
     <button type="button" className="sidebar-panels__icon" aria-label="关闭" onClick={() => publish(null)}><X size={16} aria-hidden="true" /></button>
   </div>;

@@ -8,6 +8,7 @@ import type { StreamProjectionStore } from "./stream-projection";
 import { isGeneratingChatStatus, type ChatStatus } from "./web-chat-status";
 import { chatLayout, subscribeChatLayout } from "./chat-layout";
 import type { ReplyActivity, TimelineMessage } from "./message-timeline";
+import { useExitPresence } from "./presence";
 
 // 每个滚动容器对应当前锚定回合的释放函数；点击「回到底部 / 还在生成」时解除锁定。
 const turnAnchorReleasers = new WeakMap<HTMLElement, () => void>();
@@ -357,12 +358,25 @@ export function ReadingReturnButton({ generating }: { generating: boolean }) {
     };
   }, [contentRef, generating, scrollRef]);
 
-  if ((isAtBottom && !anchored) || !unseenBelow) return null;
+  const visible = !((isAtBottom && !anchored) || !unseenBelow);
+  const presence = useExitPresence(visible, 180);
   const toTurnStart = latestBelow && !generating;
   const label = generating ? "还在生成" : toTurnStart ? "最新一轮" : "";
-  return <button type="button" className="desktop-scroll-return reading-return" data-label={label ? "true" : undefined}
-    aria-label={generating ? "还在生成，滚动到底部" : toTurnStart ? "回到最新一轮开头" : "滚动到底部"}
+  const [lastSnap, setLastSnap] = useState({ generating, label });
+  if (visible && (lastSnap.generating !== generating || lastSnap.label !== label)) {
+    setLastSnap({ generating, label });
+  }
+  const shown = visible ? { generating, label } : lastSnap;
+  if (!presence.present) return null;
+  return <button type="button" className="desktop-scroll-return reading-return"
+    data-state={visible ? "open" : "closed"}
+    data-label={shown.label ? "true" : undefined}
+    aria-hidden={!visible || undefined}
+    tabIndex={visible ? undefined : -1}
+    aria-label={shown.generating ? "还在生成，滚动到底部" : toTurnStart ? "回到最新一轮开头" : "滚动到底部"}
+    onTransitionEnd={presence.onTransitionEnd}
     onClick={() => {
+      if (!visible) return;
       const scroller = scrollRef.current;
       const start = scroller ? latestTurnStart(scroller) : undefined;
       if (toTurnStart && scroller && start) {
@@ -372,8 +386,8 @@ export function ReadingReturnButton({ generating }: { generating: boolean }) {
         void scrollToBottom();
       }
     }}>
-    {generating ? <i className="reading-return__live" aria-hidden="true" /> : null}
-    {label ? <span>{label}</span> : null}
+    {shown.generating ? <i className="reading-return__live" aria-hidden="true" /> : null}
+    {shown.label ? <span>{shown.label}</span> : null}
     <ArrowDown size={16} aria-hidden="true" />
   </button>;
 }
