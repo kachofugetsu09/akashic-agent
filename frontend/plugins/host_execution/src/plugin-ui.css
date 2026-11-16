@@ -189,3 +189,14 @@
 .host-deploy-detail__badge[data-status="submitting"] {
   color: var(--ak-color-action-primary);
 }
+
+.host-deploy-detail__link {
+  width: fit-content;
+  color: var(--ak-color-action-primary);
+  font-size: var(--chat-type-caption, 0.75rem);
+  text-decoration: none;
+}
+
+.host-deploy-detail__link:hover {
+  text-decoration: underline;
+}

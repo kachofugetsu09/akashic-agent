@@ -510,6 +510,9 @@ function RuntimeDeployDetail() {
           {deploy.error ? <p className="host-deploy-detail__error">{deploy.error}</p> : null}
         </>
       ) : null}
+      <a className="host-deploy-detail__link" href="/#version" target="_blank" rel="noopener">
+        打开「版本与更新」设置页
+      </a>
     </div>
   );
 }

@@ -134,19 +134,19 @@ def read_deploy_snapshot(
     socket_path: str | None = None,
     runtime_info_path: Path = _DEFAULT_RUNTIME_INFO,
     now: datetime | None = None,
+    history_limit: int = 1,
 ) -> dict[str, object]:
     current_time = (now or datetime.now(UTC)).astimezone(UTC)
     commit = read_runtime_commit(runtime_info_path=runtime_info_path)
     resolved_socket = os.environ.get("AKASHIC_HOST_BRIDGE_SOCKET") if socket_path is None else socket_path
 
-    latest_deploy: dict[str, object] | None = None
+    parsed_entries: list[tuple[float, str, dict[str, object]]] = []
     if resolved_socket:
         directory = Path(resolved_socket).parent / "self-deploy"
         try:
             paths = tuple(directory.glob("*.json")) if directory.is_dir() else ()
         except OSError:
             paths = ()
-        best_key: tuple[float, str] | None = None
         for item in paths:
             if not item.is_file():
                 continue
@@ -154,15 +154,30 @@ def read_deploy_snapshot(
             if parsed is None:
                 continue
             ts, entry = parsed
-            key = (ts, item.stem)
-            if best_key is None or key > best_key:
-                best_key = key
-                latest_deploy = entry
+            parsed_entries.append((ts, item.stem, entry))
 
-    return {
+    parsed_entries.sort(key=lambda row: (row[0], row[1]), reverse=True)
+    limit = max(1, history_limit)
+    history = [row[2] for row in parsed_entries[:limit]]
+    latest_deploy = history[0] if history else None
+
+    snapshot: dict[str, object] = {
         "runtime": {
             "commit": commit,
             "startedAt": started_at,
         },
         "deploy": latest_deploy,
     }
+    if history_limit > 1:
+        last_success = next(
+            (
+                row[2]
+                for row in parsed_entries
+                if row[2].get("status") == "active"
+                and (commit is None or row[2].get("targetCommit") == commit)
+            ),
+            None,
+        ) or next((row[2] for row in parsed_entries if row[2].get("status") == "active"), None)
+        snapshot["lastSuccess"] = last_success
+        snapshot["history"] = history
+    return snapshot
