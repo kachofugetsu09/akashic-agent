@@ -9,6 +9,9 @@ import { isGeneratingChatStatus, type ChatStatus } from "./web-chat-status";
 import { chatLayout, subscribeChatLayout } from "./chat-layout";
 import type { ReplyActivity, TimelineMessage } from "./message-timeline";
 
+// 每个滚动容器对应当前锚定回合的释放函数；点击「回到底部 / 还在生成」时解除锁定。
+const turnAnchorReleasers = new WeakMap<HTMLElement, () => void>();
+
 export function DesktopAutoScroll({
   sessionId,
   messages,
@@ -27,6 +30,7 @@ export function DesktopAutoScroll({
   const { contentRef, escapedFromLock, isAtBottom, scrollRef, scrollToBottom, stopScroll } = useStickToBottomContext();
   const lastMessageCountRef = useRef(messages.length);
   const anchoredAnswerRef = useRef("");
+  const turnAnchoredRef = useRef(false);
   const baselineLastMessage = messages.at(-1);
   const baselineLastMessageId = baselineLastMessage?.id;
   const subscribe = useCallback(
@@ -54,7 +58,22 @@ export function DesktopAutoScroll({
   ].join(":");
   const lastMessageRole = lastMessage?.role;
 
-  // 必要 effect：新用户消息/流式输出时 DOM 滚动到底部（响应数据变化执行 DOM 副作用），不可改为渲染期计算
+  // 必要 effect：登记当前滚动容器的锚定释放函数（纯外部映射同步）
+  useEffect(() => {
+    const scroller = scrollRef.current;
+    if (!scroller) return;
+    const release = () => {
+      turnAnchoredRef.current = false;
+      delete scroller.dataset.turnAnchored;
+    };
+    turnAnchorReleasers.set(scroller, release);
+    return () => {
+      if (turnAnchorReleasers.get(scroller) === release) turnAnchorReleasers.delete(scroller);
+      delete scroller.dataset.turnAnchored;
+    };
+  }, [scrollRef]);
+
+  // 必要 effect：新用户消息发出时把用户消息锚定在阅读区顶缘且后续不自动跟随；其余贴底状态下跟随到底部
   useEffect(() => {
     const hasNewUserMessage = messages.length > lastMessageCountRef.current && lastMessageRole === "user";
     lastMessageCountRef.current = messages.length;
@@ -62,15 +81,56 @@ export function DesktopAutoScroll({
     if (hasNewUserMessage) {
       const scroller = scrollRef.current;
       const content = contentRef.current;
-      if (scroller && content) holdTurnRoom(scroller, content);
-      void scrollToBottom({ animation: "smooth", ignoreEscapes: true });
+      if (scroller && content) {
+        scroller.closest(".chat-main")?.classList.remove("is-reading");
+        holdTurnRoom(scroller, content);
+        turnAnchoredRef.current = true;
+        scroller.dataset.turnAnchored = "true";
+        stopScroll();
+        const start = latestTurnStart(scroller);
+        if (start) {
+          const key = start.dataset.messageId ?? "";
+          if (key) anchoredAnswerRef.current = key;
+          const targetTop = Math.max(0, scroller.scrollTop + offsetToReadingTop(scroller, start));
+          if (Math.abs(targetTop - scroller.scrollTop) > 1) {
+            const reduce = media("(prefers-reduced-motion: reduce)").matches;
+            scroller.scrollTo({ top: targetTop, behavior: reduce ? "auto" : "smooth" });
+          }
+        }
+      }
       return;
     }
+
+    if (turnAnchoredRef.current) return;
 
     if (isAtBottom && !escapedFromLock) {
       void scrollToBottom({ animation: "instant", ignoreEscapes: false });
     }
-  }, [contentRef, escapedFromLock, isAtBottom, lastMessageRole, messages.length, scrollKey, scrollRef, status, scrollToBottom]);
+  }, [contentRef, escapedFromLock, isAtBottom, lastMessageRole, messages.length, scrollKey, scrollRef, status, scrollToBottom, stopScroll]);
+
+  // 必要 effect：锚定回合期间阻止 use-stick-to-bottom 因平滑向下滚动重新锁回贴底跟随
+  useLayoutEffect(() => {
+    if (turnAnchoredRef.current && (isAtBottom || !escapedFromLock)) stopScroll();
+  }, [escapedFromLock, isAtBottom, stopScroll]);
+
+  useEffect(() => {
+    const scroller = scrollRef.current;
+    if (!scroller) return;
+    let timer = 0;
+    const onScroll = () => {
+      if (!turnAnchoredRef.current) return;
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        timer = 0;
+        if (turnAnchoredRef.current) stopScroll();
+      }, 1);
+    };
+    scroller.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      window.clearTimeout(timer);
+      scroller.removeEventListener("scroll", onScroll);
+    };
+  }, [scrollRef, stopScroll]);
 
   // 必要 effect：换会话或提问已全部移除时撤掉留白；首条消息获配 ID 不算换会话。
   const roomSessionRef = useRef(sessionId);
@@ -78,31 +138,61 @@ export function DesktopAutoScroll({
     const previous = roomSessionRef.current;
     roomSessionRef.current = sessionId;
     const content = contentRef.current;
+    const scroller = scrollRef.current;
+    if (previous && previous !== sessionId) {
+      turnAnchoredRef.current = false;
+      anchoredAnswerRef.current = "";
+      if (scroller) delete scroller.dataset.turnAnchored;
+    }
     if (content?.style.minHeight && ((previous && previous !== sessionId) || !latestTurnStart(content))) {
       content.style.minHeight = "";
     }
-  }, [contentRef, sessionId, messages.length, timelineMessages.length, replyActivities.length]);
+  }, [contentRef, scrollRef, sessionId, messages.length, timelineMessages.length, replyActivities.length]);
 
-  // 必要 effect：阅读列宽度变了，提问跟着重新折行，按新位置重算留白
+  // 必要 effect：视口尺寸、标题栏收放或上方折叠变化时实时校准留白，避免上方收起后底部留下大片无效空白
   useEffect(() => {
     const scroller = scrollRef.current;
     const content = contentRef.current;
     if (!scroller || !content) return;
-    let width = scroller.clientWidth;
-    const observer = new ResizeObserver(() => {
-      if (scroller.clientWidth === width) return;
-      width = scroller.clientWidth;
+    let frame = 0;
+    const sync = () => {
+      frame = 0;
       if (content.style.minHeight) holdTurnRoom(scroller, content);
+    };
+    const schedule = () => {
+      if (content.style.minHeight && !frame) frame = window.requestAnimationFrame(sync);
+    };
+    const resizeObserver = new ResizeObserver(schedule);
+    resizeObserver.observe(scroller);
+    resizeObserver.observe(content);
+    const contentMutation = new MutationObserver(schedule);
+    contentMutation.observe(content, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["open", "aria-expanded", "data-state", "hidden", "class"],
     });
-    observer.observe(scroller);
-    return () => observer.disconnect();
+    const main = scroller.closest(".chat-main");
+    const heading = main?.querySelector(".conversation-heading");
+    const mainMutation = main ? new MutationObserver(schedule) : null;
+    mainMutation?.observe(main!, { attributes: true, attributeFilter: ["class"] });
+    content.addEventListener("transitionend", schedule);
+    heading?.addEventListener("transitionend", schedule);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      resizeObserver.disconnect();
+      contentMutation.disconnect();
+      mainMutation?.disconnect();
+      content.removeEventListener("transitionend", schedule);
+      heading?.removeEventListener("transitionend", schedule);
+    };
   }, [contentRef, scrollRef]);
 
   const generating = isGeneratingChatStatus(status);
   const followingRef = useRef(false);
   // 必要 effect：把贴底状态同步给滚动监听；用户已经读过回答开头后自己滚开，这条回答不再接管
   useEffect(() => {
-    followingRef.current = isAtBottom && !escapedFromLock;
+    followingRef.current = isAtBottom && !escapedFromLock && !turnAnchoredRef.current;
     const scroller = scrollRef.current;
     const answer = scroller && generating && escapedFromLock ? currentAnswer(scroller) : undefined;
     if (scroller && answer && offsetToReadingTop(scroller, answer.element) <= 0) anchoredAnswerRef.current = answer.key;
@@ -114,6 +204,7 @@ export function DesktopAutoScroll({
     const scroller = scrollRef.current;
     if (!scroller || !generating) return;
     const onScroll = () => {
+      if (turnAnchoredRef.current) return;
       const answer = anchorableAnswer(scroller, anchoredAnswerRef.current);
       if (!answer || !followingRef.current) return;
       anchoredAnswerRef.current = answer.key;
@@ -139,10 +230,13 @@ function media(query: string): MediaQueryList {
 }
 
 // 浮在滚动区上方的标题栏会遮住内容顶部；返回被遮挡的高度加 8px 呼吸。
+// 窄屏收放标题栏有过渡动画，同步参考 CSS 的 --heading-cover 目标值，避免首帧读到过渡中高度。
 function readingTopInset(scroller: HTMLElement): number {
-  const heading = scroller.closest(".chat-main")?.querySelector(".conversation-heading");
-  const covered = heading ? heading.getBoundingClientRect().bottom - scroller.getBoundingClientRect().top : 0;
-  return Math.max(0, covered) + 8;
+  const main = scroller.closest(".chat-main");
+  const heading = main?.querySelector<HTMLElement>(".conversation-heading");
+  const geomCovered = heading ? heading.getBoundingClientRect().bottom - scroller.getBoundingClientRect().top : 0;
+  const cssCovered = main ? parseFloat(getComputedStyle(main).getPropertyValue("--heading-cover")) || 0 : 0;
+  return Math.max(0, geomCovered, cssCovered) + 8;
 }
 
 // 元素顶部需要滚动多少才能停在阅读区顶缘。
@@ -150,12 +244,11 @@ function offsetToReadingTop(scroller: HTMLElement, element: HTMLElement): number
   return element.getBoundingClientRect().top - scroller.getBoundingClientRect().top - readingTopInset(scroller);
 }
 
-// 跟随停在哪里：窄屏屏幕小，停在回答开头；宽屏停在本轮提问，问题与回答开头同屏。
+// 跟随停在哪里：统一停在本轮提问，问题与回答开头同屏；仅在会话没有提问行时退回回答起点。
 function currentAnswer(scroller: HTMLElement) {
-  const element = chatLayout().narrow
-    ? Array.from(scroller.querySelectorAll<HTMLElement>(".reply-activity, .web-message-anchor.streaming")).at(-1)
-    : latestTurnStart(scroller);
-  const key = element?.dataset.replyHandle ?? element?.dataset.messageId ?? "";
+  const element = latestTurnStart(scroller)
+    ?? Array.from(scroller.querySelectorAll<HTMLElement>(".reply-activity, .web-message-anchor.streaming")).at(-1);
+  const key = element?.dataset.messageId ?? element?.dataset.replyHandle ?? "";
   return element && key ? { element, key } : undefined;
 }
 
@@ -175,6 +268,32 @@ function latestTurnStart(scroller: HTMLElement): HTMLElement | undefined {
   return Array.from(scroller.querySelectorAll<HTMLElement>(TURN_START)).at(-1);
 }
 
+function lastVisibleContentElement(content: HTMLElement): HTMLElement | null {
+  for (let node = content.lastElementChild; node; node = node.previousElementSibling) {
+    if (node instanceof HTMLElement && !node.hidden && node.getBoundingClientRect().height > 0) {
+      return node;
+    }
+  }
+  return null;
+}
+
+function readingBottomEdge(scroller: HTMLElement): number {
+  const box = scroller.getBoundingClientRect();
+  const composer = scroller.closest(".chat-main")?.querySelector<HTMLElement>(".composer-wrap")?.getBoundingClientRect();
+  if (composer && composer.height > 0 && composer.top > box.top && composer.top < box.bottom) {
+    return composer.top;
+  }
+  return box.bottom;
+}
+
+function hasUnseenContentBelow(scroller: HTMLElement, content: HTMLElement | null): boolean {
+  const target = content ?? scroller.querySelector<HTMLElement>(".conversation-content");
+  if (!target) return false;
+  const last = lastVisibleContentElement(target);
+  if (!last) return false;
+  return last.getBoundingClientRect().bottom > readingBottomEdge(scroller) + 12;
+}
+
 // 新一轮提问先给回答留出一屏（参考 Claude Desktop 的 turn room）：内容区的最小高度刚好让提问停在阅读区顶缘。
 // 回答在留白里长出，滚动高度不变，贴底跟随无事可做，屏幕不再随每一行上跳；写满后内容照常增高。
 // 留白保留到下一轮提问或换会话：回答落定时撤掉会让滚动区变矮、整屏往下掉。
@@ -185,35 +304,60 @@ function holdTurnRoom(scroller: HTMLElement, content: HTMLElement): void {
     return;
   }
   // use-stick-to-bottom 停在离真正底部 1px 的位置，多留 1px 让提问正好落在顶缘。
-  const room = start.getBoundingClientRect().top - content.getBoundingClientRect().top
-    - readingTopInset(scroller) + scroller.clientHeight + 1;
-  content.style.minHeight = `${Math.ceil(room)}px`;
+  const room = Math.ceil(
+    start.getBoundingClientRect().top - content.getBoundingClientRect().top
+    - readingTopInset(scroller) + scroller.clientHeight + 1,
+  );
+  const next = room > 0 ? `${room}px` : "";
+  if (content.style.minHeight !== next) content.style.minHeight = next;
 }
 
 /** 离开底部后的返回入口：生成中提示还在写；翻回历史时先回到最新一轮开头，再到底部。 */
 export function ReadingReturnButton({ generating }: { generating: boolean }) {
-  const { isAtBottom, scrollRef, scrollToBottom } = useStickToBottomContext();
-  const [latestBelow, setLatestBelow] = useState(false);
+  const { contentRef, isAtBottom, scrollRef, scrollToBottom } = useStickToBottomContext();
+  const [{ latestBelow, unseenBelow, anchored }, setScrollState] = useState({
+    latestBelow: false,
+    unseenBelow: false,
+    anchored: false,
+  });
 
-  // 必要 effect：订阅滚动位置，判断最新一轮是否还在视口下方（DOM 几何只能在滚动时读取）
+  // 必要 effect：订阅滚动与内容几何，判断最新一轮与真实内容是否还在可视区下方
   useEffect(() => {
     const scroller = scrollRef.current;
+    const content = contentRef.current;
     if (!scroller) return;
     let frame = 0;
     const measure = () => {
       frame = 0;
       const start = latestTurnStart(scroller);
-      setLatestBelow(Boolean(start && start.getBoundingClientRect().top > scroller.getBoundingClientRect().bottom));
+      const nextLatestBelow = Boolean(start && start.getBoundingClientRect().top > scroller.getBoundingClientRect().bottom);
+      const nextUnseenBelow = hasUnseenContentBelow(scroller, content);
+      const nextAnchored = Boolean(scroller.dataset.turnAnchored);
+      setScrollState((current) =>
+        current.latestBelow === nextLatestBelow
+        && current.unseenBelow === nextUnseenBelow
+        && current.anchored === nextAnchored
+          ? current
+          : { latestBelow: nextLatestBelow, unseenBelow: nextUnseenBelow, anchored: nextAnchored },
+      );
     };
-    const onScroll = () => { if (!frame) frame = window.requestAnimationFrame(measure); };
-    scroller.addEventListener("scroll", onScroll, { passive: true });
+    const schedule = () => { if (!frame) frame = window.requestAnimationFrame(measure); };
+    schedule();
+    scroller.addEventListener("scroll", schedule, { passive: true });
+    const resizeObserver = new ResizeObserver(schedule);
+    resizeObserver.observe(scroller);
+    if (content) resizeObserver.observe(content);
+    const mutationObserver = content ? new MutationObserver(schedule) : null;
+    mutationObserver?.observe(content!, { childList: true, subtree: true, characterData: true });
     return () => {
-      scroller.removeEventListener("scroll", onScroll);
+      scroller.removeEventListener("scroll", schedule);
+      resizeObserver.disconnect();
+      mutationObserver?.disconnect();
       window.cancelAnimationFrame(frame);
     };
-  }, [scrollRef]);
+  }, [contentRef, generating, scrollRef]);
 
-  if (isAtBottom) return null;
+  if ((isAtBottom && !anchored) || !unseenBelow) return null;
   const toTurnStart = latestBelow && !generating;
   const label = generating ? "还在生成" : toTurnStart ? "最新一轮" : "";
   return <button type="button" className="desktop-scroll-return reading-return" data-label={label ? "true" : undefined}
@@ -223,7 +367,10 @@ export function ReadingReturnButton({ generating }: { generating: boolean }) {
       const start = scroller ? latestTurnStart(scroller) : undefined;
       if (toTurnStart && scroller && start) {
         scroller.scrollTo({ top: scroller.scrollTop + offsetToReadingTop(scroller, start), behavior: "smooth" });
-      } else void scrollToBottom();
+      } else {
+        if (scroller) turnAnchorReleasers.get(scroller)?.();
+        void scrollToBottom();
+      }
     }}>
     {generating ? <i className="reading-return__live" aria-hidden="true" /> : null}
     {label ? <span>{label}</span> : null}

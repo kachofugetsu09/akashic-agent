@@ -390,8 +390,9 @@ function useComposerClearance(wrapRef: React.RefObject<HTMLDivElement | null>): 
         if (grown === 0) main.style.removeProperty("--composer-grown");
         else main.style.setProperty("--composer-grown", `${grown}px`);
       }
-      // 2. 紧凑高度本身也会随聚焦态变化（窄屏），所以无论哪种长高，贴底时都把底部重新露出来。
-      if (pinned) scroller.scrollTop = scroller.scrollHeight;
+      // 2. 紧凑高度本身也会随聚焦态变化（窄屏），所以无论哪种长高，贴底时都把底部重新露出来；
+      //    正在把本轮提问锚定在阅读区顶缘时不再拉回底部。
+      if (pinned && !scroller.dataset.turnAnchored) scroller.scrollTop = scroller.scrollHeight;
     };
     const observer = new ResizeObserver(sync);
     observer.observe(wrap);
