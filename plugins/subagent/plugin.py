@@ -38,7 +38,7 @@ from plugins.models.contract import (
 )
 from plugins.ui.contract import Configuration, ModelSettings, mount_settings
 
-from plugins.tools.contract import TOOL_LOADING_PRESENTATION, ToolView
+from plugins.tools.contract import TOOL_LOADING_PRESENTATION, ToolPresentation, ToolView
 from .inputs import (
     ALL_TOOLS,
     CHECK_ORIGIN,
@@ -217,38 +217,38 @@ async def apply(ctx: Context) -> None:
         idempotent=True,
     )
 
+    # 子任务沿用 prepare 时冻结的 binding；有分组加载展示时只追加 load_tools 入口，避免全量 schema 超出模型上限。
+    async def frozen_menu(request: Request) -> tuple[Mapping[str, str], ToolPresentation | None]:
+        with ctx.borrow(TOOL_LOADING_PRESENTATION) as present:
+            if present is None:
+                return request.tools, None
+            refs = {ref.name: ref for ref in ctx.require(ALL_TOOLS)().refs}
+            if not set(request.tools).issubset(refs):
+                return request.tools, None
+            view, presentation = present(ToolView(tuple(refs[name] for name in request.tools)))
+            bindings = ctx.require(BINDINGS)
+            entries = {
+                ref.name: await catalog.bind_scoped(ref, bindings, configuration=presentation.configuration(ref.name))
+                for ref in view.refs if ref.name not in request.tools
+            }
+            return {**request.tools, **entries}, presentation
+
     async def program(task: Task, reader: MessageReader, request: Request) -> Message:
         task_dir = ctx.workspace_root("subagent-runs") / request.job_id
         task_dir.mkdir(parents=True, exist_ok=True)
-        bindings = ctx.require(BINDINGS)
-        tool_view: ToolView | None = None
-        presentation = None
-        fixed_bindings: Mapping[str, str] | None = request.tools
-        allowed_names = set(request.tools)
-        with ctx.borrow(TOOL_LOADING_PRESENTATION) as present:
-            if present is not None:
-                available_refs = {ref.name: ref for ref in ctx.require(ALL_TOOLS)().refs}
-                if set(request.tools).issubset(available_refs):
-                    selected_view = ToolView(tuple(available_refs[name] for name in request.tools))
-                    tool_view, presentation = present(selected_view)
-                    fixed_bindings = None
-                    allowed_names = set(request.tools) | {"load_tools"}
+        fixed_bindings, presentation = await frozen_menu(request)
+        allowed = frozenset(fixed_bindings.values())
 
         async def authorize(binding_id: str, arguments: Mapping[str, object]) -> Mapping[str, object] | str:
-            if tool_view is None:
-                if binding_id not in request.tools.values():
-                    return '工具不属于子任务已固定权限边界'
-            else:
-                tool = cast(Mapping[str, object], bindings.describe(binding_id, TOOLS)["tool"])
-                if tool["name"] not in allowed_names:
-                    return '工具不属于子任务已固定权限边界'
+            if binding_id not in allowed:
+                return '工具不属于子任务已固定权限边界'
             return {"source": "subagent", "session_id": reader.session_id}
 
         return await ctx.require(REPLY_EXECUTE)(
                          ctx, task, reader, 'subagent',
                          check_admission=partial(ctx.require(SOURCE_CHECK), task, reader, "subagent", task.boundary_hint),
                          authorize=authorize,
-                         tool_view=tool_view,
+                         tool_view=None,
                          fixed_bindings=fixed_bindings,
                          presentation=presentation,
                          max_output_tokens=config.max_output_tokens,

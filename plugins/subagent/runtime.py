@@ -58,6 +58,8 @@ class Subagents:
         self._lineage: dict[str, tuple[str, int]] = {}
         # key -> summary dict for unsettled local jobs
         self._active: dict[str, dict[str, object]] = {}
+        self._index_loading: asyncio.Future[tuple[dict[str, tuple[str, int]], dict[str, dict[str, object]]]] | None = None
+        self._settled_while_loading: set[str] = set()
 
     def read(self, key: str) -> tuple[OwnerRecord, Request, MessageReader] | None:
         record = self.ctx.require(OWNER_STATE).open(self.ctx).read(key)
@@ -104,16 +106,13 @@ class Subagents:
             current = by_session[current].parent_session_id
         return current, depth
 
-    def _ensure_index(self, state=None, catalog=None) -> None:
-        if self._index_loaded:
-            return
-        store = self.ctx.require(OWNER_STATE).open(self.ctx) if state is None else state
-        messages = self.ctx.require(MESSAGE_CATALOG) if catalog is None else catalog
+    # 全量扫描历史子任务记录，只返回结果，由事件循环线程统一落入内存索引。
+    def _scan_index(self, state, catalog) -> tuple[dict[str, tuple[str, int]], dict[str, dict[str, object]]]:
         by_session: dict[str, Request] = {}
         active_rows: list[tuple[str, Request]] = []
-        for key, _ in store.list():
+        for key, _ in state.list():
             try:
-                found = self._read_with(store, messages, key)
+                found = self._read_with(state, catalog, key)
             except ValueError as error:
                 logger.warning("跳过损坏的历史子任务索引 key=%s error=%s", key, error)
                 continue
@@ -123,9 +122,7 @@ class Subagents:
             by_session[request.session_id] = request
             if not _pointer(record)[2]:
                 active_rows.append((key, request))
-        lineage: dict[str, tuple[str, int]] = {}
-        for session_id in by_session:
-            lineage[session_id] = self._lineage_in(by_session, session_id)
+        lineage = {session_id: self._lineage_in(by_session, session_id) for session_id in by_session}
         active: dict[str, dict[str, object]] = {}
         for key, request in active_rows:
             resolved_root = request.root_session_id or lineage.get(request.session_id, (request.parent_session_id, 1))[0]
@@ -137,16 +134,41 @@ class Subagents:
                 "depth": request.depth,
                 "root_session_id": resolved_root,
             }
-        self._lineage = lineage
-        self._active = active
-        self._index_loaded = True
+        return lineage, active
 
-    async def ensure_index(self) -> None:
+    # 扫描期间已结算的 key 不能被旧快照复活，否则名额永久泄漏。
+    def _apply_index(self, scan: tuple[dict[str, tuple[str, int]], dict[str, dict[str, object]]]) -> None:
         if self._index_loaded:
             return
-        state = self.ctx.require(OWNER_STATE).open(self.ctx)
-        catalog = self.ctx.require(MESSAGE_CATALOG)
-        await run_file_io(lambda: self._ensure_index(state, catalog))
+        lineage, active = scan
+        for key in self._settled_while_loading:
+            active.pop(key, None)
+        self._settled_while_loading.clear()
+        self._lineage = {**lineage, **self._lineage}
+        self._active = {**active, **self._active}
+        self._index_loaded = True
+
+    def _ensure_index(self) -> None:
+        if self._index_loaded:
+            return
+        self._apply_index(self._scan_index(self.ctx.require(OWNER_STATE).open(self.ctx), self.ctx.require(MESSAGE_CATALOG)))
+
+    async def ensure_index(self) -> None:
+        # 1. 并发调用共享同一次后台扫描，避免两份快照先后覆盖内存索引。
+        if self._index_loaded:
+            return
+        if self._index_loading is None:
+            state = self.ctx.require(OWNER_STATE).open(self.ctx)
+            catalog = self.ctx.require(MESSAGE_CATALOG)
+            self._index_loading = asyncio.ensure_future(run_file_io(lambda: self._scan_index(state, catalog)))
+        loading = self._index_loading
+        try:
+            scan = await asyncio.shield(loading)
+        except Exception:
+            if self._index_loading is loading:
+                self._index_loading = None
+            raise
+        self._apply_index(scan)
 
     def resolve_lineage(self, session_id: str) -> tuple[str, int]:
         """解析某会话所属的顶层根会话 ID 及当前嵌套深度（根会话为 0）。"""
@@ -188,12 +210,11 @@ class Subagents:
         """同一来源准入锁覆盖容量检查与持久提交，重放不再占额。"""
         ctx = self.ctx
         state = ctx.require(OWNER_STATE).open(ctx)
-        catalog = ctx.require(MESSAGE_CATALOG)
         limit = self.max_active
 
         async def admit(_slot: TaskSlot) -> None:
             # 1. 所有实例通过同一 owner 的准入 key；拒绝不会留下空 Session。
-            await run_file_io(lambda: self._ensure_index(state, catalog))
+            await self.ensure_index()
             existing = await run_file_io(lambda: state.read(key))
             if existing is None:
                 root_id = request.root_session_id or self.resolve_lineage(request.parent_session_id)[0]
@@ -330,6 +351,8 @@ class Subagents:
             _ = tx.save(key, {**record.value, "settled": True}, expected_version=record.version)
         await state.transact_async(commit)
         self._active.pop(key, None)
+        if not self._index_loaded:
+            self._settled_while_loading.add(key)
 
     @staticmethod
     async def outcome(reader: MessageReader, *, through_seq: int | None = None) -> tuple[str, str] | None:
