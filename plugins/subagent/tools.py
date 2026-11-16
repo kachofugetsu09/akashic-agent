@@ -224,13 +224,8 @@ class Spawn:
                 if parts:
                     origin = cast(dict[str, str], json_value(parts[0].value))
                 break
-        if args.run_in_background and origin is None:
-            return '后台子任务需要原会话渠道'
         sink = None
-        if args.run_in_background:
-            assert origin is not None
-            if origin["channel"] not in self.senders:
-                return '后台子任务的原渠道没有发送能力'
+        if args.run_in_background and origin is not None and origin["channel"] in self.senders:
             sink = SinkInput(name=origin["channel"], binding_id=self.senders[origin["channel"]], address=origin["chat_id"])
         job_id = uuid4().hex
         task_dir = self.ctx.workspace_root("subagent-runs") / job_id
@@ -281,7 +276,7 @@ class Spawn:
         compat_profile: Literal["research", "scripting", "general"] = "research" if read_only else (args.profile or "general")
         request = Request(job_id=job_id, label=(args.label or args.task[:30]).strip(), profile=compat_profile,
             read_only=read_only, depth=next_depth, root_session_id=root_session_id,
-            background=args.run_in_background, retry_count=args.retry_count,
+            background=args.run_in_background, completion_wake=args.completion_wake, retry_count=args.retry_count,
             parent_session_id=parent_session_id, parent_message_id=source.call_ref.message_id,
             parent_part_index=source.call_ref.part_index,
             origin=origin, sink=sink, program_binding=bindings.bind(SUBAGENT_PROGRAM, {}), tools=fixed,
@@ -293,8 +288,12 @@ class Spawn:
         try:
             await self.jobs.accept(key, prepared.request, prepared.task)
         except SubagentBusy as error:
+            if prepared.request.background:
+                self.jobs.mark_batch_rejected(prepared.request.parent_session_id, prepared.request.parent_message_id)
             return Result("error", (ContentPart("text", str(error)),))
-        if not prepared.request.background:
+        if prepared.request.background:
+            _ = await self.jobs.start(key)
+        else:
             task = await self.jobs.start(key)
             if task is not None:
                 try:
@@ -370,6 +369,90 @@ class Manage:
             cancelled = await self.jobs.cancel(args.job_id)
             value = {"job_id": args.job_id, "status": "cancel_requested" if cancelled else "not_found"}
         return Result("success", (ContentPart("text", json.dumps(value, ensure_ascii=False)),))
+
+    async def query(self, key: str) -> Result | None:
+        return None
+
+
+class SendInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    job_id: str = Field(min_length=1, description="目标子任务 job_id")
+    message: str = Field(min_length=1, description="要发给该子任务的追问、补充约束或纠正说明")
+    run_in_background: bool = Field(default=False, description="仅当子任务处于已结束状态需要唤醒继续时生效；运行中始终直接 Steer 注入")
+
+
+class SubagentSend:
+    """向已有子任务继续发送消息：运行中 Steer 插话，空闲时冷恢复继续执行。"""
+
+    idempotent = False
+
+    def __init__(self, jobs: Subagents):
+        self.jobs = jobs
+
+    async def prepare(self, arguments: Mapping[str, object], source: CallSource | None = None) -> Mapping[str, object] | str:
+        try:
+            args = SendInput.model_validate(dict(arguments))
+        except ValidationError as error:
+            return str(error)
+        if not args.message.strip():
+            return "消息内容不能为空"
+        if source is None or not source.messages:
+            return "subagent_send 需要已提交的父消息调用"
+        await self.jobs.ensure_index()
+        root_id, _ = self.jobs.resolve_lineage(source.messages[-1].session_id)
+        return {**args.model_dump(), "root_session_id": root_id}
+
+    async def invoke(self, key: str, arguments: Mapping[str, object]) -> Result:
+        raw = dict(cast(Mapping[str, object], json_value(arguments)))
+        root_id = str(raw.pop("root_session_id", ""))
+        args = SendInput.model_validate(raw)
+        try:
+            payload = await self.jobs.send(root_id, args.job_id, args.message, background=args.run_in_background)
+        except (KeyError, PermissionError, SubagentBusy, ValueError) as error:
+            return Result("error", (ContentPart("text", str(error)),))
+        return Result("success", (ContentPart("text", json.dumps(payload, ensure_ascii=False)),))
+
+    async def query(self, key: str) -> Result | None:
+        return None
+
+
+class ReadInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    job_id: str = Field(min_length=1, description="目标子任务 job_id")
+    after_seq: int = Field(default=-1, ge=-1, description="仅读取序号大于 after_seq 的消息，默认 -1 读取最近记录")
+    limit: int = Field(default=50, ge=1, le=200, description="最多返回的消息条数")
+
+
+class SubagentRead:
+    """读取当前会话树下 internal 子任务会话的消息过程（只读）。"""
+
+    idempotent = True
+
+    def __init__(self, jobs: Subagents):
+        self.jobs = jobs
+
+    async def prepare(self, arguments: Mapping[str, object], source: CallSource | None = None) -> Mapping[str, object] | str:
+        try:
+            args = ReadInput.model_validate(dict(arguments))
+        except ValidationError as error:
+            return str(error)
+        if source is None or not source.messages:
+            return "subagent_read 需要已提交的父消息调用"
+        await self.jobs.ensure_index()
+        root_id, _ = self.jobs.resolve_lineage(source.messages[-1].session_id)
+        return {**args.model_dump(), "root_session_id": root_id}
+
+    async def invoke(self, key: str, arguments: Mapping[str, object]) -> Result:
+        raw = dict(cast(Mapping[str, object], json_value(arguments)))
+        root_id = str(raw.pop("root_session_id", ""))
+        args = ReadInput.model_validate(raw)
+        try:
+            payload = await self.jobs.read_child_messages(
+                root_id, args.job_id, after_seq=args.after_seq, limit=args.limit,
+            )
+        except (KeyError, PermissionError, ValueError) as error:
+            return Result("error", (ContentPart("text", str(error)),))
+        return Result("success", (ContentPart("text", json.dumps(payload, ensure_ascii=False)),))
 
     async def query(self, key: str) -> Result | None:
         return None
