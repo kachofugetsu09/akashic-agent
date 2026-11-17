@@ -1,9 +1,65 @@
 import { mountChat } from "@akashic/chat-app-v1";
 
 const WIDTH_KEY = "akashic.conversation.tools.width";
+const SAMPLES_KEY = "akashic.conversation.tools.samples";
 const DEFAULT_WIDTH_RATIO = 0.42;
 const MIN_PANEL_WIDTH = 360;
 const MIN_CHAT_WIDTH = 420;
+const SNAP_TUNING = { spread: 8, halfLife: 5, minWeight: 2.5, snap: 10, correctionMs: 2000, keep: 40, dwellMs: 320 };
+
+function storedSamples() {
+  try {
+    const raw = JSON.parse(window.localStorage.getItem(SAMPLES_KEY) ?? "[]");
+    if (!Array.isArray(raw)) return [];
+    return raw.filter((item) => item && typeof item === "object"
+      && Number.isFinite(item.width) && item.width > 0 && Number.isFinite(item.at)).slice(-SNAP_TUNING.keep);
+  } catch {
+    return [];
+  }
+}
+
+function saveSamples(samples) {
+  try {
+    window.localStorage.setItem(SAMPLES_KEY, JSON.stringify(samples));
+  } catch (error) {
+    if (!(error instanceof DOMException)) throw error;
+  }
+}
+
+function favouriteWidth(samples, t = SNAP_TUNING) {
+  const weightsOf = (list) => list.map((_, i) => 0.5 ** ((list.length - 1 - i) / t.halfLife));
+  const densityAt = (list, w, x) => list.reduce((sum, s, i) => sum + w[i] * Math.exp(-((x - s.width) ** 2) / (2 * t.spread * t.spread)), 0);
+  const supportAt = (list, w, x) => list.reduce((sum, s, i) => (Math.abs(s.width - x) <= 2 * t.spread ? sum + w[i] : sum), 0);
+  const peakOf = (list) => {
+    const w = weightsOf(list);
+    const from = Math.floor(Math.min(...list.map((s) => s.width)));
+    const to = Math.ceil(Math.max(...list.map((s) => s.width)));
+    let best = from;
+    let top = -1;
+    for (let x = from; x <= to; x += 1) {
+      const d = densityAt(list, w, x);
+      if (d > top) { top = d; best = x; }
+    }
+    return { width: best, support: supportAt(list, w, best) };
+  };
+  let current = null;
+  for (let n = 1; n <= samples.length; n += 1) {
+    const seen = samples.slice(0, n);
+    const p = peakOf(seen);
+    if (p.support < t.minWeight) current = null;
+    else if (current && Math.abs(p.width - current.width) <= t.snap) {
+      current = { width: current.width, support: supportAt(seen, weightsOf(seen), current.width) };
+    } else current = p;
+  }
+  return current;
+}
+
+function recordWidthSample(samples, width, at, t = SNAP_TUNING) {
+  const last = samples[samples.length - 1];
+  const corrected = last && at - last.at < t.correctionMs;
+  const next = corrected ? [...samples.slice(0, -1), { width, at }] : [...samples, { width, at }];
+  return next.slice(-t.keep);
+}
 
 // 聊天由 Host SDK 挂进同一文档（ADR 0126）。聊天发来的事件经 hooks 转给工作台，没有工作台时取默认值。
 function connectChat(chatHost, railActions) {
@@ -340,32 +396,75 @@ function renderLaunch(panel, tools, onTool) {
   panel.replaceChildren(page);
 }
 
-// 分隔条：拖动与方向键调整宽度并记住，双击恢复默认比例。
+// 分隔条：拖动与方向键调整宽度并记住，支持 KDE 偏好磁吸与 320ms 悬停微调解锁，双击恢复默认比例。
 function connectSplitter(root, splitter, sizing) {
   let dragStartX = 0;
   let dragStartWidth = 0;
+  let holding = false;
+  let freeFrom = null;
+  let stillWidth = 0;
+  let dwellTimer = 0;
+  const clearSnap = () => {
+    holding = false;
+    freeFrom = null;
+    if (dwellTimer) { window.clearTimeout(dwellTimer); dwellTimer = 0; }
+    splitter.removeAttribute("data-snapped");
+  };
   const stop = (event) => {
     if (!root.classList.contains("is-resizing")) return;
     root.classList.remove("is-resizing");
+    clearSnap();
     if (splitter.hasPointerCapture(event.pointerId)) splitter.releasePointerCapture(event.pointerId);
-    sizing.set(sizing.width(), true);
+    const finalW = sizing.width();
+    sizing.set(finalW, true);
+    if (Math.round(finalW) !== Math.round(dragStartWidth)) sizing.recordSample(finalW);
   };
   splitter.addEventListener("pointerdown", (event) => {
     if (event.button !== 0) return;
     event.preventDefault();
+    clearSnap();
     dragStartX = event.clientX;
     dragStartWidth = sizing.width();
+    stillWidth = dragStartWidth;
     root.classList.add("is-resizing");
     splitter.setPointerCapture(event.pointerId);
   });
   splitter.addEventListener("pointermove", (event) => {
     if (!root.classList.contains("is-resizing")) return;
     const rtl = getComputedStyle(root).direction === "rtl";
-    sizing.set(dragStartWidth + (dragStartX - event.clientX) * (rtl ? -1 : 1));
+    const unclamped = dragStartWidth + (dragStartX - event.clientX) * (rtl ? -1 : 1);
+    const raw = Math.min(sizing.maximum(), Math.max(MIN_PANEL_WIDTH, unclamped));
+    const snapTarget = sizing.snapPoint();
+    // 解锁后从磁吸点按手的位移 1:1 跟随；位移取未钳制值，两端仍拖得到边界。
+    if (freeFrom !== null && snapTarget !== null) {
+      sizing.set(snapTarget + (unclamped - freeFrom));
+      return;
+    }
+    const wasHolding = holding;
+    holding = snapTarget !== null && Math.abs(raw - snapTarget) <= SNAP_TUNING.snap;
+    if (!holding) {
+      if (dwellTimer) { window.clearTimeout(dwellTimer); dwellTimer = 0; }
+      splitter.removeAttribute("data-snapped");
+      sizing.set(raw);
+      return;
+    }
+    if (!wasHolding) splitter.setAttribute("data-snapped", "");
+    sizing.set(snapTarget);
+    if (!wasHolding || Math.abs(raw - stillWidth) > SNAP_TUNING.snap / 6) {
+      stillWidth = raw;
+      if (dwellTimer) window.clearTimeout(dwellTimer);
+      dwellTimer = window.setTimeout(() => {
+        if (!root.classList.contains("is-resizing") || !holding) return;
+        freeFrom = unclamped;
+        holding = false;
+        dwellTimer = 0;
+        splitter.removeAttribute("data-snapped");
+      }, SNAP_TUNING.dwellMs);
+    }
   });
   splitter.addEventListener("pointerup", stop);
   splitter.addEventListener("pointercancel", stop);
-  splitter.addEventListener("dblclick", () => sizing.reset());
+  splitter.addEventListener("dblclick", () => { clearSnap(); sizing.reset(); });
   splitter.addEventListener("keydown", (event) => {
     const rtl = getComputedStyle(root).direction === "rtl";
     let next = sizing.width();
@@ -418,6 +517,9 @@ function connectDivider(panel, divider) {
 // 宽度：全局一份；没有记录时按页面宽度的默认比例。
 function createSizing(root, splitter) {
   const saved = storedWidth();
+  let samples = storedSamples();
+  // 磁吸点只随样本变：拖动每帧都要问，KDE 全量重算放在初始化和记样本时。
+  let favourite = favouriteWidth(samples);
   const state = { width: saved ?? 0, preferred: saved ?? 0, useDefault: saved === null };
   const maximum = () => Math.max(MIN_PANEL_WIDTH, root.clientWidth - MIN_CHAT_WIDTH);
   const set = (value, persist = false) => {
@@ -431,13 +533,19 @@ function createSizing(root, splitter) {
     state.preferred = state.width;
     saveWidth(state.width);
   };
+  const recordSample = (width) => {
+    samples = recordWidthSample(samples, Math.round(width), Date.now());
+    favourite = favouriteWidth(samples);
+    saveSamples(samples);
+  };
+  const snapPoint = () => (favourite ? Math.min(maximum(), Math.max(MIN_PANEL_WIDTH, favourite.width)) : null);
   const fit = () => set(state.useDefault ? root.clientWidth * DEFAULT_WIDTH_RATIO : state.preferred);
   const reset = () => {
     state.useDefault = true;
     clearWidth();
     fit();
   };
-  return { width: () => state.width, maximum, set, fit, reset };
+  return { width: () => state.width, maximum, set, fit, reset, recordSample, snapPoint };
 }
 
 // 标签挂载与父视图的生命周期，按标签记录（工具 + 实例）计。每个记录只 render 一次：先占位再 render，

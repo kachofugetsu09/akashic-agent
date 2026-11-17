@@ -63,6 +63,28 @@
   content: "";
 }
 
+.conversation-tools-splitter::after {
+  position: absolute;
+  inset-block-start: 50%;
+  inset-inline-start: 50%;
+  width: 3px;
+  height: 28px;
+  translate: -50% -50%;
+  border-radius: 1.5px;
+  background: var(--ak-rule-focus);
+  opacity: 0;
+  scale: 1 0.45;
+  content: "";
+  transition:
+    opacity var(--ak-sys-duration-short) var(--ak-sys-motion-standard),
+    scale var(--ak-sys-duration-short) var(--ak-sys-motion-emphasized);
+}
+
+.conversation-tools-splitter[data-snapped]::after {
+  opacity: 1;
+  scale: 1 1;
+}
+
 .conversation-tools-splitter:hover,
 .conversation-tools-splitter:focus-visible,
 .conversation-page.is-resizing .conversation-tools-splitter {

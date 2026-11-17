@@ -1295,7 +1295,8 @@ export function useDesktopChatController() {
     setSessions((current) => current.filter((session) => session.key !== sessionId));
     window.clearTimeout(deletedNoticeTimerRef.current);
     setDeletedNotice({ key: sessionId, title });
-    deletedNoticeTimerRef.current = window.setTimeout(() => setDeletedNotice(null), DELETED_NOTICE_MS);
+    // SessionDeleteNotice 在侧栏挂载时支持悬停/聚焦暂停倒计时；这里的兜底定时器留作未打开侧栏时的回收上限。
+    deletedNoticeTimerRef.current = window.setTimeout(() => setDeletedNotice(null), DELETED_NOTICE_MS * 3);
     void loadSessionsSafely();
     void navigationPins.reload();
     // 删除当前会话等于离开它：回到新会话草稿；消息仍在服务端只读保留。

@@ -31,6 +31,17 @@ export function ComposerActionButton({
       data-mode={mode}
       aria-label={label}
     >
+      {/* 正在停止时外圈无缝追逐圆环（pathLength=1），替代生硬的 CSS border 缺口旋转。 */}
+      <svg className="composer-action-button__chase" viewBox="0 0 32 32" aria-hidden="true">
+        <circle
+          cx="16"
+          cy="16"
+          r="13.5"
+          pathLength={1}
+          strokeDasharray="0.24 0.76"
+          strokeLinecap="round"
+        />
+      </svg>
       {/* 发送与停止叠在同一个格子里换挡：按钮尺寸与热区不变，只有图形换手。 */}
       <IconSwap
         state={mode === "stop"}

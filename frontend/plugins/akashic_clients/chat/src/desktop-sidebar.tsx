@@ -744,15 +744,13 @@ export const DesktopSidebar = memo(function DesktopSidebar({
         <span>{navigationPins.error}</span>
         <button type="button" disabled={navigationPins.pending} onClick={() => { void navigationPins.reload(); }}>刷新置顶列表</button>
       </div> : null}
-      {deletedNotice ? <div className="session-delete-notice" role="status">
-        <span title={deletedNotice.title}>已删除「{deletedNotice.title}」</span>
-        <button type="button" disabled={restorePending} onClick={() => onRestoreSession?.(deletedNotice.key)}>
-          {restorePending ? "正在恢复…" : "撤销"}
-        </button>
-        <button type="button" className="session-delete-notice__dismiss" aria-label="关闭提示" onClick={onDismissDeletedNotice}>
-          <X size={14} aria-hidden="true" />
-        </button>
-      </div> : null}
+      {deletedNotice ? <SessionDeleteNotice
+        key={deletedNotice.key}
+        notice={deletedNotice}
+        restorePending={restorePending}
+        onRestore={() => onRestoreSession?.(deletedNotice.key)}
+        onDismiss={onDismissDeletedNotice}
+      /> : null}
       {navigationPins.pins.length && (!searching || visiblePins.length) ? <section className="pinned-navigation" aria-label="置顶">
         <header className="navigation-section__header"><span>置顶</span></header>
         {/* 行按全量置顶渲染、用 hidden 收窄；visiblePins 只决定搜索时整个分区是否保留。 */}
@@ -887,12 +885,82 @@ function SessionSortMenu({ sort, onSort }: { sort: SessionSortId; onSort: (sort:
   </DropdownMenu>;
 }
 
+const DELETED_NOTICE_MS = 10_000;
+
+/** 软删撤销条：外框 SVG pathLength=1 沿圆角边缘平滑倒计时；鼠标悬停或键盘聚焦内侧时暂停自动消失。 */
+function SessionDeleteNotice({
+  notice,
+  restorePending,
+  onRestore,
+  onDismiss,
+}: {
+  notice: { key: string; title: string };
+  restorePending: boolean;
+  onRestore: () => void;
+  onDismiss?: () => void;
+}) {
+  const [paused, setPaused] = useState(false);
+  const remainingRef = useRef(DELETED_NOTICE_MS);
+  const startedAtRef = useRef(0);
+  const onDismissRef = useRef(onDismiss);
+  useEffect(() => { onDismissRef.current = onDismiss; });
+
+  useEffect(() => {
+    if (paused || restorePending) return;
+    startedAtRef.current = performance.now();
+    const timer = window.setTimeout(() => {
+      remainingRef.current = 0;
+      onDismissRef.current?.();
+    }, Math.max(0, remainingRef.current));
+    return () => {
+      window.clearTimeout(timer);
+      const elapsed = performance.now() - startedAtRef.current;
+      remainingRef.current = Math.max(0, remainingRef.current - elapsed);
+    };
+  }, [paused, restorePending]);
+
+  return (
+    <div
+      className="session-delete-notice"
+      role="status"
+      data-paused={(paused || restorePending) || undefined}
+      onPointerEnter={() => setPaused(true)}
+      onPointerLeave={() => setPaused(false)}
+      onFocusCapture={() => setPaused(true)}
+      onBlurCapture={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setPaused(false);
+      }}
+    >
+      <svg className="session-delete-notice__ring" aria-hidden="true">
+        <rect
+          className="session-delete-notice__ring-bar"
+          x="0.5"
+          y="0.5"
+          rx="7.5"
+          ry="7.5"
+          pathLength={1}
+        />
+      </svg>
+      <span title={notice.title}>已删除「{notice.title}」</span>
+      <button type="button" disabled={restorePending} onClick={onRestore}>
+        {restorePending ? "正在恢复…" : "撤销"}
+      </button>
+      <button type="button" className="session-delete-notice__dismiss" aria-label="关闭提示" onClick={onDismiss}>
+        <X size={14} aria-hidden="true" />
+      </button>
+    </div>
+  );
+}
+
 /** 侧栏右缘拖拽柄：只写 --chat-rail-width；双击复位，方向键以 0.5rem 步进。 */
 function SidebarRailResizer({ rail, sidebarRef }: {
   rail: SidebarRailControl;
   sidebarRef: RefObject<HTMLElement | null>;
 }) {
   const [dragging, setDragging] = useState(false);
+  // 一次拖拽只有一套 window 监听；抬起、取消、丢失 capture、卸载都走这一个收尾。
+  const finishDrag = useRef<(() => void) | null>(null);
+  useEffect(() => () => finishDrag.current?.(), []);
   const [nowRem, setNowRem] = useState(SIDEBAR_RAIL_MIN_REM);
   useLayoutEffect(() => {
     const aside = sidebarRef.current;
@@ -914,25 +982,36 @@ function SidebarRailResizer({ rail, sidebarRef }: {
     onPointerDown={(event) => {
       if (!event.isPrimary || event.button !== 0) return;
       event.preventDefault();
-      event.currentTarget.setPointerCapture(event.pointerId);
-      rail.dragStart(event.clientX, widthPx());
+      finishDrag.current?.();
+      const target = event.currentTarget;
+      const pointerId = event.pointerId;
+      // capture 只为保持拖拽光标；移动与收尾由 window 监听负责，capture 设不上（合成事件）也照常工作。
+      try { target.setPointerCapture(pointerId); } catch { /* 没有活动指针时 capture 不可用 */ }
+      rail.dragStart(event.clientX, widthPx(), target);
       setDragging(true);
-    }}
-    onPointerMove={(event) => {
-      if (!dragging) return;
       // 拖拽中宽度不经过 React state（见 use-sidebar-rail），aria-valuenow 直写保持同步。
-      const next = rail.dragTo(event.clientX);
-      if (next !== null) event.currentTarget.setAttribute("aria-valuenow", String(Math.round(next * 2) / 2));
+      const move = (moveEvent: PointerEvent) => {
+        if (moveEvent.pointerId !== pointerId) return;
+        const next = rail.dragTo(moveEvent.clientX);
+        if (next !== null) target.setAttribute("aria-valuenow", String(Math.round(next * 2) / 2));
+      };
+      const end = (endEvent: PointerEvent) => { if (endEvent.pointerId === pointerId) finish(); };
+      const finish = () => {
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", end);
+        window.removeEventListener("pointercancel", end);
+        finishDrag.current = null;
+        if (target.hasPointerCapture(pointerId)) target.releasePointerCapture(pointerId);
+        setDragging(false);
+        rail.dragEnd();
+      };
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", end);
+      window.addEventListener("pointercancel", end);
+      finishDrag.current = finish;
     }}
-    onPointerUp={(event) => {
-      if (!dragging) return;
-      event.currentTarget.releasePointerCapture(event.pointerId);
-      setDragging(false);
-      rail.dragEnd();
-    }}
-    onPointerCancel={() => { setDragging(false); rail.dragEnd(); }}
-    // capture 丢失而 pointerup/pointercancel 没到时兜底：清掉直写列宽，按最后位置收尾。
-    onLostPointerCapture={() => { if (dragging) { setDragging(false); rail.dragEnd(); } }}
+    // capture 丢失而 pointerup/pointercancel 没到时兜底：按最后位置收尾并清掉直写列宽。
+    onLostPointerCapture={() => finishDrag.current?.()}
     onDoubleClick={(event) => {
       event.preventDefault();
       rail.reset();

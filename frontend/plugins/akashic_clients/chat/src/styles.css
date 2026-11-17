@@ -181,6 +181,23 @@ input {
   touch-action: none;
 }
 
+.chat-sidebar__resizer::before {
+  content: "";
+  position: absolute;
+  inset-block-start: 50%;
+  inset-inline-start: 50%;
+  width: 3px;
+  height: 28px;
+  translate: -50% -50%;
+  border-radius: 1.5px;
+  background: var(--ak-rule-focus);
+  opacity: 0;
+  scale: 1 0.45;
+  transition:
+    opacity var(--ak-sys-duration-short) var(--ak-sys-motion-standard),
+    scale var(--ak-sys-duration-short) var(--ak-sys-motion-emphasized);
+}
+
 .chat-sidebar__resizer::after {
   content: "";
   position: absolute;
@@ -190,7 +207,22 @@ input {
   translate: -0.5px 0;
   background: var(--ak-rule-strong);
   opacity: 0;
-  transition: opacity var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+  transition:
+    opacity var(--ak-sys-duration-short) var(--ak-sys-motion-standard),
+    width var(--ak-sys-duration-short) var(--ak-sys-motion-standard),
+    background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+}
+
+.chat-sidebar__resizer[data-snapped]::before {
+  opacity: 1;
+  scale: 1 1;
+}
+
+.chat-sidebar__resizer[data-snapped]::after {
+  width: 2px;
+  translate: -1px 0;
+  background: var(--ak-rule-focus);
+  opacity: 1;
 }
 
 .chat-sidebar__resizer:focus-visible::after,
@@ -456,20 +488,36 @@ input {
   .chat-sidebar__shortcuts { display: inline-grid; }
 }
 
-/* 主题菜单：明暗是一排分段按钮，配色是带色票的单选列表；触屏行高放到 44px。 */
+/* 主题菜单：明暗是一排分段按钮（带连续滑动胶囊底块），配色是带色票的单选列表；触屏行高放到 44px。 */
 .theme-menu { width: min(264px, calc(100vw - 24px)); border: 1px solid var(--ak-rule-subtle); border-radius: var(--ak-radius-md); padding: 6px;
   color: var(--ak-ink-primary); background: var(--ak-paper-raised); font-family: var(--ak-type-ui); }
 .theme-menu__label { padding: 6px 8px 4px; color: var(--ak-ink-secondary); font-size: 0.75rem; font-weight: 500; }
-.theme-menu__modes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 2px; padding: 2px;
+.theme-menu__modes { position: relative; display: grid; grid-template-columns: repeat(3, 1fr); gap: 2px; padding: 2px;
   border-radius: var(--ak-radius-sm); background: color-mix(in oklab, var(--ak-ink-primary) 6%, transparent); }
-.theme-menu__mode, .theme-menu__family { display: flex; align-items: center; outline: none; cursor: pointer; user-select: none; }
+.theme-menu__mode-pill {
+  position: absolute;
+  inset-block: 2px;
+  inset-inline-start: 2px;
+  width: calc((100% - 8px) / 3);
+  border-radius: calc(var(--ak-radius-sm) - 2px);
+  background: var(--ak-paper-editing);
+  box-shadow: 0 0 0 1px var(--ak-rule-subtle);
+  transform: translateX(calc(var(--chat-mode-index, 0) * (100% + 2px)));
+  transition: transform var(--chat-mode-duration, 175ms) cubic-bezier(0.22, 1, 0.36, 1);
+  pointer-events: none;
+}
+.theme-menu__modes:dir(rtl) .theme-menu__mode-pill {
+  transform: translateX(calc(var(--chat-mode-index, 0) * -1 * (100% + 2px)));
+}
+@media (prefers-reduced-motion: reduce) {
+  .theme-menu__mode-pill { transition: none; }
+}
+.theme-menu__mode, .theme-menu__family { position: relative; z-index: 1; display: flex; align-items: center; outline: none; cursor: pointer; user-select: none; }
 .theme-menu__mode { min-height: 32px; justify-content: center; gap: 6px; border-radius: calc(var(--ak-radius-sm) - 2px);
-  color: var(--ak-ink-secondary); font-size: 0.8125rem; white-space: nowrap; }
-.theme-menu__mode[data-state="checked"] { color: var(--ak-ink-primary); background: var(--ak-paper-editing);
-  box-shadow: 0 0 0 1px var(--ak-rule-subtle); }
+  color: var(--ak-ink-secondary); font-size: 0.8125rem; white-space: nowrap; transition: color var(--ak-sys-duration-short) var(--ak-sys-motion-standard); }
+.theme-menu__mode[data-state="checked"] { color: var(--ak-ink-primary); font-weight: 550; }
 .theme-menu__family { min-height: 36px; gap: 10px; border-radius: var(--ak-radius-sm); padding-inline: 8px; color: var(--ak-ink-primary); font-size: 0.875rem; }
-.theme-menu__mode[data-highlighted], .theme-menu__family[data-highlighted] { background: color-mix(in oklab, var(--ak-ink-primary) 8%, transparent); }
-.theme-menu__mode[data-state="checked"][data-highlighted] { background: var(--ak-paper-editing); }
+.theme-menu__mode:not([data-state="checked"])[data-highlighted], .theme-menu__family[data-highlighted] { background: color-mix(in oklab, var(--ak-ink-primary) 8%, transparent); }
 .theme-menu__name { flex: 1 1 auto; min-width: 0; }
 .theme-menu__check { display: inline-flex; color: var(--ak-ink-primary); }
 /* 色票是一小张纸：纸面底色、一道墨色、一个强调色圆点。 */
@@ -879,8 +927,9 @@ input {
 }
 
 /* 删除后的撤销窗口：导航区内一行就地提示，不是 toast，不遮挡消息区。
-   插入时抬起 6px 落定；一次性动画，不循环。 */
+   插入时抬起 6px 落定；外框 SVG pathLength=1 沿圆角边缘平滑倒计时，悬停或聚焦暂停。 */
 .session-delete-notice {
+  position: relative;
   display: flex;
   min-width: 0;
   align-items: center;
@@ -892,6 +941,41 @@ input {
   color: var(--chat-muted);
   animation: ak-notice-in var(--ak-sys-duration-short) var(--ak-sys-motion-emphasized) both;
   font-size: 0.75rem;
+}
+
+.session-delete-notice__ring {
+  position: absolute;
+  inset: -1px;
+  width: calc(100% + 2px);
+  height: calc(100% + 2px);
+  fill: none;
+  pointer-events: none;
+}
+
+/* 平头端点：圆头在 dash 长度归零时仍会画出一个圆点，倒计时结束会在起点留一粒残点。
+   圆角跟随 --ak-radius-sm（外扩 1px 后减半个描边），不写死像素。 */
+.session-delete-notice__ring-bar {
+  width: calc(100% - 1px);
+  height: calc(100% - 1px);
+  rx: calc(var(--ak-radius-sm) - 0.5px);
+  ry: calc(var(--ak-radius-sm) - 0.5px);
+  stroke: var(--ak-rule-focus);
+  stroke-width: 1.25;
+  stroke-linecap: butt;
+  stroke-dasharray: 1 1;
+  stroke-dashoffset: 0;
+  opacity: 0.65;
+  animation: ak-notice-countdown 10s linear forwards;
+}
+
+.session-delete-notice[data-paused] .session-delete-notice__ring-bar {
+  animation-play-state: paused;
+}
+
+@keyframes ak-notice-countdown {
+  to {
+    stroke-dasharray: 0 1;
+  }
 }
 
 .session-delete-notice > span {
@@ -934,6 +1018,8 @@ input {
 /* 减弱动效：留着「这里多了一行」的淡入，去掉位移与缩放。 */
 @media (prefers-reduced-motion: reduce) {
   .session-delete-notice { animation-name: ak-notice-in-plain; }
+  /* 不动的满环只是一道多余的强调框，不如不画；倒计时靠撤销按钮本身表达。 */
+  .session-delete-notice__ring { display: none; }
 }
 
 @keyframes ak-notice-in-plain {
@@ -1591,7 +1677,7 @@ input {
 }
 
 .akashic-chat .chat-sidebar {
-  overflow: hidden;
+  overflow: visible;
   border-inline-end: 1px solid var(--chat-line);
   border-radius: 0;
   box-shadow: none;
@@ -2451,9 +2537,18 @@ form.composer:focus-within [data-slot="input-group"] {
   font-size: 0.8125rem;
   line-height: 1.4;
   pointer-events: none;
-  transition: opacity var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+  translate: 0 0;
+  scale: 1;
+  transition:
+    opacity var(--ak-sys-duration-short) var(--ak-sys-motion-standard),
+    translate var(--ak-sys-duration-short) var(--ak-sys-motion-emphasized),
+    scale var(--ak-sys-duration-short) var(--ak-sys-motion-emphasized);
 }
-.copy-notice:empty { opacity: 0; box-shadow: none; padding: 0; }
+.copy-notice:empty { opacity: 0; translate: 0 6px; scale: 0.97; box-shadow: none; padding: 0; }
+@media (prefers-reduced-motion: reduce) {
+  .copy-notice,
+  .copy-notice:empty { translate: none; scale: none; }
+}
 
 .error-line {
   display: flex;

@@ -134,7 +134,7 @@
     max-height: none;
     padding: 0;
     border: 1px solid var(--ak-rule-default);
-    border-radius: var(--ak-radius-md);
+    border-radius: var(--ak-radius-lg);
     background: var(--ak-paper-sheet);
     color: var(--ak-ink-primary);
     box-shadow: var(--ak-elevation-overlay);
@@ -413,10 +413,26 @@
     color: var(--ak-ink-secondary);
   }
 
-  /* 插件分节 tab：文字 + 下划线，不用胶囊。 */
-  .shell-settings-tabs { display: flex; gap: 20px; margin-block-end: 16px; border-block-end: 1px solid var(--ak-rule-subtle); }
-  .shell-settings-tabs button { margin-block-end: -1px; padding: 6px 0 8px; font: inherit; font-size: 14px; border: 0; border-block-end: 2px solid transparent; background: transparent; color: var(--ak-ink-muted); cursor: pointer; }
-  .shell-settings-tabs button[aria-selected="true"] { border-block-end-color: var(--ak-ink-primary); color: var(--ak-ink-primary); }
+  /* 插件分节 tab：文字 + 连续滑动下划线，不用胶囊。 */
+  .shell-settings-tabs { position: relative; display: flex; gap: 20px; margin-block-end: 16px; border-block-end: 1px solid var(--ak-rule-subtle); }
+  .shell-settings-tabs button { margin-block-end: -1px; padding: 6px 0 8px; font: inherit; font-size: 14px; border: 0; border-block-end: 2px solid transparent; background: transparent; color: var(--ak-ink-muted); cursor: pointer; transition: color var(--ak-sys-duration-short) var(--ak-sys-motion-standard); }
+  .shell-settings-tabs button[aria-selected="true"] { border-block-end-color: var(--ak-ink-primary); color: var(--ak-ink-primary); font-weight: 550; }
+  .shell-settings-tabs__indicator {
+    position: absolute;
+    left: 0;
+    bottom: -1px;
+    width: var(--shell-tabs-w, 0px);
+    height: 2px;
+    border-radius: 1px 1px 0 0;
+    background: var(--ak-ink-primary);
+    transform: translateX(var(--shell-tabs-x, 0px));
+    transition:
+      transform var(--ak-sys-duration-medium) var(--ak-sys-motion-emphasized),
+      width var(--ak-sys-duration-medium) var(--ak-sys-motion-emphasized);
+    pointer-events: none;
+  }
+  .shell-settings-tabs:not([data-ready]) .shell-settings-tabs__indicator { transition: none; }
+  .shell-settings-tabs:has(.shell-settings-tabs__indicator) button[aria-selected="true"] { border-block-end-color: transparent; }
 
   /* 插件列表：分组标题 + 发丝线分隔的行；状态只在例外时出现文字。 */
   .shell-inventory { display: grid; gap: 20px; }
