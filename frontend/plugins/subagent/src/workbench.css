@@ -1,0 +1,260 @@
+.subagent-wb {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--ak-color-bg-canvas);
+  color: var(--ak-ink-primary);
+  font-family: var(--ak-type-ui);
+  font-size: 13px;
+}
+
+.subagent-wb__bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--ak-rule-subtle);
+  background: var(--ak-paper-sheet);
+}
+
+.subagent-wb__tabs {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  gap: 6px;
+  overflow-x: auto;
+}
+
+.subagent-wb__pill {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  max-width: 240px;
+  padding: 5px 10px;
+  border: 1px solid var(--ak-rule-subtle);
+  border-radius: var(--ak-radius-full);
+  background: var(--ak-paper-raised);
+  color: var(--ak-ink-secondary);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.subagent-wb__pill.is-selected {
+  border-color: var(--ak-color-action-primary);
+  background: var(--ak-paper-editing);
+  color: var(--ak-ink-primary);
+  font-weight: 600;
+}
+
+.subagent-wb__pill-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.subagent-wb__dot {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: var(--ak-radius-full);
+  background: var(--ak-ink-muted);
+}
+
+.subagent-wb__dot.is-live { background: var(--ak-sys-color-info); }
+.subagent-wb__dot.is-done { background: var(--ak-sys-color-success); }
+.subagent-wb__dot.is-error { background: var(--ak-color-status-error); }
+
+.subagent-wb__chip {
+  padding: 1px 5px;
+  border-radius: var(--ak-radius-xs);
+  background: var(--ak-paper-sheet);
+  color: var(--ak-ink-secondary);
+  font-size: 11px;
+}
+
+.subagent-wb__stop {
+  flex: none;
+  padding: 5px 10px;
+  border: 1px solid var(--ak-color-status-error);
+  border-radius: var(--ak-radius-sm);
+  background: transparent;
+  color: var(--ak-color-status-error);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.subagent-wb__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--ak-rule-subtle);
+  color: var(--ak-ink-secondary);
+  font-size: 12px;
+}
+
+.subagent-wb__meta code {
+  padding: 1px 5px;
+  border-radius: var(--ak-radius-xs);
+  background: var(--ak-paper-sheet);
+}
+
+.subagent-wb__error {
+  margin: 8px 12px 0;
+  padding: 6px 10px;
+  border-radius: var(--ak-radius-sm);
+  background: var(--md-sys-color-error-container);
+  color: var(--ak-color-status-error);
+  font-size: 12px;
+}
+
+.subagent-wb__stream {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+}
+
+.subagent-wb__msg {
+  padding: 8px 10px;
+  border: 1px solid var(--ak-rule-subtle);
+  border-radius: var(--ak-radius-sm);
+  background: var(--ak-paper-raised);
+}
+
+.subagent-wb__msg.is-parent {
+  border-color: color-mix(in oklab, var(--ak-color-action-primary) 30%, var(--ak-rule-subtle));
+  background: var(--ak-paper-editing);
+}
+
+.subagent-wb__msg-head {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 4px;
+  color: var(--ak-ink-secondary);
+  font-size: 11px;
+}
+
+.subagent-wb__text {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--ak-type-reading);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.subagent-wb__tool-call {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--ak-ink-secondary);
+  overflow-wrap: anywhere;
+}
+
+.subagent-wb__control {
+  margin: 4px 0 0;
+  color: var(--ak-color-status-error);
+  font-size: 12px;
+}
+
+.subagent-wb__activities {
+  margin: 0;
+  padding-inline-start: 18px;
+  display: grid;
+  gap: 4px;
+  color: var(--ak-ink-secondary);
+  font-size: 12px;
+}
+
+.subagent-wb__composer {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+  padding: 10px 12px;
+  border-top: 1px solid var(--ak-rule-subtle);
+  background: var(--ak-paper-sheet);
+}
+
+.subagent-wb__composer textarea {
+  flex: 1 1 auto;
+  min-width: 0;
+  resize: vertical;
+  padding: 7px 10px;
+  border: 1px solid var(--ak-rule-subtle);
+  border-radius: var(--ak-radius-sm);
+  background: var(--ak-paper-raised);
+  color: var(--ak-ink-primary);
+  font: inherit;
+}
+
+.subagent-wb__composer button {
+  flex: none;
+  padding: 7px 12px;
+  border: 0;
+  border-radius: var(--ak-radius-sm);
+  background: var(--ak-color-action-primary);
+  color: var(--ak-color-on-action-primary);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.subagent-wb__composer button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.subagent-wb__readonly-composer {
+  padding: 10px 12px;
+  border-top: 1px solid var(--ak-rule-subtle);
+  background: var(--ak-paper-sheet);
+  color: var(--ak-ink-secondary);
+  font-size: 12px;
+  text-align: center;
+}
+
+.subagent-wb__empty,
+.subagent-wb__empty-inline {
+  padding: 20px 14px;
+  color: var(--ak-ink-secondary);
+  font-size: 12px;
+  text-align: center;
+}
+
+.subagent-wb__load-older {
+  align-self: center;
+  padding: 4px 12px;
+  border: 1px solid var(--ak-rule-subtle);
+  border-radius: var(--ak-radius-full);
+  background: var(--ak-paper-sheet);
+  color: var(--ak-ink-secondary);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+/* 键盘焦点与触屏点按：工作台里的按钮、标签与输入框都要看得见焦点，触屏下放大到 44px。 */
+.subagent-wb :is(button, textarea):focus-visible {
+  outline: 2px solid var(--ak-rule-focus);
+  outline-offset: 2px;
+}
+
+@media (hover: none) {
+  .subagent-wb__pill,
+  .subagent-wb__stop,
+  .subagent-wb__load-older,
+  .subagent-wb__composer button {
+    min-height: 2.75rem;
+  }
+}

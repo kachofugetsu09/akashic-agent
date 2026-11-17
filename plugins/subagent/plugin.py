@@ -1,4 +1,5 @@
 from __future__ import annotations
+from importlib import import_module
 
 
 import asyncio
@@ -31,11 +32,10 @@ from plugins.reply_program.contract import (
     REPLY_EXECUTE_V4 as REPLY_EXECUTE,
 )
 from agent.plugin_composition.plugin_config import PLUGIN_CONFIG
-from agent.plugin_composition.model import ServiceKey
 from plugins.models.contract import (
     CHAT_MODELS, MODEL_CATALOG, MODEL_SELECTION, ChatModelSelection, ModelChoice, ModelUse, model_options,
 )
-from plugins.ui.contract import Configuration, ModelSettings, mount_settings
+from plugins.ui.contract import UI, ModelSettings
 
 from plugins.tools.contract import TOOL_LOADING_PRESENTATION, ToolPresentation, ToolView
 from .inputs import (
@@ -86,7 +86,7 @@ workspace_roots = ("subagent-runs",)
 workspace_files = ("memory/SELF.md", "memory/spawn_trace.jsonl")
 
 
-SETTINGS = ServiceKey[Configuration]("subagent.settings.v1")
+from .dashboard import SETTINGS, SUBAGENT_UI_SERVICE, UI_CONTRACT_DIGESTS
 # 子任务默认沿用派出它的那轮对话的模型；也可固定跟随默认或指定一个模型。
 SUBAGENT_MODEL = ModelUse("subagent", "子任务", follows=("session", "default"))
 SETTING_FIELDS = ("model", "max_depth", "max_steps", "max_output_tokens", "max_active", "result_chars")
@@ -112,8 +112,8 @@ class Config(BaseModel):
 async def apply(ctx: Context) -> None:
     """工具提交请求，正式订阅者启动工作；归档只提供原程序和工具入口。"""
     config = Config.model_validate(ctx.config)
-    await mount_settings(ctx, SETTINGS, ModelSettings(ctx, Config, SETTING_FIELDS,
-                                                       status=model_options(ctx, {"model": SUBAGENT_MODEL})))
+    await ctx.provide(SETTINGS, ModelSettings(ctx, Config, SETTING_FIELDS,
+                                              status=model_options(ctx, {"model": SUBAGENT_MODEL})))
     watcher: asyncio.Task[None] | None = None
     runners: Runners | None = None
     jobs = Subagents(
@@ -135,9 +135,22 @@ async def apply(ctx: Context) -> None:
     )
     await runners.recover()
     await ctx.provide(AGENT_RUNNERS, runners)
+    await ctx.provide(SUBAGENT_UI_SERVICE, (jobs, runners))
+
+    async def register_web_app(child: Context) -> None:
+        _ = await child.require(UI).register(
+            child,
+            web="web_module.js",
+            dashboard=lambda: import_module(".dashboard", __package__),
+            requires=("shell.settings-plugins.v1", "conversation.tools.v2"),
+            contract_digests=UI_CONTRACT_DIGESTS,
+            configuration_key=SETTINGS,
+        )
+
+    _ = await ctx.inject((UI, SETTINGS, SUBAGENT_UI_SERVICE), register_web_app, name="subagent-web-ui")
     from plugins.ui.contract import UI_SLOTS
     from .runner_ui import register_ui
-    await ctx.inject((UI_SLOTS,), lambda child: register_ui(child, runners), name="runner-ui")
+    await ctx.inject((UI_SLOTS,), lambda child: register_ui(child, runners, jobs), name="runner-ui")
     catalog = ctx.require(TOOLS)
     _ = await catalog.declare_group(ctx, description=desc)
 

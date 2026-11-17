@@ -20,7 +20,7 @@ from .inputs import CONTENT, CHECK_ORIGIN
 from .inputs import CONVERSATION_COMPLETE
 from .inputs import DELIVERY
 from .inputs import REPLY_PROGRAM
-from plugins.ledger.contract import MessageConflict, MessageReader, OwnerRecord, OwnerTransaction, SessionAttributes
+from plugins.ledger.contract import MessageConflict, MessagePage, MessageReader, OwnerRecord, OwnerTransaction, SessionAttributes
 from plugins.ledger.contract import CallRef, ContentPart, Control, Input, Message, Output, ToolCall, ToolResult, with_truncated_head
 from plugins.ledger.contract import json_value
 from plugins.sources.contract import (
@@ -54,6 +54,10 @@ class _BgBatch:
     settled_event: asyncio.Event = field(default_factory=asyncio.Event)
 
 
+# 历史扫描结果：会话血缘、未结算任务摘要、已结算任务摘要。
+_IndexScan = tuple[dict[str, tuple[str, int]], dict[str, dict[str, object]], dict[str, dict[str, object]]]
+
+
 class SubagentBusy(RuntimeError):
     """现有任务仍占准入名额，当前请求没有被接纳。"""
 
@@ -75,7 +79,7 @@ class Subagents:
         self._lineage: dict[str, tuple[str, int]] = {}
         # key -> summary dict for unsettled local jobs
         self._active: dict[str, dict[str, object]] = {}
-        self._index_loading: asyncio.Future[tuple[dict[str, tuple[str, int]], dict[str, dict[str, object]]]] | None = None
+        self._index_loading: asyncio.Future[_IndexScan] | None = None
         self._settled_while_loading: set[str] = set()
         self._job_keys: dict[str, str] = {}
         self._steers: dict[str, list[tuple[str, str]]] = {}
@@ -87,6 +91,10 @@ class Subagents:
         self._notices_recovered = False
         self._worktree_notes: dict[str, str | None] = {}
         self._worktree_locks: dict[str, asyncio.Lock] = {}
+        self._revision: int = 0
+        # job_id -> 已结算任务摘要（索引加载与每次结算登记）；终态视图按需计算后缓存
+        self._settled: dict[str, dict[str, object]] = {}
+        self._settled_views: dict[str, dict[str, object]] = {}
 
     def read(self, key: str) -> tuple[OwnerRecord, Request, MessageReader] | None:
         record = self.ctx.require(OWNER_STATE).open(self.ctx).read(key)
@@ -134,9 +142,10 @@ class Subagents:
         return current, depth
 
     # 全量扫描历史子任务记录，只返回结果，由事件循环线程统一落入内存索引。
-    def _scan_index(self, state, catalog) -> tuple[dict[str, tuple[str, int]], dict[str, dict[str, object]]]:
+    def _scan_index(self, state, catalog) -> _IndexScan:
         by_session: dict[str, Request] = {}
         active_rows: list[tuple[str, Request]] = []
+        settled_rows: list[Request] = []
         for key, _ in state.list():
             try:
                 found = self._read_with(state, catalog, key)
@@ -150,25 +159,25 @@ class Subagents:
             self._job_keys[request.job_id] = key
             if not _pointer(record)[2]:
                 active_rows.append((key, request))
+            else:
+                settled_rows.append(request)
         lineage = {session_id: self._lineage_in(by_session, session_id) for session_id in by_session}
         active: dict[str, dict[str, object]] = {}
         for key, request in active_rows:
             resolved_root = request.root_session_id or lineage.get(request.session_id, (request.parent_session_id, 1))[0]
-            active[key] = {
-                "job_id": request.job_id,
-                "label": request.label,
-                "profile": request.profile,
-                "read_only": request.read_only,
-                "depth": request.depth,
-                "root_session_id": resolved_root,
-            }
-        return lineage, active
+            active[key] = self._active_entry(request, resolved_root)
+        settled = {
+            request.job_id: self._active_entry(request, request.root_session_id or lineage[request.session_id][0])
+            for request in settled_rows
+        }
+        return lineage, active, settled
 
     # 扫描期间已结算的 key 不能被旧快照复活，否则名额永久泄漏。
-    def _apply_index(self, scan: tuple[dict[str, tuple[str, int]], dict[str, dict[str, object]]]) -> None:
+    def _apply_index(self, scan: _IndexScan) -> None:
         if self._index_loaded:
             return
-        lineage, active = scan
+        lineage, active, settled = scan
+        self._settled = {**settled, **self._settled}
         for key in self._settled_while_loading:
             active.pop(key, None)
         self._settled_while_loading.clear()
@@ -438,6 +447,7 @@ class Subagents:
         if child_root != caller_root_id:
             raise PermissionError("无权向其他会话树的子任务发送消息")
 
+
         state = self.ctx.require(OWNER_STATE).open(self.ctx)
         limit = self.max_active
 
@@ -474,14 +484,7 @@ class Subagents:
                     )
                     _ = tx.append_prepared(prepared)
                 await state.transact_async(commit)
-                self._active[key] = {
-                    "job_id": request.job_id,
-                    "label": request.label,
-                    "profile": request.profile,
-                    "read_only": request.read_only,
-                    "depth": request.depth,
-                    "root_session_id": child_root,
-                }
+                self._active[key] = self._active_entry(request, child_root)
                 if background:
                     self._watched_bg.discard(key)
                     self._watch_background(key, request, resumed=True)
@@ -490,6 +493,7 @@ class Subagents:
             return "reopened"
 
         action = await self.ctx.require(TASKS).open(self.ctx).admit_async(("admission",), send_or_reopen)
+        self._bump()
         if action == "steered":
             return {"job_id": job_id, "mode": "steered", "status": "queued"}
         task = await self.start(key)
@@ -501,12 +505,42 @@ class Subagents:
         status, text = ("completed", "") if outcome is None else self._with_worktree_note(request, outcome)
         return {"job_id": job_id, "mode": "resumed_sync", "status": status, "result": text[:self.result_chars]}
 
+    # 只读请求窗口：after_seq>=0 从游标向后取一页，否则取 before_seq 之前（缺省为结尾）的一页。
+    @staticmethod
+    async def _read_window(reader: MessageReader, head: int, *, after_seq: int, before_seq: int | None,
+                           limit: int) -> MessagePage:
+        size = max(1, limit)
+        if after_seq >= 0:
+            upper = head if before_seq is None else min(head, before_seq - 1)
+            if upper <= after_seq:
+                return MessagePage((), {}, {}, upper, False)
+            return await reader.read_async(lambda current: current.read_page(after_seq=after_seq, through_seq=upper, limit=size))
+        return await reader.read_tail_async(before_seq=before_seq, through_seq=head, limit=size)
+
+    @staticmethod
+    def _message_item(msg: Message) -> dict[str, object]:
+        parts_summary: list[dict[str, object]] = []
+        if isinstance(msg.body, (Input, Output, ToolResult)):
+            for part in msg.body.parts:
+                if isinstance(part, ToolCall):
+                    parts_summary.append({"kind": "tool_call", "binding_id": part.binding_id, "arguments": json_value(part.arguments)})
+                elif isinstance(part, ContentPart) and part.kind == "text":
+                    parts_summary.append({"kind": "text", "value": str(part.value)})
+                elif isinstance(part, ContentPart):
+                    parts_summary.append({"kind": part.kind})
+        elif isinstance(msg.body, Control):
+            parts_summary.append({"kind": "control", "action": msg.body.action, "reason": msg.body.reason})
+        return {"seq": msg.seq, "message_id": msg.message_id, "author": msg.author,
+                "kind": type(msg.body).__name__.lower(), "timestamp": msg.recorded_at.isoformat(),
+                "parts": parts_summary}
+
     async def read_child_messages(
         self,
         caller_root_id: str,
         job_id: str,
         *,
         after_seq: int = -1,
+        before_seq: int | None = None,
         limit: int = 50,
     ) -> dict[str, object]:
         """按父会话树权限读取 internal 子任务会话消息，保持主侧栏不可见。"""
@@ -518,35 +552,13 @@ class Subagents:
         child_root = request.root_session_id or self.resolve_lineage(request.session_id)[0]
         if child_root != caller_root_id:
             raise PermissionError("无权读取其他会话树的子任务记录")
-        all_msgs = await reader.snapshot_async(through_seq=reader.head())
-        messages = [m for m in all_msgs if m.seq > after_seq]
-        if limit > 0 and len(messages) > limit:
-            sliced = messages[-limit:] if after_seq < 0 else messages[:limit]
-        else:
-            sliced = messages
-        items: list[dict[str, object]] = []
-        for msg in sliced:
-            body_kind = type(msg.body).__name__.lower()
-            parts_summary: list[dict[str, object]] = []
-            if isinstance(msg.body, (Input, Output, ToolResult)):
-                for part in msg.body.parts:
-                    if isinstance(part, ToolCall):
-                        parts_summary.append({"kind": "tool_call", "binding_id": part.binding_id, "arguments": json_value(part.arguments)})
-                    elif isinstance(part, ContentPart) and part.kind == "text":
-                        parts_summary.append({"kind": "text", "value": str(part.value)})
-                    elif isinstance(part, ContentPart):
-                        parts_summary.append({"kind": part.kind})
-            elif isinstance(msg.body, Control):
-                parts_summary.append({"kind": "control", "action": msg.body.action, "reason": msg.body.reason})
-            items.append({
-                "seq": msg.seq,
-                "message_id": msg.message_id,
-                "author": msg.author,
-                "kind": body_kind,
-                "timestamp": msg.recorded_at.isoformat(),
-                "parts": parts_summary,
-            })
-        outcome = await self.outcome(reader)
+        head = reader.head()
+        page = await self._read_window(reader, head, after_seq=after_seq, before_seq=before_seq, limit=limit)
+        items = [self._message_item(msg) for msg in page.messages]
+        has_more = page.has_more
+        # 2. 运行中直接报 running；已结算用结算时缓存的终态视图，轮询不再整段读子会话。
+        active = not bool(record.value["settled"]) or key in self._active
+        status = "running" if active else str(self._settled_status(request).get("status", "settled"))
         return {
             "job_id": request.job_id,
             "label": request.label,
@@ -556,9 +568,10 @@ class Subagents:
             "read_only": request.read_only,
             "model_id": request.model_id,
             "cwd": request.cwd,
-            "active": not bool(record.value["settled"]) or key in self._active,
-            "status": "running" if outcome is None and not record.value["settled"] else (outcome[0] if outcome else "settled"),
-            "head_seq": reader.head(),
+            "active": active,
+            "status": status,
+            "head_seq": head,
+            "has_more": has_more,
             "messages": items,
         }
 
@@ -742,14 +755,8 @@ class Subagents:
                     root_id = request.root_session_id or self.resolve_lineage(request.parent_session_id)[0]
                     self._lineage[request.session_id] = (root_id, request.depth)
                     self._job_keys[request.job_id] = key
-                    self._active[key] = {
-                        "job_id": request.job_id,
-                        "label": request.label,
-                        "profile": request.profile,
-                        "read_only": request.read_only,
-                        "depth": request.depth,
-                        "root_session_id": root_id,
-                    }
+                    self._active[key] = self._active_entry(request, root_id)
+                    self._bump()
                     if request.background:
                         self._watch_background(key, request)
             finally:
@@ -846,7 +853,8 @@ class Subagents:
                     _ = tx.save(key, {**row.value, "settled": True, "background": False, **pending},
                                 expected_version=row.version)
                 await state.transact_async(commit)
-                self._release_active(key)
+                self._record_settled(request, self._release_active(key))
+                self._bump()
                 self._wake_events.pop(request.session_id, None)
                 return False
 
@@ -868,15 +876,19 @@ class Subagents:
             assert record is not None
             _ = tx.save(key, {**record.value, "settled": True}, expected_version=record.version)
         await state.transact_async(commit)
-        self._release_active(key)
+        prev = self._release_active(key)
+        if found is not None:
+            self._record_settled(found[1], prev)
+        self._bump()
         if found is not None:
             _, request, _ = found
             await self._cleanup_request_worktree(request)
 
-    def _release_active(self, key: str) -> None:
-        self._active.pop(key, None)
+    def _release_active(self, key: str) -> dict[str, object] | None:
+        prev = self._active.pop(key, None)
         if not self._index_loaded:
             self._settled_while_loading.add(key)
+        return prev
 
     @staticmethod
     async def outcome(reader: MessageReader, *, through_seq: int | None = None) -> tuple[str, str] | None:
@@ -1068,6 +1080,86 @@ class Subagents:
                 logger.error("子任务结果发送失败 job=%s reason=%s", request.job_id, receipt.error or receipt.status)
                 await self._trace(request, "delivery_failed")
         return True
+
+    @property
+    def revision(self) -> int:
+        return self._revision
+
+    def _bump(self) -> None:
+        self._revision += 1
+
+    @staticmethod
+    def _active_entry(request: Request, root_id: str) -> dict[str, object]:
+        return {
+            "job_id": request.job_id,
+            "label": request.label,
+            "profile": request.profile,
+            "session_id": request.session_id,
+            "parent_session_id": request.parent_session_id,
+            "read_only": request.read_only,
+            "fork": request.fork,
+            "isolation": request.isolation,
+            "model_id": request.model_id,
+            "cwd": request.cwd,
+            "depth": request.depth,
+            "root_session_id": root_id,
+        }
+
+    # 结算时只用索引查询计算终态视图，不再读整段子会话。
+    def _settled_view(self, request: Request) -> dict[str, object]:
+        reader = self.ctx.require(MESSAGE_CATALOG).reader(request.session_id)
+        head = reader.head()
+        latest_input = reader.latest_input_seq("subagent", through_seq=head)
+        after = -1 if latest_input is None else latest_input
+        control = reader.latest_control("subagent", through_seq=head)
+        finished = reader.latest_finished_output_seq("subagent", after_seq=after, through_seq=head)
+        status, error, fail_seq = "completed", "", -1
+        if (control is not None and isinstance(control.body, Control) and control.seq > after
+                and control.body.action in {"pause", "failure", "abandon"}
+                and (finished is None or control.seq > finished)):
+            status = "cancelled" if control.body.action == "pause" else "failed"
+            error, fail_seq = (control.body.reason or "子任务执行失败")[:200], control.seq
+        tail = reader.read_tail(through_seq=head, limit=1).messages
+        return {"status": status, "active": False, "error": error, "fail_seq": fail_seq,
+                "finished_at": tail[-1].recorded_at.isoformat() if tail else ""}
+
+    def _settled_status(self, request: Request) -> dict[str, object]:
+        view = self._settled_views.get(request.job_id)
+        if view is None:
+            view = self._settled_views[request.job_id] = self._settled_view(request)
+        return view
+
+    def _record_settled(self, request: Request, prev: Mapping[str, object] | None) -> None:
+        root_id = request.root_session_id or self.resolve_lineage(request.session_id)[0]
+        self._settled[request.job_id] = dict(prev) if prev is not None else self._active_entry(request, root_id)
+        self._settled_views[request.job_id] = self._settled_view(request)
+        self._bump()
+
+    def session_tree(self, session_id: str, *, limit: int = 30) -> list[dict[str, object]]:
+        """返回与当前会话同一根会话树下的本地子任务（运行中 + 最近已结束）。"""
+        # 1. 运行中与已结算条目都来自内存索引；已结算终态视图首次需要时按索引查询并缓存。
+        self._ensure_index()
+        root_id, _ = self.resolve_lineage(session_id)
+        active_items = [
+            {**dict(item), "status": "running", "active": True, "error": ""}
+            for item in self._active.values()
+            if item.get("root_session_id") == root_id
+        ]
+        seen = {str(item["job_id"]) for item in active_items}
+        settled_items: list[dict[str, object]] = []
+        for job_id, entry in self._settled.items():
+            if entry.get("root_session_id") != root_id or job_id in seen:
+                continue
+            view = self._settled_views.get(job_id)
+            if view is None:
+                key = self._job_keys.get(job_id)
+                found = None if key is None else self.read(key)
+                if found is None:
+                    continue
+                view = self._settled_status(found[1])
+            settled_items.append({**entry, **view})
+        settled_items.sort(key=lambda item: str(item.get("finished_at", "")), reverse=True)
+        return (active_items + settled_items)[:limit]
 
     def jobs(self, *, root_session_id: str | None = None) -> tuple[Mapping[str, object], ...]:
         self._ensure_index()

@@ -3,52 +3,245 @@ import { render, ToolText, type HeaderMetaItem, type PluginUiContext, type Plugi
 import { ICONS, useValue, valueStore, type ValueStore } from "../../../../packages/akashic-plugin-kit/src/meta-store";
 import "./runner-ui.css";
 
-type Run = { id: string; label: string; runner: string; status: string; result: string;
-  progress: boolean; truncated?: boolean; activities: { kind: string; text: string }[] };
-const labels: Record<string, string> = { accepted: "已接纳", running: "运行中", completed: "已完成",
-  failed: "失败", interrupted: "已中断" };
-const busy = (run: Run) => run.status === "running" || run.status === "accepted";
-function valid(value: unknown): value is Run {
+type Run = {
+  id: string;
+  label: string;
+  runner: string;
+  status: string;
+  result: string;
+  progress: boolean;
+  truncated?: boolean;
+  activities: { kind: string; text: string }[];
+};
+
+type SubagentNode = {
+  job_id: string;
+  label: string;
+  session_id: string;
+  parent_session_id: string;
+  depth: number;
+  read_only: boolean;
+  fork?: boolean;
+  isolation?: string;
+  model_id?: string | null;
+  status: string;
+  active: boolean;
+  error?: string;
+  fail_seq?: number;
+};
+
+type SubagentPayload = {
+  runs: Run[];
+  subagents: SubagentNode[];
+};
+
+const labels: Record<string, string> = {
+  accepted: "已接纳",
+  running: "运行中",
+  completed: "已完成",
+  failed: "失败",
+  cancelled: "已取消",
+  interrupted: "已中断",
+};
+
+const busyRun = (run: Run) => run.status === "running" || run.status === "accepted";
+
+function validRun(value: unknown): value is Run {
   if (!value || typeof value !== "object") return false;
   const r = value as Run;
-  return [r.id, r.label, r.runner, r.status, r.result].every(v => typeof v === "string")
+  return [r.id, r.label, r.runner, r.status, r.result].every((v) => typeof v === "string")
     && typeof r.progress === "boolean" && Array.isArray(r.activities)
-    && r.activities.every(e => typeof e?.text === "string" && typeof e?.kind === "string");
+    && r.activities.every((e) => typeof e?.text === "string" && typeof e?.kind === "string");
 }
 
-// 说明项：代理任务一项挂在本会话下，每次执行是它的子项；在跑时是进行中，全部结束后只留在面板里，失败的子项冒泡成需要注意。
-function runItems(runs: Run[], store: ValueStore<Run[]>, stop: (id: string) => Promise<string>): HeaderMetaItem[] {
-  if (!runs.length) return [];
-  const running = runs.filter(busy).length;
-  return [{
-    id: "runs", scope: "session", label: "代理任务", iconSvg: ICONS.bot, tone: running ? "live" : "info",
-    text: running ? `代理 ${running} 运行中` : undefined,
-    value: running ? `${running} 个运行中 · ${runs.length - running} 个已结束` : `${runs.length} 个已结束`,
-    detail: (host) => render(host, <p className="agent-runs__notice">独立执行；过程不自动加入主对话上下文。取消不会撤销已有外部效果。</p>),
-  }, ...runs.map((run): HeaderMetaItem => ({
-    id: `run:${run.id}`, parent: "runs", scope: "session", label: run.label, iconSvg: ICONS.bot,
-    tone: busy(run) ? "live" : run.status === "failed" ? "alert" : "info",
-    value: `${run.runner} · ${labels[run.status] ?? run.status}`,
-    detail: (host) => render(host, <RunDetail store={store} id={run.id} stop={stop} />),
-  }))];
+function validSubagent(value: unknown): value is SubagentNode {
+  if (!value || typeof value !== "object") return false;
+  const s = value as SubagentNode;
+  return typeof s.job_id === "string" && typeof s.label === "string"
+    && typeof s.session_id === "string" && typeof s.status === "string"
+    && typeof s.active === "boolean" && typeof s.depth === "number";
 }
 
-function RunDetail({ store, id, stop }: { store: ValueStore<Run[]>; id: string; stop: (id: string) => Promise<string> }) {
-  const run = useValue(store).find((item) => item.id === id);
+function parsePayload(value: Record<string, unknown> | null): SubagentPayload {
+  const runs = Array.isArray(value?.runs) ? value.runs.filter(validRun) : [];
+  const subagents = Array.isArray(value?.subagents) ? value.subagents.filter(validSubagent) : [];
+  return { runs, subagents };
+}
+
+function buildLineageItems(
+  payload: SubagentPayload,
+  store: ValueStore<SubagentPayload>,
+  actions: {
+    stopRunner: (id: string) => Promise<string>;
+    cancelSubagent: (jobId: string) => Promise<string>;
+    openWorkbench: (kind: "subagent" | "external", jobId: string, label: string) => void;
+    canOpenWorkbench: boolean;
+  },
+): HeaderMetaItem[] {
+  const { runs, subagents } = payload;
+  const total = runs.length + subagents.length;
+  if (!total) return [];
+  const runningCount = runs.filter(busyRun).length + subagents.filter((s) => s.active).length;
+  const failedCount = runs.filter((r) => r.status === "failed").length
+    + subagents.filter((s) => s.status === "failed").length;
+  const rootTone: HeaderMetaItem["tone"] = failedCount > 0 ? "alert" : runningCount > 0 ? "live" : "info";
+  const bySession = new Map<string, SubagentNode>();
+  for (const s of subagents) bySession.set(s.session_id, s);
+
+  const rootItem: HeaderMetaItem = {
+    id: "subagents-tree",
+    scope: "session",
+    label: "子任务血缘",
+    iconSvg: ICONS.bot,
+    tone: rootTone,
+    text: runningCount > 0 ? `子任务 ${runningCount} 运行中` : failedCount > 0 ? `${failedCount} 个子任务失败` : undefined,
+    value: [
+      runningCount ? `${runningCount} 运行中` : "",
+      failedCount ? `${failedCount} 失败` : "",
+      `${total} 项`,
+    ].filter(Boolean).join(" · "),
+    detail: (host) => render(
+      host,
+      <p className="agent-runs__notice">展示当前会话树下的全部内部子任务与外部只读代理；点击条目可在右侧工作台查看完整实时流。</p>,
+    ),
+  };
+
+  const subItems: HeaderMetaItem[] = subagents.map((node) => {
+    const parentNode = bySession.get(node.parent_session_id);
+    const parentId = parentNode ? `sub:${parentNode.job_id}` : "subagents-tree";
+    const tags = [
+      node.depth > 1 ? `L${node.depth}` : "",
+      node.fork ? "fork" : "",
+      node.isolation === "worktree" ? "worktree" : "",
+      node.read_only ? "只读" : "",
+    ].filter(Boolean).join(" · ");
+    const tone: HeaderMetaItem["tone"] = node.active ? "live" : node.status === "failed" ? "alert" : "info";
+    return {
+      id: `sub:${node.job_id}`,
+      parent: parentId,
+      scope: "session",
+      label: node.label,
+      iconSvg: ICONS.bot,
+      tone,
+      value: [tags, labels[node.status] ?? node.status].filter(Boolean).join(" · "),
+      detail: (host) => render(host, <SubagentNodeDetail store={store} jobId={node.job_id} actions={actions} />),
+    };
+  });
+
+  const runItems: HeaderMetaItem[] = runs.map((run) => ({
+    id: `run:${run.id}`,
+    parent: "subagents-tree",
+    scope: "session",
+    label: run.label,
+    iconSvg: ICONS.bot,
+    tone: busyRun(run) ? "live" : run.status === "failed" ? "alert" : "info",
+    value: `${run.runner} · 外部只读 · ${labels[run.status] ?? run.status}`,
+    detail: (host) => render(host, <RunDetail store={store} id={run.id} actions={actions} />),
+  }));
+
+  return [rootItem, ...subItems, ...runItems];
+}
+
+function SubagentNodeDetail({
+  store,
+  jobId,
+  actions,
+}: {
+  store: ValueStore<SubagentPayload>;
+  jobId: string;
+  actions: {
+    cancelSubagent: (jobId: string) => Promise<string>;
+    openWorkbench: (kind: "subagent" | "external", jobId: string, label: string) => void;
+    canOpenWorkbench: boolean;
+  };
+}) {
+  const node = useValue(store).subagents.find((item) => item.job_id === jobId);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState("");
+  if (!node) return <p className="agent-runs__notice">该子任务已不在当前血缘列表。</p>;
+  return (
+    <div className="agent-runs__body">
+      {error && <p role="alert">{error}</p>}
+      <p className="agent-runs__notice">
+        深度 L{node.depth}{node.read_only ? " · 只读" : ""}{node.fork ? " · fork" : ""}{node.isolation === "worktree" ? " · worktree" : ""}
+      </p>
+      {node.error ? <p role="alert">{node.error}</p> : null}
+      <div className="agent-runs__actions">
+        {actions.canOpenWorkbench ? (
+          <button type="button" onClick={() => actions.openWorkbench("subagent", node.job_id, node.label)}>
+            在工作台查看
+          </button>
+        ) : null}
+        {node.active ? (
+          <button
+            type="button"
+            disabled={pending}
+            onClick={() => {
+              setPending(true);
+              setError("");
+              void actions.cancelSubagent(node.job_id).then((msg) => {
+                setError(msg);
+                setPending(false);
+              });
+            }}
+          >
+            {pending ? "正在停止…" : "停止任务"}
+          </button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function RunDetail({
+  store,
+  id,
+  actions,
+}: {
+  store: ValueStore<SubagentPayload>;
+  id: string;
+  actions: {
+    stopRunner: (id: string) => Promise<string>;
+    openWorkbench: (kind: "subagent" | "external", jobId: string, label: string) => void;
+    canOpenWorkbench: boolean;
+  };
+}) {
+  const run = useValue(store).runs.find((item) => item.id === id);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
   if (!run) return <p className="agent-runs__notice">这次执行已不在列表里。</p>;
-  return <div className="agent-runs__body">
-    {error && <p role="alert">{error}</p>}
-    {run.status === "running" && <button type="button" disabled={pending} onClick={() => {
-      setPending(true); setError("");
-      void stop(run.id).then((message) => { setError(message); setPending(false); });
-    }}>{pending ? "正在停止…" : "停止任务"}</button>}
-    {!run.progress && <p>此执行器仅提供最终结果。</p>}
-    {run.truncated && <p>仅展示最近 200 条活动，长活动已截短。</p>}
-    <ol>{run.activities.map((event, i) => <li key={i} data-kind={event.kind}>{event.text}</li>)}</ol>
-    {run.result && <pre>{run.result}</pre>}
-  </div>;
+  return (
+    <div className="agent-runs__body">
+      {error && <p role="alert">{error}</p>}
+      <div className="agent-runs__actions">
+        {actions.canOpenWorkbench ? (
+          <button type="button" onClick={() => actions.openWorkbench("external", run.id, run.label)}>
+            在工作台查看
+          </button>
+        ) : null}
+        {run.status === "running" && (
+          <button
+            type="button"
+            disabled={pending}
+            onClick={() => {
+              setPending(true);
+              setError("");
+              void actions.stopRunner(run.id).then((message) => {
+                setError(message);
+                setPending(false);
+              });
+            }}
+          >
+            {pending ? "正在停止…" : "停止任务"}
+          </button>
+        )}
+      </div>
+      {!run.progress && <p>此执行器仅提供最终结果。</p>}
+      {run.truncated && <p>仅展示最近 200 条活动，长活动已截短。</p>}
+      <ol>{run.activities.map((event, i) => <li key={i} data-kind={event.kind}>{event.text}</li>)}</ol>
+      {run.result && <pre>{run.result}</pre>}
+    </div>
+  );
 }
 
 // spawn 回执的写法与 plugins/subagent 的 tools.query / runtime.completion 一致。
@@ -91,7 +284,13 @@ function describeSpawn(block: ToolSummaryFacts): ToolTaskSummary | null {
   const title = field("label") || firstLine(field("task"));
   if (!title) return null;
   const background = (args as Record<string, unknown>).run_in_background === true;
-  const tags = [...(background ? ["后台"] : []), ...(field("profile") === "research" ? ["只读"] : [])];
+  const flag = (name: string) => (args as Record<string, unknown>)[name] === true;
+  const tags = [
+    ...(background ? ["后台"] : []),
+    ...(flag("read_only") || field("profile") === "research" ? ["只读"] : []),
+    ...(flag("fork") ? ["fork"] : []),
+    ...(field("isolation") === "worktree" ? ["worktree"] : []),
+  ];
   const result = block.status === "running" ? null : parseSpawnResult(block.value);
   const summary: ToolTaskSummary = {
     kind: "task", title, tags,
@@ -110,27 +309,144 @@ function SpawnResultView({ result }: { result: SpawnResult }) {
   ) : <ToolText text={result.body || "子任务没有输出文字。"} tail={false} className="tool-result" />;
 }
 
-// 不渲染界面：执行状态来自本插件后端的推送，登记到标题下的说明行，过程在宿主的会话信息面板里展开。
-function Runs({ context }: { context: PluginUiContext<"header.meta"> }) {
-  const store = useMemo(() => valueStore<Run[]>([]), []);
+function LineageHeaderMeta({ context }: { context: PluginUiContext<"header.meta"> }) {
+  const store = useMemo(() => valueStore<SubagentPayload>({ runs: [], subagents: [] }), []);
   useEffect(() => {
-    const stop = async (id: string) => {
-      try {
-        const response = await context.query("runners.stop", { id }, { cache: "none" });
-        return response.accepted ? "" : "任务已结束，或当前不能停止。";
-      } catch { return "停止失败，请检查任务状态。"; }
+    const actions = {
+      stopRunner: async (id: string) => {
+        try {
+          const response = await context.query("runners.stop", { id }, { cache: "none" });
+          return response.accepted ? "" : "任务已结束，或当前不能停止。";
+        } catch {
+          return "停止失败，请检查任务状态。";
+        }
+      },
+      cancelSubagent: async (jobId: string) => {
+        try {
+          const response = await context.query("subagent.cancel", { job_id: jobId }, { cache: "none" });
+          return response.accepted ? "" : "任务已结束，或当前不能停止。";
+        } catch {
+          return "取消失败，请检查任务状态。";
+        }
+      },
+      openWorkbench: (kind: "subagent" | "external", jobId: string, label: string) => {
+        context.meta.closePanel();
+        void context.workbench.open("subagent.open.v1", { kind, job_id: jobId, label });
+      },
+      canOpenWorkbench: context.workbench.accepts("subagent.open.v1"),
     };
-    return context.subscribe(value => {
-      const runs = Array.isArray(value?.runs) ? value.runs.filter(valid) : [];
-      store.set(runs);
-      context.meta.publish(runItems(runs, store, stop));
-    });
+    const publish = (value: SubagentPayload) => {
+      store.set(value);
+      context.meta.publish(buildLineageItems(value, store, {
+        ...actions,
+        canOpenWorkbench: context.workbench.accepts("subagent.open.v1"),
+      }));
+    };
+    const offSub = context.subscribe((raw) => publish(parsePayload(raw)));
+    const offInv = context.onInvalidate(() => publish(store.get()));
+    return () => {
+      offSub();
+      offInv();
+    };
   }, [context, store]);
   return null;
 }
+
+function readDismissed(sessionId: string | undefined): string {
+  if (!sessionId) return "";
+  try {
+    return window.sessionStorage.getItem(`akashic:subagent-dismissed:${sessionId}`) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function saveDismissed(sessionId: string | undefined, signature: string): void {
+  if (!sessionId) return;
+  try {
+    window.sessionStorage.setItem(`akashic:subagent-dismissed:${sessionId}`, signature);
+  } catch {
+    // 忽略受限环境下的 sessionStorage 异常
+  }
+}
+
+function ChatAttentionBanner({ context }: { context: PluginUiContext<"chat.notice"> }) {
+  const [payload, setPayload] = useState<SubagentPayload>({ runs: [], subagents: [] });
+  const [dismissedKey, setDismissedKey] = useState<string>(() => readDismissed(context.sessionId));
+  const [canOpen, setCanOpen] = useState(() => context.workbench.accepts("subagent.open.v1"));
+
+  useEffect(() => {
+    setPayload({ runs: [], subagents: [] });
+    setDismissedKey(readDismissed(context.sessionId));
+    const offSub = context.subscribe((raw) => setPayload(parsePayload(raw)));
+    const offInv = context.onInvalidate(() => setCanOpen(context.workbench.accepts("subagent.open.v1")));
+    return () => {
+      offSub();
+      offInv();
+    };
+  }, [context]);
+
+  const failures = [
+    ...payload.subagents
+      .filter((s) => s.status === "failed")
+      .map((s) => ({
+        kind: "subagent" as const,
+        id: s.job_id,
+        label: s.label,
+        detail: s.error || "执行失败",
+        failSeq: typeof s.fail_seq === "number" ? s.fail_seq : 0,
+      })),
+    ...payload.runs
+      .filter((r) => r.status === "failed")
+      .map((r) => ({
+        kind: "external" as const,
+        id: r.id,
+        label: r.label,
+        detail: r.result || "外部任务失败",
+        failSeq: r.activities.length,
+      })),
+  ];
+
+  const signature = failures.map((f) => `${f.kind}:${f.id}:${f.failSeq}:${f.detail}`).join("|");
+  if (!failures.length || dismissedKey === signature) return null;
+  const first = failures[0];
+
+  return (
+    <div className="subagent-composer-alert" role="status">
+      <span className="subagent-composer-alert__dot" aria-hidden="true" />
+      <span className="subagent-composer-alert__text">
+        <strong>{failures.length === 1 ? `子任务「${first.label}」失败` : `${failures.length} 个子任务执行失败`}</strong>
+        <span>{first.detail}</span>
+      </span>
+      <span className="subagent-composer-alert__actions">
+        {canOpen ? (
+          <button
+            type="button"
+            className="subagent-composer-alert__open"
+            onClick={() => void context.workbench.open("subagent.open.v1", { kind: first.kind, job_id: first.id, label: first.label })}
+          >
+            在工作台查看
+          </button>
+        ) : null}
+        <button
+          type="button"
+          className="subagent-composer-alert__dismiss"
+          onClick={() => {
+            saveDismissed(context.sessionId, signature);
+            setDismissedKey(signature);
+          }}
+        >
+          忽略
+        </button>
+      </span>
+    </div>
+  );
+}
+
 const definition: PluginUiDefinition = {
   slots: {
-    "header.meta": { mount: (host, context) => render(host, <Runs context={context} />) },
+    "header.meta": { mount: (host, context) => render(host, <LineageHeaderMeta context={context} />) },
+    "chat.notice": { mount: (host, context) => render(host, <ChatAttentionBanner context={context} />) },
     "tool.result": {
       accepts: (block) => block.name === "spawn" && parseSpawnResult(block.value) !== null,
       mount(host, context) {
