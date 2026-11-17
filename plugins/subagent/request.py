@@ -25,7 +25,7 @@ EXCLUDED_ALWAYS_TOOLS: frozenset[str] = frozenset({
     "load_tools",
 })
 
-DELEGATION_TOOLS: frozenset[str] = frozenset({"spawn", "spawn_manage"})
+DELEGATION_TOOLS: frozenset[str] = frozenset({"spawn", "spawn_manage", "subagent_send", "subagent_read"})
 
 READ_ONLY_EXCLUDED_TOOLS: frozenset[str] = frozenset({
     "write_file",
@@ -50,6 +50,7 @@ READ_ONLY_EXCLUDED_TOOLS: frozenset[str] = frozenset({
     "design_show_html",
     "spawn",
     "spawn_manage",
+    "subagent_send",
 }) | EXCLUDED_ALWAYS_TOOLS
 
 _READ_ONLY_DESIGN_TOOLS: frozenset[str] = frozenset({"design_get_jsx", "design_describe"})
@@ -108,6 +109,10 @@ class SpawnInput(BaseModel):
     )
     cwd: str | None = Field(default=None, description="可选：子任务的初始工作目录（相对路径以父会话当前目录解析，省略时继承父会话工作目录）")
     run_in_background: bool = False
+    completion_wake: Literal["always", "settled_only"] = Field(
+        default="settled_only",
+        description="可选：后台模式唤醒策略；settled_only 等待同批并发子任务全部完成后合并唤醒一次，always 每个完成立即唤醒",
+    )
     retry_count: int = Field(default=0, ge=0)
     model: str | None = Field(default=None, description="可选：指定子任务使用的模型（型号名或 model_id）；留空按子任务设置解析")
     connection: str | None = Field(default=None, description="可选：指定模型所属的连接渠道（连接名称或 connection_id）")
@@ -125,6 +130,10 @@ class Request(BaseModel):
     depth: int = Field(default=1, ge=1)
     root_session_id: str | None = Field(default=None, min_length=1)
     background: bool
+    completion_wake: Literal["always", "settled_only"] = "settled_only"
+    parent_source: str = Field(default="conversation", min_length=1)
+    # 旧请求兼容字段：批唤醒改为只按已接纳成员判断，不再依赖预估的同批数量。
+    parent_batch_count: int = Field(default=1, ge=1)
     retry_count: int = Field(ge=0)
     parent_session_id: str = Field(min_length=1)
     parent_message_id: str = Field(min_length=1)
@@ -156,7 +165,5 @@ def check_request(part: ContentPart, *, check_origin: Callable[[ContentPart], Co
         raise ValueError("只读子任务不能包含写入或执行类工具")
     if request.origin is not None:
         _ = check_origin(ContentPart("channel.origin", request.origin))
-    if request.background and (request.origin is None or request.sink is None):
-        raise ValueError("后台子任务缺少原发送目标")
     return ContentReferences(binding_ids=(request.program_binding, *request.tools.values(),
                                          *((request.sink["binding_id"],) if request.sink is not None else ())))

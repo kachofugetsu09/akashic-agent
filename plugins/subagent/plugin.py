@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from functools import partial
 
 import asyncio
 from collections.abc import AsyncGenerator, Mapping
@@ -15,7 +14,7 @@ from agent.plugin_composition import (
     Context,
     stop_spawned,
 )
-from plugins.ledger.contract import BINDINGS
+from plugins.ledger.contract import BINDINGS, OwnerTransaction
 from plugins.ledger.contract import (
     MESSAGE_CATALOG,
     MESSAGE_WRITERS,
@@ -56,7 +55,7 @@ from .contract import SUBAGENT_PROGRAM, AGENT_RUNNERS
 from .runners import Runners
 from plugins.jobs.contract import JOB_NOTICES
 from .runtime import DEFAULT_MAX_ACTIVE, DEFAULT_MAX_DEPTH, DEFAULT_RESULT_CHARS, Subagents
-from .tools import Manage, ManageInput, Spawn, select_model
+from .tools import Manage, ManageInput, ReadInput, SendInput, Spawn, SubagentRead, SubagentSend, select_model
 
 api_version = 3
 name = "subagent"
@@ -193,12 +192,20 @@ async def apply(ctx: Context) -> None:
             external_jobs=None if runners is None else runners.active_jobs,
         )
 
+    @asynccontextmanager
+    async def open_send(_state: Mapping[str, object]) -> AsyncGenerator[SubagentSend]:
+        yield SubagentSend(jobs)
+
+    @asynccontextmanager
+    async def open_read(_state: Mapping[str, object]) -> AsyncGenerator[SubagentRead]:
+        yield SubagentRead(jobs)
+
     _ = await catalog.register(
         ctx,
         name="spawn",
         description=(
             "把有界、多步且可独立完成的任务交给子任务。默认继承父会话已授权的工具与工作目录（可通过 cwd 指定初始目录），"
-            "需要只读调研时设 read_only=true。默认同步返回结果；长任务可用 run_in_background，完成后回传原会话。"
+            "需要只读调研时设 read_only=true。默认同步返回结果；长任务可用 run_in_background（支持并发启动多条并按 completion_wake 合并回传）。"
             "所有子任务受统一递归深度上限约束（默认 1 层）。"
             "可通过 model 与 connection 为本次子任务单独指定模型及所属连接渠道（不确定有哪些连接和模型时，先用 spawn_manage(action=\"models\") 查询）；留空时按子任务设置解析。"
             "任务需要用户交互或只是简单操作时直接处理。task 必须包含目标、约束、上下文和预期结果。"
@@ -207,6 +214,7 @@ async def apply(ctx: Context) -> None:
         open=open_spawn,
         capture=capture,
         idempotent=True,
+        parallel=True,
     )
     _ = await catalog.register(
         ctx,
@@ -215,6 +223,24 @@ async def apply(ctx: Context) -> None:
         parameters=ManageInput.model_json_schema(),
         open=open_manage,
         idempotent=True,
+        parallel=True,
+    )
+    _ = await catalog.register(
+        ctx,
+        name="subagent_send",
+        description="向当前会话树下已创建的子任务继续发送指令：运行中实时 Steer 插话，已结束则沿用原上下文继续执行",
+        parameters=SendInput.model_json_schema(),
+        open=open_send,
+        idempotent=False,
+    )
+    _ = await catalog.register(
+        ctx,
+        name="subagent_read",
+        description="只读查看当前会话树下指定子任务的内部会话进展与输出消息",
+        parameters=ReadInput.model_json_schema(),
+        open=open_read,
+        idempotent=True,
+        parallel=True,
     )
 
     # 子任务沿用 prepare 时冻结的 binding；有分组加载展示时只追加 load_tools 入口，避免全量 schema 超出模型上限。
@@ -244,13 +270,19 @@ async def apply(ctx: Context) -> None:
                 return '工具不属于子任务已固定权限边界'
             return {"source": "subagent", "session_id": reader.session_id}
 
+        def check_admission(*, transaction: OwnerTransaction | None = None) -> None:
+            ctx.require(SOURCE_CHECK)(task, reader, "subagent", task.boundary_hint, transaction=transaction)
+
+        before_step, retry_wake = jobs.steer_binding(reader.session_id, task=task)
         return await ctx.require(REPLY_EXECUTE)(
                          ctx, task, reader, 'subagent',
-                         check_admission=partial(ctx.require(SOURCE_CHECK), task, reader, "subagent", task.boundary_hint),
+                         check_admission=check_admission,
                          authorize=authorize,
                          tool_view=None,
                          fixed_bindings=fixed_bindings,
                          presentation=presentation,
+                         before_step=before_step,
+                         retry_wake=retry_wake,
                          max_output_tokens=config.max_output_tokens,
                          max_steps=config.max_steps,
                          exclude_material_kinds=frozenset({'recall'}),

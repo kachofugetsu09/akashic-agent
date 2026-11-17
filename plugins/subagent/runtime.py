@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import dataclass, field
 from functools import partial
+from uuid import uuid4
 from datetime import UTC, datetime
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Literal, cast
 
 from core.common.file_io import run_file_io
@@ -19,7 +21,7 @@ from .inputs import CONVERSATION_COMPLETE
 from .inputs import DELIVERY
 from .inputs import REPLY_PROGRAM
 from plugins.ledger.contract import MessageConflict, MessageReader, OwnerRecord, OwnerTransaction, SessionAttributes
-from plugins.ledger.contract import ContentPart, Control, Input, Message, Output, with_truncated_head
+from plugins.ledger.contract import ContentPart, Control, Input, Message, Output, ToolCall, ToolResult, with_truncated_head
 from plugins.ledger.contract import json_value
 from plugins.sources.contract import (
     SourceGuard,
@@ -29,12 +31,23 @@ from .request import Request, check_request
 from plugins.models.contract import MODEL_SELECTION
 
 from plugins.working_directory.contract import WORKING_DIRECTORY
+from plugins.jobs.contract import JOB_NOTICES, JobOutcome, JobWatch
 from .contract import SUBAGENT_PROGRAM
 
 logger = logging.getLogger(__name__)
 DEFAULT_MAX_ACTIVE = 8
 DEFAULT_RESULT_CHARS = 100_000
 DEFAULT_MAX_DEPTH = 1
+
+
+
+# 同一父 Output 并行派发的 settled_only 后台子任务；只按已接纳成员判断是否到齐，未接纳的调用不会卡住整批。
+@dataclass(slots=True)
+class _BgBatch:
+    members: dict[str, str] = field(default_factory=dict)
+    outcomes: dict[str, tuple[str, tuple[str, str]]] = field(default_factory=dict)
+    winner_job_id: str | None = None
+    settled_event: asyncio.Event = field(default_factory=asyncio.Event)
 
 
 class SubagentBusy(RuntimeError):
@@ -60,6 +73,14 @@ class Subagents:
         self._active: dict[str, dict[str, object]] = {}
         self._index_loading: asyncio.Future[tuple[dict[str, tuple[str, int]], dict[str, dict[str, object]]]] | None = None
         self._settled_while_loading: set[str] = set()
+        self._job_keys: dict[str, str] = {}
+        self._steers: dict[str, list[tuple[str, str]]] = {}
+        self._wake_events: dict[str, asyncio.Event] = {}
+        self._batches: dict[tuple[str, str], _BgBatch] = {}
+        self._bg_futures: dict[str, asyncio.Future[tuple[str, str]]] = {}
+        self._watched_bg: set[str] = set()
+        self._watch_batches: dict[str, _BgBatch] = {}
+        self._notices_recovered = False
 
     def read(self, key: str) -> tuple[OwnerRecord, Request, MessageReader] | None:
         record = self.ctx.require(OWNER_STATE).open(self.ctx).read(key)
@@ -120,6 +141,7 @@ class Subagents:
                 continue
             record, request, _ = found
             by_session[request.session_id] = request
+            self._job_keys[request.job_id] = key
             if not _pointer(record)[2]:
                 active_rows.append((key, request))
         lineage = {session_id: self._lineage_in(by_session, session_id) for session_id in by_session}
@@ -206,6 +228,290 @@ class Subagents:
 
         return await self.ctx.require(TASKS).open(self.ctx).admit_async(("admission",), _check)
 
+    def _batch_for(self, request: Request) -> _BgBatch:
+        bkey = (request.parent_session_id, request.parent_message_id)
+        batch = self._batches.get(bkey)
+        if batch is None:
+            batch = _BgBatch()
+            self._batches[bkey] = batch
+        return batch
+
+    # 全部已接纳成员都有结果时由最后结算者代表整批唤醒；释放后立即摘除，迟到成员另起一批而不是被吞掉。
+    def _maybe_release_batch(self, request: Request, batch: _BgBatch) -> None:
+        if batch.settled_event.is_set() or len(batch.outcomes) < len(batch.members):
+            return
+        batch.winner_job_id = next(reversed(batch.outcomes))
+        batch.settled_event.set()
+        bkey = (request.parent_session_id, request.parent_message_id)
+        if self._batches.get(bkey) is batch:
+            del self._batches[bkey]
+
+    def _finish_bg_outcome(
+        self,
+        key: str,
+        request: Request,
+        outcome: tuple[str, str],
+        *,
+        resumed: bool = False,
+    ) -> None:
+        fut = self._bg_futures.pop(key, None)
+        if fut is not None and not fut.done():
+            fut.set_result(outcome)
+        batch = self._watch_batches.pop(key, None)
+        if not resumed and batch is not None:
+            batch.outcomes[request.job_id] = (request.label, outcome)
+            self._maybe_release_batch(request, batch)
+
+    @staticmethod
+    def _batch_summary(batch: _BgBatch) -> JobOutcome:
+        parts: list[str] = []
+        any_failed = False
+        for jid, (label, (st, txt)) in batch.outcomes.items():
+            any_failed = any_failed or st != "completed"
+            snippet = txt.strip()[:2500]
+            if len(txt.strip()) > 2500:
+                snippet += "\n...[已截断，完整输出请用 subagent_read]"
+            parts.append(f"### {label} (`{jid}` · {st})\n{snippet}")
+        return JobOutcome("failed" if any_failed else "completed",
+                          f"本批 {len(batch.outcomes)} 个后台子任务已全部完成：\n\n" + "\n\n".join(parts))
+
+    # 结果已交给 jobs 后清除持久的待通知标记；重启前未交出的结果仍会在下次启动重新登记。
+    async def _clear_notify(self, keys: tuple[str, ...]) -> None:
+        def commit(tx: OwnerTransaction) -> None:
+            for key in keys:
+                row = tx.read(key)
+                if row is not None and row.value.get("notify") is True:
+                    value = {name: item for name, item in row.value.items() if name != "notify"}
+                    _ = tx.save(key, value, expected_version=row.version)
+        try:
+            async with self.ctx.runtime_scope():
+                await self.ctx.require(OWNER_STATE).open(self.ctx).transact_async(commit)
+        except Exception:
+            logger.warning("子任务待通知标记清除失败 keys=%s", keys, exc_info=True)
+
+    def _watch_background(self, key: str, request: Request, *, resumed: bool = False) -> None:
+        if key in self._watched_bg:
+            return
+        with self.ctx.borrow(JOB_NOTICES) as notices:
+            if notices is None:
+                return
+            self._watched_bg.add(key)
+            fut = self._bg_futures.get(key)
+            if fut is None or fut.done():
+                fut = asyncio.get_running_loop().create_future()
+                self._bg_futures[key] = fut
+            batch: _BgBatch | None = None
+            if not resumed and request.completion_wake == "settled_only":
+                batch = self._batch_for(request)
+                batch.members[request.job_id] = key
+                self._watch_batches[key] = batch
+
+            async def settled() -> JobOutcome | None:
+                status, text = await fut
+                if batch is None:
+                    await self._clear_notify((key,))
+                    body = text[:12_000] + ("\n\n结果已截断；完整消息请用 subagent_read 读取。" if len(text) > 12_000 else "")
+                    return JobOutcome("completed" if status == "completed" else "failed", f"状态：{status}\n\n{body}")
+                # 1. 批对象在登记时固定，赢家摘除批次后其他成员不会再建一份永远等不到的空批。
+                await batch.settled_event.wait()
+                if batch.winner_job_id != request.job_id:
+                    return None
+                await self._clear_notify(tuple(batch.members.values()))
+                return self._batch_summary(batch)
+
+            notices.watch(JobWatch(
+                session_id=request.parent_session_id,
+                source=notices.origin_source(request.parent_session_id, request.parent_source),
+                job_id=request.job_id,
+                kind="subagent",
+                label=request.label,
+                collect_hint=f'需要完整对话或继续追问，请用 subagent_read(job_id="{request.job_id}") 或 subagent_send。',
+                settled=settled,
+                stop=lambda: self.cancel(request.job_id),
+            ))
+
+    async def _drain_steers(self, session_id: str, *, task: Task | None = None) -> int:
+        queued = self._steers.pop(session_id, [])
+        if not queued:
+            return 0
+        writer = self.ctx.require(MESSAGE_WRITERS).bind(
+            self.ctx,
+            author="parent",
+            source="subagent",
+            body_types=(Input,),
+            content={"text": self.ctx.require(CONTENT).check_text},
+        )(session_id)
+        try:
+            for msg_id, text in queued:
+                committed = await writer.append_async(msg_id, Input((ContentPart("text", text),)))
+                if task is not None:
+                    task.boundary_hint = committed.seq
+        finally:
+            writer.expire()
+        return len(queued)
+
+    def steer_binding(self, session_id: str, *, task: Task | None = None) -> tuple[Callable[[], Awaitable[None]], asyncio.Event]:
+        wake = self._wake_events.get(session_id)
+        if wake is None:
+            wake = asyncio.Event()
+            self._wake_events[session_id] = wake
+
+        async def before_step() -> None:
+            wake.clear()
+            _ = await self._drain_steers(session_id, task=task)
+
+        return before_step, wake
+
+    # 索引加载时与每次接纳都会登记 job_id；未登记即不存在，不再全表扫描。
+    def _find_by_job_id(self, job_id: str) -> tuple[str, OwnerRecord, Request, MessageReader] | None:
+        self._ensure_index()
+        key = self._job_keys.get(job_id)
+        if key is None:
+            return None
+        found = self.read(key)
+        return None if found is None else (key, *found)
+
+    async def send(
+        self,
+        caller_root_id: str,
+        job_id: str,
+        message: str,
+        *,
+        background: bool = False,
+    ) -> dict[str, object]:
+        """向同一会话树下的子任务追加消息：运行中走 Steer 插话，空闲时冷恢复继续对话。"""
+        await self.ensure_index()
+        found = self._find_by_job_id(job_id)
+        if found is None:
+            raise KeyError(f"未找到子任务: {job_id}")
+        key, _record, request, reader = found
+        child_root = request.root_session_id or self.resolve_lineage(request.session_id)[0]
+        if child_root != caller_root_id:
+            raise PermissionError("无权向其他会话树的子任务发送消息")
+
+        state = self.ctx.require(OWNER_STATE).open(self.ctx)
+        limit = self.max_active
+
+        async def send_or_reopen(_slot: TaskSlot) -> str:
+            current = state.read(key)
+            assert current is not None
+            # 1. 在同一准入锁内判断活跃态：未结算或仍在 _active 则入队 Steer，与 _run 末尾排空无竞态
+            if not current.value["settled"] or key in self._active:
+                wake = self._wake_events.setdefault(request.session_id, asyncio.Event())
+                self._steers.setdefault(request.session_id, []).append((f"steer:{uuid4().hex}", message))
+                wake.set()
+                return "steered"
+            if self.active_count_for_root(child_root) >= limit:
+                raise SubagentBusy(f"subagent capacity reached for session tree: max={limit}; resume rejected")
+            writer = self.ctx.require(MESSAGE_WRITERS).bind(
+                self.ctx,
+                author="parent",
+                source="subagent",
+                body_types=(Input,),
+                content={"text": self.ctx.require(CONTENT).check_text},
+            )(request.session_id)
+            try:
+                prepared = await writer.prepare_async(f"subagent-send:{uuid4().hex}", Input((ContentPart("text", message),)))
+                def commit(tx: OwnerTransaction) -> None:
+                    row = tx.read(key)
+                    assert row is not None
+                    if row.value["settled"] is not True:
+                        raise SubagentBusy("子任务状态刚切换为活跃，请重试")
+                    _ = tx.save(
+                        key,
+                        {**row.value, "settled": False, "background": background, "resumed": True},
+                        expected_version=row.version,
+                    )
+                    _ = tx.append_prepared(prepared)
+                await state.transact_async(commit)
+                self._active[key] = {
+                    "job_id": request.job_id,
+                    "label": request.label,
+                    "profile": request.profile,
+                    "read_only": request.read_only,
+                    "depth": request.depth,
+                    "root_session_id": child_root,
+                }
+                if background:
+                    self._watched_bg.discard(key)
+                    self._watch_background(key, request, resumed=True)
+            finally:
+                writer.expire()
+            return "reopened"
+
+        action = await self.ctx.require(TASKS).open(self.ctx).admit_async(("admission",), send_or_reopen)
+        if action == "steered":
+            return {"job_id": job_id, "mode": "steered", "status": "queued"}
+        task = await self.start(key)
+        if background:
+            return {"job_id": job_id, "mode": "resumed_background", "status": "running"}
+        if task is not None:
+            _ = await task.join()
+        outcome = await self.outcome(reader)
+        status, text = ("completed", "") if outcome is None else outcome
+        return {"job_id": job_id, "mode": "resumed_sync", "status": status, "result": text[:self.result_chars]}
+
+    async def read_child_messages(
+        self,
+        caller_root_id: str,
+        job_id: str,
+        *,
+        after_seq: int = -1,
+        limit: int = 50,
+    ) -> dict[str, object]:
+        """按父会话树权限读取 internal 子任务会话消息，保持主侧栏不可见。"""
+        await self.ensure_index()
+        found = self._find_by_job_id(job_id)
+        if found is None:
+            raise KeyError(f"未找到子任务: {job_id}")
+        key, record, request, reader = found
+        child_root = request.root_session_id or self.resolve_lineage(request.session_id)[0]
+        if child_root != caller_root_id:
+            raise PermissionError("无权读取其他会话树的子任务记录")
+        all_msgs = await reader.snapshot_async(through_seq=reader.head())
+        messages = [m for m in all_msgs if m.seq > after_seq]
+        if limit > 0 and len(messages) > limit:
+            sliced = messages[-limit:] if after_seq < 0 else messages[:limit]
+        else:
+            sliced = messages
+        items: list[dict[str, object]] = []
+        for msg in sliced:
+            body_kind = type(msg.body).__name__.lower()
+            parts_summary: list[dict[str, object]] = []
+            if isinstance(msg.body, (Input, Output, ToolResult)):
+                for part in msg.body.parts:
+                    if isinstance(part, ToolCall):
+                        parts_summary.append({"kind": "tool_call", "binding_id": part.binding_id, "arguments": json_value(part.arguments)})
+                    elif isinstance(part, ContentPart) and part.kind == "text":
+                        parts_summary.append({"kind": "text", "value": str(part.value)})
+                    elif isinstance(part, ContentPart):
+                        parts_summary.append({"kind": part.kind})
+            elif isinstance(msg.body, Control):
+                parts_summary.append({"kind": "control", "action": msg.body.action, "reason": msg.body.reason})
+            items.append({
+                "seq": msg.seq,
+                "message_id": msg.message_id,
+                "author": msg.author,
+                "kind": body_kind,
+                "timestamp": msg.recorded_at.isoformat(),
+                "parts": parts_summary,
+            })
+        outcome = await self.outcome(reader)
+        return {
+            "job_id": request.job_id,
+            "label": request.label,
+            "session_id": request.session_id,
+            "root_session_id": child_root,
+            "depth": request.depth,
+            "read_only": request.read_only,
+            "model_id": request.model_id,
+            "cwd": request.cwd,
+            "active": not bool(record.value["settled"]) or key in self._active,
+            "status": "running" if outcome is None and not record.value["settled"] else (outcome[0] if outcome else "settled"),
+            "head_seq": reader.head(),
+            "messages": items,
+        }
+
     async def accept(self, key: str, request: Request, text: str) -> None:
         """同一来源准入锁覆盖容量检查与持久提交，重放不再占额。"""
         ctx = self.ctx
@@ -265,6 +571,7 @@ class Subagents:
                 if created:
                     root_id = request.root_session_id or self.resolve_lineage(request.parent_session_id)[0]
                     self._lineage[request.session_id] = (root_id, request.depth)
+                    self._job_keys[request.job_id] = key
                     self._active[key] = {
                         "job_id": request.job_id,
                         "label": request.label,
@@ -273,6 +580,8 @@ class Subagents:
                         "depth": request.depth,
                         "root_session_id": root_id,
                     }
+                    if request.background:
+                        self._watch_background(key, request)
             finally:
                 writer.expire()
                 if created:
@@ -318,29 +627,64 @@ class Subagents:
         admitted = reader.get(request.input_id)
         if admitted is None or admitted.source != "subagent" or not isinstance(admitted.body, Input):
             raise ValueError("子任务程序缺少同来源的原 Input")
-        task.boundary_hint = admitted.seq
-        try:
-            # 1. 只有未关闭输入才进入原程序；最终消息或控制足以决定恢复方向。
-            if await self.outcome(reader) is None:
-                async with self.ctx.require(BINDINGS).open(request.program_binding, SUBAGENT_PROGRAM) as (program, _):
-                    _ = await program(task, reader, request)
-        except asyncio.CancelledError as error:
-            if await self.outcome(reader) is None:
-                if not task.active:
+        latest_input = reader.latest_input("subagent", through_seq=reader.head())
+        task.boundary_hint = admitted.seq if latest_input is None else latest_input.seq
+        state = self.ctx.require(OWNER_STATE).open(self.ctx)
+        was_bg = request.background
+        was_resumed = False
+        while True:
+            try:
+                # 1. 只有未关闭输入才进入原程序；最终消息或控制足以决定恢复方向。
+                if await self.outcome(reader) is None:
+                    async with self.ctx.require(BINDINGS).open(request.program_binding, SUBAGENT_PROGRAM) as (program, _):
+                        _ = await program(task, reader, request)
+            except asyncio.CancelledError as error:
+                if await self.outcome(reader) is None:
+                    if not task.active:
+                        raise
+                    # 程序自行取消没有撤销 Task，不能伪造用户 pause 或取消父等待者。
+                    await self._control(request, "failure", "子任务程序意外取消：" + (str(error) or type(error).__name__), task=task)
+            except Exception as error:
+                if task.active:
+                    await self._control(request, "failure", str(error) or type(error).__name__, task=task)
+                else:
                     raise
-                # 程序自行取消没有撤销 Task，不能伪造用户 pause 或取消父等待者。
-                await self._control(request, "failure", "子任务程序意外取消：" + (str(error) or type(error).__name__), task=task)
-        except Exception as error:
-            if task.active:
-                await self._control(request, "failure", str(error) or type(error).__name__, task=task)
-            else:
-                raise
-        # 2. 已开始的工具与原程序资源此时已经排空，回传不复制内部推理。
-        outcome = await self.outcome(reader)
-        if outcome is None:
-            raise RuntimeError("子任务程序没有保存终态")
-        if not request.background:
-            await self._settle(key)
+            outcome = await self.outcome(reader)
+            if outcome is None:
+                raise RuntimeError("子任务程序没有保存终态")
+
+            # 2. 在准入锁内检查是否有回合末插话未消费；非用户取消时先排空入账并继续下一轮，否则原子结算。
+            drained_more = False
+
+            async def try_settle_or_drain(_slot: TaskSlot) -> bool:
+                nonlocal was_bg, was_resumed
+                if outcome[0] != "cancelled" and self._steers.get(request.session_id):
+                    count = await self._drain_steers(request.session_id, task=task)
+                    if count > 0:
+                        return True
+                self._steers.pop(request.session_id, None)
+                def commit(tx: OwnerTransaction) -> None:
+                    nonlocal was_bg, was_resumed
+                    row = tx.read(key)
+                    assert row is not None
+                    was_bg = bool(row.value.get("background", request.background))
+                    was_resumed = bool(row.value.get("resumed", False))
+                    # 后台结果交给 jobs 前保留待通知标记，重启后据此重新登记唤醒。
+                    pending = {"notify": True} if was_bg else {}
+                    _ = tx.save(key, {**row.value, "settled": True, "background": False, **pending},
+                                expected_version=row.version)
+                await state.transact_async(commit)
+                self._release_active(key)
+                self._wake_events.pop(request.session_id, None)
+                return False
+
+            drained_more = await self.ctx.require(TASKS).open(self.ctx).admit_async(("admission",), try_settle_or_drain)
+            if not drained_more:
+                break
+
+        if was_bg or key in self._watched_bg:
+            self._finish_bg_outcome(key, request, outcome, resumed=was_resumed)
+            self._watched_bg.discard(key)
         await self._trace(request, outcome[0])
 
     async def _settle(self, key: str) -> None:
@@ -350,6 +694,9 @@ class Subagents:
             assert record is not None
             _ = tx.save(key, {**record.value, "settled": True}, expected_version=record.version)
         await state.transact_async(commit)
+        self._release_active(key)
+
+    def _release_active(self, key: str) -> None:
         self._active.pop(key, None)
         if not self._index_loaded:
             self._settled_while_loading.add(key)
@@ -362,6 +709,8 @@ class Subagents:
         for message in reversed(messages):
             if message.source != "subagent":
                 continue
+            if isinstance(message.body, Input):
+                break
             if isinstance(message.body, Output) and message.body.finish != "continue":
                 ending = await reader.read_async(lambda current: with_truncated_head(current, message))
                 assert isinstance(ending.body, Output)
@@ -384,7 +733,9 @@ class Subagents:
             task.on_close(writer.expire)
         try:
             head = reader.head(source="subagent") if expected_source_head is None else expected_source_head
-            _ = await writer.append_async(request.input_id + ":" + action, Control(action, head, reason),
+            latest = reader.latest_input("subagent", through_seq=head)
+            base_id = request.input_id if latest is None else latest.message_id
+            _ = await writer.append_async(base_id + ":" + action, Control(action, head, reason),
                               expected_source_head=expected_source_head,
                               on_commit=None if on_commit is None else lambda _message, _inserted: on_commit())
         finally:
@@ -392,51 +743,49 @@ class Subagents:
 
     async def cancel(self, job_id: str) -> bool:
         """取消意图先保存，再撤销新决策并等待原效果排空。"""
-        for key, _ in self.ctx.require(OWNER_STATE).open(self.ctx).list():
-            found = self.read(key)
-            assert found is not None
-            record, request, reader = found
-            if request.job_id != job_id:
-                continue
-            stopped: Task | None = None
+        await self.ensure_index()
+        found = self._find_by_job_id(job_id)
+        if found is None:
+            return False
+        key, record, request, reader = found
+        stopped: Task | None = None
 
-            async def cancel(slot: TaskSlot) -> bool:
-                def committed() -> None:
-                    nonlocal stopped
-                    stopped = slot.current
-                    if stopped is not None:
-                        stopped.cancel(interrupt=True)
-
-                # 读期间可能完成；只对检查过的来源前缀提交 pause。
-                while True:
-                    head = reader.head(source="subagent")
-                    outcome = await self.outcome(reader, through_seq=head)
-                    if outcome is not None:
-                        return outcome[0] == "cancelled"
-                    if record.value["settled"]:
-                        raise ValueError("子任务结算记录缺少终态")
-                    try:
-                        await self._control(request, "pause", "用户取消子任务", expected_source_head=head,
-                                            on_commit=committed)
-                    except MessageConflict:
-                        if reader.head(source="subagent") == head:
-                            raise
-                        continue
-                    return True
-
-            try:
-                cancelled = await self.ctx.require(TASKS).open(self.ctx).admit_async(("job", key), cancel)
-            finally:
-                # 即使调用者在提交中取消，真实 pause 也先撤销原 Task 并排空。
+        async def cancel(slot: TaskSlot) -> bool:
+            def committed() -> None:
+                nonlocal stopped
+                stopped = slot.current
                 if stopped is not None:
-                    await drain(stopped)
-            if not cancelled:
-                return False
-            task = await self.start(key)
-            if task is not None:
-                await drain(task)
-            return True
-        return False
+                    stopped.cancel(interrupt=True)
+
+            # 读期间可能完成；只对检查过的来源前缀提交 pause。
+            while True:
+                head = reader.head(source="subagent")
+                outcome = await self.outcome(reader, through_seq=head)
+                if outcome is not None:
+                    return outcome[0] == "cancelled"
+                if record.value["settled"]:
+                    raise ValueError("子任务结算记录缺少终态")
+                try:
+                    await self._control(request, "pause", "用户取消子任务", expected_source_head=head,
+                                        on_commit=committed)
+                except MessageConflict:
+                    if reader.head(source="subagent") == head:
+                        raise
+                    continue
+                return True
+
+        try:
+            cancelled = await self.ctx.require(TASKS).open(self.ctx).admit_async(("job", key), cancel)
+        finally:
+            # 即使调用者在提交中取消，真实 pause 也先撤销原 Task 并排空。
+            if stopped is not None:
+                await drain(stopped)
+        if not cancelled:
+            return False
+        task = await self.start(key)
+        if task is not None:
+            await drain(task)
+        return True
 
     # Save report failure under the child source before releasing the parent lane.
     async def _report_failure(
@@ -551,8 +900,40 @@ class Subagents:
             if root_session_id is None or item.get("root_session_id") == root_session_id
         )
 
+    # 启动时先整体登记所有后台成员（运行中与已结算未通知），再交出已结算结果，保证同批仍合并成一次唤醒。
+    async def _recover_notices(self) -> None:
+        if self._notices_recovered:
+            return
+        self._notices_recovered = True
+        finished: list[tuple[str, Request, MessageReader, bool]] = []
+        for key, _record in self.ctx.require(OWNER_STATE).open(self.ctx).list():
+            try:
+                found = self.read(key)
+            except ValueError:
+                continue
+            if found is None:
+                continue
+            record, request, reader = found
+            settled, resumed = record.value["settled"], bool(record.value.get("resumed", False))
+            if settled and record.value.get("notify") is True:
+                self._watch_background(key, request, resumed=resumed)
+                finished.append((key, request, reader, resumed))
+            elif not settled and bool(record.value.get("background", request.background)):
+                self._watch_background(key, request, resumed=resumed)
+        for key, request, reader, resumed in finished:
+            outcome = await self.outcome(reader) or ("failed", "子任务结算记录缺少消息终态")
+            self._finish_bg_outcome(key, request, outcome, resumed=resumed)
+            self._watched_bg.discard(key)
+
     async def follow(self) -> None:
         """正式生命周期追赶持久输入；短通知不持有工具归档或运行 generation。"""
+        try:
+            async with self.ctx.runtime_scope():
+                await self._recover_notices()
+        except CompositionError as error:
+            if error.code != "OWNER_UNAVAILABLE":
+                raise
+            return
         attempted: dict[str, tuple[int, int]] = {}
         active: dict[str, Task] = {}
         async def wait(key: str, task: Task) -> None:
@@ -570,12 +951,19 @@ class Subagents:
                         found = self.read(key)
                         assert found is not None
                         record, request, reader = found
-                        if request.background and not record.value["settled"]:
+                        if not record.value["settled"]:
                             outcome = await self.outcome(reader)
-                            if outcome is None:
-                                raise RuntimeError("子任务没有可回传的终态")
-                            if await self._announce(key, request, reader, outcome):
-                                await self._settle(key)
+                            if outcome is not None:
+                                is_bg = bool(record.value.get("background", request.background))
+                                is_resumed = bool(record.value.get("resumed", False))
+                                with self.ctx.borrow(JOB_NOTICES) as notices:
+                                    if not is_bg:
+                                        await self._settle(key)
+                                    elif notices is not None or request.sink is None:
+                                        await self._settle(key)
+                                        self._finish_bg_outcome(key, request, outcome, resumed=is_resumed)
+                                    elif await self._announce(key, request, reader, outcome):
+                                        await self._settle(key)
                 except CompositionError as error:
                     if entered or error.code != "OWNER_UNAVAILABLE":
                         raise
@@ -604,6 +992,8 @@ class Subagents:
                                 record, request, reader = found
                                 if record.value["settled"]:
                                     continue
+                                if bool(record.value.get("background", request.background)):
+                                    self._watch_background(key, request, resumed=bool(record.value.get("resumed", False)))
                                 parent = self.ctx.require(MESSAGE_CATALOG).reader(request.parent_session_id)
                                 heads = (reader.head(), parent.head())
                                 if attempted.get(key) == heads:
@@ -629,9 +1019,12 @@ class Subagents:
 def _pointer(record: OwnerRecord) -> tuple[str, str, bool]:
     """在存储边界读取同一份子任务恢复指针。"""
     value = record.value
-    if (set(value) != {"session_id", "input_id", "settled"}
+    required = {"session_id", "input_id", "settled"}
+    allowed = required | {"background", "resumed", "notify"}
+    if (not required.issubset(value) or not set(value).issubset(allowed)
             or not isinstance(value["session_id"], str) or not isinstance(value["input_id"], str)
-            or type(value["settled"]) is not bool):
+            or type(value["settled"]) is not bool
+            or any(type(value[k]) is not bool for k in ("background", "resumed", "notify") if k in value)):
         raise ValueError("子任务恢复指针损坏")
     return value["session_id"], value["input_id"], value["settled"]
 
