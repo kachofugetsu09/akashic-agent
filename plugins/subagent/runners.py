@@ -39,14 +39,45 @@ class ResultInput(BaseModel):
 
 
 class Runners:
-    def __init__(self, ctx: Context, *, max_active: int, result_chars: int) -> None:
+    def __init__(
+        self,
+        ctx: Context,
+        *,
+        max_active: int,
+        result_chars: int,
+        resolve_root: Callable[[str], str] | None = None,
+        tree_active_count: Callable[[str], int] | None = None,
+        check_depth: Callable[[str], str | None] | None = None,
+        ensure_index: Callable[[], Awaitable[None]] | None = None,
+        admit_external: Callable[[str, Callable[[int], bool]], Awaitable[bool]] | None = None,
+    ) -> None:
         self.ctx = ctx
         self.store = ctx.require(OWNER_STATE).open_scoped(ctx, "external-runners")
         self.entries: dict[str, AgentRunner] = {}
         # Reserved before the receipt is written, so the cap holds across concurrent calls.
         self.active: dict[str, asyncio.Task[None] | None] = {}
+        self.active_roots: dict[str, str] = {}
+        self.active_meta: dict[str, dict[str, object]] = {}
         self.max_active, self.result_chars = max_active, result_chars
         self.revisions: dict[str, int] = {}
+        self._resolve_root = resolve_root
+        self._tree_active_count = tree_active_count
+        self._check_depth = check_depth
+        self._ensure_index = ensure_index
+        self._admit_external = admit_external
+
+    def root_for(self, session_id: str) -> str:
+        return session_id if self._resolve_root is None else self._resolve_root(session_id)
+
+    def active_for_root(self, root_session_id: str) -> int:
+        return sum(1 for root in list(self.active_roots.values()) if root == root_session_id)
+
+    def active_jobs(self, root_session_id: str | None = None) -> tuple[Mapping[str, object], ...]:
+        return tuple(
+            dict(meta)
+            for job_id, meta in list(self.active_meta.items())
+            if root_session_id is None or self.active_roots.get(job_id) == root_session_id
+        )
 
     def connect(self, ctx: Context, owner: str, argv: tuple[str, ...], cwd: str, env: dict[str, str]):
         from .protocol import open_json_lines
@@ -170,6 +201,13 @@ class Delegate:
         if not args.task.strip():
             return "task must be nonblank"
         session_id = source.messages[-1].session_id
+        if self.registry._check_depth is not None:
+            async with self.registry.ctx.runtime_scope():
+                if self.registry._ensure_index is not None:
+                    await self.registry._ensure_index()
+                rejection = self.registry._check_depth(session_id)
+            if rejection is not None:
+                return rejection
         try:
             resolved_cwd = await resolve_cwd(self.ctx, session_id, args.cwd, fallback=self.ctx.runtime.workspace)
         except ValueError as error:
@@ -196,18 +234,43 @@ class Delegate:
         if arguments.get("selection") != self.selection:
             raise ValueError("runner selection mismatch")
         registry = self.registry
-        if len(registry.active) >= registry.max_active:
-            return Result("error", (ContentPart("text",
-                f"外部任务并发已满（max={registry.max_active}）；等已有任务结束后再委托。"),))
         job = Job(self, key, arguments)
-        registry.active[job.id] = None
+        async with registry.ctx.runtime_scope():
+            if registry._ensure_index is not None:
+                await registry._ensure_index()
+            root_id = registry.root_for(job.session_id)
+
+            def reserve(_used: int) -> bool:
+                registry.active[job.id] = None
+                registry.active_roots[job.id] = root_id
+                registry.active_meta[job.id] = {
+                    "job_id": job.id,
+                    "label": str(job.record["label"]),
+                    "runner": self.runner.name,
+                    "root_session_id": root_id,
+                    "external": True,
+                }
+                return True
+
+            if registry._admit_external is not None:
+                admitted = await registry._admit_external(root_id, reserve)
+            else:
+                used = registry.active_for_root(root_id) if registry._tree_active_count is None else registry._tree_active_count(root_id)
+                admitted = used < registry.max_active and reserve(used)
+        if not admitted:
+            return Result("error", (ContentPart("text",
+                f"当前会话树子任务并发已满（max={registry.max_active}）；等已有任务结束后再委托。"),))
         try:
             if not await job.accept():
                 registry.active.pop(job.id, None)
+                registry.active_roots.pop(job.id, None)
+                registry.active_meta.pop(job.id, None)
             else:
                 await job.start()
         except BaseException:
             registry.active.pop(job.id, None)
+            registry.active_roots.pop(job.id, None)
+            registry.active_meta.pop(job.id, None)
             raise
         response = await self.query(key)
         assert response is not None
@@ -283,6 +346,8 @@ class Job:
             await self.update(status="failed", result=outcome.detail)
         finally:
             self.registry.active.pop(self.id, None)
+            self.registry.active_roots.pop(self.id, None)
+            self.registry.active_meta.pop(self.id, None)
             if not self.done.done():
                 self.done.set_result(outcome)
 
@@ -294,6 +359,8 @@ class Job:
         except Exception as error:
             body.close()
             self.registry.active.pop(self.id, None)
+            self.registry.active_roots.pop(self.id, None)
+            self.registry.active_meta.pop(self.id, None)
             outcome = JobOutcome("failed", "外部任务未能启动：" + type(error).__name__)
             await self.update(status="failed", result=outcome.detail)
             self.registry.notify(self.record, outcome)

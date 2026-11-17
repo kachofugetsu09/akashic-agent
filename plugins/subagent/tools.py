@@ -12,12 +12,21 @@ from agent.plugin_composition import Context
 from pathlib import Path
 from plugins.ledger.contract import BINDINGS
 from plugins.working_directory.contract import WORKING_DIRECTORY
-from .inputs import CallSource, Result, TOOL_BIND_SAVED
+from plugins.tools.contract import current_nested_tool_scope
+from .inputs import ALL_TOOLS, CallSource, Result, TOOL_BIND_SAVED, TOOLS
 from plugins.ledger.contract import ContentPart, Input, Message
 from plugins.ledger.contract import json_value
 from plugins.models.contract import ChatModelSelection, ModelCatalogSnapshot
 
-from .request import PROFILE_TOOLS, Request, SpawnInput, SinkInput
+from .request import (
+    DELEGATION_TOOLS,
+    EXCLUDED_ALWAYS_TOOLS,
+    Request,
+    SinkInput,
+    SpawnInput,
+    is_delegation_tool,
+    is_read_only_excluded,
+)
 from .contract import SUBAGENT_PROGRAM
 from .runtime import SubagentBusy, Subagents, completion
 
@@ -199,11 +208,15 @@ class Spawn:
             return '子任务不能为空'
         if source is None:
             return 'spawn 需要已提交的父消息调用'
-        if args.run_in_background:
-            parent = source.messages[-1]
-            rejection = self.jobs.check_background_spawn(parent.session_id, parent.source)
-            if rejection is not None:
-                return rejection
+        parent_session_id = source.messages[-1].session_id
+        await self.jobs.ensure_index()
+        root_session_id, parent_depth = self.jobs.resolve_lineage(parent_session_id)
+        if self.jobs.max_depth <= 0:
+            return "当前设置已禁用子任务派发（max_depth=0）；请直接完成该任务。"
+        if parent_depth >= self.jobs.max_depth:
+            return f"子任务委派深度已达到上限（当前第 {parent_depth} 层，上限 {self.jobs.max_depth} 层）；请直接处理或汇报已有结果。"
+        next_depth = parent_depth + 1
+        read_only = args.read_only or args.profile == "research"
         origin = None
         for message in reversed(source.messages):
             if isinstance(message.body, Input):
@@ -221,18 +234,23 @@ class Spawn:
             sink = SinkInput(name=origin["channel"], binding_id=self.senders[origin["channel"]], address=origin["chat_id"])
         job_id = uuid4().hex
         task_dir = self.ctx.workspace_root("subagent-runs") / job_id
-        parent_session_id = source.messages[-1].session_id
         try:
             cwd = await resolve_cwd(self.ctx, parent_session_id, args.cwd, fallback=task_dir)
         except ValueError as error:
             return str(error)
-        names = tuple(name for name in PROFILE_TOOLS[args.profile] if name in self.targets)
-        if not names:
-            return '当前 profile 缺少已安装工具'
+        nested_scope = current_nested_tool_scope()
+        caller_allowed = None if nested_scope is None else set(nested_scope.tools)
+        names = tuple(
+            name for name in self.targets
+            if name not in EXCLUDED_ALWAYS_TOOLS
+            and (caller_allowed is None or name in caller_allowed)
+            and (not read_only or not is_read_only_excluded(name))
+            and (next_depth < self.jobs.max_depth or not is_delegation_tool(name))
+        )
         bindings = self.ctx.require(BINDINGS)
         fixed: dict[str, str] = {}
         # 2. 目录设置与实际工具实现都在 prepared 时固定，恢复不重选配置。
-        # 参考 DSH：子任务继承父工作目录（或显式 cwd）并在目标目录直接读写执行，不再把 read/write 锁死在 subagent-runs。
+        # 参考 DSH：默认继承父会话工具池（可选 read_only 裁剪）并继承父工作目录，不再切分三套静态 profile。
         for name in names:
             configuration: Mapping[str, object] | None = None
             if name in {"read_file", "list_dir", "write_file", "edit_file"}:
@@ -247,11 +265,22 @@ class Spawn:
                     self.targets[name],
                     configuration=configuration,
                 )
+        if not read_only and next_depth < self.jobs.max_depth:
+            with self.ctx.borrow(ALL_TOOLS) as all_tools, self.ctx.borrow(TOOLS) as tool_catalog:
+                if all_tools is not None and tool_catalog is not None:
+                    for ref in all_tools().refs:
+                        if ref.name in DELEGATION_TOOLS and ref.name not in fixed:
+                            if caller_allowed is None or ref.name == "spawn" or ref.name in caller_allowed:
+                                fixed[ref.name] = await tool_catalog.bind_scoped(ref, bindings)
+        if not fixed:
+            return '当前子任务没有可用的已安装工具'
         # 3. 模型在父调用里解析并随请求固定：调用方显式指定 model/connection 优先，否则按设置（如跟随父对话）解析；恢复时不重选。
         model = await self.model(source.messages, args)
         if isinstance(model, str):
             return model
-        request = Request(job_id=job_id, label=(args.label or args.task[:30]).strip(), profile=args.profile,
+        compat_profile: Literal["research", "scripting", "general"] = "research" if read_only else (args.profile or "general")
+        request = Request(job_id=job_id, label=(args.label or args.task[:30]).strip(), profile=compat_profile,
+            read_only=read_only, depth=next_depth, root_session_id=root_session_id,
             background=args.run_in_background, retry_count=args.retry_count,
             parent_session_id=parent_session_id, parent_message_id=source.call_ref.message_id,
             parent_part_index=source.call_ref.part_index,
@@ -301,9 +330,11 @@ class Spawn:
 class Manage:
     idempotent = True
 
-    def __init__(self, jobs: Subagents, *, catalog: Callable[[], ModelCatalogSnapshot] | None = None):
+    def __init__(self, jobs: Subagents, *, catalog: Callable[[], ModelCatalogSnapshot] | None = None,
+                 external_jobs: Callable[[str | None], tuple[Mapping[str, object], ...]] | None = None):
         self.jobs = jobs
         self.catalog = catalog
+        self.external_jobs = external_jobs
 
     async def prepare(self, arguments: Mapping[str, object], source: CallSource | None = None) -> Mapping[str, object] | str:
         try:
@@ -312,14 +343,25 @@ class Manage:
             return str(error)
         if args.action == "cancel" and not args.job_id:
             return '取消子任务需要 job_id'
-        return args.model_dump()
+        payload: dict[str, object] = args.model_dump()
+        if source is not None and source.messages:
+            await self.jobs.ensure_index()
+            root_id, _ = self.jobs.resolve_lineage(source.messages[-1].session_id)
+            payload["root_session_id"] = root_id
+        return payload
 
     async def invoke(self, key: str, arguments: Mapping[str, object]) -> Result:
-        args = ManageInput.model_validate(json_value(arguments))
+        raw = dict(cast(Mapping[str, object], json_value(arguments)))
+        raw_root = raw.pop("root_session_id", None)
+        root_session_id = raw_root if isinstance(raw_root, str) and raw_root else None
+        args = ManageInput.model_validate(raw)
         value: dict[str, object]
         if args.action == "list":
-            jobs = self.jobs.jobs()
-            value = {"running_count": len(jobs), "jobs": jobs}
+            await self.jobs.ensure_index()
+            local_jobs = self.jobs.jobs(root_session_id=root_session_id)
+            ext_jobs = () if self.external_jobs is None else self.external_jobs(root_session_id)
+            all_jobs = [*local_jobs, *ext_jobs]
+            value = {"running_count": len(all_jobs), "jobs": all_jobs}
         elif args.action == "models":
             if self.catalog is None:
                 return Result("error", (ContentPart("text", "当前环境未挂载模型目录"),))

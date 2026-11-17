@@ -32,9 +32,9 @@ from plugins.working_directory.contract import WORKING_DIRECTORY
 from .contract import SUBAGENT_PROGRAM
 
 logger = logging.getLogger(__name__)
-DEFAULT_MAX_ACTIVE = 3
+DEFAULT_MAX_ACTIVE = 8
 DEFAULT_RESULT_CHARS = 100_000
-MAX_BACKGROUND_DEPTH = 3
+DEFAULT_MAX_DEPTH = 1
 
 
 class SubagentBusy(RuntimeError):
@@ -45,10 +45,21 @@ class Subagents:
     """来源拥有准入和回传；Task、模型、工具与消息分别由既有能力执行。"""
 
     def __init__(self, ctx: Context, *, max_active: int = DEFAULT_MAX_ACTIVE,
-                 result_chars: int = DEFAULT_RESULT_CHARS):
+                 result_chars: int = DEFAULT_RESULT_CHARS,
+                 max_depth: int = DEFAULT_MAX_DEPTH,
+                 external_active_for_root: Callable[[str], int] | None = None):
         self.ctx = ctx
         self.max_active = max_active
         self.result_chars = result_chars
+        self.max_depth = max_depth
+        self._external_active_for_root = external_active_for_root
+        self._index_loaded = False
+        # session_id -> (root_session_id, depth)
+        self._lineage: dict[str, tuple[str, int]] = {}
+        # key -> summary dict for unsettled local jobs
+        self._active: dict[str, dict[str, object]] = {}
+        self._index_loading: asyncio.Future[tuple[dict[str, tuple[str, int]], dict[str, dict[str, object]]]] | None = None
+        self._settled_while_loading: set[str] = set()
 
     def read(self, key: str) -> tuple[OwnerRecord, Request, MessageReader] | None:
         record = self.ctx.require(OWNER_STATE).open(self.ctx).read(key)
@@ -67,26 +78,133 @@ class Subagents:
             raise ValueError("子任务请求与恢复指针不一致")
         return record, request, reader
 
-    # Read the saved parent calls so report chains stay bounded across restarts.
-    def check_background_spawn(self, session_id: str, source: str) -> str | None:
-        parents: dict[str, Request] = {}
-        for key, _ in self.ctx.require(OWNER_STATE).open(self.ctx).list():
-            found = self.read(key)
-            assert found is not None
-            request = found[1]
-            if request.background and request.parent_session_id == session_id:
-                parents[request.session_id] = request
-        reader = self.ctx.require(MESSAGE_CATALOG).reader(session_id)
+    def _read_with(self, state, catalog, key: str) -> tuple[OwnerRecord, Request, MessageReader] | None:
+        record = state.read(key)
+        if record is None:
+            return None
+        session_id, input_id, _ = _pointer(record)
+        reader = catalog.reader(session_id)
+        message = reader.get(input_id)
+        if message is None or not isinstance(message.body, Input):
+            raise ValueError("子任务原输入缺失")
+        requests = [part for part in message.body.parts if part.kind == "subagent.request"]
+        if len(requests) != 1:
+            raise ValueError("子任务原输入缺少唯一请求")
+        request = Request.model_validate(json_value(requests[0].value))
+        if (request.session_id, request.input_id) != (reader.session_id, message.message_id):
+            raise ValueError("子任务请求与恢复指针不一致")
+        return record, request, reader
+
+    @staticmethod
+    def _lineage_in(by_session: Mapping[str, Request], session_id: str) -> tuple[str, int]:
         depth = 0
-        while source in parents:
+        current = session_id
+        seen: set[str] = set()
+        while current in by_session and current not in seen:
+            seen.add(current)
             depth += 1
-            if depth >= MAX_BACKGROUND_DEPTH:
-                return f"后台子任务链已达到 {MAX_BACKGROUND_DEPTH} 层；请汇报已有结果，等待用户决定是否继续。"
-            parent = reader.get(parents[source].parent_message_id)
-            if parent is None:
-                raise ValueError("后台子任务的父调用消息缺失")
-            source = parent.source
+            current = by_session[current].parent_session_id
+        return current, depth
+
+    # 全量扫描历史子任务记录，只返回结果，由事件循环线程统一落入内存索引。
+    def _scan_index(self, state, catalog) -> tuple[dict[str, tuple[str, int]], dict[str, dict[str, object]]]:
+        by_session: dict[str, Request] = {}
+        active_rows: list[tuple[str, Request]] = []
+        for key, _ in state.list():
+            try:
+                found = self._read_with(state, catalog, key)
+            except ValueError as error:
+                logger.warning("跳过损坏的历史子任务索引 key=%s error=%s", key, error)
+                continue
+            if found is None:
+                continue
+            record, request, _ = found
+            by_session[request.session_id] = request
+            if not _pointer(record)[2]:
+                active_rows.append((key, request))
+        lineage = {session_id: self._lineage_in(by_session, session_id) for session_id in by_session}
+        active: dict[str, dict[str, object]] = {}
+        for key, request in active_rows:
+            resolved_root = request.root_session_id or lineage.get(request.session_id, (request.parent_session_id, 1))[0]
+            active[key] = {
+                "job_id": request.job_id,
+                "label": request.label,
+                "profile": request.profile,
+                "read_only": request.read_only,
+                "depth": request.depth,
+                "root_session_id": resolved_root,
+            }
+        return lineage, active
+
+    # 扫描期间已结算的 key 不能被旧快照复活，否则名额永久泄漏。
+    def _apply_index(self, scan: tuple[dict[str, tuple[str, int]], dict[str, dict[str, object]]]) -> None:
+        if self._index_loaded:
+            return
+        lineage, active = scan
+        for key in self._settled_while_loading:
+            active.pop(key, None)
+        self._settled_while_loading.clear()
+        self._lineage = {**lineage, **self._lineage}
+        self._active = {**active, **self._active}
+        self._index_loaded = True
+
+    def _ensure_index(self) -> None:
+        if self._index_loaded:
+            return
+        self._apply_index(self._scan_index(self.ctx.require(OWNER_STATE).open(self.ctx), self.ctx.require(MESSAGE_CATALOG)))
+
+    async def ensure_index(self) -> None:
+        # 1. 并发调用共享同一次后台扫描，避免两份快照先后覆盖内存索引。
+        if self._index_loaded:
+            return
+        if self._index_loading is None:
+            state = self.ctx.require(OWNER_STATE).open(self.ctx)
+            catalog = self.ctx.require(MESSAGE_CATALOG)
+            self._index_loading = asyncio.ensure_future(run_file_io(lambda: self._scan_index(state, catalog)))
+        loading = self._index_loading
+        try:
+            scan = await asyncio.shield(loading)
+        except Exception:
+            if self._index_loading is loading:
+                self._index_loading = None
+            raise
+        self._apply_index(scan)
+
+    def resolve_lineage(self, session_id: str) -> tuple[str, int]:
+        """解析某会话所属的顶层根会话 ID 及当前嵌套深度（根会话为 0）。"""
+        self._ensure_index()
+        return self._lineage.get(session_id, (session_id, 0))
+
+    def check_depth(self, session_id: str) -> str | None:
+        """同步与后台共用的统一递归深度限制。"""
+        if self.max_depth <= 0:
+            return "当前设置已禁用子任务派发（max_depth=0）；请直接完成该任务。"
+        _, depth = self.resolve_lineage(session_id)
+        if depth >= self.max_depth:
+            return f"子任务委派深度已达到上限（当前第 {depth} 层，上限 {self.max_depth} 层）；请直接处理或汇报已有结果。"
         return None
+
+    def active_count_for_root(self, root_session_id: str, *, exclude_key: str | None = None) -> int:
+        self._ensure_index()
+        local_active = sum(
+            1
+            for key, item in self._active.items()
+            if key != exclude_key and item.get("root_session_id") == root_session_id
+        )
+        external_active = 0 if self._external_active_for_root is None else self._external_active_for_root(root_session_id)
+        return local_active + external_active
+
+    async def admit_external(self, root_session_id: str, reserve: Callable[[int], bool]) -> bool:
+        """与本地子任务共用同一 ("admission",) 锁原子校验并占用根会话树槽位。"""
+        await self.ensure_index()
+
+        async def _check(_slot: TaskSlot) -> bool:
+            used = self.active_count_for_root(root_session_id)
+            if used >= self.max_active:
+                return False
+            return reserve(used)
+
+        return await self.ctx.require(TASKS).open(self.ctx).admit_async(("admission",), _check)
 
     async def accept(self, key: str, request: Request, text: str) -> None:
         """同一来源准入锁覆盖容量检查与持久提交，重放不再占额。"""
@@ -94,13 +212,14 @@ class Subagents:
         state = ctx.require(OWNER_STATE).open(ctx)
         limit = self.max_active
 
-        def check_capacity() -> None:
-            if state.read(key) is None and sum(not _pointer(row)[2] for _, row in state.list()) >= limit:
-                raise SubagentBusy(f"subagent capacity reached: max={limit}; current spawn rejected")
-
         async def admit(_slot: TaskSlot) -> None:
             # 1. 所有实例通过同一 owner 的准入 key；拒绝不会留下空 Session。
-            await run_file_io(check_capacity)
+            await self.ensure_index()
+            existing = await run_file_io(lambda: state.read(key))
+            if existing is None:
+                root_id = request.root_session_id or self.resolve_lineage(request.parent_session_id)[0]
+                if self.active_count_for_root(root_id) >= limit:
+                    raise SubagentBusy(f"subagent capacity reached for session tree: max={limit}; current spawn rejected")
             _ = await ctx.require(SESSION_ADMISSION).ensure_async(ctx, request.session_id,
                 SessionAttributes(visibility="internal", learning="excluded"))
             if request.cwd is not None:
@@ -143,6 +262,17 @@ class Subagents:
                 # 2. 内容检查保留原 Context，Input 与恢复指针仍在同一 SQL 事务。
                 prepared = await writer.prepare_async(request.input_id, body)
                 await state.transact_async(commit, on_commit=committed)
+                if created:
+                    root_id = request.root_session_id or self.resolve_lineage(request.parent_session_id)[0]
+                    self._lineage[request.session_id] = (root_id, request.depth)
+                    self._active[key] = {
+                        "job_id": request.job_id,
+                        "label": request.label,
+                        "profile": request.profile,
+                        "read_only": request.read_only,
+                        "depth": request.depth,
+                        "root_session_id": root_id,
+                    }
             finally:
                 writer.expire()
                 if created:
@@ -220,6 +350,9 @@ class Subagents:
             assert record is not None
             _ = tx.save(key, {**record.value, "settled": True}, expected_version=record.version)
         await state.transact_async(commit)
+        self._active.pop(key, None)
+        if not self._index_loaded:
+            self._settled_while_loading.add(key)
 
     @staticmethod
     async def outcome(reader: MessageReader, *, through_seq: int | None = None) -> tuple[str, str] | None:
@@ -410,15 +543,13 @@ class Subagents:
                 await self._trace(request, "delivery_failed")
         return True
 
-    def jobs(self) -> tuple[Mapping[str, object], ...]:
-        result: list[Mapping[str, object]] = []
-        for key, _ in self.ctx.require(OWNER_STATE).open(self.ctx).list():
-            found = self.read(key)
-            assert found is not None
-            record, request, _ = found
-            if not record.value["settled"]:
-                result.append({"job_id": request.job_id, "label": request.label, "profile": request.profile})
-        return tuple(result)
+    def jobs(self, *, root_session_id: str | None = None) -> tuple[Mapping[str, object], ...]:
+        self._ensure_index()
+        return tuple(
+            dict(item)
+            for item in self._active.values()
+            if root_session_id is None or item.get("root_session_id") == root_session_id
+        )
 
     async def follow(self) -> None:
         """正式生命周期追赶持久输入；短通知不持有工具归档或运行 generation。"""
