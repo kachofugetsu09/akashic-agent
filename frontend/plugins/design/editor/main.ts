@@ -8,6 +8,7 @@ import { Documents, type DocumentHost } from "./documents";
 import { configureFonts, preferNewestFonts } from "./fonts";
 import { iconSvg, type IconName } from "./icons";
 import { bindKeyboard } from "./keyboard";
+import { WHEEL_MODES, ZOOM_STEP, bindNavigation, navigation, setWheelMode, zoomBy } from "./navigation";
 import { LayersPanel, PropertiesPanel } from "./panels";
 import { PreviewFrame, importPreview } from "./preview";
 import "./style.css";
@@ -81,14 +82,58 @@ const DocumentBar = defineComponent({
   },
 });
 
+// 工具条末尾的缩放：显示当前比例，点开可以放大、缩小、回到 100%、看全部，并选择鼠标滚轮的行为。
+// 只用鼠标时不必记快捷键也能缩放。
+const ZoomMenu = defineComponent({
+  props: { editor: { type: Object as PropType<Editor>, required: true } },
+  setup(props) {
+    const commands = useEditorCommands();
+    const open = ref(false);
+    const close = (event: PointerEvent) => {
+      if (!(event.target instanceof Element) || !event.target.closest(".design-zoom")) open.value = false;
+    };
+    onMounted(() => window.addEventListener("pointerdown", close, true));
+    onBeforeUnmount(() => window.removeEventListener("pointerdown", close, true));
+    const item = (label: string, keys: string, action: () => void) => h("button", {
+      type: "button", class: "design-zoom-item", role: "menuitem", onClick: action,
+    }, [h("span", label), h("kbd", keys)]);
+    return () => {
+      const editor = props.editor;
+      const menu = open.value && h("div", { class: "design-zoom-menu", role: "menu", "aria-label": "缩放" }, [
+        item("放大", "+", () => zoomBy(editor, ZOOM_STEP)),
+        item("缩小", "-", () => zoomBy(editor, 1 / ZOOM_STEP)),
+        item("缩放到 100%", "⇧0", () => commands.runCommand("view.zoom100")),
+        item("缩放到全部内容", "⇧1", () => commands.runCommand("view.zoomFit")),
+        h("p", { class: "design-zoom-heading" }, "鼠标滚轮"),
+        ...WHEEL_MODES.map((option) => h("button", {
+          type: "button", class: "design-zoom-item", role: "menuitemradio", "aria-checked": String(navigation.wheel === option.mode),
+          onClick: () => setWheelMode(option.mode),
+        }, [h("span", option.label), h("small", option.hint)])),
+        h("p", { class: "design-zoom-tip" }, "右键、中键或按住空格拖动画布即可平移"),
+      ]);
+      return h("div", { class: "design-zoom" }, [
+        menu,
+        h("button", {
+          type: "button", class: "design-zoom-value", "aria-haspopup": "menu", "aria-expanded": String(open.value),
+          title: "缩放与滚轮", onClick: () => { open.value = !open.value; },
+        }, `${Math.round(editor.state.zoom * 100)}%`),
+      ]);
+    };
+  },
+});
+
 // 浮在画布底部的工具条：与 open-pencil 应用一样按单键切换，按钮上标出键位。
 const ToolDock = defineComponent({
   props: { editor: { type: Object as PropType<Editor>, required: true } },
   setup(props) {
-    return () => h("nav", { class: "design-dock", "aria-label": "绘制工具" }, TOOLS.map((item) => IconButton({
-      label: `${item.label} (${item.key})`, icon: item.icon, pressed: props.editor.state.activeTool === item.tool,
-      onClick: () => props.editor.setTool(item.tool),
-    })));
+    return () => h("nav", { class: "design-dock", "aria-label": "绘制工具" }, [
+      ...TOOLS.map((item) => IconButton({
+        label: `${item.label} (${item.key})`, icon: item.icon, pressed: props.editor.state.activeTool === item.tool,
+        onClick: () => props.editor.setTool(item.tool),
+      })),
+      h("span", { class: "design-dock-rule", "aria-hidden": "true" }),
+      h(ZoomMenu, { editor: props.editor }),
+    ]);
   },
 });
 
@@ -152,8 +197,14 @@ const Shell = defineComponent({
     // 画布丢了 WebGL 上下文后换一个 key，CanvasRoot 整个重新挂载，拿新的画布元素与上下文
     const surface = ref(0);
     const rebuild = () => { surface.value++; };
+    const stage = ref<HTMLElement | null>(null);
+    const busy = () => props.documents.state.busy > 0;
     let unbind = () => {};
-    onMounted(() => { unbind = bindKeyboard(window, props.editor, commands.runCommand, () => props.documents.state.busy > 0); });
+    onMounted(() => {
+      const unbindKeyboard = bindKeyboard(window, props.editor, commands.runCommand, busy);
+      const unbindNavigation = stage.value ? bindNavigation(stage.value, props.editor, () => !busy()) : () => {};
+      unbind = () => { unbindKeyboard(); unbindNavigation(); };
+    });
     onBeforeUnmount(() => unbind());
     return () => {
       const { state } = props.documents;
@@ -163,7 +214,7 @@ const Shell = defineComponent({
         state.error && h("p", { class: "design-error", role: "alert" }, state.error),
         h("div", { class: "design-body", inert: state.busy > 0 }, [
           !empty && panels.layers && h(LayersPanel),
-          h("div", { class: "design-stage" }, [
+          h("div", { class: "design-stage", ref: stage }, [
             h(CanvasRoot, { key: surface.value }, () => [h(CanvasSurface, { class: "design-canvas" }),
               h(CanvasInput, { editor: props.editor, documents: props.documents, onContextLost: rebuild })]),
             !empty && state.view === "canvas" && h(ToolDock, { editor: props.editor }),

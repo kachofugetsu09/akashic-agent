@@ -163,6 +163,92 @@ body {
   transform: translateX(-50%);
 }
 
+.design-dock-rule {
+  flex: none;
+  width: 1px;
+  margin: 6px 2px;
+  background: var(--ak-rule-default);
+}
+
+/* 缩放比例与菜单：菜单从工具条向上展开，右缘与工具条对齐。 */
+.design-zoom { position: relative; display: flex; }
+
+.design-zoom-value {
+  min-width: 52px;
+  height: 32px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--ak-radius-sm);
+  color: var(--ak-ink-secondary);
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.design-zoom-value:hover,
+.design-zoom-value[aria-expanded="true"] { color: var(--ak-ink-primary); background: var(--ak-paper-raised); }
+
+.design-zoom-menu {
+  position: absolute;
+  inset-block-end: calc(100% + 10px);
+  inset-inline-end: -5px;
+  width: 248px;
+  padding: 4px;
+  border: 1px solid var(--ak-rule-default);
+  border-radius: var(--ak-radius-md);
+  background: var(--ak-paper-sheet);
+  box-shadow: var(--ak-elevation-float);
+}
+
+.design-zoom-item {
+  display: flex;
+  width: 100%;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 2px 8px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: var(--ak-radius-sm);
+  color: var(--ak-ink-primary);
+  background: transparent;
+  font: inherit;
+  font-size: 13px;
+  text-align: start;
+  cursor: pointer;
+}
+
+.design-zoom-item:hover { background: var(--ak-paper-raised); }
+.design-zoom-item kbd { color: var(--ak-ink-muted); font: inherit; font-size: 12px; }
+.design-zoom-item small { flex-basis: 100%; color: var(--ak-ink-muted); font-size: 12px; }
+.design-zoom-item[aria-checked="true"] { font-weight: 600; }
+.design-zoom-item[aria-checked="true"] small { font-weight: 400; }
+
+.design-zoom-item[role="menuitemradio"] { padding-inline-start: 24px; position: relative; }
+.design-zoom-item[aria-checked="true"]::before {
+  content: "";
+  position: absolute;
+  inset-block-start: 12px;
+  inset-inline-start: 10px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ak-ink-primary);
+}
+
+.design-zoom-heading,
+.design-zoom-tip {
+  margin: 0;
+  padding: 8px 8px 4px;
+  border-block-start: 1px solid var(--ak-rule-subtle);
+  color: var(--ak-ink-muted);
+  font-size: 12px;
+}
+
+.design-zoom-tip { margin-block-start: 4px; padding-block-end: 6px; }
+
 .design-empty {
   position: absolute;
   inset: 0;
