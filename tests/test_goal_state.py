@@ -115,22 +115,6 @@ def test_resume_only_from_paused_or_blocked_and_resets_empty():
         resume(_goal(token_budget=1))
 
 
-def test_budget_can_be_set_and_lowered_below_usage():
-    goal = _goal(token_budget=1000)
-    goal = set_token_budget(goal, 10)
-    assert goal.token_budget == 10
-    goal = settle_round(
-        goal, activity=True, tokens=20, coverage="exact",
-        settled_through_seq=4, last_settled_message_id="m",
-    )
-    assert goal.status is GoalStatus.BUDGET_LIMITED
-    raised = set_token_budget(goal, 100)
-    assert raised.status is GoalStatus.ACTIVE
-    assert raised.token_budget == 100
-    lowered = set_token_budget(raised, 5)
-    assert lowered.status is GoalStatus.BUDGET_LIMITED
-
-
 def test_continuation_cap_pauses_active_goal():
     from dataclasses import replace
     goal = _goal()

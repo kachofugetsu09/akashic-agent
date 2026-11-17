@@ -19,9 +19,8 @@ async def live_root(host: PluginManager):
     yield root
 
 @asynccontextmanager
-async def application(tmp_path, *, replying, missing_tool=False, discovery=False, compaction=False,
-                      output_tokens=4096, max_steps=None, keep_recent_tokens=128, summary_padding=0,
-                      provider_effect_data=False, updates=False, validation_passed=True, extra_sources=None,
+async def application(tmp_path, *, replying, discovery=False, compaction=False,
+                      output_tokens=4096, max_steps=None, keep_recent_tokens=128, extra_sources=None,
                       shell=False):
     sources = tmp_path / "plugins"
     workspace = tmp_path / "workspace"
@@ -55,17 +54,6 @@ async def application(tmp_path, *, replying, missing_tool=False, discovery=False
             sources / name,
             ignore=shutil.ignore_patterns("__pycache__"),
         )
-    if updates:
-        from tests.support.delivery_sources import sources as delivery_sources
-        delivery_sources(sources)
-        shutil.copytree(
-            Path(__file__).parents[1] / "plugins/delivery_policy",
-            sources / "delivery_policy",
-            ignore=shutil.ignore_patterns("__pycache__"),
-        )
-        for name in ("assets", "plugin_update"):
-            shutil.copytree(Path(__file__).parents[1] / "plugins" / name, sources / name,
-                            ignore=shutil.ignore_patterns("__pycache__"))
     if compaction:
         shutil.copytree(Path(__file__).parents[1] / "plugins/compaction", sources / "compaction",
                         ignore=shutil.ignore_patterns("__pycache__"))
@@ -74,10 +62,6 @@ async def application(tmp_path, *, replying, missing_tool=False, discovery=False
         save_config(settings, {"summary_source": ["compaction", "compaction"]})
         module = sources / "compaction/plugin.py"
         module.write_text(module.read_text().replace('Field(default=20_000,', f'Field(default={keep_recent_tokens},'))
-    if missing_tool:
-        settings = tmp_path / "workspace/plugin-data/reply-builtin"
-        settings.parent.mkdir(parents=True, exist_ok=True)
-        save_config(settings, {"tools": ["gone"]})
     provider = sources / "test_provider"
     provider.mkdir()
     (provider / "plugin.py").write_text('''
@@ -166,14 +150,6 @@ async def apply(ctx):
     await ctx.provide(MODEL_SELECTION, SelectionOwner())
     await ctx.provide(ServiceKey("fixture.calls"), calls)
 '''.replace("EFFECT_PATH", repr(str(tmp_path / "effect.txt"))))
-    if provider_effect_data:
-        module = provider / "plugin.py"
-        module.write_text(module.read_text().replace(
-            repr(str(tmp_path / "effect.txt")), 'ctx.runtime.data_dir / "effect.txt"'))
-    if updates and not validation_passed:
-        module = provider / "plugin.py"
-        module.write_text(module.read_text().replace(
-            'return LLMResponse("finished")', 'raise RuntimeError("candidate execution failed")'))
     if discovery:
         module = provider / "plugin.py"
         module.write_text(module.read_text().replace(
@@ -188,7 +164,7 @@ async def apply(ctx):
                 from plugins.compaction.message_summary import HEADINGS
                 return LLMResponse("\\n".join(heading + "\\nPreserved facts." for heading in HEADINGS))
             business.append(request)
-            if len(business) == 1:''').replace("Preserved facts.", "Preserved facts." + "z" * summary_padding))
+            if len(business) == 1:'''))
     if shell:
         save_config(workspace / "plugin-data/context-builtin", {"prompt_sources": {"skills": "skills"}})
         for name in ("host_execution", "assets"):
@@ -238,7 +214,6 @@ async def test_installed_default_reply_is_an_independent_log_consumer(tmp_path, 
             async with live_root(host) as root:
                 calls = root.context.require(ServiceKey("fixture.calls"))
                 assert calls == []
-                assert all("[Source messages]" in str(call.messages) for call in calls)
             assert log.reader("test:room").snapshot() == (accepted,)
             assert not (tmp_path / "effect.txt").exists()
 

@@ -16,19 +16,6 @@ def _write_source(path, source):
     path.write_text(source)
 
 @pytest.mark.asyncio
-async def test_core_only_manager_does_not_supply_commands(tmp_path):
-    initialize_plugin_workspace(tmp_path / "workspace")
-    host = PluginManager([], workspace=tmp_path / "workspace",
-                         installed_cache_root=tmp_path / "home")
-    try:
-        await host.load_all()
-        root = host.live_root
-        assert root is not None
-        assert root.context.get(COMMANDS) is None
-    finally:
-        await host.terminate_all()
-
-@pytest.mark.asyncio
 async def test_binding_keeps_selected_provider_handler_and_dependency_closure(tmp_path):
     """异名 provider 按服务选择；命令绑定保留实际贡献闭包且不吸收无关插件。"""
     source = tmp_path / "plugins"

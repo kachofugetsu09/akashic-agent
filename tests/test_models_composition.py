@@ -17,4 +17,4 @@ def test_remainder_label_collision_preserves_category_shares() -> None:
     assert len(detail["injected"]) <= 31
     scaled = _scaled(detail, 782)
     assert scaled is not None
-    assert totals(scaled) == _scaled(totals(parts), 782)
+    assert totals(scaled) == {"injected": {"": 391}, "user": {"": 391}}

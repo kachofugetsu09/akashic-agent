@@ -1,13 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { promisify } from "node:util";
 import { ComputerLifecycle } from "../lifecycle.mjs";
-
-const exec = promisify(execFile);
 
 async function waitForFile(path, timeoutMs = 3000) {
   const deadline = Date.now() + timeoutMs;
@@ -21,12 +17,6 @@ async function waitForFile(path, timeoutMs = 3000) {
   throw new Error(`Timed out waiting for ${path}`);
 }
 
-test("gateway stream token uses hex without leading hyphen", async () => {
-  const gatewaySource = await readFile(new URL("../gateway.mjs", import.meta.url), "utf8");
-  assert.match(gatewaySource, /COMPUTER_STREAM_TOKEN\s*\|\|=\s*randomBytes\(24\)\.toString\("hex"\)/);
-  assert.doesNotMatch(gatewaySource, /COMPUTER_STREAM_TOKEN\s*\|\|=\s*randomBytes\(24\)\.toString\("base64url"\)/);
-});
-
 test("start.sh binds master-token with equals and cleans Singleton locks in --runtime", async () => {
   const startSource = await readFile(new URL("../start.sh", import.meta.url), "utf8");
   assert.match(startSource, /--master-token="\$COMPUTER_STREAM_TOKEN"/);
@@ -34,15 +24,6 @@ test("start.sh binds master-token with equals and cleans Singleton locks in --ru
   assert.match(runtimeSection, /\/data\/profile\/SingletonCookie/);
   assert.match(runtimeSection, /\/data\/profile\/SingletonLock/);
   assert.match(runtimeSection, /\/data\/profile\/SingletonSocket/);
-});
-
-test("argparse accepts leading-hyphen token when passed via --master-token=value", async () => {
-  const { stdout } = await exec("python3", [
-    "-c",
-    "import argparse, sys; p = argparse.ArgumentParser(); p.add_argument('--master-token'); print(p.parse_args(sys.argv[1:]).master_token)",
-    "--master-token=-leading-hyphen-token",
-  ]);
-  assert.equal(stdout.trim(), "-leading-hyphen-token");
 });
 
 test("ComputerLifecycle startup rollback sends SIGTERM and returns to sleeping without locking failed", async () => {

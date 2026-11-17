@@ -15,8 +15,6 @@ from plugins.react.plugin import (
     STEP_LIMIT_ABANDON,
     STEP_LIMIT_FAILURE,
     StepLimit,
-    step_limit_abandon_reason,
-    step_limit_failure_reason,
 )
 from tests.support.message_react import runtime
 from plugins.tools.execution import Result
@@ -73,9 +71,9 @@ async def test_step_limit_abandons_segment_when_no_call_is_open(tmp_path: Path) 
         # 第二轮又跑满 2 步后才作废：新输入不会被旧账卡住，也不会凭空清零。
         assert len(abandons) == 2, written
         for body in abandons:
-            assert body.reason == step_limit_abandon_reason(2)
             assert body.reason is not None
             assert body.reason.startswith(STEP_LIMIT_ABANDON)
+            assert "连续 2 次" in body.reason
         # 自动放弃不需要用户再动手，因此不能写 failure 把来源留在暂停上。
         assert not [body for body in written if body.action == "failure"]
         # 两轮共 4 次请求：每段 2 步，第二轮没有因为旧账而一步都发不出。
@@ -123,9 +121,9 @@ async def test_step_limit_with_open_call_reports_unknown_effect(tmp_path: Path) 
 
         limit = failure.value.args[0]
         assert isinstance(limit, StepLimit)
-        assert str(limit) == step_limit_failure_reason(1, 1)
         # 界面按这个前缀认出「重试不会生效、只有放弃能解开」，所以它必须是稳定的事实。
         assert str(limit).startswith(STEP_LIMIT_FAILURE)
+        assert "连续 1 次" in str(limit) and "1 个工具调用" in str(limit)
         # 引擎没有替用户作废：没有任何 abandon，计数也不会被清掉。
         assert not [body for body in controls(log) if body.action == "abandon"]
 
@@ -172,7 +170,5 @@ def _typescript_string_constant(path: Path, name: str) -> str:
 def test_step_limit_reason_prefix_matches_frontend_constant() -> None:
     """改文案必须同时改前端；否则界面会悄悄退回一个不会生效的「重试」。"""
     assert _typescript_string_constant(_TIMELINE_SOURCE, "STEP_LIMIT_FAILURE_REASON") == STEP_LIMIT_FAILURE
-    assert step_limit_failure_reason(1, 1).startswith(STEP_LIMIT_FAILURE)
     # 引擎放弃那条前缀同样被前端用来区分人工与自动放弃。
     assert _typescript_string_constant(_CONVERSATION_SOURCE, "ENGINE_ABANDON_REASON") == STEP_LIMIT_ABANDON
-    assert step_limit_abandon_reason(1).startswith(STEP_LIMIT_ABANDON)

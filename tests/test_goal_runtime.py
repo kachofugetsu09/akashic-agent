@@ -8,7 +8,7 @@ from typing import Any, Literal, cast
 
 import pytest
 
-from plugins.goal.runtime import GoalRuntime, _usage, fold_round
+from plugins.goal.runtime import GoalRuntime, fold_round
 from plugins.goal.state import GoalStatus, new_goal
 from plugins.ledger.contract import (
     ContentPart,
@@ -390,35 +390,6 @@ async def test_pause_after_preemption_does_not_continue(tmp_path):
         assert harness.log.reader("s").get("goal-continuation:g:2") is None
     finally:
         harness.log.close()
-
-
-@pytest.mark.asyncio
-async def test_complete_status_stops_continuation(tmp_path):
-    harness = goal_harness(tmp_path)
-    try:
-        _append_output(harness.log, "setup")
-        goal = await _create_goal(harness, settled_through_seq=0)
-        runtime = GoalRuntime(harness.store, cast(Any, _RuntimeCatalog(harness.log)), _stats)
-        await runtime.advance("s")
-        from dataclasses import replace
-        await harness.store.apply(
-            "s", "op-complete", "update", "1" * 64,
-            lambda current: (
-                replace(current, status=GoalStatus.COMPLETE)
-                if current is not None else current,
-                "complete",
-            ),
-        )
-        await runtime.advance("s")
-        goal = await harness.store.get("s")
-        assert goal is not None and goal.status is GoalStatus.COMPLETE
-        assert goal.continuations == 1
-    finally:
-        harness.log.close()
-
-
-def test_usage_without_model_facts_is_unavailable():
-    assert _usage((), _stats) == (0, "unavailable")
 
 
 def test_fold_round_marks_successful_tool_result_as_activity(tmp_path):

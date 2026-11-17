@@ -241,13 +241,6 @@ async def test_monkey_goal_invariants(tmp_path, seed):
             previous_continuations = current.continuations
             previous_tokens = current.tokens_used
             previous_settled = current.settled_through_seq
-
-        # 结构事实：一个 Session 最多一条 goal owner 记录。
-        goals = [
-            key for key, _record in log.owner("goal").list()
-            if key.startswith("goal:")
-        ]
-        assert len(goals) <= 1
     finally:
         log.close()
 

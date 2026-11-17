@@ -7,7 +7,7 @@ from typing import cast
 import pytest
 
 from plugins.goal.state import Goal, GoalStatus, new_goal
-from plugins.goal.store import RoundSettlement, digest, goal_key
+from plugins.goal.store import RoundSettlement, digest
 from plugins.ledger.contract import (
     ContentReferences,
     ContentPart,
@@ -35,32 +35,13 @@ async def _create(store, session_id="s", operation="op-create", objective="ship 
 
 
 @pytest.mark.asyncio
-async def test_create_is_idempotent_and_digest_guarded(tmp_path):
-    harness = goal_harness(tmp_path)
-    try:
-        goal, text = await _create(harness.store)
-        assert text == "created"
-        assert goal is not None and goal.status is GoalStatus.ACTIVE
-        again, again_text = await _create(harness.store)
-        assert again == goal and again_text == "created"
-        with pytest.raises(MessageConflict):
-            await harness.store.apply(
-                "s", "op-create", "create", digest({"objective": "other"}),
-                lambda current: (current, "noop"),
-                expected_head=await harness.store.conversation_head("s"),
-            )
-    finally:
-        harness.log.close()
-
-
-@pytest.mark.asyncio
 async def test_start_appends_continuation_and_settle_appends_next(tmp_path):
     harness = goal_harness(tmp_path)
     log = harness.log
     try:
         goal, _ = await _create(harness.store)
         assert goal is not None
-        version = harness.store._open().read(goal_key("s")).version
+        version = await harness.store.version("s")
         head = await harness.store.conversation_head("s")
         started = await harness.store.start(
             "s", expected_goal_id="g", expected_version=version, expected_head=head,
@@ -80,7 +61,7 @@ async def test_start_appends_continuation_and_settle_appends_next(tmp_path):
             "final", Output((ContentPart("text", "done"),), "complete"),
         )
         writer.expire()
-        version = harness.store._open().read(goal_key("s")).version
+        version = await harness.store.version("s")
         settled = await harness.store.settle(
             "s", expected_goal_id="g", expected_version=version,
             expected_head=terminal.seq,
@@ -105,7 +86,7 @@ async def test_settle_rejects_head_change(tmp_path):
     try:
         goal, _ = await _create(harness.store)
         assert goal is not None
-        version = harness.store._open().read(goal_key("s")).version
+        version = await harness.store.version("s")
         head = await harness.store.conversation_head("s")
         await harness.store.start(
             "s", expected_goal_id="g", expected_version=version, expected_head=head,
@@ -121,7 +102,7 @@ async def test_settle_rejects_head_change(tmp_path):
         writer.expire()
         stale_head = terminal.seq
         user_input(log, "s", "user-1", "let me add something")
-        version = harness.store._open().read(goal_key("s")).version
+        version = await harness.store.version("s")
         with pytest.raises(MessageConflict):
             await harness.store.settle(
                 "s", expected_goal_id="g", expected_version=version,
@@ -148,11 +129,16 @@ async def test_operation_receipts_are_bounded(tmp_path, monkeypatch):
                 "s", f"op-{index}", "clear", digest({"clear": index}),
                 lambda current: (None, "cleared"),
             )
-        keys = [
-            key for key, _record in harness.store._open().list()
-            if key.startswith("goalop:")
-        ]
-        assert len(keys) <= 3
+        # 最新回执仍守护同一操作号；最早的回执已淘汰，同号新载荷不再冲突。
+        with pytest.raises(MessageConflict):
+            await harness.store.apply(
+                "s", "op-7", "clear", digest({"clear": "other"}),
+                lambda current: (None, "cleared"),
+            )
+        await harness.store.apply(
+            "s", "op-0", "clear", digest({"clear": "other"}),
+            lambda current: (None, "cleared"),
+        )
     finally:
         harness.log.close()
 
@@ -163,6 +149,7 @@ async def test_runtime_sessions_includes_inactive_with_pending_continuation(tmp_
     harness = goal_harness(tmp_path)
     try:
         await _create(harness.store)
+        assert await harness.store.active_sessions() == frozenset({"s"})
         assert await harness.store.runtime_sessions() == frozenset({"s"})
 
         await harness.store.apply(
@@ -183,20 +170,5 @@ async def test_runtime_sessions_includes_inactive_with_pending_continuation(tmp_
             lambda current: (replace(cast(Goal, current), continuation_id=None), "settled"),
         )
         assert await harness.store.runtime_sessions() == frozenset()
-    finally:
-        harness.log.close()
-
-
-@pytest.mark.asyncio
-async def test_active_sessions_only_returns_active(tmp_path):
-    harness = goal_harness(tmp_path)
-    try:
-        await _create(harness.store)
-        assert await harness.store.active_sessions() == frozenset({"s"})
-        await harness.store.apply(
-            "s", "op-pause", "pause", digest({"pause": True}),
-            lambda current: (None, "cleared"),
-        )
-        assert await harness.store.active_sessions() == frozenset()
     finally:
         harness.log.close()

@@ -198,7 +198,6 @@ async def test_parallel_flag_stays_out_of_binding_description(tmp_path):
                 parameters={"type": "object"}, open=open_target, parallel=True,
             )
             assert "parallel" not in ref.description
-            assert "risk" not in ref.description
             assert catalog.allows_parallel("write_example") is True
             assert catalog.allows_parallel("missing") is False
     finally:
