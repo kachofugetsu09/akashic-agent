@@ -1,8 +1,22 @@
-import { MoreHorizontal, Search } from "lucide-react";
+import { MoreHorizontal } from "lucide-react";
 import { useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { hostLink } from "./chat-host";
 import { chatLayout, subscribeChatLayout } from "./chat-layout";
+
+// Codex 16×16 原生像素网格放大镜，保持软角与轻细线重。
+function FindIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path
+        fillRule="evenodd"
+        clipRule="evenodd"
+        d="M7.328 1.91C10.288 1.91 12.687 4.309 12.687 7.269C12.687 8.574 12.219 9.769 11.444 10.698L14.043 13.298C14.248 13.503 14.248 13.835 14.043 14.04C13.838 14.245 13.506 14.245 13.301 14.04L10.696 11.435C9.775 12.179 8.605 12.627 7.328 12.627C4.369 12.627 1.97 10.228 1.97 7.269C1.97 4.309 4.369 1.91 7.328 1.91ZM7.328 2.961C4.949 2.961 3.021 4.889 3.021 7.269C3.021 9.648 4.949 11.577 7.328 11.577C9.708 11.577 11.637 9.648 11.637 7.269C11.637 4.889 9.708 2.961 7.328 2.961Z"
+        fill="currentColor"
+      />
+    </svg>
+  );
+}
 
 // 宿主下发的标题行动作（例如工作台开关）：处理函数留在宿主，聊天只画按钮并回传 id。
 export interface HeaderActionItem {
@@ -56,7 +70,7 @@ export function HeaderActions({ onFind, newChat }: { onFind?: () => void; newCha
   const pending = useRef<(() => void) | null>(null);
   const actions: HeadingAction[] = [
     ...onFind ? [{ id: "find", label: "在对话中查找", hint: "在对话中查找 (Ctrl/⌘F)", keys: "Control+F Meta+F",
-      icon: <Search size={20} strokeWidth={1.75} aria-hidden="true" />, run: onFind }] : [],
+      icon: <FindIcon />, run: onFind }] : [],
     ...host.map((item) => ({ id: item.id, label: item.label, hint: item.hint ?? item.label, attention: item.attention, active: item.active,
       icon: <HostIcon svg={item.iconSvg} />, run: () => hostLink()?.activateHeaderAction(item.id) })),
   ];

@@ -293,11 +293,24 @@ input {
 }
 
 .chat-sidebar__new,
-.conversation-heading__new,
-.conversation-heading__action {
+.conversation-heading__new {
   display: inline-grid;
   width: 36px;
   height: 36px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 0;
+  border-radius: var(--ak-radius-sm);
+  padding: 0;
+  color: var(--chat-ink);
+  background: transparent;
+  cursor: pointer;
+}
+
+.conversation-heading__action {
+  display: inline-grid;
+  width: 32px;
+  height: 32px;
   flex: 0 0 auto;
   place-items: center;
   border: 0;
@@ -314,18 +327,19 @@ input {
   margin-inline-start: auto;
 }
 
-/* 动作区靠行尾：第一个动作推到右侧，其余紧挨；宿主图标（工作台）与 Lucide 图标同尺寸，有新活动时右上角一个点。 */
+/* 动作区靠行尾：第一个动作推到右侧，其余紧挨；工作台图标统一 16px，有新活动时右上角一个点。 */
 .conversation-heading__stack + .conversation-heading__action,
 .conversation-heading > h1 + .conversation-heading__action { margin-inline-start: auto; }
 .conversation-heading__action + .conversation-heading__new { margin-inline-start: 0; }
 .conversation-heading__action { position: relative; }
+.conversation-heading__action svg { width: 16px; height: 16px; }
 .conversation-heading__icon { display: inline-grid; place-items: center; }
 .conversation-heading__icon svg,
-.conversation-heading__menu .conversation-heading__icon svg { width: 20px; height: 20px; }
+.conversation-heading__menu .conversation-heading__icon svg { width: 16px; height: 16px; }
 .conversation-heading__action[data-attention]::after {
   position: absolute;
-  inset-block-start: 7px;
-  inset-inline-end: 7px;
+  inset-block-start: 6px;
+  inset-inline-end: 6px;
   width: 6px;
   height: 6px;
   border-radius: 50%;
@@ -1696,9 +1710,9 @@ input {
   min-block-size: 53px;
   flex: 0 0 auto;
   align-items: center;
-  gap: 2px;
+  gap: 4px;
   padding-block: 6px;
-  padding-inline: max(24px, env(safe-area-inset-left, 0px)) max(24px, env(safe-area-inset-right, 0px));
+  padding-inline: max(24px, env(safe-area-inset-left, 0px)) max(16px, env(safe-area-inset-right, 0px));
   border-block-end: 1px solid var(--chat-line);
 }
 

@@ -377,7 +377,7 @@ function renderComputer(ctx: WebHostContextV1, host: HTMLElement, rawView: unkno
 export function activate(ctx: WebHostContextV1): WebUiDisposer {
   return ctx.ui.inject("conversation.tools.v2", mount => mount.register({
     id: "computer", label: "浏览器", order: 10, hint: "带你登录态的浏览器，Agent 和你都能用", shortcut: "Mod+Shift+D", background: true,
-    icon: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg>',
+    icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg>',
     render(host, _entryView, props) { return renderComputer(ctx, host, props); },
   }));
 }

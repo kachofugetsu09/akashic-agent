@@ -495,7 +495,7 @@ function renderChanges(ctx: WebHostContextV1, host: HTMLElement, rawView: unknow
 export function activate(ctx: WebHostContextV1): WebUiDisposer {
   return ctx.ui.inject("conversation.tools.v2", (mount) => mount.register({
     id: "workspace-changes", label: "改动", order: 30, hint: "工作目录相对 git 的改动", shortcut: "Mod+Shift+G", accepts: [OPEN_INTENT, FILE_INTENT],
-    icon: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3v12M18 9v12M6 15a3 3 0 1 0 0 6 3 3 0 0 0 0-6ZM18 3a3 3 0 1 0 0 6 3 3 0 0 0 0-6ZM6 15c0-4 12-2 12-6"/></svg>',
+    icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3v12M18 9v12M6 15a3 3 0 1 0 0 6 3 3 0 0 0 0-6ZM18 3a3 3 0 1 0 0 6 3 3 0 0 0 0-6ZM6 15c0-4 12-2 12-6"/></svg>',
     render(host, _entryView, props) { return renderChanges(ctx, host, props); },
   }));
 }

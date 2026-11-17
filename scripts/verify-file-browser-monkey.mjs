@@ -380,16 +380,24 @@ async function checkInvariants(page, tag) {
         if (!special.disabled) problems.push(`special file entry not disabled: ${special.textContent}`);
       }
     }
+    const panelOpen = Boolean(document.querySelector("#conversation-tools-panel") && !document.querySelector("#conversation-tools-panel").hidden);
+    const wide = !window.matchMedia("(max-width: 68rem)").matches;
     return {
       problems,
       workers: window.workerStats,
+      panelOpen,
+      wide,
       headerActions: window.__headerActions.map((a) => ({ id: a.id, active: a.active })),
     };
   });
   assert.deepEqual(audit.problems, [], `${tag} invariant violation: ${JSON.stringify(audit)}`);
   assert.ok(audit.workers.live <= 1, `${tag} leaked syntax workers: ${JSON.stringify(audit.workers)}`);
-  assert.ok(audit.headerActions.some((a) => a.id === "tool:markdown-reader"), `${tag} missing header file button`);
-  assert.ok(audit.headerActions.some((a) => a.id === "workbench"), `${tag} missing header workbench button`);
+  assert.ok(!audit.headerActions.some((a) => a.id.startsWith("tool:")), `${tag} unexpected promoted tool action: ${JSON.stringify(audit.headerActions)}`);
+  if (audit.panelOpen && audit.wide) {
+    assert.ok(!audit.headerActions.some((a) => a.id === "workbench"), `${tag} wide open workbench should hide duplicate header toggle`);
+  } else {
+    assert.ok(audit.headerActions.some((a) => a.id === "workbench"), `${tag} missing header workbench button`);
+  }
 }
 
 const WIDTHS = [
@@ -413,9 +421,27 @@ try {
     const errors = [];
     page.on("pageerror", (err) => errors.push(err.message));
 
+    async function ensureFilesOpen(targetPage) {
+      const wbOpen = await targetPage.locator("#conversation-tools-panel").isVisible().catch(() => false);
+      if (!wbOpen) {
+        const wbBtn = targetPage.locator("button[data-header-action='workbench']");
+        if (await wbBtn.isVisible().catch(() => false)) {
+          await wbBtn.click();
+        } else {
+          await targetPage.keyboard.press("Control+J");
+        }
+      }
+      const readerVisible = await targetPage.locator(".md-reader").isVisible().catch(() => false);
+      if (!readerVisible) {
+        const tabBtn = targetPage.locator(".conversation-tools-tab", { hasText: "文件" });
+        if (await tabBtn.isVisible().catch(() => false)) await tabBtn.click();
+        else await targetPage.locator(".conversation-tools-launch-tool", { hasText: "文件" }).click();
+      }
+    }
+
     await page.goto(origin + "/");
-    await page.locator("button[data-header-action='tool:markdown-reader']").waitFor();
-    await page.locator("button[data-header-action='tool:markdown-reader']").click();
+    await page.locator("button[data-header-action='workbench']").waitFor();
+    await ensureFilesOpen(page);
     await waitQuiet(page);
     await checkInvariants(page, `seed=${seed}:init`);
 
@@ -450,9 +476,11 @@ try {
       try {
         const panelOpen = await page.locator(".md-reader").isVisible().catch(() => false);
         if (!panelOpen && action !== "header_file" && action !== "intent" && action !== "resize") {
-          await page.locator("button[data-header-action='tool:markdown-reader']").click();
+          await ensureFilesOpen(page);
         } else if (action === "header_file") {
-          await page.locator("button[data-header-action='tool:markdown-reader']").click();
+          const closeBtn = page.locator(".conversation-tools-close");
+          if (await closeBtn.isVisible().catch(() => false)) await closeBtn.click();
+          else await ensureFilesOpen(page);
         } else if (action === "switch_session") {
           const next = pick(["main", "proj", "other", ""]);
           await page.evaluate((s) => window.__setSession(s), next);
