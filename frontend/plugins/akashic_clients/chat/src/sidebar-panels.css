@@ -275,12 +275,6 @@
   outline-offset: -2px;
 }
 
-<<<<<<< HEAD
-@keyframes sidebar-panels-in { from { transform: translateY(-6px) scale(0.96, 0.92); opacity: 0; } }
-@keyframes sidebar-panels-sheet { from { transform: translateY(24px); opacity: 0; } }
-@keyframes sidebar-panels-fade { from { opacity: 0; } }
-=======
->>>>>>> 03c44b790 (fix(chat): replace abrupt unmounts & keyframes with interruptible transitions)
 @media (prefers-reduced-motion: reduce) {
   .sidebar-panels,
   .sidebar-panels-scrim { transition: none; filter: none; }

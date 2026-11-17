@@ -14,7 +14,8 @@ let listener; window.stopCalls=[]; window.items=[]; window.publish=value=>listen
 // 宿主替身：说明项记在 window.items，展开某项就把它的 detail 挂进 #detail。
 window.expand=id=>{const host=document.getElementById('detail');window.unmount?.();host.replaceChildren();const item=window.items.find(i=>i.id===id);window.unmount=item?.detail?.(host)};
 const context={subscribe(fn){listener=fn;return()=>{listener=null}},async query(method,payload){window.stopCalls.push(payload);return {accepted:true}},
-  meta:{publish(items){window.items=items},closePanel(){}}};
+  meta:{publish(items){window.items=items},closePanel(){}},onInvalidate(){return()=>{}},
+  workbench:{accepts(){return false},async open(){return 'unhandled'}}};
 definition.slots['header.meta'].mount(document.getElementById('root'),context);`,resolveDir:repo,loader:'tsx'},bundle:true,format:'esm',jsx:'automatic',outfile:out+'/bundle.js',plugins:[{name:'public-render',setup(b){b.onResolve({filter:/^@akashic\/chat-ui-v1$/},()=>({path:'ui',namespace:'shim'}));b.onLoad({filter:/.*/,namespace:'shim'},()=>({contents:"import {createRoot} from 'react-dom/client'; export function render(host,node){const root=createRoot(host);root.render(node);return ()=>root.unmount()} export const ToolText=({text})=>text;",resolveDir:repo}));}}]});
 const server=await startDesktopFixtureServer(out);
 const browser=await chromium.launch({executablePath:process.env.CHROMIUM_PATH??'/usr/bin/chromium',headless:true});
@@ -29,7 +30,7 @@ for(const width of [390,1440]){
  await page.evaluate(r=>window.publish({runs:[r]}),run);
  // 1. 在跑：说明行一项（进行中）加一个子项，子项展开后能停止。
  const items=await page.evaluate(()=>window.items.map(({detail,...rest})=>rest));
- assert.deepEqual(items.map(i=>[i.id,i.parent??null,i.tone,i.text??null]),[['runs',null,'live','代理 1 运行中'],['run:a','runs','live',null]]);
+ assert.deepEqual(items.map(i=>[i.id,i.parent??null,i.tone,i.text??null]),[['subagents-tree',null,'live','子任务 1 运行中'],['run:a','subagents-tree','live',null]]);
  await page.evaluate(()=>window.expand('run:a'));
  await page.getByRole('button',{name:'停止任务',exact:true}).click();
  await page.waitForFunction(()=>window.stopCalls.length===1);
@@ -46,7 +47,7 @@ for(const width of [390,1440]){
  // 展开由 createRoot 异步渲染：等文字出现再断言，不在同一帧读取。
  await page.waitForFunction(()=>document.getElementById('detail').innerText.includes('失败原因'),null,{timeout:5000});
  assert.equal(await page.evaluate(()=>window.items.find(i=>i.id==='run:a').tone),'alert');
- assert.equal(await page.evaluate(()=>window.items.find(i=>i.id==='runs').text),undefined);
+ assert.equal(await page.evaluate(()=>window.items.find(i=>i.id==='subagents-tree').text),'1 个子任务失败');
  assert.equal(await page.locator('script').count(),1);
  await page.screenshot({path:out+`/detail-${width}.png`});
  // 3. 没有执行时撤回全部说明项。
