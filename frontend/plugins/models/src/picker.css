@@ -29,7 +29,7 @@
   align-items: center;
   gap: 2px;
   overflow-y: auto;
-  border-inline-end: 1px solid var(--ak-rule-default);
+  border-inline-end: 1px solid var(--ak-rule-subtle);
   padding: 6px 5px;
   scrollbar-width: none;
 }
@@ -81,10 +81,9 @@
   height: 2.5rem;
   align-items: center;
   gap: 8px;
-  border-bottom: 1px solid var(--ak-rule-default);
+  border-bottom: 1px solid var(--ak-rule-subtle);
   padding: 0 12px;
   color: var(--ak-ink-secondary);
-  background: var(--ak-paper-raised);
 }
 
 .model-picker__search input {
@@ -126,38 +125,21 @@
   letter-spacing: 0.02em;
 }
 
-.model-picker__row {
-  position: relative;
-}
-
-.model-picker__row + .model-picker__row {
-  margin-block-start: 1px;
-}
-
-.model-picker__row .model-picker__option {
-  padding-inline-end: 28px;
-}
-
-.model-picker__row .model-picker__star {
-  position: absolute;
-  inset-inline-end: 8px;
-  top: 7px;
-}
-
+/* Cursor 式单行选项：名字与能力同一行，勾选在行尾；当前项（键盘或指针）6% 墨，已选 8%，两者叠加 11%。 */
 .model-picker__option {
   display: flex;
   width: 100%;
-  align-items: flex-start;
-  gap: 8px;
+  min-height: 30px;
+  align-items: center;
+  gap: 6px;
   border: 0;
   border-radius: var(--ak-radius-sm);
-  padding: 6px 8px;
+  padding: 5px 8px;
   color: inherit;
   background: transparent;
   font: inherit;
   text-align: start;
   cursor: pointer;
-  outline: none;
   user-select: none;
 }
 
@@ -165,22 +147,21 @@
   margin-block-start: 1px;
 }
 
-.model-picker__option:focus-visible {
-  background: color-mix(in oklab, var(--ak-ink-primary) 5%, transparent);
-}
-@media (hover: hover) {
-  .model-picker__option:hover {
-    background: color-mix(in oklab, var(--ak-ink-primary) 5%, transparent);
-  }
+.model-picker__option[data-active] {
+  background: color-mix(in oklab, var(--ak-ink-primary) 6%, transparent);
 }
 
-.model-picker__option.is-selected:not(:hover):not(:focus-visible) {
-  background: color-mix(in oklab, var(--ak-ink-primary) 6%, transparent);
+.model-picker__option.is-selected {
+  background: color-mix(in oklab, var(--ak-ink-primary) 8%, transparent);
+}
+
+.model-picker__option.is-selected[data-active] {
+  background: color-mix(in oklab, var(--ak-ink-primary) 11%, transparent);
 }
 
 .model-picker__check {
   flex: 0 0 auto;
-  margin-block-start: 3px;
+  margin-inline-start: auto;
   color: var(--ak-ink-primary);
   opacity: 0;
 }
@@ -190,23 +171,32 @@
 }
 
 .model-picker__copy {
-  display: grid;
+  display: flex;
   min-width: 0;
   flex: 1;
-  gap: 1px;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 8px;
   text-align: start;
 }
 
+/* 模型名必须能区分版本，不能在选择列表里只留下相同的省略前缀：放不下就折行。 */
 .model-picker__copy strong {
-  overflow: hidden;
+  min-width: 0;
   font-size: 0.8125rem;
   font-weight: 500;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 20px;
+  overflow-wrap: anywhere;
+}
+
+.model-picker__copy mark {
+  color: var(--ak-rule-focus);
+  background: transparent;
+  font-weight: 650;
 }
 
 .model-picker__option.is-selected .model-picker__copy strong {
-  font-weight: 650;
+  font-weight: 600;
 }
 
 .model-picker__meta {
@@ -217,28 +207,27 @@
 
 .model-picker__meta em,
 .model-picker__meta i {
-  color: var(--md-sys-color-on-surface-variant);
+  color: var(--ak-ink-muted);
   font-size: var(--chat-type-micro);
   font-style: normal;
 }
 
 .model-picker__meta i {
-  font-weight: 500;
-  opacity: 0.8;
+  font-variant-numeric: tabular-nums;
 }
 
 .model-picker__meta svg {
-  color: var(--ak-ink-secondary);
-  opacity: 0.55;
+  color: var(--ak-ink-muted);
 }
 
 .model-picker__star {
+  display: grid;
   flex: 0 0 auto;
-  margin-block-start: 1px;
+  place-items: center;
   border: 0;
   border-radius: var(--ak-radius-xs);
   padding: 2px;
-  color: var(--md-sys-color-on-surface-variant);
+  color: var(--ak-ink-muted);
   background: transparent;
   cursor: pointer;
   opacity: 0;
@@ -246,20 +235,14 @@
   transition-duration: var(--ak-sys-duration-short);
 }
 
-.model-picker__row:focus-within .model-picker__star,
-.model-picker__star:focus-visible,
+.model-picker__option[data-active] .model-picker__star,
 .model-picker__star.is-favorite {
   opacity: 1;
-}
-@media (hover: hover) {
-  .model-picker__row:hover .model-picker__star {
-    opacity: 1;
-  }
 }
 
 @media (hover: hover) {
   .model-picker__star:hover {
-    color: var(--md-sys-color-on-surface);
+    color: var(--ak-ink-primary);
   }
 }
 
@@ -271,7 +254,7 @@
   .model-picker__star:not(.is-favorite) { opacity: 0.45; }
 }
 @media (pointer: coarse) {
-  .model-picker__star { padding: 10px; margin: -9px -10px -9px -4px; }
+  .model-picker__star { padding: 10px; margin: -9px -4px -9px -10px; }
 }
 
 .model-picker__empty {
@@ -285,11 +268,9 @@
   translate: 0.5px -0.5px;
 }
 
-/* 模型名必须能区分版本，不能在选择列表里只留下相同的省略前缀。 */
-.model-picker__copy strong { white-space: normal; overflow-wrap: anywhere; }
-
 @media (forced-colors: active) {
-  .model-picker__option.is-selected {
+  .model-picker__option.is-selected,
+  .model-picker__option[data-active] {
     outline: 2px solid Highlight;
     outline-offset: -2px;
   }

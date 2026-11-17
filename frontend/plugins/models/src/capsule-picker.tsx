@@ -1,5 +1,5 @@
 import { Check, ChevronDown, Eye, LayoutGrid, Search, Sparkles, Star } from "lucide-react";
-import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from "react";
 import { compatibleEffort, EFFORT_LABELS, type ChatModelRuntime } from "./capsule-data";
 import "./picker.css";
 
@@ -15,14 +15,6 @@ interface ModelCapsulePickerProps {
   runtimes: ChatModelRuntime[];
   selectedRuntimeId: string;
   selectedEffort: string;
-  disabled: boolean;
-  onChange: (runtimeId: string, effort: string) => void;
-}
-
-interface ModelEffortActionProps {
-  runtime: ChatModelRuntime;
-  effort: string;
-  explicit: boolean;
   disabled: boolean;
   onChange: (runtimeId: string, effort: string) => void;
 }
@@ -44,7 +36,7 @@ function CapabilityMarks({ runtime }: { runtime: ChatModelRuntime }) {
   );
 }
 
-export function resolveVisibleRuntime(
+function resolveVisibleRuntime(
   runtimes: ChatModelRuntime[],
   selectedRuntimeId: string,
   defaultRuntime: string,
@@ -140,78 +132,54 @@ function useDismissLayer(open: boolean, rootRef: RefObject<HTMLElement | null>, 
   }, [open, rootRef, onClose]);
 }
 
-// 上下/Home/End 只在 [data-nav] 行之间移动焦点；星星等次级按钮不插进方向链，
-// 焦点落在次级按钮上时按其所在行定位，方向键回到行间导航。
-function moveRowFocus(event: React.KeyboardEvent<HTMLElement>) {
-  if (!(event.key === "ArrowDown" || event.key === "ArrowUp" || event.key === "Home" || event.key === "End")) return;
-  const options = [...event.currentTarget.querySelectorAll<HTMLElement>("[data-nav]")];
-  if (!options.length) return;
-  const active = document.activeElement as HTMLElement | null;
-  // 收藏星和模型按钮是同一行的兄弟元素：从星星出发也按它所在的行算。
-  const owningRow = (active?.closest?.(".model-picker__row")?.querySelector("[data-nav]")
-    ?? active?.closest?.("[data-nav]")) as HTMLElement | null;
-  const current = owningRow ? options.indexOf(owningRow) : -1;
-  // 焦点还在搜索框或来源栏时，下键进第一行、上键进最后一行。
-  const next = event.key === "Home" ? 0 : event.key === "End" ? options.length - 1
-    : current < 0 ? (event.key === "ArrowDown" ? 0 : options.length - 1)
-    : (current + (event.key === "ArrowDown" ? 1 : -1) + options.length) % options.length;
-  event.preventDefault();
-  options[next]?.focus({ preventScroll: true });
+// 搜索命中的那一段加底色；不区分大小写，原文大小写保留。
+function Highlight({ text, needle }: { text: string; needle: string }) {
+  const at = needle ? text.toLowerCase().indexOf(needle) : -1;
+  if (at < 0) return <>{text}</>;
+  return <>{text.slice(0, at)}<mark>{text.slice(at, at + needle.length)}</mark>{text.slice(at + needle.length)}</>;
 }
 
 interface ModelRowProps {
+  id: string;
   runtime: ChatModelRuntime;
+  needle: string;
   selected: boolean;
+  active: boolean;
   favorite: boolean;
   /** 所在分组已写明来源时不再逐行重复；收藏组混着不同来源，要写。 */
   showSource: boolean;
+  onActive: () => void;
   onChoose: () => void;
   onToggleFavorite: () => void;
 }
 
-function ModelRow({ runtime, selected, favorite, showSource, onChoose, onToggleFavorite }: ModelRowProps) {
+// Cursor 式单行选项：焦点留在搜索框，行只用 aria-activedescendant 标出当前项；勾选放在行尾。
+function ModelRow({ id, runtime, needle, selected, active, favorite, showSource, onActive, onChoose, onToggleFavorite }: ModelRowProps) {
   return (
-    <div className="model-picker__row">
-      <button
-        type="button"
-        className={`model-picker__option ${selected ? "is-selected" : ""}`}
-        aria-pressed={selected}
-        tabIndex={-1}
-        data-nav
-        onClick={onChoose}
-        onKeyDown={(event) => {
-          // Enter/Space 交给按钮原生 click；ArrowRight 进入行内次级动作（收藏星），ArrowLeft 从星星回到行。
-          if (event.key === "ArrowRight") {
-            event.preventDefault();
-            event.currentTarget.parentElement?.querySelector<HTMLElement>(".model-picker__star")?.focus();
-          }
-        }}
-      >
-        <Check size={14} className="model-picker__check" aria-hidden="true" />
-        <span className="model-picker__copy">
-          <strong>{runtime.model}</strong>
-          <span className="model-picker__meta">
-            <CapabilityMarks runtime={runtime} />
-            {showSource ? <em>{runtime.sourceName}</em> : null}
-          </span>
+    <div id={id} role="option" aria-selected={selected} data-active={active || undefined}
+      className={`model-picker__row model-picker__option ${selected ? "is-selected" : ""}`}
+      onPointerMove={active ? undefined : onActive} onClick={onChoose}>
+      <span className="model-picker__copy">
+        <strong><Highlight text={runtime.model} needle={needle} /></strong>
+        <span className="model-picker__meta">
+          <CapabilityMarks runtime={runtime} />
+          {showSource ? <em>{runtime.sourceName}</em> : null}
         </span>
-      </button>
+      </span>
       <button
         type="button"
         tabIndex={-1}
         className={`model-picker__star ${favorite ? "is-favorite" : ""}`}
         aria-label={`${favorite ? "取消收藏" : "收藏"} ${runtime.model}`}
         aria-pressed={favorite}
-        onClick={onToggleFavorite}
-        onKeyDown={(event) => {
-          if (event.key !== "ArrowLeft") return;
-          event.preventDefault();
+        onClick={(event) => {
           event.stopPropagation();
-          (event.currentTarget.parentElement?.querySelector("[data-nav]") as HTMLElement | null)?.focus();
+          onToggleFavorite();
         }}
       >
         <Star size={13} aria-hidden="true" />
       </button>
+      <Check size={14} className="model-picker__check" aria-hidden="true" />
     </div>
   );
 }
@@ -283,105 +251,220 @@ function PickerRail({ sources, scope, onScope }: { sources: PickerSource[]; scop
   );
 }
 
+interface PickerOption {
+  key: string;
+  runtimeId: string;
+}
+
+interface PickerView {
+  needle: string;
+  sources: PickerSource[];
+  groups: PickerSource[];
+  favorites: ChatModelRuntime[];
+  showFollow: boolean;
+  options: PickerOption[];
+}
+
+// 前缀命中排在包含命中之前（Cursor 的搜索排序）；"vendor/model" 的两段都算前缀。
+function searchRank(runtime: ChatModelRuntime, needle: string): number {
+  const name = runtime.model.toLowerCase();
+  return name.startsWith(needle) || name.includes(`/${needle}`) ? 0 : 1;
+}
+
+// 1. 来源栏决定范围；2. 搜索在范围内过滤并按命中位置排序；3. 收藏组只在"全部"与"收藏"下出现；
+// 4. 按显示顺序摊平成键盘导航用的选项序列。
+function pickerView(runtimes: ChatModelRuntime[], selectedId: string, query: string, scope: PickerScope,
+  favoriteSet: Set<string>, hasFollow: boolean): PickerView {
+  const needle = query.trim().toLowerCase();
+  const sources = pickerSources(runtimes, selectedId);
+  const matches = (runtime: ChatModelRuntime) => !needle || `${runtime.model} ${runtime.sourceName}`.toLowerCase().includes(needle);
+  const ranked = (models: ChatModelRuntime[]) => needle
+    ? models.filter(matches).sort((a, b) => searchRank(a, needle) - searchRank(b, needle)) : models;
+  const groups = scope.kind === "favorites" ? [] : sources
+    .filter((source) => scope.kind === "all" || source.id === scope.id)
+    .map((source) => ({ ...source, models: ranked(source.models) }))
+    .filter((source) => source.models.length);
+  const favorites = scope.kind === "source" ? [] : ranked(sources.flatMap((source) => source.models).filter((runtime) => favoriteSet.has(runtime.id)));
+  const showFollow = hasFollow && scope.kind === "all" && !needle;
+  const options: PickerOption[] = [
+    ...(showFollow ? [{ key: "follow", runtimeId: "" }] : []),
+    ...favorites.map((runtime) => ({ key: `fav:${runtime.id}`, runtimeId: runtime.id })),
+    ...groups.flatMap((source) => source.models.map((runtime) => ({ key: `m:${runtime.id}`, runtimeId: runtime.id }))),
+  ];
+  return { needle, sources, groups, favorites, showFollow, options };
+}
+
+// 方向键在选项间循环移动；Home/End 只在搜索框为空时接管（有字时留给光标）。
+function nextActiveKey(options: PickerOption[], current: string, key: string, empty: boolean): string | null {
+  const index = options.findIndex((option) => option.key === current);
+  if (key === "ArrowDown") return options[(index + 1) % options.length]?.key ?? null;
+  if (key === "ArrowUp") return options[(index - 1 + options.length) % options.length]?.key ?? null;
+  if (empty && key === "Home") return options[0]?.key ?? null;
+  if (empty && key === "End") return options.at(-1)?.key ?? null;
+  return null;
+}
+
 // 搜索、来源栏与模型列表；聊天胶囊与设置页的场景选择共用，选择后由外层决定如何关闭。
 export function ModelPickerBody({ runtimes, selectedId, follow, onChoose }: ModelPickerBodyProps) {
   const [query, setQuery] = useState("");
   const [scope, setScope] = useState<PickerScope>({ kind: "all" });
   const [favoriteSet, toggleFavorite] = useFavorites();
-  const groupId = useId();
-  const rootRef = useRef<HTMLDivElement>(null);
+  const baseId = useId();
   const searchRef = useRef<HTMLInputElement>(null);
-  const sources = useMemo(() => pickerSources(runtimes, selectedId), [runtimes, selectedId]);
-  const needle = query.trim().toLowerCase();
-  const matches = (runtime: ChatModelRuntime) => !needle || `${runtime.model} ${runtime.sourceName}`.toLowerCase().includes(needle);
-  // 1. 来源栏决定范围；2. 搜索在范围内过滤；3. 收藏组只在“全部”与“收藏”下出现。
-  const groups = scope.kind === "favorites" ? [] : sources
-    .filter((source) => scope.kind === "all" || source.id === scope.id)
-    .map((source) => ({ ...source, models: source.models.filter(matches) }))
-    .filter((source) => source.models.length);
-  const favorites = scope.kind === "source" ? [] : sources.flatMap((source) => source.models).filter((runtime) => favoriteSet.has(runtime.id) && matches(runtime));
-  const showFollow = Boolean(follow) && scope.kind === "all" && !needle;
-  const first = favorites[0] ?? groups[0]?.models[0];
+  const view = useMemo(() => pickerView(runtimes, selectedId, query, scope, favoriteSet, Boolean(follow)),
+    [runtimes, selectedId, query, scope, favoriteSet, follow]);
+  const [activeKey, setActiveKey] = useState(() => view.options.find((option) => option.runtimeId === selectedId)?.key ?? "");
+  // 搜索或换范围后原高亮项可能不在了：回落到第一项。
+  const active = view.options.some((option) => option.key === activeKey) ? activeKey : view.options[0]?.key ?? "";
+  const optionId = (key: string) => `${baseId}-${key}`;
 
   useEffect(() => {
-    // 触屏上聚焦搜索框会立刻弹出软键盘盖住半个列表；改为聚焦当前选中行，需要搜索时再点。
-    const focusTimer = window.setTimeout(() => {
-      if (window.matchMedia("(pointer: coarse)").matches) {
-        rootRef.current?.querySelector<HTMLElement>(".model-picker__option[aria-pressed='true']")?.focus({ preventScroll: true });
-      } else searchRef.current?.focus({ preventScroll: true });
-    }, 0);
-    return () => window.clearTimeout(focusTimer);
+    // 触屏上聚焦搜索框会立刻弹出软键盘盖住半个列表；需要搜索时再点。
+    if (!window.matchMedia("(pointer: coarse)").matches) searchRef.current?.focus({ preventScroll: true });
   }, []);
+  useLayoutEffect(() => {
+    if (active) document.getElementById(`${baseId}-${active}`)?.scrollIntoView({ block: "nearest" });
+  }, [active, baseId]);
+
+  function onSearchKey(event: React.KeyboardEvent<HTMLInputElement>) {
+    const next = view.options.length ? nextActiveKey(view.options, active, event.key, !query) : null;
+    if (next !== null) {
+      event.preventDefault();
+      setActiveKey(next);
+    } else if (event.key === "Enter" && active) {
+      event.preventDefault();
+      onChoose(view.options.find((option) => option.key === active)?.runtimeId ?? "");
+    } else if (event.key === "Escape" && query) {
+      // Esc 先清空搜索，再按一次才由外层关闭。
+      event.preventDefault();
+      event.stopPropagation();
+      setQuery("");
+    }
+  }
 
   return (
-    <div ref={rootRef} className={`model-picker__body ${sources.length > 1 ? "has-rail" : ""}`} onKeyDown={moveRowFocus}>
+    <div className={`model-picker__body ${view.sources.length > 1 ? "has-rail" : ""}`}>
       <div className="model-picker__search">
         <Search size={14} aria-hidden="true" />
-        <input
-          ref={searchRef}
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          onKeyDown={(event) => {
-            // Enter 直接选第一个匹配；Esc 先清空搜索，再按一次才由外层关闭。
-            if (event.key === "Enter" && first && needle) {
-              event.preventDefault();
-              onChoose(first.id);
-            } else if (event.key === "Escape" && query) {
-              event.preventDefault();
-              event.stopPropagation();
-              setQuery("");
-            }
-          }}
-          placeholder={sources.length > 1 ? "筛选模型或来源" : "筛选模型"}
-          aria-label="筛选模型"
-        />
+        <input ref={searchRef} value={query} role="combobox" aria-expanded="true" aria-autocomplete="list"
+          aria-controls={`${baseId}-list`} aria-activedescendant={active ? optionId(active) : undefined}
+          onChange={(event) => { setQuery(event.target.value); setActiveKey(""); }} onKeyDown={onSearchKey}
+          placeholder={view.sources.length > 1 ? "搜索模型或来源" : "搜索模型"} aria-label="搜索模型" />
       </div>
-      {sources.length > 1 ? <PickerRail sources={sources} scope={scope} onScope={setScope} /> : null}
-      <div className="model-picker__list" role="group" aria-label="可选模型" tabIndex={0}>
-        {showFollow && follow ? (
-          <button
-            type="button"
-            className={`model-picker__option model-picker__follow ${!selectedId ? "is-selected" : ""}`}
-            aria-pressed={!selectedId}
-            tabIndex={-1}
-            data-nav
-            onClick={() => onChoose("")}
-          >
-            <Check size={14} className="model-picker__check" aria-hidden="true" />
-            <span className="model-picker__copy">
-              <strong>{follow.label}</strong>
-              <span className="model-picker__meta"><em>{follow.detail}</em></span>
-            </span>
-          </button>
-        ) : null}
-        {favorites.length ? (
-          <div className="model-picker__group" role="group" aria-labelledby={`${groupId}-fav`}>
-            <div className="model-picker__group-title" role="presentation" id={`${groupId}-fav`}><Star size={12} aria-hidden="true" />收藏</div>
-            {favorites.map((runtime) => (
-              <ModelRow key={`fav:${runtime.id}`} runtime={runtime} selected={runtime.id === selectedId} favorite showSource
-                onChoose={() => onChoose(runtime.id)} onToggleFavorite={() => toggleFavorite(runtime.id)} />
-            ))}
-          </div>
-        ) : null}
-        {groups.map((source, index) => (
-          <div className="model-picker__group" role="group" aria-labelledby={`${groupId}-${index}`} key={source.id}>
-            <div className="model-picker__group-title" role="presentation" id={`${groupId}-${index}`}>
-              {/* 分组头只放驱动声明的品牌 SVG；未声明的来源不留字母占位块，避免与来源名重复表达。 */}
-              {source.icon ? <img className="model-picker__group-icon" src={source.icon} alt="" aria-hidden="true" /> : null}
-              {source.name}
-            </div>
-            {source.models.map((runtime) => (
-              <ModelRow key={runtime.id} runtime={runtime} selected={runtime.id === selectedId} showSource={false}
-                favorite={favoriteSet.has(runtime.id)} onChoose={() => onChoose(runtime.id)} onToggleFavorite={() => toggleFavorite(runtime.id)} />
-            ))}
-          </div>
-        ))}
-        {!groups.length && !favorites.length ? (
-          <p className="model-picker__empty">{scope.kind === "favorites" && !needle ? "还没有收藏；在模型行右侧点星标收藏" : "没有匹配的模型"}</p>
-        ) : null}
-      </div>
+      {view.sources.length > 1 ? <PickerRail sources={view.sources} scope={scope} onScope={(next) => { setScope(next); setActiveKey(""); }} /> : null}
+      <PickerList view={view} baseId={baseId} active={active} selectedId={selectedId} follow={follow} scope={scope}
+        favoriteSet={favoriteSet} onActive={setActiveKey} onChoose={onChoose} onToggleFavorite={toggleFavorite} />
     </div>
   );
+}
+
+interface PickerListProps {
+  view: PickerView;
+  baseId: string;
+  active: string;
+  selectedId: string;
+  follow: ModelPickerBodyProps["follow"];
+  scope: PickerScope;
+  favoriteSet: Set<string>;
+  onActive: (key: string) => void;
+  onChoose: (runtimeId: string) => void;
+  onToggleFavorite: (runtimeId: string) => void;
+}
+
+// 选项列表：跟随默认、收藏组、按来源分组；每行由 key 对应搜索框的 aria-activedescendant。
+function PickerList({ view, baseId, active, selectedId, follow, scope, favoriteSet, onActive, onChoose, onToggleFavorite }: PickerListProps) {
+  const row = (key: string, runtime: ChatModelRuntime, showSource: boolean) => (
+    <ModelRow key={key} id={`${baseId}-${key}`} runtime={runtime} needle={view.needle} selected={runtime.id === selectedId}
+      active={active === key} favorite={favoriteSet.has(runtime.id)} showSource={showSource} onActive={() => onActive(key)}
+      onChoose={() => onChoose(runtime.id)} onToggleFavorite={() => onToggleFavorite(runtime.id)} />
+  );
+  return (
+    <div className="model-picker__list" id={`${baseId}-list`} role="listbox" aria-label="可选模型">
+      {view.showFollow && follow ? (
+        <div id={`${baseId}-follow`} role="option" aria-selected={!selectedId} data-active={active === "follow" || undefined}
+          className={`model-picker__option model-picker__follow ${!selectedId ? "is-selected" : ""}`}
+          onPointerMove={() => onActive("follow")} onClick={() => onChoose("")}>
+          <span className="model-picker__copy">
+            <strong>{follow.label}</strong>
+            <span className="model-picker__meta"><em>{follow.detail}</em></span>
+          </span>
+          <Check size={14} className="model-picker__check" aria-hidden="true" />
+        </div>
+      ) : null}
+      {view.favorites.length ? (
+        <div className="model-picker__group" role="group" aria-labelledby={`${baseId}-fav`}>
+          <div className="model-picker__group-title" role="presentation" id={`${baseId}-fav`}><Star size={12} aria-hidden="true" />收藏</div>
+          {view.favorites.map((runtime) => row(`fav:${runtime.id}`, runtime, true))}
+        </div>
+      ) : null}
+      {view.groups.map((source, index) => (
+        <div className="model-picker__group" role="group" aria-labelledby={`${baseId}-g${index}`} key={source.id}>
+          <div className="model-picker__group-title" role="presentation" id={`${baseId}-g${index}`}>
+            {/* 分组头只放驱动声明的品牌 SVG；未声明的来源不留字母占位块，避免与来源名重复表达。 */}
+            {source.icon ? <img className="model-picker__group-icon" src={source.icon} alt="" aria-hidden="true" /> : null}
+            {source.name}
+          </div>
+          {source.models.map((runtime) => row(`m:${runtime.id}`, runtime, false))}
+        </div>
+      ))}
+      {!view.options.length ? (
+        <p className="model-picker__empty">{scope.kind === "favorites" && !view.needle ? "还没有收藏；在模型行右侧点星标收藏" : "没有匹配的模型"}</p>
+      ) : null}
+    </div>
+  );
+}
+
+// 思考强度折成三格刻度：触发钮上只占三个点的宽度，档名留给读屏与面板。
+const EFFORT_DOTS: Record<string, number> = { none: 0, minimal: 1, low: 1, medium: 2, high: 3, xhigh: 3, max: 3 };
+
+function EffortDots({ effort }: { effort: string }) {
+  const filled = EFFORT_DOTS[effort] ?? 2;
+  return (
+    <span className="model-picker__dots" aria-hidden="true">
+      {[0, 1, 2].map((index) => <i key={index} data-on={index < filled || undefined} />)}
+    </span>
+  );
+}
+
+// 面板底部的思考强度：参数跟着当前模型走（Cursor 把推理档放在模型菜单里，不单独占一个工具按钮）。
+function EffortRow({ runtime, effort, explicit, onChange }: { runtime: ChatModelRuntime; effort: string; explicit: boolean;
+  onChange: (runtimeId: string, effort: string) => void }) {
+  return (
+    <div className="model-picker__effort">
+      <div className="model-picker__effort-row" role="radiogroup" aria-label={`${runtime.model} 的思考强度`}>
+        <span className="model-picker__effort-label">思考</span>
+        {runtime.supportedReasoningEfforts.map((level) => (
+          <button key={level} type="button" role="radio" aria-checked={level === effort}
+            className="model-picker__effort-option" onClick={() => onChange(runtime.id, level)}>
+            {EFFORT_LABELS[level] || level}
+          </button>
+        ))}
+      </div>
+      {!explicit ? <p className="model-picker__effort-hint">选择强度会把 {runtime.model} 固定到当前会话</p> : null}
+    </div>
+  );
+}
+
+// 输入框里 Ctrl/⌘ + / 打开模型菜单（Cursor 同键）；只在焦点位于本输入卡时生效。
+function useOpenShortcut(rootRef: RefObject<HTMLElement | null>, disabled: boolean, open: () => void) {
+  useEffect(() => {
+    if (disabled) return;
+    function onKey(event: KeyboardEvent) {
+      if (event.key !== "/" || !(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey) return;
+      if (!rootRef.current?.closest("form")?.contains(document.activeElement)) return;
+      event.preventDefault();
+      open();
+    }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [rootRef, disabled, open]);
+}
+
+// 输入区触发钮只放模型名本身：OpenRouter 式 "deepseek/deepseek-v4-pro" 去掉厂商前缀，
+// 截断时留下能区分型号的后半段；完整 ID 留在 title 与面板里。
+function triggerLabel(model: string, hasSelection: boolean, pinned: boolean): string {
+  if (!hasSelection) return pinned ? "所选模型不可用" : "选择对话模型";
+  return model.slice(model.lastIndexOf("/") + 1) || model;
 }
 
 export function ModelCapsulePicker({
@@ -398,12 +481,14 @@ export function ModelCapsulePicker({
   const { visibleModel, defaultModel, explicitModel } = resolveVisibleRuntime(runtimes, selectedRuntimeId, defaultRuntime);
   const multiSource = new Set(runtimes.map((runtime) => runtime.sourceId)).size > 1;
   const panelStyle = useFixedPanelStyle(open, triggerRef, multiSource ? 380 : 320);
+  const openPanel = useCallback(() => setOpen(true), []);
 
   const closePicker = (restoreFocus: boolean) => {
     setOpen(false);
     if (restoreFocus) triggerRef.current?.focus({ preventScroll: true });
   };
   useDismissLayer(open, rootRef, closePicker);
+  useOpenShortcut(rootRef, disabled || open, openPanel);
 
   if (!visibleModel || !defaultModel) return null;
 
@@ -414,12 +499,11 @@ export function ModelCapsulePicker({
   }
 
   const hasSelection = Boolean(selectedRuntimeId ? explicitModel : runtimes.find((runtime) => runtime.id === defaultRuntime));
-  // 输入区触发钮只放模型名本身：OpenRouter 式 "deepseek/deepseek-v4-pro" 去掉厂商前缀，
-  // 截断时留下能区分型号的后半段；完整 ID 留在 title 与面板里。先取成字符串副本再切，
-  // 直接在 visibleModel.model 上调用会让 React Compiler 认为 explicitModel 可能被改而放弃 memo。
+  // 先取成字符串副本再切：直接在 visibleModel.model 上调用会让 React Compiler 认为 explicitModel 可能被改而放弃 memo。
   const fullModelName = `${visibleModel.model}`;
-  const selectionLabel = hasSelection ? fullModelName.slice(fullModelName.lastIndexOf("/") + 1) || fullModelName
-    : selectedRuntimeId || defaultRuntime ? "所选模型不可用" : "选择对话模型";
+  const selectionLabel = triggerLabel(fullModelName, hasSelection, Boolean(selectedRuntimeId || defaultRuntime));
+  const effort = hasSelection ? compatibleEffort(visibleModel, selectedEffort) : "";
+  const effortText = effort ? `，思考强度 ${EFFORT_LABELS[effort] || effort}` : "";
 
   return (
     <div ref={rootRef} className={`model-picker ${open ? "is-open" : ""} ${explicitModel ? "is-pinned" : ""}`}>
@@ -428,8 +512,9 @@ export function ModelCapsulePicker({
         type="button"
         className="model-picker__trigger"
         aria-expanded={open}
-        title={hasSelection ? `${fullModelName} · ${visibleModel.sourceName}` : undefined}
-        aria-label={hasSelection ? `选择模型，当前 ${fullModelName}` : selectionLabel}
+        aria-keyshortcuts="Control+/ Meta+/"
+        title={hasSelection ? `${fullModelName} · ${visibleModel.sourceName}${effortText}（Ctrl+/）` : undefined}
+        aria-label={hasSelection ? `选择模型，当前 ${fullModelName}${effortText}` : selectionLabel}
         disabled={disabled}
         onClick={() => {
           if (open) closePicker(false);
@@ -439,95 +524,15 @@ export function ModelCapsulePicker({
         {multiSource && visibleModel.icon ? <img className="model-picker__group-icon" src={visibleModel.icon} alt="" aria-hidden="true" /> : null}
         {/* 名字最少留约 6 个字符宽：再窄就认不出型号，输入卡据此判断单行放不下、改用两行。 */}
         <span className="model-picker__name" style={{ minWidth: `${Math.min(selectionLabel.length, 6)}ch` }}><bdi>{selectionLabel}</bdi></span>
-        <ChevronDown size={11} aria-hidden="true" />
+        {effort ? <EffortDots effort={effort} /> : null}
+        <ChevronDown size={9} strokeWidth={2.5} aria-hidden="true" />
       </button>
       {/* 先确定位置再挂列表，避免首次测量触发整份列表布局，随后写入定位又重算一次。 */}
       {open && panelStyle ? (
         <div className="model-picker__panel" role="dialog" aria-label="选择模型" style={panelStyle}>
           <ModelPickerBody runtimes={runtimes} selectedId={selectedRuntimeId} onChoose={choose}
             follow={{ label: "跟随默认模型", detail: `${defaultModel.model} · ${defaultModel.sourceName}` }} />
-        </div>
-      ) : null}
-      {open ? <PickerSheetScrim onClose={() => closePicker(false)} /> : null}
-    </div>
-  );
-}
-
-
-// 思考强度是与模型选择解耦的独立工具行控件：当前模型不支持推理时整体消失。
-export function ModelEffortAction({ runtime, effort, explicit, disabled, onChange }: ModelEffortActionProps) {
-  const [open, setOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement>(null);
-  const triggerRef = useRef<HTMLButtonElement>(null);
-  const panelStyle = useFixedPanelStyle(open, triggerRef, 176);
-  const closePicker = (restoreFocus: boolean) => {
-    setOpen(false);
-    if (restoreFocus) triggerRef.current?.focus({ preventScroll: true });
-  };
-  useDismissLayer(open, rootRef, closePicker);
-
-  const supported = runtime.supportedReasoningEfforts;
-  if (!supported.length) return null;
-  const visibleEffort = compatibleEffort(runtime, effort);
-
-  return (
-    <div ref={rootRef} className={`model-effort ${open ? "is-open" : ""} ${visibleEffort ? "is-active" : ""}`}>
-      <button
-        ref={triggerRef}
-        type="button"
-        className="model-effort__trigger"
-        aria-expanded={open}
-        aria-label={`思考强度，当前 ${EFFORT_LABELS[visibleEffort] || visibleEffort}`}
-        disabled={disabled}
-        onClick={() => {
-          if (open) closePicker(false);
-          else setOpen(true);
-        }}
-      >
-        <Sparkles size={14} aria-hidden="true" />
-        {visibleEffort ? <span className="model-effort__tag">{EFFORT_LABELS[visibleEffort] || visibleEffort}</span> : null}
-      </button>
-      {open && panelStyle ? (
-        <div
-          className="model-effort__panel"
-          role="dialog"
-          aria-label={`${runtime.model} 支持的思考强度`}
-          style={panelStyle}
-          onKeyDown={moveRowFocus}
-        >
-          <div className="model-effort__list" role="listbox">
-            {supported.map((level) => {
-              const active = level === visibleEffort;
-              return (
-                <div
-                  key={level}
-                  className={`model-picker__option model-effort__option ${active ? "is-selected" : ""}`}
-                  role="option"
-                  aria-selected={active}
-                  tabIndex={-1}
-                  data-nav
-                  onClick={() => {
-                    onChange(runtime.id, level);
-                    closePicker(true);
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
-                      onChange(runtime.id, level);
-                      closePicker(true);
-                    }
-                  }}
-                >
-                  <Check size={14} className="model-picker__check" aria-hidden="true" />
-                  <span className="model-picker__copy">
-                    {/* 只写中文档名：英文值是同一信息，第二行只会让每个选项高一倍。 */}
-                    <strong>{EFFORT_LABELS[level] || level}</strong>
-                  </span>
-                </div>
-              );
-            })}
-          </div>
-          {!explicit ? <p className="model-effort__hint">选择强度会把 {runtime.model} 固定到当前会话</p> : null}
+          {effort ? <EffortRow runtime={visibleModel} effort={effort} explicit={Boolean(explicitModel)} onChange={onChange} /> : null}
         </div>
       ) : null}
       {open ? <PickerSheetScrim onClose={() => closePicker(false)} /> : null}
