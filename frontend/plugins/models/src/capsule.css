@@ -131,6 +131,9 @@
 }
 
 .model-picker__effort-option {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
   height: 24px;
   border: 0;
   border-radius: var(--ak-radius-full);
@@ -142,7 +145,16 @@
   cursor: pointer;
 }
 
-.model-picker__effort-option[aria-checked="true"] {
+/* 原生 radio 只承担语义与键盘，视觉由整枚胶囊表达。 */
+.model-picker__effort-option input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.model-picker__effort-option:has(input:checked) {
   color: var(--ak-ink-primary);
   background: color-mix(in oklab, var(--ak-ink-primary) 8%, transparent);
   font-weight: 600;
@@ -151,7 +163,7 @@
   .model-picker__effort-option:hover { color: var(--ak-ink-primary); }
 }
 
-.model-picker__effort-option:focus-visible {
+.model-picker__effort-option:has(input:focus-visible) {
   outline: 2px solid var(--ak-rule-focus);
   outline-offset: -2px;
 }

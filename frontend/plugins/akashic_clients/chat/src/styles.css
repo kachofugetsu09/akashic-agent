@@ -2536,6 +2536,8 @@ form.composer:focus-within [data-slot="input-group"] {
 .composer-status-anchor > .composer-stats-line > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 /* 生成中插话气泡在输入卡上方右对齐；状态签同时在时让出一签高，两者不叠。 */
 .composer-wrap:has(.composer-stats-line) > .steer-cards { margin-block-end: 30px; }
+/* 复制提示同样浮在输入卡左上方：状态签在时再往上让一签高。 */
+.composer-wrap:has(.composer-stats-line) > .copy-notice { inset-block-end: calc(100% + 38px); }
 
 /* 矮屏触屏输入区回到文档流，上方没有空位，停止钮与"运行中"已说明在生成，不显示状态签。
    只在视觉上收起（不用 display:none）：开始与终态的 aria-live 播报仍要留在无障碍树里。 */
@@ -2551,7 +2553,11 @@ form.composer:focus-within [data-slot="input-group"] {
     clip-path: inset(50%);
     white-space: nowrap;
   }
+  /* 状态签收起后不再给插话卡和复制提示让位。 */
+  .composer-wrap:has(.composer-stats-line) > .steer-cards { margin-block-end: 0; }
+  .composer-wrap:has(.composer-stats-line) > .copy-notice { inset-block-end: calc(100% + 8px); }
 }
+
 
 /* 终态摘要由 composer.status 插槽的插件给出；包装沿用本行的基线排版（宿主元素要有盒子，插槽按可见性挂载）。 */
 .composer-stats-line > .plugin-ui-slot,

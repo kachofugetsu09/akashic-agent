@@ -1,5 +1,5 @@
 import { Check, ChevronDown, Eye, LayoutGrid, Search, Sparkles, Star } from "lucide-react";
-import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from "react";
 import { compatibleEffort, EFFORT_LABELS, type ChatModelRuntime } from "./capsule-data";
 import "./picker.css";
 
@@ -157,6 +157,7 @@ interface ModelRowProps {
 function ModelRow({ id, runtime, needle, selected, active, favorite, showSource, onActive, onChoose, onToggleFavorite }: ModelRowProps) {
   return (
     <div id={id} role="option" aria-selected={selected} data-active={active || undefined}
+      aria-description={favorite ? "已收藏" : undefined}
       className={`model-picker__row model-picker__option ${selected ? "is-selected" : ""}`}
       onPointerMove={active ? undefined : onActive} onClick={onChoose}>
       <span className="model-picker__copy">
@@ -166,19 +167,18 @@ function ModelRow({ id, runtime, needle, selected, active, favorite, showSource,
           {showSource ? <em>{runtime.sourceName}</em> : null}
         </span>
       </span>
-      <button
-        type="button"
-        tabIndex={-1}
+      {/* 星标只给指针用；option 里不能嵌可聚焦按钮，键盘与读屏走 Ctrl/⌘+D 收藏当前高亮行。 */}
+      <span
         className={`model-picker__star ${favorite ? "is-favorite" : ""}`}
-        aria-label={`${favorite ? "取消收藏" : "收藏"} ${runtime.model}`}
-        aria-pressed={favorite}
+        title={`${favorite ? "取消收藏" : "收藏"}（Ctrl+D）`}
+        aria-hidden="true"
         onClick={(event) => {
           event.stopPropagation();
           onToggleFavorite();
         }}
       >
-        <Star size={13} aria-hidden="true" />
-      </button>
+        <Star size={13} />
+      </span>
       <Check size={14} className="model-picker__check" aria-hidden="true" />
     </div>
   );
@@ -311,6 +311,7 @@ export function ModelPickerBody({ runtimes, selectedId, follow, onChoose }: Mode
   const [favoriteSet, toggleFavorite] = useFavorites();
   const baseId = useId();
   const searchRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
   const view = useMemo(() => pickerView(runtimes, selectedId, query, scope, favoriteSet, Boolean(follow)),
     [runtimes, selectedId, query, scope, favoriteSet, follow]);
   const [activeKey, setActiveKey] = useState(() => view.options.find((option) => option.runtimeId === selectedId)?.key ?? "");
@@ -319,23 +320,30 @@ export function ModelPickerBody({ runtimes, selectedId, follow, onChoose }: Mode
   const optionId = (key: string) => `${baseId}-${key}`;
 
   useEffect(() => {
-    // 触屏上聚焦搜索框会立刻弹出软键盘盖住半个列表；需要搜索时再点。
-    if (!window.matchMedia("(pointer: coarse)").matches) searchRef.current?.focus({ preventScroll: true });
+    // 触屏上聚焦搜索框会立刻弹出软键盘盖住半个列表：改为聚焦列表本身，外接键盘照样能用方向键选。
+    const coarse = window.matchMedia("(pointer: coarse)").matches;
+    (coarse ? listRef.current : searchRef.current)?.focus({ preventScroll: true });
   }, []);
   useLayoutEffect(() => {
     if (active) document.getElementById(`${baseId}-${active}`)?.scrollIntoView({ block: "nearest" });
   }, [active, baseId]);
 
-  function onSearchKey(event: React.KeyboardEvent<HTMLInputElement>) {
-    const next = view.options.length ? nextActiveKey(view.options, active, event.key, !query) : null;
+  // 搜索框与列表共用一套按键：方向键移动高亮行，Enter 选中，Ctrl/⌘+D 收藏当前行，Esc 先清空搜索。
+  function onNavKey(event: React.KeyboardEvent<HTMLElement>) {
+    const fromSearch = event.target === searchRef.current;
+    if (!fromSearch && event.target !== listRef.current) return;
+    const current = view.options.find((option) => option.key === active);
+    const next = view.options.length ? nextActiveKey(view.options, active, event.key, !fromSearch || !query) : null;
     if (next !== null) {
       event.preventDefault();
       setActiveKey(next);
-    } else if (event.key === "Enter" && active) {
+    } else if (event.key === "Enter" && current) {
       event.preventDefault();
-      onChoose(view.options.find((option) => option.key === active)?.runtimeId ?? "");
+      onChoose(current.runtimeId);
+    } else if (event.key.toLowerCase() === "d" && (event.ctrlKey || event.metaKey) && current?.runtimeId) {
+      event.preventDefault();
+      toggleFavorite(current.runtimeId);
     } else if (event.key === "Escape" && query) {
-      // Esc 先清空搜索，再按一次才由外层关闭。
       event.preventDefault();
       event.stopPropagation();
       setQuery("");
@@ -343,22 +351,23 @@ export function ModelPickerBody({ runtimes, selectedId, follow, onChoose }: Mode
   }
 
   return (
-    <div className={`model-picker__body ${view.sources.length > 1 ? "has-rail" : ""}`}>
+    <div className={`model-picker__body ${view.sources.length > 1 ? "has-rail" : ""}`} onKeyDown={onNavKey}>
       <div className="model-picker__search">
         <Search size={14} aria-hidden="true" />
         <input ref={searchRef} value={query} role="combobox" aria-expanded="true" aria-autocomplete="list"
           aria-controls={`${baseId}-list`} aria-activedescendant={active ? optionId(active) : undefined}
-          onChange={(event) => { setQuery(event.target.value); setActiveKey(""); }} onKeyDown={onSearchKey}
+          onChange={(event) => { setQuery(event.target.value); setActiveKey(""); }}
           placeholder={view.sources.length > 1 ? "搜索模型或来源" : "搜索模型"} aria-label="搜索模型" />
       </div>
       {view.sources.length > 1 ? <PickerRail sources={view.sources} scope={scope} onScope={(next) => { setScope(next); setActiveKey(""); }} /> : null}
-      <PickerList view={view} baseId={baseId} active={active} selectedId={selectedId} follow={follow} scope={scope}
+      <PickerList listRef={listRef} view={view} baseId={baseId} active={active} selectedId={selectedId} follow={follow} scope={scope}
         favoriteSet={favoriteSet} onActive={setActiveKey} onChoose={onChoose} onToggleFavorite={toggleFavorite} />
     </div>
   );
 }
 
 interface PickerListProps {
+  listRef: RefObject<HTMLDivElement | null>;
   view: PickerView;
   baseId: string;
   active: string;
@@ -372,14 +381,15 @@ interface PickerListProps {
 }
 
 // 选项列表：跟随默认、收藏组、按来源分组；每行由 key 对应搜索框的 aria-activedescendant。
-function PickerList({ view, baseId, active, selectedId, follow, scope, favoriteSet, onActive, onChoose, onToggleFavorite }: PickerListProps) {
+function PickerList({ listRef, view, baseId, active, selectedId, follow, scope, favoriteSet, onActive, onChoose, onToggleFavorite }: PickerListProps) {
   const row = (key: string, runtime: ChatModelRuntime, showSource: boolean) => (
     <ModelRow key={key} id={`${baseId}-${key}`} runtime={runtime} needle={view.needle} selected={runtime.id === selectedId}
       active={active === key} favorite={favoriteSet.has(runtime.id)} showSource={showSource} onActive={() => onActive(key)}
       onChoose={() => onChoose(runtime.id)} onToggleFavorite={() => onToggleFavorite(runtime.id)} />
   );
   return (
-    <div className="model-picker__list" id={`${baseId}-list`} role="listbox" aria-label="可选模型">
+    <div ref={listRef} className="model-picker__list" id={`${baseId}-list`} role="listbox" aria-label="可选模型" tabIndex={0}
+      aria-activedescendant={active ? `${baseId}-${active}` : undefined}>
       {view.showFollow && follow ? (
         <div id={`${baseId}-follow`} role="option" aria-selected={!selectedId} data-active={active === "follow" || undefined}
           className={`model-picker__option model-picker__follow ${!selectedId ? "is-selected" : ""}`}
@@ -408,7 +418,7 @@ function PickerList({ view, baseId, active, selectedId, follow, scope, favoriteS
         </div>
       ))}
       {!view.options.length ? (
-        <p className="model-picker__empty">{scope.kind === "favorites" && !view.needle ? "还没有收藏；在模型行右侧点星标收藏" : "没有匹配的模型"}</p>
+        <p className="model-picker__empty">{scope.kind === "favorites" && !view.needle ? "还没有收藏；点模型行右侧的星标，或按 Ctrl+D 收藏高亮行" : "没有匹配的模型"}</p>
       ) : null}
     </div>
   );
@@ -429,35 +439,22 @@ function EffortDots({ effort }: { effort: string }) {
 // 面板底部的思考强度：参数跟着当前模型走（Cursor 把推理档放在模型菜单里，不单独占一个工具按钮）。
 function EffortRow({ runtime, effort, explicit, onChange }: { runtime: ChatModelRuntime; effort: string; explicit: boolean;
   onChange: (runtimeId: string, effort: string) => void }) {
+  const name = useId();
   return (
     <div className="model-picker__effort">
+      {/* 原生 radio：一个 Tab 停靠点，组内方向键换档，与 radio group 的键盘合同一致。 */}
       <div className="model-picker__effort-row" role="radiogroup" aria-label={`${runtime.model} 的思考强度`}>
-        <span className="model-picker__effort-label">思考</span>
+        <span className="model-picker__effort-label" aria-hidden="true">思考</span>
         {runtime.supportedReasoningEfforts.map((level) => (
-          <button key={level} type="button" role="radio" aria-checked={level === effort}
-            className="model-picker__effort-option" onClick={() => onChange(runtime.id, level)}>
+          <label key={level} className="model-picker__effort-option">
+            <input type="radio" name={name} value={level} checked={level === effort} onChange={() => onChange(runtime.id, level)} />
             {EFFORT_LABELS[level] || level}
-          </button>
+          </label>
         ))}
       </div>
       {!explicit ? <p className="model-picker__effort-hint">选择强度会把 {runtime.model} 固定到当前会话</p> : null}
     </div>
   );
-}
-
-// 输入框里 Ctrl/⌘ + / 打开模型菜单（Cursor 同键）；只在焦点位于本输入卡时生效。
-function useOpenShortcut(rootRef: RefObject<HTMLElement | null>, disabled: boolean, open: () => void) {
-  useEffect(() => {
-    if (disabled) return;
-    function onKey(event: KeyboardEvent) {
-      if (event.key !== "/" || !(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey) return;
-      if (!rootRef.current?.closest("form")?.contains(document.activeElement)) return;
-      event.preventDefault();
-      open();
-    }
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [rootRef, disabled, open]);
 }
 
 // 输入区触发钮只放模型名本身：OpenRouter 式 "deepseek/deepseek-v4-pro" 去掉厂商前缀，
@@ -481,14 +478,12 @@ export function ModelCapsulePicker({
   const { visibleModel, defaultModel, explicitModel } = resolveVisibleRuntime(runtimes, selectedRuntimeId, defaultRuntime);
   const multiSource = new Set(runtimes.map((runtime) => runtime.sourceId)).size > 1;
   const panelStyle = useFixedPanelStyle(open, triggerRef, multiSource ? 380 : 320);
-  const openPanel = useCallback(() => setOpen(true), []);
 
   const closePicker = (restoreFocus: boolean) => {
     setOpen(false);
     if (restoreFocus) triggerRef.current?.focus({ preventScroll: true });
   };
   useDismissLayer(open, rootRef, closePicker);
-  useOpenShortcut(rootRef, disabled || open, openPanel);
 
   if (!visibleModel || !defaultModel) return null;
 
@@ -512,8 +507,7 @@ export function ModelCapsulePicker({
         type="button"
         className="model-picker__trigger"
         aria-expanded={open}
-        aria-keyshortcuts="Control+/ Meta+/"
-        title={hasSelection ? `${fullModelName} · ${visibleModel.sourceName}${effortText}（Ctrl+/）` : undefined}
+        title={hasSelection ? `${fullModelName} · ${visibleModel.sourceName}${effortText}` : undefined}
         aria-label={hasSelection ? `选择模型，当前 ${fullModelName}${effortText}` : selectionLabel}
         disabled={disabled}
         onClick={() => {

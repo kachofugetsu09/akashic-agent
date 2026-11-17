@@ -47,11 +47,13 @@ try {
       const catalog = await (await response).json(), names = catalog.runtimes.map(model => model.model).sort();
       assert.ok(names.length >= 43, '请使用至少 43 个模型的隔离目录');
       const trigger = page.locator('.model-picker__trigger'), panel = page.getByRole('dialog', { name: '选择模型', exact: true });
-      const search = panel.getByRole('combobox', { name: '搜索模型', exact: true });
+      const search = panel.locator('.model-picker__search input');
       const row = { width, height, kind, success: false }; report.samples.push(row);
       // 1. 首次与重新打开都显示完整目录；桌面聚焦搜索（方向键移动高亮行），触屏不聚焦以免弹出键盘。
       await trigger.click(); await checkNames(names);
       await page.waitForFunction(coarse => coarse || document.activeElement?.matches('.model-picker__search input'), width === 390);
+      // #2088 前后两套结构：旧版收藏是按钮、强度是独立面板；新版收藏键盘走 Ctrl+D、强度在面板底部。
+      const legacy = await page.locator('.model-effort__trigger').count() > 0;
       const first = await snapshot(page, panel, `${values.output}/${width}-${height}-${kind}.png`);
       await search.fill('picker/model-0042'); await checkNames(['picker/model-0042']);
       await search.press('Enter');
@@ -59,20 +61,30 @@ try {
       assert.ok(await trigger.evaluate(el => el === document.activeElement));
       await trigger.click(); await checkNames(names);
       // 2. 收藏只是本地列表投影；来源筛选和取消收藏恢复完整集合。
-      await panel.getByRole('button', { name: '收藏 picker/model-0042', exact: true }).click();
+      const star = () => panel.locator('.model-picker__option', { hasText: 'picker/model-0042' }).locator('.model-picker__star').first();
+      await star().click();
       await checkNames([...names, 'picker/model-0042'].sort());
       await panel.getByRole('button', { name: '收藏', exact: true }).click(); await checkNames(['picker/model-0042']);
-      await panel.getByRole('button', { name: '取消收藏 picker/model-0042', exact: true }).click(); await checkNames([]);
+      await star().click(); await checkNames([]);
       await panel.getByText('还没有收藏；在模型行右侧点星标收藏', { exact: true }).waitFor();
       await panel.getByRole('button', { name: '模型来源 1', exact: true }).click();
       await checkNames(catalog.runtimes.filter(model => model.sourceName === '模型来源 1').map(model => model.model).sort());
       await panel.getByRole('button', { name: '全部来源', exact: true }).click(); await checkNames(names);
       await search.press('Escape'); await panel.waitFor({ state: 'hidden' }); assert.ok(await trigger.evaluate(el => el === document.activeElement));
-      // 3. 思考强度在模型面板底部：选档不关面板，触发钮的读屏名随之更新。
-      await trigger.click(); await panel.getByRole('radio', { name: '高', exact: true }).click();
-      assert.ok((await trigger.getAttribute('aria-label')).includes('思考强度 高'));
-      const strength = await snapshot(page, panel, `${values.output}/${width}-${height}-${kind}-effort.png`);
-      await search.press('Escape'); await panel.waitFor({ state: 'hidden' });
+      // 3. 思考强度：新版在模型面板底部（选档不关面板），旧版是独立面板。
+      let strength;
+      if (legacy) {
+        const effort = page.locator('.model-effort__trigger'), effortPanel = page.locator('.model-effort__panel');
+        await effort.click(); await effortPanel.getByRole('option', { name: '高', exact: true }).click();
+        await effortPanel.waitFor({ state: 'hidden' }); await effort.click(); await effortPanel.waitFor();
+        strength = await snapshot(page, effortPanel, `${values.output}/${width}-${height}-${kind}-effort.png`);
+        await effort.press('Escape'); await effortPanel.waitFor({ state: 'hidden' });
+      } else {
+        await trigger.click(); await panel.getByRole('radio', { name: '高', exact: true }).check();
+        assert.ok((await trigger.getAttribute('aria-label')).includes('思考强度 高'));
+        strength = await snapshot(page, panel, `${values.output}/${width}-${height}-${kind}-effort.png`);
+        await search.press('Escape'); await panel.waitFor({ state: 'hidden' });
+      }
       // 4. 面板保持打开时改变窗口，检查重定位与窄屏遮罩关闭。
       await trigger.click(); await checkNames(names);
       await page.setViewportSize({ width: width === 1440 ? 1100 : 460, height: height === 380 ? 700 : height });
@@ -83,7 +95,9 @@ try {
       await panel.waitFor({ state: 'hidden' });
       const shots = { first, strength, resized };
       row.geometry = Object.fromEntries(Object.entries(shots).map(([name, shot]) => [name, shot.geometry]));
-      if (kind === 'baseline') baseline = shots;
+      row.legacy = legacy;
+      if (kind === 'baseline') baseline = { ...shots, legacy };
+      else if (baseline.legacy !== legacy) row.pixelsEqual = '结构不同（#2088 前后），只做行为断言';
       else {
         row.pixelsEqual = {};
         for (const name of Object.keys(shots)) {
