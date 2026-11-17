@@ -152,7 +152,8 @@ function saveWidth(value) {
   }
 }
 
-const TOOL_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M15 3v18"/></svg>';
+// Codex 20×20 右栏图标：连续超椭圆圆角，作顶栏工作台开关。
+const TOOL_ICON = '<svg viewBox="0 0 20 20" fill="none" data-icon="fill" aria-hidden="true"><path fill-rule="evenodd" clip-rule="evenodd" d="M5.5 2.877C3.476 2.877 1.835 4.518 1.835 6.542V13.459C1.835 15.483 3.476 17.124 5.5 17.124H14.5C16.524 17.124 18.165 15.483 18.165 13.459V6.542C18.165 4.518 16.524 2.877 14.5 2.877H5.5ZM11.835 15.794H5.5C4.21 15.794 3.165 14.748 3.165 13.459V6.542C3.165 5.252 4.21 4.207 5.5 4.207H11.835V15.794ZM14.5 4.207C15.79 4.207 16.835 5.252 16.835 6.542V13.459C16.835 14.748 15.79 15.794 14.5 15.794H13.165V4.207H14.5Z" fill="currentColor"/></svg>';
 
 // 工作台的快捷键列给聊天的快捷键面板。
 function toolShortcuts(entries) {
@@ -218,7 +219,7 @@ function shortcutKeys(spec) {
 }
 
 function svgIcon(name) {
-  return `<svg viewBox="0 0 24 24" aria-hidden="true">${ICONS[name]}</svg>`;
+  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]}</svg>`;
 }
 
 function chromeButton(className, label, icon) {
@@ -856,26 +857,20 @@ function mountTools(root, chat, tools, entries) {
     return entry.hint ?? "";
   }
 
+  // 极简收敛（方案 2）：聊天顶栏不再平铺工作台内部标签；桌面分屏展开时，工作台标签栏与聊天标题共享同一条 53px 顶栏，
+  // 开关按钮只留在收起态/窄屏态的聊天顶栏里，避免左右重复出现工作台开关。
   function updateToggle() {
     const pending = [...new Set([...records.singles(), ...allTabs()])].find((record) => record.attention || record.indicator?.busy);
     const keys = shortcutKeys(HOST_SHORTCUTS.toggle).join("+");
-    const active = state.open ? activeRecord() : null;
-    const promoted = entries.filter((entry) => entry.header && entry.icon).map((entry) => {
-      const current = active?.entry === entry;
-      const shortcut = entry.shortcut ? `（${shortcutKeys(entry.shortcut).join("+")}）` : "";
-      return {
-        id: `tool:${entry.id}`,
-        label: entry.label,
-        hint: `${current ? "收起" : "打开"}${entry.label}${shortcut}`,
-        iconSvg: entry.icon,
-        active: current,
-      };
-    });
+    const sharedDesktopHeader = state.open && !narrow.matches && !state.maximized;
+    if (sharedDesktopHeader) {
+      chat.handle.setHeaderActions([]);
+      return;
+    }
     const label = state.open
       ? `收起工作台（${keys}）`
       : pending ? `打开工作台（${keys}）· ${pending.label ?? pending.entry.label}有新活动` : `打开工作台（${keys}）`;
     chat.handle.setHeaderActions([
-      ...promoted,
       { id: "workbench", label: state.open ? "收起工作台" : "工作台", hint: label, iconSvg: TOOL_ICON, attention: !state.open && Boolean(pending), active: state.open },
     ]);
   }
@@ -1218,6 +1213,8 @@ function mountTools(root, chat, tools, entries) {
     state.maximized = !state.maximized;
     update();
   });
+  const onNarrow = () => updateToggle();
+  narrow.addEventListener("change", onNarrow);
   root.classList.add("has-tools");
   root.append(chrome.splitter, chrome.panel);
   root.addEventListener("keydown", onKeydown);
@@ -1250,6 +1247,7 @@ function mountTools(root, chat, tools, entries) {
     dispose() {
       disposed = true;
       chat.handle.setHeaderActions([]);
+      narrow.removeEventListener("change", onNarrow);
       root.removeEventListener("keydown", onKeydown);
       window.removeEventListener("keydown", onShortcut);
       window.removeEventListener("resize", sizing.fit);

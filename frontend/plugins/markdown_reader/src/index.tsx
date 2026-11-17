@@ -31,7 +31,8 @@ const PINS_KEY = "akashic.files.pins.v1";
 const SPLIT_WIDTH_PX = 480;
 const MAX_PINS = 8;
 const IMPORT_LIMIT_BYTES = 50 * 1024 * 1024;
-const FOLDER_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>';
+// Codex 16×16 软角文件夹图标（evenodd 路径，data-icon="fill" 免双重描边）。
+const FOLDER_ICON = '<svg viewBox="0 0 16 16" fill="none" data-icon="fill" aria-hidden="true"><path fill-rule="evenodd" clip-rule="evenodd" d="M5.559 2.141C6.065 2.141 6.558 2.302 6.967 2.599L7.818 3.219C8.047 3.385 8.324 3.475 8.607 3.475H11.967C13.287 3.475 14.358 4.546 14.358 5.867V11.467C14.358 12.787 13.287 13.858 11.967 13.858H4.033C2.712 13.858 1.641 12.787 1.641 11.467V4.533C1.642 3.212 2.712 2.142 4.033 2.141H5.559ZM2.692 7.859V11.467C2.692 12.207 3.292 12.808 4.033 12.808H11.967C12.708 12.808 13.308 12.208 13.308 11.467V7.859H2.692ZM4.033 3.192C3.292 3.192 2.692 3.792 2.692 4.533V6.808H13.308V5.867C13.308 5.126 12.708 4.525 11.967 4.525H8.607C8.102 4.525 7.609 4.365 7.2 4.068L6.348 3.448C6.119 3.281 5.843 3.192 5.559 3.192H4.033Z" fill="currentColor"/></svg>';
 
 const STATUS_MESSAGES: Record<string, string> = {
   not_found: "服务端路径不存在",
@@ -1087,7 +1088,6 @@ export function activate(ctx: WebHostContextV1): WebUiDisposer {
     accepts: ["workspace.document.open.v1", "workspace.file.open.v1"],
     label: "文件",
     order: 25,
-    header: true,
     icon: FOLDER_ICON,
     shortcut: "Mod+Shift+E",
     hint: "浏览服务端工作区、会话目录或指定路径文件",

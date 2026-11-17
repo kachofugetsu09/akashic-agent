@@ -108,7 +108,9 @@
 .conversation-tools-group {
   display: grid;
   flex: 1 1 0;
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr);
+  min-width: 0;
   min-height: 0;
 }
 
@@ -165,15 +167,15 @@
   background: color-mix(in oklab, var(--ak-ink-primary) 8%, transparent);
 }
 
-/* 标签条：浏览器式圆角标签，均分宽度，最窄 90px，再多就横向滚动；“+”紧跟最后一个标签，铺满与收起在最右。 */
+/* 标签条：与左侧聊天标题共享同一条 53px（52px 内高 + 1px 底边）水平顶栏。 */
 .conversation-tools-bar {
   position: relative;
   display: flex;
-  height: 43px;
+  height: 53px;
   min-width: 0;
   align-items: center;
-  gap: 4px;
-  padding-inline: 6px;
+  gap: 6px;
+  padding-inline: 10px 8px;
   border-block-end: 1px solid var(--ak-rule-subtle);
   background: var(--ak-paper-canvas);
 }
@@ -199,7 +201,7 @@
   flex: 0 1 auto;
   width: 172px;
   min-width: 90px;
-  height: 30px;
+  height: 32px;
   align-items: center;
   border: 1px solid transparent;
   border-radius: var(--ak-radius-sm);
@@ -256,11 +258,14 @@
 
 .conversation-tools-tab > svg {
   flex: none;
-  width: 15px;
-  height: 15px;
+  width: 16px;
+  height: 16px;
+}
+
+.conversation-tools-tab > svg:not([data-icon="fill"]) {
   fill: none;
   stroke: currentColor;
-  stroke-width: 1.8;
+  stroke-width: 1.65;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
@@ -329,8 +334,8 @@
 .conversation-tools-button {
   display: inline-grid;
   flex: 0 0 auto;
-  width: 28px;
-  height: 28px;
+  width: 30px;
+  height: 30px;
   place-items: center;
   padding: 0;
   border-radius: var(--ak-radius-sm);
@@ -340,9 +345,13 @@
 .conversation-tools-launch-tool > svg {
   width: 16px;
   height: 16px;
+}
+
+.conversation-tools-button svg:not([data-icon="fill"]),
+.conversation-tools-launch-tool > svg:not([data-icon="fill"]) {
   fill: none;
   stroke: currentColor;
-  stroke-width: 1.8;
+  stroke-width: 1.65;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
@@ -401,10 +410,12 @@
 }
 
 .conversation-tools-content {
+  min-width: 0;
   min-height: 0;
 }
 
 .conversation-tool-panel {
+  min-width: 0;
   height: 100%;
   overflow: hidden;
 }

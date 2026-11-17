@@ -4,7 +4,8 @@ import type { WebHostContextV1, WebUiDisposer } from "@akashic/web-ui-v1";
 import { registerForm, Field, ModelField } from "../../../../packages/akashic-plugin-kit/src/configuration";
 import { SubagentWorkbench } from "./workbench";
 
-const SUBAGENT_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="6" width="16" height="12" rx="3"/><path d="M9 11h.01M15 11h.01M9 15h6M12 3v3"/></svg>';
+// 分叉流/子任务图标：显式 fill="none" 与 stroke="currentColor"，在任何容器内都不出现实心黑块。
+const SUBAGENT_ICON = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="4.5" cy="4" r="1.75"/><circle cx="4.5" cy="12" r="1.75"/><circle cx="11.5" cy="8" r="1.75"/><path d="M4.5 5.75v4.5M6.1 4.6c2.2.3 3.2 1.2 3.7 2.2M6.1 11.4c2.2-.3 3.2-1.2 3.7-2.2"/></svg>';
 
 // 子任务的运行参数与右侧工作台标签；留空即用默认值。
 export function activate(ctx: WebHostContextV1): WebUiDisposer {
@@ -29,7 +30,6 @@ export function activate(ctx: WebHostContextV1): WebUiDisposer {
     id: "subagent",
     label: "子任务",
     order: 25,
-    header: true,
     background: true,
     icon: SUBAGENT_ICON,
     hint: "实时查看子任务进展并插话/续聊",

@@ -90,7 +90,7 @@ runnerUi.slots['chat.notice']!.mount(bannerHost, {
 
 mkdirSync(root + '/dist', { recursive: true });
 writeFileSync(root + '/dist/index.html', readFileSync(root + '/index.html'));
-writeFileSync(root + '/chat-ui-shim.tsx', "import { createRoot } from 'react-dom/client'; export function render(host: Element, node: any) { const r = createRoot(host); r.render(node); return () => r.unmount(); }");
+writeFileSync(root + '/chat-ui-shim.tsx', "import { createRoot } from 'react-dom/client'; export function render(host: Element, node: any) { const r = createRoot(host); r.render(node); return () => r.unmount(); } export function ToolText({ text }: { text: string }) { return <span>{text}</span>; }");
 await build({
   entryPoints: [root + '/fixture.tsx'],
   outfile: root + '/dist/fixture.js',
@@ -140,12 +140,27 @@ const server = createServer(async (req, res) => {
       active: jid === 'sub-run-1',
       has_more: jid === 'sub-run-1',
       messages: jid === 'sub-run-1' ? [
-        ...Array.from({ length: 14 }, (_, k) => ({ seq: 10 + k, message_id: `m-${k}`, author: k % 2 ? 'subagent' : 'parent', kind: k % 2 ? 'output' : 'input', timestamp: '2026-11-17T02:00:05Z', parts: [{ kind: 'text', value: k === 13 ? '正在检查 runtime.py...' : `历史步骤 #${k} 内容占位行` }] })),
+        ...Array.from({ length: 14 }, (_, k) => ({
+          seq: 10 + k,
+          message_id: `m-${k}`,
+          author: k % 2 ? 'subagent' : 'parent',
+          kind: k % 2 ? 'output' : 'input',
+          timestamp: '2026-11-17T02:00:05Z',
+          parts: k === 12
+            ? [
+                { kind: 'tool_call', binding_id: 'shell', arguments: { command: 'ls skills/', description: '核对可用技能目录' } },
+                { kind: 'tool_call', binding_id: 'read', arguments: { path: 'plugins/subagent/runtime.py' } },
+                { kind: 'tool_call', binding_id: 'search', arguments: { query: 'EventMail' } },
+                { kind: 'tool_call', binding_id: 'shell', arguments: { command: 'pytest tests/test_subagent_workbench_and_ui.py', description: '运行子任务回归测试' } },
+                { kind: 'tool_call', binding_id: 'read', arguments: { path: 'frontend/plugins/subagent/src/workbench.tsx' } },
+              ]
+            : [{ kind: 'text', value: k === 13 ? '正在检查 runtime.py...' : `历史步骤 #${k} 内容占位行` }],
+        })),
         ...sentMessages.filter(m => m.job_id === jid).map((m, i) => ({
           seq: 30 + i, message_id: `sent-${i}`, author: 'parent', kind: 'input', timestamp: '2026-11-17T02:00:06Z', parts: [{ kind: 'text', value: m.message }],
         })),
       ] : [
-        { seq: 0, message_id: 'm0', author: 'parent', kind: 'input', timestamp: '2026-11-17T02:00:00Z', parts: [{ kind: 'text', value: '执行子任务检查' }] },
+        { seq: 0, message_id: 'm0', author: 'parent', kind: 'input', timestamp: '2026-11-17T02:00:00Z', parts: [{ kind: 'text', value: '请完成 mail-watch 全链路开发与安装验收：核对 hookhub 过滤规则、补齐增量读取接口、创建独立插件仓库并以 submodule 接入 akashic-fleet，最后在隔离实例里验证激活、定时拉取、去重游标与真实 EventMail 投递链路。'.repeat(2) }] },
         { seq: 1, message_id: 'm1', author: 'subagent', kind: 'output', timestamp: '2026-11-17T02:00:05Z', parts: [{ kind: 'text', value: '构建报错 Exit code 2' }] },
       ],
     }));
@@ -186,6 +201,13 @@ try {
   assert.match(await page.locator('.subagent-composer-alert').innerText(), /修复构建/);
   await page.locator('.subagent-composer-alert__open').click();
   await page.waitForFunction(() => document.body.innerText.includes('构建报错 Exit code 2'));
+  // 1a. 长委派指令默认折叠，点击才展开
+  const briefTrigger = page.locator('.subagent-wb__brief-trigger');
+  await briefTrigger.waitFor();
+  assert.equal(await briefTrigger.getAttribute('aria-expanded'), 'false');
+  await briefTrigger.click();
+  assert.equal(await briefTrigger.getAttribute('aria-expanded'), 'true');
+  await briefTrigger.click();
   // 1b. 已结束的子任务只读一次消息，不再每 1.2s 轮询
   const settledBefore = messageRequests.filter((r) => r.jid === 'sub-fail-2').length;
   await page.waitForTimeout(3000);
@@ -193,20 +215,25 @@ try {
   console.log('[1b] settled child message polls in 3s:', settledPolls);
   assert.equal(settledPolls, 0, `已结束的子任务不应继续轮询消息，3 秒内又请求了 ${settledPolls} 次`);
 
-  // 2. 验证内部子任务可续聊/Steer：发送消息写入后端，并截图含失败提醒横幅 + 活跃子流
+  // 2. 验证单焦点切换器 + 工具步骤折叠 + 可续聊/Steer
+  await page.locator('.subagent-wb__switcher').click();
   await page.locator('.subagent-wb__pill').first().click();
   await page.waitForFunction(() => document.body.innerText.includes('正在检查 runtime.py'));
+  // 2b. 工具调用早期步骤默认折叠成计数行，尾部保留 3 条
+  const foldRow = page.locator('.subagent-wb__fold-row');
+  await foldRow.waitFor();
+  assert.equal(await page.locator('.subagent-wb__tool-item').count(), 3);
   await page.locator('.subagent-wb__composer textarea').fill('优先核对锁顺序');
   await page.locator('.subagent-wb__composer button[type="submit"]').click();
   await page.waitForFunction(() => document.body.innerText.includes('优先核对锁顺序'));
   assert.equal(sentMessages.length, 1);
-  // 2a. 运行中的子任务首读之后按 after_seq 增量拉取，不重复取整页
+  // 2c. 运行中的子任务首读之后按 after_seq 增量拉取，不重复取整页
   const runPolls = messageRequests.filter((r) => r.jid === 'sub-run-1' && r.before === null);
-  console.log('[2a] running child polls:', JSON.stringify(runPolls.map((r) => r.after)));
+  console.log('[2c] running child polls:', JSON.stringify(runPolls.map((r) => r.after)));
   // 每次选中先读最近一页（after 为空），之后只增量拉取
   const sinceSelect = runPolls.slice(runPolls.map((r) => r.after).lastIndexOf(null) + 1);
   assert.ok(sinceSelect.length > 0 && sinceSelect.every((r) => Number(r.after) >= 23), `选中后的轮询应带 after_seq，实际：${runPolls.map((r) => r.after)}`);
-  // 2b. 验证加载更早消息 + 向上滚动时轮询不会强拉回底部
+  // 2d. 验证加载更早消息 + 向上滚动时轮询不会强拉回底部
   await page.locator('.subagent-wb__load-older').click();
   await page.waitForFunction(() => document.body.innerText.includes('更早的历史上下文'));
   await page.evaluate(() => {
@@ -219,6 +246,7 @@ try {
   await page.screenshot({ path: root + '/workbench-live.png', animations: 'disabled' });
 
   // 3. 切换到外部只读代理：验证显示只读横幅且无发送输入框
+  await page.locator('.subagent-wb__switcher').click();
   await page.locator('.subagent-wb__pill').nth(2).click();
   await page.locator('.subagent-wb__readonly-composer').waitFor();
   assert.equal(await page.locator('.subagent-wb__composer').count(), 0);
