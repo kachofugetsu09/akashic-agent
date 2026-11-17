@@ -164,12 +164,10 @@ class Sources:
             self._changes.discard(event)
 
     def _route(self, channel: str) -> Source:
-        """输入和控制共用唯一的专属渠道优先规则（只路由到 ACTIVE 来源）。"""
+        """输入和控制共用唯一的专属渠道优先规则。"""
         default: Source | None = None
         for registration in self._items.values():
             source = registration.source
-            if source.context.fiber.state is not FiberState.ACTIVE:
-                continue
             if source.channels is None:
                 default = source
             elif channel in source.channels:

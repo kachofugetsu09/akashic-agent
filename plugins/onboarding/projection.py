@@ -1,6 +1,7 @@
 """步骤随贡献者 Effect 存在，顺序由真实功能 Fiber 计算。"""
 from __future__ import annotations
 
+from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -123,8 +124,9 @@ class Registry:
         registration = self.steps[key]
         if registration.context.fiber.state is not FiberState.ACTIVE:
             raise KeyError(key)
-        try:
-            async with registration.context.runtime_scope():
-                return await registration.step.status()
-        except CompositionError as error:
-            raise KeyError(key) from error
+        async with AsyncExitStack() as stack:
+            try:
+                _ = await stack.enter_async_context(registration.context.runtime_scope())
+            except CompositionError as error:
+                raise KeyError(key) from error
+            return await registration.step.status()

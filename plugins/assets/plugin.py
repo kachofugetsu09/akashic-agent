@@ -76,14 +76,10 @@ class Assets:
     ) -> AsyncIterator[tuple[InstalledAsset, ...]]:
         """异步读取跨越换代时，持有选中且 ACTIVE 资产的贡献者；正在卸载的贡献者跳过。"""
         async with self._ctx.runtime_scope(), AsyncExitStack() as stack:
-            consumer.require_runtime_identity(INSTALLED_ASSETS, self)
             candidates = tuple(
-                (item, owner)
-                for item, owner in sorted(
-                    self._entries.items(),
-                    key=lambda pair: (pair[0].owner_id, pair[0].category, str(pair[0].root_dir)),
-                )
-                if item.category == category and owner.fiber.state is FiberState.ACTIVE
+                (item, self._entries[item])
+                for item in self(consumer)
+                if item.category == category
             )
             admitted_owners: set[Context] = set()
             for owner in dict.fromkeys(owner for _, owner in candidates):
