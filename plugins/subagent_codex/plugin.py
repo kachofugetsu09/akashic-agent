@@ -190,8 +190,31 @@ async def on_item(item: dict[str, object], method: object, answers: dict[str, st
         else:
             # 1. Commentary and phases added by newer Codex versions are progress, not answers.
             await emit(AgentActivity("message", text))
-    elif kind in {"commandExecution", "fileChange", "mcpToolCall", "webSearch"}:
-        await emit(AgentActivity("tool", f"{kind} · {'开始' if method == 'item/started' else '结束'}"))
+    elif kind in {"commandExecution", "fileChange", "mcpToolCall", "webSearch"} and method == "item/completed":
+        await emit(AgentActivity("tool", describe_item(item)))
+
+
+# 面板活动行：「动作 · 对象」，失败追加原因；只在条目完成时记一行，开始事件不再单独占行。
+def describe_item(item: dict[str, object]) -> str:
+    kind = item.get("type")
+    status = item.get("status")
+    failed = status in {"failed", "declined"}
+    if kind == "commandExecution":
+        text = f"Shell · {' '.join(str(item.get('command') or '').split())}"
+        code = item.get("exitCode")
+        if isinstance(code, int) and code != 0:
+            return f"{text} · 退出码 {code}"
+    elif kind == "fileChange":
+        changes = item.get("changes")
+        listed = cast(list[object], changes) if isinstance(changes, list) else []
+        paths = [str(obj(change).get("path") or "") for change in listed]
+        shown = "、".join(path for path in paths[:3] if path) or "文件"
+        text = f"Edit · {shown}" + (f" 等 {len(paths)} 个" if len(paths) > 3 else "")
+    elif kind == "mcpToolCall":
+        text = f"MCP · {item.get('server') or ''}/{item.get('tool') or ''}"
+    else:
+        text = f"Search · {item.get('query') or ''}"
+    return f"{text} · {'已拒绝' if status == 'declined' else '失败'}" if failed else text
 
 
 async def apply(ctx: Context) -> None:

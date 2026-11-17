@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import type { ConversationTabView } from "@akashic/conversation-tools-v2";
 import type { WebHostContextV1 } from "@akashic/web-ui-v1";
+import { renderMarkdownProse } from "../../../../packages/akashic-plugin-kit/src/markdown-prose";
 import "./workbench.css";
 
 export interface TreeSubagent {
@@ -34,6 +35,7 @@ interface ChildMessagePart {
   kind: string;
   value?: string;
   binding_id?: string;
+  tool?: string;
   arguments?: Record<string, unknown>;
   action?: string;
   reason?: string;
@@ -46,7 +48,26 @@ interface ChildMessage {
   kind: string;
   timestamp: string;
   parts: ChildMessagePart[];
+  call_ref?: { message_id: string; part_index: number };
+  outcome?: "success" | "denied" | "error" | "interrupted";
 }
+
+interface ToolResultView {
+  outcome: string;
+  parts: string[];
+}
+
+interface ToolEntry {
+  key: string;
+  part: ChildMessagePart;
+  result?: ToolResultView;
+}
+
+// 消息流按阅读块组织：连续工具调用并成一条轨道，结果挂回对应调用，正文按 Markdown 排版。
+type StreamBlock =
+  | { kind: "text"; key: string; text: string; steer: boolean; initial: boolean }
+  | { kind: "tools"; key: string; entries: ToolEntry[] }
+  | { kind: "control"; key: string; action?: string; reason?: string };
 
 type Selection = { kind: "subagent" | "external"; id: string };
 
@@ -57,6 +78,12 @@ const STATUS_LABELS: Record<string, string> = {
   failed: "失败",
   cancelled: "已取消",
   interrupted: "已中断",
+};
+
+const CONTROL_LABELS: Record<string, string> = {
+  cancel: "任务已取消",
+  pause: "已停止",
+  resume: "已恢复",
 };
 
 const API_BASE = "/api/dashboard/subagent";
@@ -82,17 +109,131 @@ function summarizeToolCall(part: ChildMessagePart): { tool: string; summary: str
   const skill = str("skill");
 
   let tool = "工具";
-  if (cmd) tool = "Shell";
+  if (part.tool) tool = part.tool;
+  else if (cmd) tool = "Shell";
   else if (typeof args.new_text === "string" || typeof args.old_text === "string") tool = "Edit";
   else if (typeof args.content === "string" && path) tool = "Write";
   else if (path) tool = "Read";
   else if (query) tool = "Search";
   else if (url) tool = "Fetch";
   else if (skill) tool = "Skill";
-  else if (part.binding_id) tool = part.binding_id.slice(0, 8);
 
   const summary = desc || cmd || path || query || url || skill || JSON.stringify(args);
   return { tool, summary, rawJson };
+}
+
+const RESULT_TEXT_KEYS = ["output", "stdout", "content", "text", "result", "message", "error", "stderr"];
+const RESULT_HIDDEN_KEYS = new Set(["command", "original_token_count", "chunk_id", "wall_time_ms"]);
+// 命令单独成块；description 已在摘要里，shell/login 是执行器默认项。
+const ARG_HIDDEN_KEYS = new Set(["command", "description", "shell", "login"]);
+const RESULT_VIEW_CHARS = 20000;
+
+// 工具结果多为 JSON 信封：取出正文字段还原换行，其余标量字段压成一行元信息；非 JSON 的段落（如状态提示）原样保留。
+function formatToolResult(result: ToolResultView): { body: string; meta: string[]; failed: boolean } {
+  let failed = result.outcome !== "success";
+  let record: Record<string, unknown> | null = null;
+  const notes: string[] = [];
+  for (const part of result.parts) {
+    let parsed: unknown = null;
+    try {
+      parsed = JSON.parse(part);
+    } catch {
+      parsed = null;
+    }
+    if (!record && parsed && typeof parsed === "object" && !Array.isArray(parsed)) record = parsed as Record<string, unknown>;
+    else notes.push(part);
+  }
+  if (!record) return { body: notes.join("\n\n"), meta: [], failed };
+  const bodyKey = RESULT_TEXT_KEYS.find((key) => typeof record[key] === "string" && (record[key] as string).length > 0);
+  const meta: string[] = [];
+  for (const [key, value] of Object.entries(record)) {
+    if (key === bodyKey || RESULT_HIDDEN_KEYS.has(key)) continue;
+    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") meta.push(`${key}: ${value}`);
+  }
+  if (typeof record.exit_code === "number" && record.exit_code !== 0) failed = true;
+  if (typeof record.process_status === "string" && /fail|error|timeout|killed/i.test(record.process_status)) failed = true;
+  const body = [...notes, bodyKey ? (record[bodyKey] as string) : JSON.stringify(record, null, 2)].join("\n\n");
+  return { body, meta, failed };
+}
+
+const LEGACY_ACTIVITY_NAMES: Record<string, string> = {
+  commandExecution: "Shell",
+  fileChange: "Edit",
+  mcpToolCall: "MCP",
+  webSearch: "Search",
+};
+
+// 外部执行器活动行「名称 · 对象 · 状态」拆成工具行；旧版只有事件名的「开始」行直接略去。
+function activityView(act: { kind: string; text: string }): { name: string; detail: string; failed: boolean } | null {
+  const segments = act.text.split(" · ");
+  const legacy = LEGACY_ACTIVITY_NAMES[segments[0]];
+  if (legacy && segments.length === 2) return segments[1] === "开始" ? null : { name: legacy, detail: "", failed: false };
+  if (act.kind !== "tool" || segments.length < 2) return { name: "", detail: act.text, failed: false };
+  const last = segments[segments.length - 1];
+  const failed = /^(失败|已拒绝|退出码 \d+)$/.test(last) || act.text === "上一步工具失败";
+  return { name: segments[0], detail: segments.slice(1, failed ? -1 : undefined).join(" · "), failed };
+}
+
+function resultView(msg: ChildMessage): ToolResultView {
+  return { outcome: msg.outcome ?? "success", parts: msg.parts.filter((p) => p.kind === "text" && p.value).map((p) => p.value!) };
+}
+
+function messageText(msg: ChildMessage): string {
+  return msg.parts.filter((p) => p.kind === "text" && p.value).map((p) => p.value!).join("\n\n");
+}
+
+// 1. 结果按 call_ref 建索引 2. 依序生成块，连续调用合并、正文与控制打断合并 3. 找不到调用的结果单独成轨道。
+function buildStreamBlocks(messages: ChildMessage[]): StreamBlock[] {
+  const results = new Map<string, ToolResultView>();
+  const callKeys = new Set<string>();
+  for (const msg of messages) {
+    if (msg.kind === "toolresult" && msg.call_ref) {
+      results.set(`${msg.call_ref.message_id}:${msg.call_ref.part_index}`, resultView(msg));
+    }
+    msg.parts.forEach((part, index) => {
+      if (part.kind === "tool_call") callKeys.add(`${msg.message_id}:${index}`);
+    });
+  }
+  const blocks: StreamBlock[] = [];
+  let rail: Extract<StreamBlock, { kind: "tools" }> | null = null;
+  const pushTool = (entry: ToolEntry) => {
+    if (!rail) {
+      rail = { kind: "tools", key: `tools:${entry.key}`, entries: [] };
+      blocks.push(rail);
+    }
+    rail.entries.push(entry);
+  };
+  for (const msg of messages) {
+    if (msg.kind === "toolresult") {
+      const ref = msg.call_ref ? `${msg.call_ref.message_id}:${msg.call_ref.part_index}` : msg.message_id;
+      if (!callKeys.has(ref)) pushTool({ key: msg.message_id, part: { kind: "tool_call", tool: "更早调用的结果" }, result: results.get(ref) ?? resultView(msg) });
+      continue;
+    }
+    const text = messageText(msg);
+    if (text) {
+      rail = null;
+      blocks.push({ kind: "text", key: `text:${msg.message_id}`, text, steer: msg.author === "parent" && msg.seq > 0, initial: msg.author === "parent" && msg.seq === 0 });
+    }
+    msg.parts.forEach((part, index) => {
+      if (part.kind === "tool_call") {
+        const key = `${msg.message_id}:${index}`;
+        pushTool({ key, part, result: results.get(key) });
+      } else if (part.kind === "control") {
+        rail = null;
+        blocks.push({ kind: "control", key: `control:${msg.message_id}:${index}`, action: part.action, reason: part.reason });
+      }
+    });
+  }
+  return blocks;
+}
+
+// 与文件预览同一套 Markdown 渲染；同步挂载，贴底滚动在同一帧内就能量到新高度。
+function MarkdownText({ text, className = "" }: { text: string; className?: string }) {
+  const ref = useRef<HTMLDivElement | null>(null);
+  useLayoutEffect(() => {
+    ref.current?.replaceChildren(renderMarkdownProse(text, { headingIds: false }));
+  }, [text]);
+  return <div ref={ref} className={`subagent-wb__md${className ? ` ${className}` : ""}`} />;
 }
 
 async function apiJson<T>(ctx: WebHostContextV1, url: string, init?: RequestInit): Promise<T> {
@@ -157,34 +298,69 @@ function ArrowUpIcon() {
   );
 }
 
-function ToolCallRow({ part }: { part: ChildMessagePart }) {
+function ToolCallRow({ entry, live }: { entry: ToolEntry; live: boolean }) {
   const [expanded, setExpanded] = useState(false);
-  const { tool, summary, rawJson } = useMemo(() => summarizeToolCall(part), [part]);
+  const { tool, summary, rawJson } = useMemo(() => summarizeToolCall(entry.part), [entry.part]);
+  const formatted = useMemo(() => (entry.result ? formatToolResult(entry.result) : null), [entry.result]);
+  const args = entry.part.arguments ?? {};
+  const command = typeof args.command === "string" ? args.command : "";
+  const rest = Object.fromEntries(Object.entries(args).filter(([key]) => !ARG_HIDDEN_KEYS.has(key)));
+  const restJson = command ? (Object.keys(rest).length ? JSON.stringify(rest, null, 2) : "") : rawJson;
   const hasArgs = rawJson !== "{}";
+  const expandable = hasArgs || Boolean(formatted);
+  const state = formatted ? (formatted.failed ? "error" : "done") : live ? "running" : "idle";
+  const body = formatted && formatted.body.length > RESULT_VIEW_CHARS
+    ? `${formatted.body.slice(0, RESULT_VIEW_CHARS)}\n…（已截断，共 ${formatted.body.length.toLocaleString()} 字）`
+    : formatted?.body ?? "";
 
   return (
-    <div className="subagent-wb__tool-item">
+    <div className="subagent-wb__tool-item" data-state={state}>
       <button
         type="button"
         className="subagent-wb__tool-trigger"
-        aria-expanded={hasArgs ? expanded : undefined}
-        disabled={!hasArgs}
-        onClick={() => hasArgs && setExpanded((prev) => !prev)}
+        aria-expanded={expandable ? expanded : undefined}
+        disabled={!expandable}
+        onClick={() => expandable && setExpanded((prev) => !prev)}
       >
         <TerminalGlyphIcon />
         <span className="subagent-wb__tool-name">{tool}</span>
         <span className="subagent-wb__tool-summary">{summary}</span>
-        {hasArgs ? <span className="subagent-wb__tool-caret"><ChevronDownIcon rotated={expanded} /></span> : null}
+        {state === "error" ? <span className="subagent-wb__tool-flag">失败</span> : null}
+        {state === "running" ? <span className="subagent-wb__tool-flag is-live">运行中</span> : null}
+        {expandable ? <span className="subagent-wb__tool-caret"><ChevronDownIcon rotated={expanded} /></span> : null}
       </button>
-      {expanded && hasArgs ? <pre className="subagent-wb__tool-raw">{rawJson}</pre> : null}
+      {expanded ? (
+        <div className="subagent-wb__tool-detail">
+          {command ? (
+            <section>
+              <h4 className="subagent-wb__tool-label">命令</h4>
+              <pre className="subagent-wb__tool-raw">{command}</pre>
+            </section>
+          ) : null}
+          {restJson && restJson !== "{}" ? (
+            <section>
+              <h4 className="subagent-wb__tool-label">参数</h4>
+              <pre className="subagent-wb__tool-raw">{restJson}</pre>
+            </section>
+          ) : null}
+          {formatted ? (
+            <section>
+              <h4 className="subagent-wb__tool-label">
+                结果{formatted.meta.length ? <span className="subagent-wb__tool-meta">{formatted.meta.join(" · ")}</span> : null}
+              </h4>
+              {body ? <pre className="subagent-wb__tool-raw is-output">{body}</pre> : <p className="subagent-wb__tool-empty">无输出</p>}
+            </section>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }
 
-function ToolCallRail({ parts }: { parts: ChildMessagePart[] }) {
+function ToolCallRail({ entries, live }: { entries: ToolEntry[]; live: boolean }) {
   const [showAll, setShowAll] = useState(false);
-  const hiddenCount = Math.max(0, parts.length - VISIBLE_TOOL_TAIL);
-  const visibleParts = showAll || hiddenCount === 0 ? parts : parts.slice(-VISIBLE_TOOL_TAIL);
+  const hiddenCount = Math.max(0, entries.length - VISIBLE_TOOL_TAIL);
+  const visible = showAll || hiddenCount === 0 ? entries : entries.slice(-VISIBLE_TOOL_TAIL);
 
   return (
     <div className="subagent-wb__tool-rail">
@@ -199,8 +375,8 @@ function ToolCallRail({ parts }: { parts: ChildMessagePart[] }) {
           <ChevronDownIcon rotated={showAll} />
         </button>
       ) : null}
-      {visibleParts.map((part, idx) => (
-        <ToolCallRow key={idx} part={part} />
+      {visible.map((entry) => (
+        <ToolCallRow key={entry.key} entry={entry} live={live} />
       ))}
     </div>
   );
@@ -411,6 +587,10 @@ export function SubagentWorkbench({ ctx, view }: { ctx: WebHostContextV1; view: 
   }, [active, childLive, selected, refreshMessages]);
 
   const currentRun = selected?.kind === "external" ? runs.find((r) => r.id === selected.id) : undefined;
+  const runActivities = useMemo(
+    () => (currentRun?.activities ?? []).map(activityView).filter((item): item is NonNullable<typeof item> => item !== null),
+    [currentRun?.activities],
+  );
   const isRunning = currentSub ? currentSub.active : currentRun ? (currentRun.status === "running" || currentRun.status === "accepted") : false;
 
   const tailKey = selected?.kind === "subagent"
@@ -488,6 +668,13 @@ export function SubagentWorkbench({ ctx, view }: { ctx: WebHostContextV1; view: 
     }
   };
 
+  // 长委派指令折叠进顶部说明，不再进消息流。
+  const blocks = useMemo(() => {
+    const first = messages[0];
+    const firstText = first && first.author === "parent" && first.seq === 0 ? messageText(first) : "";
+    return buildStreamBlocks(firstText.length > 140 ? messages.slice(1) : messages);
+  }, [messages]);
+
   if (!sessionId) {
     return <div className="subagent-wb__empty">发送首条消息后，这里将实时展示该会话树派出的全部子任务。</div>;
   }
@@ -513,8 +700,7 @@ export function SubagentWorkbench({ ctx, view }: { ctx: WebHostContextV1; view: 
     ? firstMsg.parts.filter((p) => p.kind === "text" && p.value).map((p) => p.value!).join("\n\n")
     : "";
   const hasFoldedBrief = firstPromptText.length > 140 || Boolean(activeModel || activeCwd);
-  const streamMessages = firstPromptText.length > 140 ? messages.slice(1) : messages;
-
+  
   return (
     <div className="subagent-wb">
       <header className="subagent-wb__bar">
@@ -656,36 +842,30 @@ export function SubagentWorkbench({ ctx, view }: { ctx: WebHostContextV1; view: 
                       </div>
                     ) : null}
                     {firstPromptText.length > 140 ? (
-                      <pre className="subagent-wb__brief-text">{firstPromptText}</pre>
+                      <MarkdownText text={firstPromptText} className="subagent-wb__brief-text" />
                     ) : null}
                   </div>
                 ) : null}
               </section>
             ) : null}
 
-            {streamMessages.length === 0 && firstPromptText.length <= 140 ? (
+            {blocks.length === 0 && firstPromptText.length <= 140 ? (
               <p className="subagent-wb__empty-inline">等待子任务写入首条输出…</p>
             ) : (
-              streamMessages.map((msg) => {
-                const textParts = msg.parts.filter((p) => p.kind === "text" && p.value);
-                const toolParts = msg.parts.filter((p) => p.kind === "tool_call");
-                const controlParts = msg.parts.filter((p) => p.kind === "control");
-                const isParentSteer = msg.author === "parent" && msg.seq > 0;
-                const isShortInitialPrompt = msg.author === "parent" && msg.seq === 0;
-
+              blocks.map((block) => {
+                if (block.kind === "tools") return <ToolCallRail key={block.key} entries={block.entries} live={childLive} />;
+                if (block.kind === "control") {
+                  return (
+                    <div key={block.key} className={`subagent-wb__control${block.action === "cancel" || block.action === "pause" ? " is-muted" : ""}`}>
+                      <strong>{CONTROL_LABELS[block.action ?? ""] ?? block.action ?? "状态变更"}</strong>
+                      {block.reason ? <span>{block.reason}</span> : null}
+                    </div>
+                  );
+                }
                 return (
-                  <article key={msg.message_id} className={`subagent-wb__turn${isParentSteer || isShortInitialPrompt ? " is-steer" : ""}`}>
-                    {isParentSteer ? <span className="subagent-wb__turn-tag">插话</span> : null}
-                    {textParts.map((part, idx) => (
-                      <pre key={`t-${idx}`} className="subagent-wb__text">{part.value}</pre>
-                    ))}
-                    {toolParts.length > 0 ? <ToolCallRail parts={toolParts} /> : null}
-                    {controlParts.map((part, idx) => (
-                      <div key={`c-${idx}`} className={`subagent-wb__control${part.action === "cancel" ? " is-muted" : ""}`}>
-                        <strong>{part.action === "cancel" ? "任务已取消" : part.action ?? "状态变更"}</strong>
-                        {part.reason ? <span>{part.reason}</span> : null}
-                      </div>
-                    ))}
+                  <article key={block.key} className={`subagent-wb__turn${block.steer || block.initial ? " is-steer" : ""}`}>
+                    {block.steer ? <span className="subagent-wb__turn-tag">插话</span> : null}
+                    <MarkdownText text={block.text} />
                   </article>
                 );
               })
@@ -717,9 +897,9 @@ export function SubagentWorkbench({ ctx, view }: { ctx: WebHostContextV1; view: 
       ) : currentRun ? (
         <>
           <div ref={streamRef} className="subagent-wb__stream" onScroll={handleStreamScroll}>
-            {currentRun.activities.length > 0 ? (
+            {runActivities.length > 0 ? (
               <div className="subagent-wb__tool-rail">
-                {currentRun.activities.length > 5 ? (
+                {runActivities.length > 5 ? (
                   <button
                     type="button"
                     className="subagent-wb__fold-row"
@@ -728,26 +908,31 @@ export function SubagentWorkbench({ ctx, view }: { ctx: WebHostContextV1; view: 
                   >
                     <span>
                       {activitiesExpanded
-                        ? `收起更早 ${currentRun.activities.length - 3} 条活动`
-                        : `已完成 ${currentRun.activities.length - 3} 条更早活动`}
+                        ? `收起更早 ${runActivities.length - 3} 条活动`
+                        : `已完成 ${runActivities.length - 3} 条更早活动`}
                     </span>
                     <ChevronDownIcon rotated={activitiesExpanded} />
                   </button>
                 ) : null}
-                {(activitiesExpanded || currentRun.activities.length <= 5
-                  ? currentRun.activities
-                  : currentRun.activities.slice(-3)
-                ).map((act, i) => (
-                  <div key={i} className="subagent-wb__activity-row" data-kind={act.kind}>
-                    <span className="subagent-wb__activity-dot" aria-hidden="true" />
-                    <span>{act.text}</span>
-                  </div>
+                {(activitiesExpanded || runActivities.length <= 5 ? runActivities : runActivities.slice(-3)).map((act, i) => (
+                  act.name ? (
+                    <div key={i} className="subagent-wb__tool-item" data-state={act.failed ? "error" : "done"}>
+                      <div className="subagent-wb__tool-trigger is-static">
+                        <TerminalGlyphIcon />
+                        <span className="subagent-wb__tool-name">{act.name}</span>
+                        <span className="subagent-wb__tool-summary">{act.detail}</span>
+                        {act.failed ? <span className="subagent-wb__tool-flag">失败</span> : null}
+                      </div>
+                    </div>
+                  ) : (
+                    <p key={i} className="subagent-wb__activity-note">{act.detail}</p>
+                  )
                 ))}
               </div>
             ) : (
               <p className="subagent-wb__empty-inline">{currentRun.progress ? "暂无活动记录。" : "此执行器仅提供最终结果。"}</p>
             )}
-            {currentRun.result ? <pre className="subagent-wb__text">{currentRun.result}</pre> : null}
+            {currentRun.result ? <MarkdownText text={currentRun.result} /> : null}
           </div>
           <div className="subagent-wb__readonly-composer" role="note">
             外部只读执行器（{currentRun.runner}）不支持续聊，仅可查看过程或停止。

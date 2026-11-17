@@ -82,9 +82,21 @@ async def execute(wire: AgentWire, task: AgentTask,
                 if block.get("type") == "text" and kind == "assistant":
                     await emit(AgentActivity("message", str(block.get("text", ""))))
                 elif block.get("type") == "tool_use":
-                    await emit(AgentActivity("tool", str(block.get("name", "tool")) + " · 开始"))
-                elif block.get("type") == "tool_result":
-                    await emit(AgentActivity("tool", str(block.get("tool_use_id", "tool")) + " · 结束"))
+                    await emit(AgentActivity("tool", describe_tool_use(block)))
+                elif block.get("type") == "tool_result" and block.get("is_error") is True:
+                    await emit(AgentActivity("tool", "上一步工具失败"))
+
+
+# 面板活动行：「工具名 · 关键参数」，与 codex 执行器同一格式。
+def describe_tool_use(block: dict[str, object]) -> str:
+    name = str(block.get("name") or "tool")
+    raw = block.get("input")
+    args = cast(dict[str, object], raw) if isinstance(raw, dict) else {}
+    for key in ("command", "file_path", "path", "pattern", "url", "query", "description"):
+        value = args.get(key)
+        if isinstance(value, str) and value.strip():
+            return f"{name} · {' '.join(value.split())}"
+    return name
 
 
 async def apply(ctx: Context) -> None:
