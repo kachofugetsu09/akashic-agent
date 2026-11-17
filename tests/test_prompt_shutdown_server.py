@@ -15,7 +15,7 @@ from plugins.ui.dashboard_server import DashboardServer
 PROMPT_SERVERS = [WebShellServer, DashboardServer, ChatApiServer]
 
 
-def _app(events: list[str]):
+def _app(events: list[str], received: asyncio.Event | None = None):
     async def app(scope, receive, send):
         if scope["type"] == "lifespan":
             while True:
@@ -27,6 +27,8 @@ def _app(events: list[str]):
                     await send({"type": "lifespan.shutdown.complete"})
                     return
         await receive()
+        if received is not None:
+            received.set()
         await asyncio.sleep(0.2)
         await send({"type": "http.response.start", "status": 200, "headers": []})
         await send({"type": "http.response.body", "body": b"done"})
@@ -34,8 +36,8 @@ def _app(events: list[str]):
     return app
 
 
-async def _serve(tmp_path, events, server_type):
-    server = server_type(uvicorn.Config(_app(events), uds=str(tmp_path / "s.sock"), log_level="warning"))
+async def _serve(tmp_path, events, server_type, received: asyncio.Event | None = None):
+    server = server_type(uvicorn.Config(_app(events, received), uds=str(tmp_path / "s.sock"), log_level="warning"))
     task = asyncio.create_task(server.serve())
     while not server.started:
         await asyncio.sleep(0.01)
@@ -68,11 +70,13 @@ async def test_idle_exit_from_other_thread_starts_graceful_shutdown_promptly(tmp
 @pytest.mark.parametrize("server_type", [uvicorn.Server, *PROMPT_SERVERS])
 async def test_exit_waits_for_in_flight_response(tmp_path, server_type):
     events: list[str] = []
-    server, task = await _serve(tmp_path, events, server_type)
+    received = asyncio.Event()
+    server, task = await _serve(tmp_path, events, server_type, received)
     reader, writer = await asyncio.open_unix_connection(str(tmp_path / "s.sock"))
     writer.write(b"GET / HTTP/1.1\r\nHost: test\r\n\r\n")
     await writer.drain()
-    await asyncio.sleep(0.05)
+    # 等应用真的收到请求再退出：固定等 50ms 时，进程被挂起就可能在连接被接受/读取前开始关闭，客户端读到 reset。
+    await asyncio.wait_for(received.wait(), 2)
     server.should_exit = True
     await asyncio.wait_for(task, 2)
     assert b"\r\ndone\r\n" in await reader.read()
