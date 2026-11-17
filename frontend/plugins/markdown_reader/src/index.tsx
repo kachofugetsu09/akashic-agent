@@ -1,7 +1,6 @@
-import { micromark } from "micromark";
-import { gfm, gfmHtml } from "micromark-extension-gfm";
 import type { ConversationIntent, ConversationIntentStatus, ConversationTabView } from "@akashic/conversation-tools-v2";
 import type { WebHostContextV1, WebUiDisposer } from "@akashic/web-ui-v1";
+import { renderMarkdownProse } from "../../../../packages/akashic-plugin-kit/src/markdown-prose";
 import { FileSyntax } from "./syntax";
 import "./style.css";
 
@@ -846,23 +845,17 @@ class Reader {
   }
 
   private renderMarkdown(text: string, gen: number, signal?: AbortSignal): void {
-    const template = document.createElement("template");
-    template.innerHTML = micromark(text, { extensions: [gfm()], htmlExtensions: [gfmHtml()] });
     const dir = dirnameOf(this.path);
     const pendingImages: Array<{ img: HTMLImageElement; target: string }> = [];
-    template.content.querySelectorAll("img").forEach((image) => {
-      const src = (image.getAttribute("src") || "").trim();
-      image.removeAttribute("src");
-      if (src && !/^[a-z][a-z0-9+.-]*:/i.test(src) && !src.startsWith("//") && /\.(png|jpe?g|webp|gif)$/i.test(src.split("?")[0])) {
+    // 只接管服务端相对路径上的常见位图，其余图片由共享渲染替换成省略说明。
+    const prose = renderMarkdownProse(text, {
+      onImage: (image, src) => {
+        if (!src || /^[a-z][a-z0-9+.-]*:/i.test(src) || src.startsWith("//") || !/\.(png|jpe?g|webp|gif)$/i.test(src.split("?")[0])) return false;
         const joined = src.startsWith("/") ? src : `${dir === "/" ? "" : dir}/${src}`;
         pendingImages.push({ img: image, target: normalizePosix(joined) });
-      } else {
-        image.replaceWith(el("span", `[图片：${image.alt || "外部或不支持的资源"}；已省略]`, "md-image-note"));
-      }
+        return true;
+      },
     });
-    const prose = el("div", "", "md-prose");
-    prose.append(template.content);
-    this.decorateProse(prose);
     this.article.append(prose);
     for (const item of pendingImages) {
       this.attachImage(item.img, item.target, gen, signal);
@@ -1005,33 +998,6 @@ class Reader {
         this.syncChrome();
         void this.files(nextPath);
       }
-    });
-  }
-
-  private decorateProse(container: HTMLElement): void {
-    const slugs = new Map<string, number>();
-    container.querySelectorAll("h1,h2,h3,h4,h5,h6").forEach((heading) => {
-      if (heading.id) return;
-      const slug = (heading.textContent || "section").toLowerCase()
-        .replace(/[^\p{L}\p{N}\s_-]/gu, "").replace(/\s+/g, "-");
-      const count = slugs.get(slug) || 0;
-      slugs.set(slug, count + 1);
-      heading.id = `md-${count ? `${slug}-${count}` : slug}`;
-    });
-    container.querySelectorAll("a").forEach((link) => {
-      if (/^https?:/i.test(link.getAttribute("href") || "")) {
-        link.target = "_blank";
-        link.rel = "noopener noreferrer";
-      }
-    });
-    container.querySelectorAll("table").forEach((table) => {
-      const wrapper = el("div", "", "md-table");
-      wrapper.tabIndex = 0;
-      table.replaceWith(wrapper);
-      wrapper.append(table);
-    });
-    container.querySelectorAll("input").forEach((input) => {
-      input.disabled = true;
     });
   }
 
