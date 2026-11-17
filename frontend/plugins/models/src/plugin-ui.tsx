@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { render, type ComposerControls, type PluginUiContext, type PluginUiDefinition } from "@akashic/chat-ui-v1";
-import { compatibleEffort, chatModelState, modelProblem, type ChatModelState } from "./capsule-data";
-import { ModelCapsulePicker, ModelEffortAction, resolveVisibleRuntime } from "./capsule-picker";
+import { chatModelState, modelProblem, type ChatModelState } from "./capsule-data";
+import { ModelCapsulePicker } from "./capsule-picker";
 import { formatModelCallStats, readModelCallStats } from "./call-stats";
 import "./capsule.css";
 import "./message-ui.css";
@@ -161,12 +161,9 @@ function ModelCapsule({ context, composer }: { context: PluginUiContext<"compose
     <span id={errorId} hidden>{error}</span>
   </> : null;
   if (!state) return retry;
-  const { visibleModel, explicitModel } = resolveVisibleRuntime(state.runtimes, selection.runtimeId, state.defaultRuntime);
   return <>
     <ModelCapsulePicker defaultRuntime={state.defaultRuntime} runtimes={state.runtimes} selectedRuntimeId={selection.runtimeId}
       selectedEffort={selection.effort} disabled={busy} onChange={choose} />
-    {visibleModel ? <ModelEffortAction runtime={visibleModel} effort={compatibleEffort(visibleModel, selection.effort)}
-      explicit={Boolean(explicitModel)} disabled={busy} onChange={choose} /> : null}
     {problem ? <a className="models-capsule-settings" href="/#models" target="_blank" rel="noopener">模型设置</a> : null}
     {retry}
   </>;

@@ -361,12 +361,6 @@ async function chat(page, prefix, narrow) {
   await measure(page, `${prefix}-chat-model-last`);
   await page.keyboard.press("Escape");
   await picker.waitFor({ state: "detached" });
-  const effort = frame.locator(".model-effort__trigger");
-  if (await effort.count()) {
-    await effort.click();
-    await measure(page, `${prefix}-chat-effort-picker`);
-    await effort.click();
-  }
   if (narrow)
     await frame.getByRole("button", { name: "打开导航", exact: true }).click();
   await measure(page, `${prefix}-chat-navigation`);

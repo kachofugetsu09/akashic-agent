@@ -295,10 +295,14 @@ async function measureDesktopModelPicker(browserInstance, origin) {
   await page.locator(".model-picker__panel").waitFor();
   Object.assign(metric, await readPerformanceProbe(page, startedAt, ".model-picker__option"));
   metric.openOptions = await page.locator(".model-picker__option").count();
+  // 焦点留在搜索框，方向键与 Home/End 只移动 aria-activedescendant 指向的高亮行。
+  const activeOption = () => page.evaluate(() =>
+    document.getElementById(document.activeElement?.getAttribute("aria-activedescendant") ?? "")?.textContent ?? "");
   await page.keyboard.press("End");
-  metric.keyboardEnd = await page.evaluate(() => document.activeElement?.classList.contains("model-picker__option") ? 1 : 0);
+  const last = await activeOption();
+  metric.keyboardEnd = last && !last.includes("跟随默认模型") ? 1 : 0;
   await page.keyboard.press("Home");
-  metric.keyboardHome = await page.evaluate(() => document.activeElement?.textContent?.includes("跟随默认模型") ? 1 : 0);
+  metric.keyboardHome = (await activeOption()).includes("跟随默认模型") ? 1 : 0;
   await page.keyboard.press("Escape");
   metric.focusRestored = await page.evaluate(() => document.activeElement?.classList.contains("model-picker__trigger") ? 1 : 0);
   if (metric.closedOptions !== 0 || metric.keyboardEnd !== 1 || metric.keyboardHome !== 1 || metric.focusRestored !== 1) {

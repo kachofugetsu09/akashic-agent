@@ -14,11 +14,12 @@
   border: 0;
   border-radius: var(--ak-radius-full);
   padding: 0;
-  color: var(--md-sys-color-on-primary);
-  background: var(--md-sys-color-primary);
+  /* 发送是一枚墨色实心圆：纸面上唯一的实色，眼睛落点在这里。 */
+  color: var(--ak-paper-editing);
+  background: var(--ak-ink-primary);
   cursor: pointer;
   appearance: none;
-  transition-property: scale, color, background-color, opacity;
+  transition-property: scale, color, background-color, box-shadow;
   /* 按下要立刻、回弹才慢慢来：进出两条时长与两条曲线分开写，索引与 transition-property 对齐。 */
   transition-duration: 180ms, var(--ak-sys-duration-short), var(--ak-sys-duration-short), var(--ak-sys-duration-short);
   transition-timing-function: var(--ak-sys-motion-emphasized), var(--ak-sys-motion-standard), var(--ak-sys-motion-standard), var(--ak-sys-motion-standard);
@@ -34,19 +35,23 @@
 /* 箭头的线比停止方块粗一档（改版前由 .composer-action-button[data-mode="send"] > svg 承担）。 */
 .composer-action-button[data-mode="send"] .icon-swap__slot > svg {
   stroke-width: 2.4;
+  /* 箭杆画在 24 格的 7–21 行，墨迹质心比盒中心低约 0.5px；上提半像素回到圆心。 */
+  translate: 0 -0.5px;
 }
 
+/* 停止退成描边：同一位置、同一尺寸，只把实心换成细环 + 小方块，生成中不抢正文的注意力。 */
 .composer-action-button[data-mode="stop"] {
-  color: var(--md-sys-color-on-error-container);
-  background: var(--md-sys-color-error-container);
+  color: var(--ak-ink-primary);
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px color-mix(in oklab, var(--ak-ink-primary) 16%, transparent);
 }
 
 .composer-action-button:hover:not(:disabled, [aria-disabled="true"]) {
-  background: color-mix(in srgb, var(--md-sys-color-primary) 92%, var(--md-sys-color-on-primary) 8%);
+  background: color-mix(in oklab, var(--ak-ink-primary) 86%, var(--ak-paper-editing));
 }
 
 .composer-action-button[data-mode="stop"]:hover:not(:disabled, [aria-disabled="true"]) {
-  background: color-mix(in srgb, var(--md-sys-color-error-container) 92%, var(--md-sys-color-on-error-container) 8%);
+  background: color-mix(in oklab, var(--ak-ink-primary) 6%, transparent);
 }
 
 .composer-action-button:active:not(:disabled, [aria-disabled="true"]) {
@@ -59,18 +64,24 @@
   outline-offset: 2px;
 }
 
+/* 空输入：浅墨底 + 淡箭头，位置已在，等字写进来才变实。 */
 .composer-action-button:is(:disabled, [aria-disabled="true"]) {
-  color: color-mix(in srgb, var(--md-sys-color-on-surface) 38%, transparent);
-  background: color-mix(in srgb, var(--md-sys-color-on-surface) 12%, transparent);
+  color: color-mix(in oklab, var(--ak-ink-primary) 34%, transparent);
+  background: color-mix(in oklab, var(--ak-ink-primary) 7%, transparent);
   cursor: default;
 }
 
-/* 正在停止：停止键保持方块，外圈一道 pathLength=1 的圆头无缝追逐弧线，表示请求已送达、等本轮收尾。 */
+.composer-action-button[data-mode="stop"][aria-disabled="true"] {
+  color: color-mix(in oklab, var(--ak-ink-primary) 55%, transparent);
+  background: transparent;
+}
+
+/* 生成中：细环上一道慢转的圆头弧线（pathLength=1 无缝追逐）；正在停止时转快一档，表示请求已送达、等本轮收尾。 */
 .composer-action-button__chase {
   position: absolute;
-  inset: 4px;
-  width: calc(100% - 8px);
-  height: calc(100% - 8px);
+  inset: 0;
+  width: 100%;
+  height: 100%;
   fill: none;
   stroke: currentColor;
   stroke-width: 1.5;
@@ -79,12 +90,16 @@
   transition: opacity var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
 }
 
-.composer-action-button[data-mode="stop"][aria-disabled="true"] .composer-action-button__chase {
-  opacity: 0.78;
+.composer-action-button[data-mode="stop"] .composer-action-button__chase {
+  opacity: 0.7;
+}
+
+.composer-action-button[data-mode="stop"] .composer-action-button__chase circle {
+  animation: composer-action-stopping 2.4s linear infinite;
 }
 
 .composer-action-button[data-mode="stop"][aria-disabled="true"] .composer-action-button__chase circle {
-  animation: composer-action-stopping 1.25s linear infinite;
+  animation-duration: 1.1s;
 }
 
 @keyframes composer-action-stopping {
@@ -94,6 +109,6 @@
 
 @media (prefers-reduced-motion: reduce) {
   .composer-action-button:active:not(:disabled, [aria-disabled="true"]) { scale: 1; }
-  .composer-action-button[data-mode="stop"][aria-disabled="true"] .composer-action-button__chase { opacity: 0.45; }
-  .composer-action-button[data-mode="stop"][aria-disabled="true"] .composer-action-button__chase circle { animation: none; stroke-dasharray: 1 0; }
+  .composer-action-button[data-mode="stop"] .composer-action-button__chase { opacity: 0.45; }
+  .composer-action-button[data-mode="stop"] .composer-action-button__chase circle { animation: none; stroke-dasharray: 1 0; }
 }

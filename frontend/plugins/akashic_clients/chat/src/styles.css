@@ -1674,7 +1674,11 @@ input {
   --composer-control-size: 36px;
   --composer-control-inset: calc((var(--composer-compact-h) - 2px - var(--composer-control-size)) / 2);
   --composer-dock-gap: 4px;
-  /* 统计行浮在输入卡下方的底距里、不占流（见 .composer-stats-line），消息区不再为它预留高度。 */
+  --composer-ring: color-mix(in oklab, var(--ak-ink-primary) 11%, transparent);
+  --composer-ring-focus: color-mix(in oklab, var(--ak-ink-primary) 26%, transparent);
+  /* token-exempt: 输入卡的托起影是负扩散的宽影，elevation 档位里没有这种只往下沉的形状 */
+  --composer-lift-shadow: 0 6px 18px -8px color-mix(in oklab, var(--ak-color-shadow) 18%, transparent);
+  /* 状态签浮在输入卡左上方、不占流（见 .composer-status-anchor），消息区不为它预留高度。 */
   --composer-stats-line: 0px;
   --composer-dock-end: max(24px, env(safe-area-inset-bottom, 0px));
 }
@@ -2301,15 +2305,15 @@ input {
   position: relative;
   min-height: 0;
   overflow: hidden;
-  border: 1px solid var(--ak-rule-default);
+  /* 纸面单形：不画硬边框，1px 发丝环 + 贴地软影把卡片从纸色里托起来；聚焦只把环加深一档。 */
+  border: 1px solid var(--composer-ring);
   border-radius: var(--composer-radius);
   /* 左侧 15px + 1px 边框 = --composer-text-inset，输入文字落在阅读竖线上。 */
   padding: var(--composer-control-inset) var(--composer-control-inset) var(--composer-control-inset) 15px;
   background: var(--chat-lift, var(--ak-paper-editing));
-  box-shadow: none;
-  /* Focus only changes border-color; expand/compact smoothly eases padding & height. */
+  box-shadow: var(--ak-elevation-raised), var(--composer-lift-shadow);
   interpolate-size: allow-keywords;
-  transition-property: border-color, padding, height, min-height;
+  transition-property: border-color, box-shadow, padding, height, min-height;
   transition-duration: var(--ak-sys-duration-short);
   transition-timing-function: var(--ak-sys-motion-standard);
 }
@@ -2332,8 +2336,7 @@ input {
 }
 
 .composer:focus-within {
-  border-color: var(--ak-rule-focus);
-  box-shadow: none;
+  border-color: var(--composer-ring-focus);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -2495,9 +2498,7 @@ form.composer:focus-within [data-slot="input-group"] {
   justify-content: flex-start;
   gap: 0.25rem;
   min-height: 0;
-  /* 与编辑区文字对齐：wrap 左缘 + --composer-text-inset。 */
   margin: 0;
-  padding-inline-start: var(--composer-text-inset, 16px);
   color: color-mix(in oklab, var(--chat-faint, var(--ak-ink-muted)) 78%, transparent);
   /* 中文状态句不用等宽字体（汉字会被拉开）；数字等宽，逐秒刷新不抖。 */
   font-size: var(--chat-type-caption);
@@ -2509,18 +2510,40 @@ form.composer:focus-within [data-slot="input-group"] {
   transition: opacity var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
 }
 
-/* 浮在输入卡下方的底距里（桌面 20px，放得下 4px 间隔 + 14px 行高）：出现、淡出都不把输入卡顶起再落下。 */
-.composer-wrap > .composer-stats-line {
-  position: absolute;
-  inset-block-start: calc(100% + var(--composer-dock-gap));
-  inset-inline: 0;
+/* 状态签：一枚纸面小胶囊浮在输入卡左上方 6px 处，签内文字与输入文字同一条竖线（6 + 10 = text-inset）。
+   锚点零高并抵掉 wrap 的纵向间距，出现、淡出都不把输入卡顶起再落下。 */
+.composer-status-anchor {
+  position: relative;
+  z-index: 1;
+  height: 0;
+  margin-block-end: calc(0px - var(--composer-dock-gap));
 }
+.composer-status-anchor > .composer-stats-line {
+  position: absolute;
+  inset-block-end: 6px;
+  inset-inline-start: calc(var(--composer-text-inset) - 10px);
+  max-width: calc(100% - 2 * var(--composer-text-inset));
+  height: 24px;
+  align-items: center;
+  border: 1px solid var(--composer-ring);
+  border-radius: var(--ak-radius-full);
+  padding-inline: 9px;
+  color: var(--chat-faint, var(--ak-ink-muted));
+  background: var(--chat-lift, var(--ak-paper-editing));
+  box-shadow: var(--ak-elevation-raised);
+  white-space: nowrap;
+}
+.composer-status-anchor > .composer-stats-line > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* 生成中插话气泡在输入卡上方右对齐；状态签同时在时让出一签高，两者不叠。 */
+.composer-wrap:has(.composer-stats-line) > .steer-cards { margin-block-end: 30px; }
+/* 复制提示同样浮在输入卡左上方：状态签在时再往上让一签高。 */
+.composer-wrap:has(.composer-stats-line) > .copy-notice { inset-block-end: calc(100% + 38px); }
 
-/* 窄屏底距只有 8px 放不下，停止钮与"运行中"已说明在生成；矮屏触屏输入区回到文档流，也不显示。
+/* 矮屏触屏输入区回到文档流，上方没有空位，停止钮与"运行中"已说明在生成，不显示状态签。
    只在视觉上收起（不用 display:none）：开始与终态的 aria-live 播报仍要留在无障碍树里。 */
-:where([data-chat-width~="36rem"], [data-chat-short]) {
+:where([data-chat-short]) {
   .composer-stats-line,
-  .composer-wrap > .composer-stats-line {
+  .composer-status-anchor > .composer-stats-line {
     position: absolute;
     inset: auto;
     width: 1px;
@@ -2530,7 +2553,11 @@ form.composer:focus-within [data-slot="input-group"] {
     clip-path: inset(50%);
     white-space: nowrap;
   }
+  /* 状态签收起后不再给插话卡和复制提示让位。 */
+  .composer-wrap:has(.composer-stats-line) > .steer-cards { margin-block-end: 0; }
+  .composer-wrap:has(.composer-stats-line) > .copy-notice { inset-block-end: calc(100% + 8px); }
 }
+
 
 /* 终态摘要由 composer.status 插槽的插件给出；包装沿用本行的基线排版（宿主元素要有盒子，插槽按可见性挂载）。 */
 .composer-stats-line > .plugin-ui-slot,

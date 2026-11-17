@@ -245,6 +245,10 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
             onStart={(ref) => moveDraft(() => navigationGroups.startChat(ref))} onUngrouped={() => moveDraft(startNewChat)} /> : null}
 
           <SteerCards items={steers} onWithdraw={withdrawToDraft} />
+          {/* 状态签挂在输入卡左上方：零高锚点，出现与淡出都不改变输入区高度。 */}
+          <div className="composer-status-anchor">
+            <ComposerStatsLine sessionId={activeSessionId} messages={timelineMessages} activities={replyActivities} connected={replyAvailable !== null} status={status} stopping={stopPending} />
+          </div>
           <DesktopComposer
             ref={composerApi}
             chatReady={chatReady} canSend={canSend} sendProblem={sendProblem} draftKey={draftKey} autoFocus={!conversationLayout && chatReady} fresh={!conversationLayout} status={status} stopPending={stopPending}
@@ -252,7 +256,6 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
             onSend={sendMessage} onSteer={steerMessage} onStop={stopTurn} lastInput={lastInput}
           />
           <CopyNotice text={copyNotice} />
-          <ComposerStatsLine sessionId={activeSessionId} messages={timelineMessages} activities={replyActivities} connected={replyAvailable !== null} status={status} stopping={stopPending} />
           {replyAvailable === false ? <p className="reply-unavailable" role="status">当前未加载回复插件</p> : null}
           {controller.reconnecting ? <p className="reply-unavailable connection-status" role="status">
             <i aria-hidden="true" />连接已断开，正在重新连接…
