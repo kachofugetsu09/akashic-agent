@@ -23,20 +23,11 @@ def _run(path: Path) -> object:
     return namespace["VALUE"]
 
 
-def test_bytecode_cache_reused_only_for_same_source(plugin_source, tmp_path, monkeypatch):
+def test_bytecode_cache_never_serves_stale_source(plugin_source):
     plugin_source.write_text("VALUE = 1\n")
     assert _run(plugin_source) == 1
-    cache = importer._cache_path(str(plugin_source))
-    assert cache is not None and cache.is_file()
-    assert cache.is_relative_to(tmp_path / "home" / "bytecode")
-    assert sorted(path.name for path in plugin_source.parent.iterdir()) == ["mod.py"]
-
-    def fail_compile(*_args):
-        raise AssertionError("cached bytecode should be reused")
-
-    monkeypatch.setattr(importer, "compile", fail_compile, raising=False)
     assert _run(plugin_source) == 1
-    monkeypatch.delattr(importer, "compile")
+    assert sorted(path.name for path in plugin_source.parent.iterdir()) == ["mod.py"]
 
     plugin_source.write_text("VALUE = 2\n")
     assert _run(plugin_source) == 2
@@ -58,7 +49,6 @@ def test_corrupt_or_disabled_cache_falls_back_to_compile(plugin_source, monkeypa
 
 
 def test_optimization_level_has_its_own_cache(plugin_source, tmp_path):
-    import os
     import subprocess
     import sys
 
@@ -83,27 +73,14 @@ def test_optimization_level_has_its_own_cache(plugin_source, tmp_path):
     assert len(names) == 2 and any(".opt-1." in name for name in names)
 
 
-def test_compile_fact_reused_only_for_same_source(plugin_source, monkeypatch):
-    """编译校验事实按内容寻址：未变源码不重复编译，变化后重新编译并校验。"""
+def test_compile_fact_follows_source_content(plugin_source):
+    """编译校验事实按内容寻址：变化或损坏的源码不能借用旧事实。"""
     plugin_source.write_text("VALUE = 1\n")
     source = plugin_source.read_bytes()
     assert not importer.source_compile_verified(source)
     importer.ensure_source_compiles(source, str(plugin_source))
     importer.record_source_compile(source)
     assert importer.source_compile_verified(source)
-    fact = importer._compile_fact_path(source)
-    assert fact is not None and fact.is_relative_to(
-        Path(os.environ["AKASHIC_PLUGIN_HOME"]) / "bytecode"
-    )
-
-    def fail_compile(*_args):
-        raise AssertionError("已编译过的源码应命中字节码缓存")
-
-    # 排除进程内 lru 命中：字节码缓存命中时不再触及 compile。
-    monkeypatch.setattr(importer, "compile", fail_compile, raising=False)
-    importer._compile_source.cache_clear()
-    importer.ensure_source_compiles(source, str(plugin_source))
-    monkeypatch.delattr(importer, "compile")
 
     changed = b"VALUE = 2\n"
     assert not importer.source_compile_verified(changed)

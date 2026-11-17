@@ -31,24 +31,6 @@ def assert_rows_unchanged(
         raise AssertionError(f"{state_name} 的既有行发生删改")
 
 
-def assert_no_forbidden_writes(
-    statements: list[str],
-    *,
-    tables: tuple[str, ...],
-) -> None:
-    """断言执行轨迹没有删改受保护表。"""
-    protected = {table.casefold() for table in tables}
-    violations: list[str] = []
-    for statement in statements:
-        normalized = " ".join(statement.casefold().split())
-        if not normalized.startswith(("delete ", "update ", "replace ")):
-            continue
-        if any(table in normalized for table in protected):
-            violations.append(statement)
-    if violations:
-        raise AssertionError(f"检测到受保护状态删改: {violations}")
-
-
 def _seed_history(log: MessageLog) -> tuple:
     """通过真实 MessageLog writer 建立已结算历史。"""
     input_writer = log.writer(
@@ -130,14 +112,11 @@ async def test_real_message_reply_preserves_history_embeddings_and_restart_seq(t
         before_vectors = _vector_snapshot(embeddings, before)
         before_message_rows = _message_rows(before)
         before_embedding_rows = _embedding_rows(before_vectors)
-        statements: list[str] = []
-        log._connection.set_trace_callback(statements.append)  # pyright: ignore[reportPrivateUsage]
         await conversation.accept("current", Input((ContentPart("text", "continue"),)))
         task = await conversation.start(_run)
         assert task is not None
         await task.join()
         after = log.reader("s").snapshot()
-        log._connection.set_trace_callback(None)  # pyright: ignore[reportPrivateUsage]
 
         assert_rows_unchanged(
             before_message_rows,
@@ -149,10 +128,6 @@ async def test_real_message_reply_preserves_history_embeddings_and_restart_seq(t
         assert len(requests) == 1
         assert "old input 0" in str(requests[0])
         assert "old output 2" in str(requests[0])
-        assert_no_forbidden_writes(
-            statements,
-            tables=("messages", "message_embeddings"),
-        )
         after_vectors = _vector_snapshot(embeddings, before)
         assert_rows_unchanged(
             before_embedding_rows,

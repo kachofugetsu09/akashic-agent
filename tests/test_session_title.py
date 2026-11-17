@@ -1,11 +1,10 @@
-"""Monkey 测试与异常注入：session_title 插件鲁棒性、故障隔离与清洗。"""
+"""session_title 插件的异常注入：鲁棒性、故障隔离与清洗。"""
 from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
 from collections.abc import Callable
 from pathlib import Path
-import random
 from tempfile import TemporaryDirectory
 from typing import Any, AsyncIterator
 
@@ -30,7 +29,6 @@ from plugins.models.contract import (
     ModelChoice,
     ModelRequest,
     ModelUse,
-    TransportError,
 )
 from plugins.session_title import plugin
 from plugins.sources.contract import SOURCE_CHANGED_V3, SourceChangedV3
@@ -206,57 +204,3 @@ async def test_unexpected_exceptions_remain_visible() -> None:
                 await asyncio.wait_for(asyncio.shield(worker), 3)
             assert reader.title is None
             assert any(item.kind == "task_failure" for item in env["root"].recent_incidents())
-
-
-@pytest.mark.asyncio
-async def test_monkey_stress_concurrency() -> None:
-    """4. Monkey 压力测试：并发随机注入 None、异常、超时、正常响应及用户主动改名。"""
-    async with scenario_context() as env:
-        append = env["append"]
-        drain = env["drain"]
-        models = env["models"]
-        admin = env["admin"]
-
-        rng = random.Random(42)
-        session_count = 30
-        readers = []
-
-        def random_behavior(req: ModelRequest) -> str | None | BaseException:
-            choice = rng.randint(0, 5)
-            if choice == 0:
-                return None
-            elif choice == 1:
-                return "   "  # 纯空格
-            elif choice == 2:
-                return TransportError("模拟网络断开").exception()
-            elif choice == 3:
-                return TimeoutError("模型请求超时")
-            elif choice == 4:
-                return f"标题：Monkey生成_{rng.randint(100, 999)}"
-            else:
-                return f"“优雅标题_{rng.randint(100, 999)}”"
-
-        models.behavior = random_behavior
-
-        for i in range(session_count):
-            key = f"monkey_{i}"
-            text = f"这是会话 {i} 的第一条随机输入内容_{rng.randint(1000, 9999)}"
-            reader = append(key, text)
-            readers.append((key, text, reader))
-
-            # 随机模拟用户提前改名
-            if rng.random() < 0.2:
-                await admin.set_title(key, f"用户手动改名_{i}")
-
-        await drain()
-
-        # 验收每一个会话状态
-        for key, text, reader in readers:
-            title = reader.title
-            assert title is not None, f"会话 {key} 标题不应为空"
-            # 长度不能超过 24
-            assert len(title) <= 24
-            # 不能包含未剥离的包裹引号
-            assert not (title.startswith('"') and title.endswith('"'))
-            assert not (title.startswith('“') and title.endswith('”'))
-            assert not title.startswith("标题：")

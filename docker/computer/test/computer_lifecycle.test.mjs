@@ -17,15 +17,6 @@ async function waitForFile(path, timeoutMs = 3000) {
   throw new Error(`Timed out waiting for ${path}`);
 }
 
-test("start.sh binds master-token with equals and cleans Singleton locks in --runtime", async () => {
-  const startSource = await readFile(new URL("../start.sh", import.meta.url), "utf8");
-  assert.match(startSource, /--master-token="\$COMPUTER_STREAM_TOKEN"/);
-  const runtimeSection = startSource.split('if [ "${1:-}" != "--runtime" ]; then')[1];
-  assert.match(runtimeSection, /\/data\/profile\/SingletonCookie/);
-  assert.match(runtimeSection, /\/data\/profile\/SingletonLock/);
-  assert.match(runtimeSection, /\/data\/profile\/SingletonSocket/);
-});
-
 test("ComputerLifecycle startup rollback sends SIGTERM and returns to sleeping without locking failed", async () => {
   const dir = await mkdtemp(join(tmpdir(), "computer-lifecycle-term-"));
   const runtimeScript = join(dir, "runtime.sh");

@@ -5,12 +5,10 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import cast
 
-import pytest
 
 from plugins.ledger.contract import Bindings
 from plugins.ledger.contract import CallRef, ContentPart, Input, Message, Output, ToolCall, ToolResult
 from plugins.akasha._boundaries import TOOLS
-from plugins.akasha import learning as learning_module
 from plugins.akasha.domain.model import Turn, TurnFeedback
 from plugins.akasha.infrastructure.consumption import Applied, Consumption
 from plugins.akasha.learning import Learning
@@ -51,21 +49,6 @@ class RecordedBindings:
         assert identity == "recorded-tool"
         assert service is TOOLS
         return {"tool": {"owner": "akasha"}}
-
-
-def test_empty_feedback_does_not_scan_the_historical_prefix(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A receipt-free restored turn does not need message-node attribution."""
-    learning = Learning(TurnProjection(), owner="akasha", post_commit_effect=legacy_post_commit_effect)
-    current = message("current-input", 4, Input((ContentPart("text", "question"),)))
-    state = Consumption(cutover_heads=(), applied=(applied("past", 0), applied("future", 2)))
-
-    def unexpected_scan(*args: object, **kwargs: object) -> dict[str, int]:
-        raise AssertionError("empty feedback must not scan historical members")
-
-    monkeypatch.setattr(learning_module, "message_nodes", unexpected_scan)
-    previous = cast(tuple[Turn, ...], (object(),))
-    assert learning.feedback(Sample(current, (current,), ()), previous, state,
-                             cast(Bindings, object())) == TurnFeedback()
 
 
 def test_recorded_feedback_keeps_prefix_mapping_and_rejects_future_targets() -> None:

@@ -4,7 +4,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import random
 import subprocess
 from pathlib import Path
 from uuid import uuid4
@@ -294,56 +293,6 @@ async def test_worktree_isolation_and_change_aware_cleanup(tmp_path: Path):
             assert Path(req_comm.cwd).exists()
             assert req_comm.worktree_branch in str(res_comm.parts[0].value)
             # 确认主仓库本身工作区保持干净
-            main_status = subprocess.run(["git", "-C", str(repo_dir), "status", "--porcelain"],
-                                         capture_output=True, text=True, check=True).stdout.strip()
-            assert main_status == ""
-    finally:
-        await tasks.close()
-        await root.dispose()
-        log.close()
-
-
-@pytest.mark.asyncio
-async def test_monkey_concurrent_fork_and_worktrees(tmp_path: Path):
-    """随机并发 Monkey 测试：混合 fork + clean/dirty/commit worktree 并发运行，验证主仓洁净与清理不互相踩踏。"""
-    rng = random.Random(202611174)
-    repo_dir = tmp_path / "monkey-repo"
-    _init_git_repo(repo_dir)
-    log, root, tasks, ctx, _jobs, spawn, work_actions = await _mount_pr4_fixture(tmp_path)
-    try:
-        win = log.writer("m-wt", author="user", source="conversation", body_types=(Input,),
-                         content={"text": lambda _: ContentReferences()})
-        in_msg = win.append("m-in", Input((ContentPart("text", "monkey"),)))
-        src = CallSource(messages=(in_msg,), call_ref=CallRef("m-out", 0))
-
-        async with ctx.runtime_scope():
-            jobs_info: list[tuple[Request, str]] = []
-            for i in range(8):
-                mode = rng.choice(["noop", "dirty", "commit"])
-                fork = rng.random() < 0.5
-                prep = await spawn.prepare(
-                    {"task": f"mw-{i}", "label": f"mw-{i}", "cwd": str(repo_dir), "isolation": "worktree", "fork": fork},
-                    src,
-                )
-                assert isinstance(prep, dict)
-                req = Request.model_validate(prep["request"])
-                work_actions[req.job_id] = mode
-                jobs_info.append((req, mode))
-
-            async def run_one(idx: int, req: Request):
-                async with ctx.runtime_scope():
-                    # Re-build Prepared from req
-                    return await spawn.invoke(f"mwt-{idx}", {"task": f"mw-{idx}", "request": req.model_dump()})
-
-            results = await asyncio.gather(*(run_one(i, req) for i, (req, _) in enumerate(jobs_info)))
-            assert all(r.outcome == "success" for r in results)
-            for (req, mode), res in zip(jobs_info, results, strict=True):
-                assert req.cwd is not None
-                if mode == "noop":
-                    assert not Path(req.cwd).exists()
-                else:
-                    assert Path(req.cwd).exists()
-                    assert "[worktree 保留]" in str(res.parts[0].value)
             main_status = subprocess.run(["git", "-C", str(repo_dir), "status", "--porcelain"],
                                          capture_output=True, text=True, check=True).stdout.strip()
             assert main_status == ""

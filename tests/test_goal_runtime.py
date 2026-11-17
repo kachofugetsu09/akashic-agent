@@ -307,6 +307,24 @@ async def test_failure_with_prior_activity_counts_as_empty(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_exhausted_budget_stops_goal(tmp_path):
+    harness = goal_harness(tmp_path)
+    try:
+        _append_output(harness.log, "setup")
+        await _create_goal(harness, settled_through_seq=0, token_budget=10)
+        runtime = GoalRuntime(harness.store, cast(Any, _RuntimeCatalog(harness.log)), _stats)
+        await runtime.advance("s")
+        _append_output(harness.log, "goal-final", text="done", call_id="c1")
+        await runtime.advance("s")
+        goal = await harness.store.get("s")
+        assert goal is not None
+        assert goal.status is GoalStatus.BUDGET_LIMITED
+        assert harness.log.reader("s").get("goal-continuation:g:2") is None
+    finally:
+        harness.log.close()
+
+
+@pytest.mark.asyncio
 async def test_partial_coverage_with_budget_pauses_instead_of_spending(tmp_path):
     harness = goal_harness(tmp_path)
     try:
