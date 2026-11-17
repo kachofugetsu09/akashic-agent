@@ -8,6 +8,7 @@ export type PluginUiSlotName =
   | "message.meta"
   | "drawer.panel"
   | "tool.result"
+  | "tool.summary"
   | "message.attachment"
   | "chat.notice"
   | "header.end"
@@ -21,9 +22,9 @@ export type PluginUiSlotName =
   | "navigation.destinations"
   | "sidebar.panels";
 
-/** 宿主挂载插件元素的插槽；composer.suggest、navigation.groups、navigation.destinations 与 sidebar.panels 是数据源，由宿主外框挂载。 */
+/** 宿主挂载插件元素的插槽；composer.suggest、tool.summary、navigation.groups、navigation.destinations 与 sidebar.panels 是数据源，由宿主外框挂载。 */
 export type PluginUiMountSlotName = Exclude<PluginUiSlotName,
-  "composer.suggest" | "navigation.groups" | "navigation.destinations" | "sidebar.panels">;
+  "composer.suggest" | "tool.summary" | "navigation.groups" | "navigation.destinations" | "sidebar.panels">;
 
 export type WorkbenchIntentStatus = "handled" | "unhandled" | "invalid" | "failed";
 
@@ -355,6 +356,39 @@ export interface ToolResultFacts {
   error: boolean;
 }
 
+/** tool.summary 插槽交给 describe 的一次调用：状态由宿主按回执给出，value 是已解析的结果（还没有回执时为 undefined）。 */
+export interface ToolSummaryFacts {
+  name: string;
+  arguments: unknown;
+  status: "running" | "done" | "error" | "unknown";
+  value: unknown;
+}
+
+/**
+ * 一次调用委派出去的独立任务（例如子任务）：宿主把它画成任务卡，同一段过程里连续的任务收成一组，
+ * 悬停或键盘聚焦时浮出详情；行、展开、浮卡、键盘与读屏都由宿主负责，插件只给文字。
+ */
+export interface ToolTaskSummary {
+  kind: "task";
+  /** 任务名，一行。 */
+  title: string;
+  /** 短标签，例如“后台”“只读”。 */
+  tags?: readonly string[];
+  /** 安静的一行说明，例如模型与思考强度。 */
+  detail?: string;
+  /** 任务的工作目录，只在浮卡里显示。 */
+  cwd?: string;
+  /** 进度或结果的一行预览；不给时宿主按状态给默认文字。 */
+  preview?: string;
+  /** 调用状态之外的任务状态，例如已转入后台；不给时按调用状态显示。 */
+  state?: { label: string; tone: "live" | "done" | "error" | "idle" };
+}
+
+/** 工具调用在时间线上的摘要：只问注册该工具的插件；返回 null 或插件未加载时用通用工具行。须是同步的纯函数。 */
+export interface ToolSummaryProvider {
+  describe(block: ToolSummaryFacts): ToolTaskSummary | null;
+}
+
 /** message.attachment 插槽的 block：附件的不可变描述，以及它所在消息的出处。 */
 export interface MessageAttachmentFacts {
   artifact_id: string;
@@ -410,6 +444,7 @@ export interface ComposerSuggestProvider {
 export interface PluginUiDefinition {
   slots: { [S in PluginUiMountSlotName]?: PluginUiRenderer<S> } & {
     "composer.suggest"?: ComposerSuggestProvider;
+    "tool.summary"?: ToolSummaryProvider;
     "navigation.groups"?: NavigationGroupsProvider;
     "navigation.destinations"?: NavigationDestinationsProvider;
     "sidebar.panels"?: SidebarPanelProvider;

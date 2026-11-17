@@ -8,7 +8,7 @@ import { composerControls } from "./composer-contributions";
 import type { ScopeFields } from "./scope-fields";
 import { openInWorkbench, subscribeWorkbenchIntents, workbenchAccepts } from "./shell-workbench";
 
-import type { ComposerControls, ComposerSuggestProvider, DestinationControls, DestinationForm, HeaderMetaControls, NavigationControls, NavigationDestinationsProvider, NavigationForm, NavigationFormControls, NavigationGroupsProvider, NavigationNotice, PluginUiDefinition, PluginUiHostContext, PluginUiMountSlotName, PluginUiQueryOptions, PluginUiSlotFacts, PluginUiSlotName, ScopeFieldControls, SidebarPanelControls, SidebarPanelProvider } from "@akashic/chat-ui-v1";
+import type { ComposerControls, ComposerSuggestProvider, DestinationControls, DestinationForm, HeaderMetaControls, NavigationControls, NavigationDestinationsProvider, NavigationForm, NavigationFormControls, NavigationGroupsProvider, NavigationNotice, PluginUiDefinition, PluginUiHostContext, PluginUiMountSlotName, PluginUiQueryOptions, PluginUiSlotFacts, PluginUiSlotName, ScopeFieldControls, SidebarPanelControls, SidebarPanelProvider, ToolSummaryFacts, ToolSummaryProvider, ToolTaskSummary } from "@akashic/chat-ui-v1";
 
 // 插槽合同由 @akashic/chat-ui-v1 发布，宿主与插件共用同一份类型。
 export type { ComposerSuggestProvider, ComposerSuggestion, PluginUiContext, PluginUiDefinition, PluginUiQueryOptions, PluginUiRenderer, PluginUiSlotName } from "@akashic/chat-ui-v1";
@@ -90,6 +90,7 @@ const SLOT_NAMES = new Set<PluginUiSlotName>([
   "message.meta",
   "drawer.panel",
   "tool.result",
+  "tool.summary",
   "message.attachment",
   "chat.notice",
   "header.end",
@@ -400,6 +401,7 @@ function parseDefinition(value: unknown, plugin: PluginUiCatalogItem): PluginUiD
       throw new Error(`插件界面 slot 无效: ${plugin.id}.${name}`);
     }
     const valid = name === "composer.suggest" ? isSuggestProvider(renderer)
+      : name === "tool.summary" ? isSummaryProvider(renderer)
       : name === "navigation.groups" ? isGroupsProvider(renderer)
       : name === "navigation.destinations" ? isDestinationsProvider(renderer)
       : name === "sidebar.panels" ? isPanelProvider(renderer) : isRenderer(renderer);
@@ -429,6 +431,10 @@ function isSuggestProvider(value: unknown): value is ComposerSuggestProvider {
     && (provider.keepOpenOnMatch === undefined || typeof provider.keepOpenOnMatch === "boolean")
     && (provider.prefix === "/" || provider.prefix === "@") && Array.isArray(provider.sigils)
     && provider.sigils.every((sigil) => sigil === "/" || sigil === "@");
+}
+
+function isSummaryProvider(value: unknown): value is ToolSummaryProvider {
+  return typeof value === "object" && value !== null && typeof (value as { describe?: unknown }).describe === "function";
 }
 
 function isGroupsProvider(value: unknown): value is NavigationGroupsProvider {
@@ -463,6 +469,21 @@ function isPanelProvider(value: unknown): value is SidebarPanelProvider {
   const provider = value as Partial<Record<keyof SidebarPanelProvider, unknown>>;
   return typeof provider.label === "string" && typeof provider.iconSvg === "string" && typeof provider.mount === "function"
     && (provider.status === undefined || typeof provider.status === "function");
+}
+
+// 工具调用的时间线摘要只问工具 owner；插件未加载、返回无效值或抛错时退回通用工具行。调用方需随目录版本重新渲染。
+export function pluginToolSummary(facts: ToolSummaryFacts, owner: string | undefined): ToolTaskSummary | null {
+  if (!owner) return null;
+  const plugin = catalog.plugins.find((item) => item.id === owner);
+  const loaded = plugin ? definitions.get(plugin.id) : undefined;
+  const provider = plugin && loaded?.revision === plugin.revision ? loaded.definition.slots["tool.summary"] : undefined;
+  if (!provider) return null;
+  try {
+    const summary = provider.describe(facts);
+    return summary && summary.kind === "task" && typeof summary.title === "string" && summary.title.trim() ? summary : null;
+  } catch {
+    return null;
+  }
 }
 
 /** 已加载的侧栏面板，按目录顺序；宿主不按插件名挑选。 */

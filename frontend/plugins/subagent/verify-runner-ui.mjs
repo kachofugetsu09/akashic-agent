@@ -15,7 +15,7 @@ let listener; window.stopCalls=[]; window.items=[]; window.publish=value=>listen
 window.expand=id=>{const host=document.getElementById('detail');window.unmount?.();host.replaceChildren();const item=window.items.find(i=>i.id===id);window.unmount=item?.detail?.(host)};
 const context={subscribe(fn){listener=fn;return()=>{listener=null}},async query(method,payload){window.stopCalls.push(payload);return {accepted:true}},
   meta:{publish(items){window.items=items},closePanel(){}}};
-definition.slots['header.meta'].mount(document.getElementById('root'),context);`,resolveDir:repo,loader:'tsx'},bundle:true,format:'esm',jsx:'automatic',outfile:out+'/bundle.js',plugins:[{name:'public-render',setup(b){b.onResolve({filter:/^@akashic\/chat-ui-v1$/},()=>({path:'ui',namespace:'shim'}));b.onLoad({filter:/.*/,namespace:'shim'},()=>({contents:"import {createRoot} from 'react-dom/client'; export function render(host,node){const root=createRoot(host);root.render(node);return ()=>root.unmount()}",resolveDir:repo}));}}]});
+definition.slots['header.meta'].mount(document.getElementById('root'),context);`,resolveDir:repo,loader:'tsx'},bundle:true,format:'esm',jsx:'automatic',outfile:out+'/bundle.js',plugins:[{name:'public-render',setup(b){b.onResolve({filter:/^@akashic\/chat-ui-v1$/},()=>({path:'ui',namespace:'shim'}));b.onLoad({filter:/.*/,namespace:'shim'},()=>({contents:"import {createRoot} from 'react-dom/client'; export function render(host,node){const root=createRoot(host);root.render(node);return ()=>root.unmount()} export const ToolText=({text})=>text;",resolveDir:repo}));}}]});
 const server=await startDesktopFixtureServer(out);
 const browser=await chromium.launch({executablePath:process.env.CHROMIUM_PATH??'/usr/bin/chromium',headless:true});
 let seed=20261029;const random=()=>((seed=(Math.imul(seed,1664525)+1013904223)>>>0)/2**32);
@@ -43,7 +43,8 @@ for(const width of [390,1440]){
  }
  await page.evaluate(r=>window.publish({runs:[{...r,status:'failed',result:'失败原因'}]}),run);
  await page.evaluate(()=>window.expand('run:a'));
- assert.match(await page.locator('#detail').innerText(),/失败原因/);
+ // 展开由 createRoot 异步渲染：等文字出现再断言，不在同一帧读取。
+ await page.waitForFunction(()=>document.getElementById('detail').innerText.includes('失败原因'),null,{timeout:5000});
  assert.equal(await page.evaluate(()=>window.items.find(i=>i.id==='run:a').tone),'alert');
  assert.equal(await page.evaluate(()=>window.items.find(i=>i.id==='runs').text),undefined);
  assert.equal(await page.locator('script').count(),1);

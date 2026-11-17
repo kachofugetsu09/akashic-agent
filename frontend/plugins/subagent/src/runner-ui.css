@@ -8,3 +8,7 @@
 .agent-runs__notice { margin: 0; color: var(--chat-faint); font-size: 12px; }
 .agent-runs__body ol { margin: 0; padding-inline-start: 20px; }
 .agent-runs__body pre { margin: 0; font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* 时间线展开后的后台任务回执。 */
+.subagent-tool-result { margin: 0; color: var(--chat-muted); font-size: 0.75rem; overflow-wrap: anywhere; }
+.subagent-tool-result code { padding: 1px 5px; border-radius: var(--ak-radius-xs); background: var(--ak-paper-sheet); color: var(--chat-ink); }
