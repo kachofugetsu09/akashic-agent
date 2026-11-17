@@ -215,6 +215,15 @@ def test_board_wake_only_takes_unclaimed_notices_within_budget():
     assert first not in board.pending("s")
 
 
+def test_board_default_wakes_are_unlimited():
+    board = JobBoard()
+    for index in range(5):
+        notice = board.settle(_job(f"unlimited-{index}"), JobOutcome("completed", "exit_code=0"))
+        assert board.take_wake(notice, "input-1")
+        assert not board.wake_limit_reached(notice, "input-1")
+        board.finish_wake(notice)
+
+
 def _shell_sources(sources: Path) -> None:
     _job_sources(sources)
     provider = sources / "test_provider/plugin.py"
