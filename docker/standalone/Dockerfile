@@ -25,15 +25,16 @@ FROM python:3.12-slim-bookworm
 ARG AKASHIC_REVISION
 LABEL org.opencontainers.image.source="https://github.com/kachofugetsu09/akashic-agent" \
       org.opencontainers.image.revision=$AKASHIC_REVISION
-RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates zsh curl \
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates zsh curl libstdc++6 libatomic1 \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 1000 akashic && useradd --uid 1000 --gid 1000 --create-home akashic \
     && mkdir /data && chown akashic:akashic /data
+COPY --from=node /usr/local/bin/node /usr/local/bin/node
 COPY --from=build /opt/venv /opt/venv
 COPY --from=build /opt/distribution /opt/distribution
 COPY --from=build /opt/core /opt/core
 # 插件源码保留临时目录的 700 权限；运行用户需要读取，但不应改写镜像制品。
-RUN chmod -R a=rX /opt/distribution
+RUN chmod -R a=rX /opt/distribution && /usr/local/bin/node --version
 # 限制 glibc arena 数量，避免后台线程的大块临时分配把 RSS 撑到 线程数 × 峰值（#1455）。
 ENV MALLOC_ARENA_MAX=2
 ENV PATH=/opt/venv/bin:$PATH AKASHIC_EXECUTION_MODE=local PYTHONUNBUFFERED=1 AKASHIC_PLUGIN_DISTRIBUTION=/opt/distribution \

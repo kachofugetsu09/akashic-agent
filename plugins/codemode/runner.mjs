@@ -108,6 +108,7 @@ async function run(init) {
   let nextId = 1;
   const collectedArtifacts = [];
   const seenArtifacts = new Set();
+  const activeTimers = new Set();
 
   function callHostTool(name, args) {
     if (rlClosed) {
@@ -171,7 +172,14 @@ async function run(init) {
   const sandbox = Object.assign(Object.create(null), {
     tools: toolsProxy,
     console: sandboxConsole,
-    sleep: (ms) => new Promise((r) => setTimeout(r, Math.max(0, Math.min(Number(ms) || 0, 30_000)))),
+    sleep: (ms) => new Promise((r) => {
+      const clamped = Math.max(0, Math.min(Number(ms) || 0, 30_000));
+      const timer = setTimeout(() => {
+        activeTimers.delete(timer);
+        r();
+      }, clamped);
+      activeTimers.add(timer);
+    }),
     collectArtifact: (id) => {
       const s = String(id || "");
       if (seenArtifacts.has(s) && !collectedArtifacts.includes(s)) {
@@ -208,6 +216,10 @@ async function run(init) {
       collectedArtifacts,
     });
   } finally {
+    for (const timer of activeTimers) {
+      clearTimeout(timer);
+    }
+    activeTimers.clear();
     rl.close();
   }
 }

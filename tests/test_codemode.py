@@ -398,3 +398,43 @@ async def test_codemode_respects_max_calls_and_blocking_tool_timeout(tmp_path):
     )
     assert res_timeout.outcome == "error"
     assert "超时" in str(res_timeout.parts[0].value)
+
+
+@pytest.mark.asyncio
+async def test_codemode_clears_pending_sleep_timers_and_reports_missing_node(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    t0 = time.monotonic()
+    res_race = await _run_e2e_codemode(
+        tmp_path / "race",
+        "return await Promise.race([Promise.resolve('fast'), sleep(30_000).then(() => 'slow')]);",
+        timeout_ms=3_000,
+    )
+    elapsed = time.monotonic() - t0
+    assert res_race.outcome == "success", res_race.parts[0].value
+    assert '"fast"' in str(res_race.parts[0].value)
+    assert elapsed < 2.5
+
+    def _no_node(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(shutil, "which", _no_node)
+    res_missing = await _run_e2e_codemode(
+        tmp_path / "missing_node",
+        "return 1;",
+        timeout_ms=3_000,
+    )
+    assert res_missing.outcome == "error"
+    assert "Node.js" in str(res_missing.parts[0].value)
+
+
+def test_runtime_dockerfiles_include_nodejs() -> None:
+    root = Path(__file__).resolve().parents[1]
+    dist_dockerfile = (root / "docker/host-runtime/Dockerfile.distribution").read_text(encoding="utf-8")
+    standalone_dockerfile = (root / "docker/standalone/Dockerfile").read_text(encoding="utf-8")
+    assert "nodejs" in dist_dockerfile
+    assert "node --version" in dist_dockerfile
+    assert "COPY --from=node /usr/local/bin/node /usr/local/bin/node" in standalone_dockerfile
+    assert "node --version" in standalone_dockerfile
+
