@@ -5,6 +5,7 @@ import { AlertCircle, X } from "lucide-react";
 import type { HeaderMetaControls, HeaderMetaItem } from "@akashic/chat-ui-v1";
 import { chatLayout, chatPortalRoot, subscribeChatLayout } from "./chat-layout";
 import { HeaderMetaSourceMount, headerMetaSources, usePluginUiCatalogVersion, type HeaderMetaSource } from "./plugin-ui-runtime";
+import { useExitPresence } from "./presence";
 import "./header-meta.css";
 
 // 标题下的说明行：插件经 header.meta 登记说明项，宿主建树、冒泡、沿树收起，点开是整棵树的会话信息面板。
@@ -177,13 +178,16 @@ export function HeaderMeta({ sessionId, project, refreshToken }: {
   }, [controls]);
   const roots = useMemo(() => buildTree(published), [published]);
   const levels = useMemo(() => lineLevels(roots, compact, !!project), [roots, compact, project]);
+  const presence = useExitPresence(open !== null, 200);
+  const [lastFocus, setLastFocus] = useState<string>("");
+  if (open !== null && open !== lastFocus) setLastFocus(open);
   return <>
     <div className="header-meta__sources" hidden>{sources.map((source) => <HeaderMetaSourceMount key={source.key} source={source}
       sessionId={sessionId} meta={controls.get(source.pluginId)!} refreshToken={refreshToken} />)}</div>
     {project || levels.length
       ? <MetaLine lineRef={lineRef} project={project} levels={levels} onOpen={setOpen} open={open !== null} /> : null}
-    {open !== null ? createPortal(<SessionInfoPanel anchor={lineRef} compact={compact} roots={roots} project={project} focus={open}
-      onFocus={setOpen} onClose={() => setOpen(null)} />, chatPortalRoot()) : null}
+    {presence.present ? createPortal(<SessionInfoPanel open={open !== null} anchor={lineRef} compact={compact} roots={roots} project={project}
+      focus={open ?? lastFocus} onFocus={setOpen} onClose={() => setOpen(null)} onTransitionEnd={presence.onTransitionEnd} />, chatPortalRoot()) : null}
   </>;
 }
 
@@ -262,8 +266,9 @@ function tabbable(root: HTMLElement): HTMLElement[] {
 
 // 焦点：打开时进到面板里点中的一行，关闭时回到打开它的按钮（已消失就回说明行第一项）；
 // 面板里有焦点的一项被撤回时，焦点留在面板里。
-function usePanelFocus(ref: React.RefObject<HTMLDivElement | null>, anchor: React.RefObject<HTMLDivElement | null>) {
+function usePanelFocus(open: boolean, ref: React.RefObject<HTMLDivElement | null>, anchor: React.RefObject<HTMLDivElement | null>) {
   useEffect(() => {
+    if (!open) return;
     const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const panel = ref.current;
     const line = anchor.current;
@@ -283,7 +288,7 @@ function usePanelFocus(ref: React.RefObject<HTMLDivElement | null>, anchor: Reac
       const target = opener?.isConnected ? opener : line?.querySelector<HTMLElement>("button");
       if (!document.activeElement || document.activeElement === document.body || panel.contains(document.activeElement)) target?.focus();
     };
-  }, [anchor, ref]);
+  }, [open, anchor, ref]);
 }
 
 // 紧凑外壳的抽屉是模态：Tab 在抽屉里循环，不落到遮罩后面。
@@ -297,7 +302,8 @@ function trapTab(event: React.KeyboardEvent<HTMLDivElement>) {
 }
 
 // 会话信息面板：按项目、本会话、账号三个范围列出整棵树；点中的一项展开插件给的详细内容。
-function SessionInfoPanel({ anchor, compact, roots, project, focus, onFocus, onClose }: {
+function SessionInfoPanel({ open, anchor, compact, roots, project, focus, onFocus, onClose, onTransitionEnd }: {
+  open: boolean;
   anchor: React.RefObject<HTMLDivElement | null>;
   /** 紧凑外壳里是底部抽屉，否则锚在说明行下方。 */
   compact: boolean;
@@ -306,11 +312,13 @@ function SessionInfoPanel({ anchor, compact, roots, project, focus, onFocus, onC
   focus: string;
   onFocus(key: string): void;
   onClose(): void;
+  onTransitionEnd: (event: React.TransitionEvent<HTMLElement>) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const place = usePanelPlace(anchor, compact);
-  usePanelFocus(ref, anchor);
+  usePanelFocus(open, ref, anchor);
   useEffect(() => {
+    if (!open) return;
     const onPointer = (event: PointerEvent) => {
       const target = event.target as Node;
       if (!ref.current?.contains(target) && !anchor.current?.contains(target)) onClose();
@@ -319,7 +327,7 @@ function SessionInfoPanel({ anchor, compact, roots, project, focus, onFocus, onC
     document.addEventListener("pointerdown", onPointer);
     document.addEventListener("keydown", onKey);
     return () => { document.removeEventListener("pointerdown", onPointer); document.removeEventListener("keydown", onKey); };
-  }, [anchor, onClose]);
+  }, [open, anchor, onClose]);
   useEffect(() => { ref.current?.querySelector<HTMLElement>("[data-focus='true']")?.scrollIntoView({ block: "nearest" }); }, [focus]);
   const row = (node: MetaNode, depth: number): React.ReactNode => <div key={node.key} className="header-meta-node" data-tone={node.item.tone}
     style={{ "--depth": depth } as React.CSSProperties}>
@@ -341,10 +349,11 @@ function SessionInfoPanel({ anchor, compact, roots, project, focus, onFocus, onC
       {nodes.map((node) => row(node, 0))}
     </section>;
   };
+  const state = open ? "open" : "closed";
   return <>
-    {compact ? <div className="header-meta-scrim" onClick={onClose} /> : null}
-    <div ref={ref} className="header-meta-panel" data-sheet={compact || undefined} style={place} role="dialog" aria-modal={compact} tabIndex={-1}
-      aria-label="会话信息" data-escape-layer="" onKeyDown={compact ? trapTab : undefined}>
+    {compact ? <div className="header-meta-scrim" data-state={state} onClick={onClose} /> : null}
+    <div ref={ref} className="header-meta-panel" data-state={state} data-sheet={compact || undefined} style={place} role="dialog" aria-modal={compact} tabIndex={-1}
+      aria-label="会话信息" data-escape-layer="" inert={!open ? true : undefined} onTransitionEnd={onTransitionEnd} onKeyDown={compact ? trapTab : undefined}>
       {compact ? <button type="button" className="header-meta-panel__close" aria-label="关闭会话信息" onClick={onClose}>
         <X size={18} strokeWidth={1.75} aria-hidden="true" /></button> : null}
       {scope("project", "项目", project)}{scope("session", "本会话")}{scope("account", "账号")}

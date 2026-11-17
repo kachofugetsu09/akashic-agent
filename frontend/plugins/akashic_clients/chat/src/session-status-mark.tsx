@@ -5,6 +5,11 @@ export type SessionStatus = "running" | "unread";
 
 const STATUS_LABEL: Record<SessionStatus, string> = { running: "正在回复", unread: "有新回复" };
 
+/** 只给读屏的状态文案：图标放进 aria-hidden 的容器（如 IconSwap）时，文案要留在外面。 */
+export function SessionStatusLabel({ status }: { status?: SessionStatus }) {
+  return status ? <span className="session-status-label">{STATUS_LABEL[status]}</span> : null;
+}
+
 // 3x3 环去掉中心：每个格子在环上的次序，决定明暗依次传递的方向。
 const SWIRL_RING: readonly (number | null)[] = [0, 1, 2, 7, null, 3, 6, 5, 4];
 

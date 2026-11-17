@@ -1,6 +1,7 @@
 import { Menu } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Dialog, DialogContent, DialogTitle } from "./components/ui/dialog";
+import { useExitPresence } from "./presence";
 import { DesktopSidebar, type DesktopSidebarProps } from "./desktop-sidebar";
 import { GroupFormDialog, type GroupFormRequest } from "./navigation-groups";
 import { DestinationFormDialog } from "./navigation-destinations";
@@ -17,6 +18,7 @@ const shown = (element: HTMLElement | null): element is HTMLElement => element !
 /** Expose the desktop navigation contract as a modal drawer on narrow viewports. */
 export function CompactNavigation(props: DesktopSidebarProps) {
   const [open, setOpen] = useState(false);
+  const drawer = useExitPresence(open, 260);
   const [formRequest, setFormRequest] = useState<GroupFormRequest | null>(null);
   const [destinationForm, setDestinationForm] = useState<DestinationForm | null>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -73,10 +75,14 @@ export function CompactNavigation(props: DesktopSidebarProps) {
       <Menu aria-hidden="true" size={20} />
     </button>
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogContent
+      {drawer.present ? <DialogContent
+        forceMount
+        animated={false}
         className="compact-navigation-dialog"
         overlayClassName="compact-navigation-overlay"
         showCloseButton={false}
+        inert={!open ? true : undefined}
+        onTransitionEnd={drawer.onTransitionEnd}
         onOpenAutoFocus={(event) => {
           if (!searchOnOpen.current) return;
           searchOnOpen.current = false;
@@ -120,7 +126,7 @@ export function CompactNavigation(props: DesktopSidebarProps) {
           onOpenPanels={afterClose}
           onRailAction={afterClose}
         />
-      </DialogContent>
+      </DialogContent> : null}
     </Dialog>
     {destinationForm && props.destination?.source ? <DestinationFormDialog source={props.destination.source} form={destinationForm}
       controls={{ reload: props.destination.reload, open: props.destination.open, openForm: setDestinationForm }}

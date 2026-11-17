@@ -51,6 +51,7 @@ import { StaticMessageResponse, richRendererFallback } from "./static-message-re
 import type { MessageResponseProps } from "@/components/ai-elements/message-response";
 import { Disclosure, formatToolDuration, keepAt, prefersReducedMotion, ToolResultContent, useStickyDisclosure } from "./tool-result-view";
 import { FindRegionCount, useFindRegion } from "./thread-find";
+import { IconSwap } from "./icon-swap";
 
 const LazyMessageResponse = lazy<ComponentType<MessageResponseProps>>(() =>
   import("@/components/ai-elements/message-response").then(({ MessageResponse }) => ({ default: MessageResponse }), richRendererFallback),
@@ -1334,7 +1335,7 @@ function MediaViewer({ gallery, onStep, onClose }: { gallery: MediaGallery; onSt
       {items.length > 1 ? <MediaPager index={index} count={items.length} go={go} /> : null}
       {zoom.zoomable ? <button type="button" aria-pressed={zoom.actual} aria-label={zoom.actual ? "适应窗口" : "原始尺寸"}
         title={zoom.actual ? "适应窗口" : "原始尺寸"} onClick={() => zoom.toggle()}>
-        {zoom.actual ? <ZoomOut size={18} aria-hidden="true" /> : <ZoomIn size={18} aria-hidden="true" />}
+        <IconSwap state={zoom.actual} a={<ZoomIn size={18} aria-hidden="true" />} b={<ZoomOut size={18} aria-hidden="true" />} />
       </button> : null}
       <a href={item.url} target="_blank" rel="noreferrer" aria-label="在新标签页打开" data-tip="在新标签页打开"><ExternalLink size={18} aria-hidden="true" /></a>
       <a href={item.url} download={item.label} aria-label={`下载 ${item.label}`} data-tip="下载"><Download size={18} aria-hidden="true" /></a>
@@ -1664,7 +1665,7 @@ function ToolDetailHeading({
           aria-label={copied ? `${label}已复制` : `复制工具${label}`}
           onClick={onCopy}
         >
-          {copied ? <Check size={14} aria-hidden="true" /> : <Copy size={14} aria-hidden="true" />}
+          <IconSwap state={copied} a={<Copy size={14} aria-hidden="true" />} b={<Check size={14} aria-hidden="true" />} />
           <span aria-live="polite">{copied ? "已复制" : "复制"}</span>
         </button>
       ) : null}

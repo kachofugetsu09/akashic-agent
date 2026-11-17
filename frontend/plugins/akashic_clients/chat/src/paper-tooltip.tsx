@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
+import { useExitPresence } from "./presence";
 
 /** 停留这么久才出提示：毫秒级掠过的指针不该被打断。 */
 const SHOW_DELAY_MS = 400;
@@ -8,19 +9,25 @@ const GAP_PX = 9;
 const EDGE_PX = 8;
 
 type Hint = { text: string; rect: DOMRect };
-type Placed = { style: CSSProperties; place: "above" | "below" };
+type Placed = { style: CSSProperties; place: "above" | "below"; hint: Hint };
 
 /**
  * 纸气泡提示：控件上写 `data-tip="文案"` 即可，不需要包一层 DOM。
  *
  * 原来的原生 `title` 延迟和样式都不受控，触控上还会粘住。这里改成挂在 document 上的
- * 一个浮层：进入延迟 400ms、带 3px 位移淡入，离开立即消失（卸载即瞬时）。
+ * 一个浮层：进入延迟 400ms、带 3px 位移淡入，离开时柔和淡出；若在退场期间移入新目标则直接顺滑衔接。
  * 可访问名称仍由控件自己的 `aria-label` 承担，气泡只是视觉补充，不重复播报。
  */
 export function PaperTooltipLayer() {
   const [hint, setHint] = useState<Hint | null>(null);
   const [placed, setPlaced] = useState<Placed | null>(null);
+  const [lastHint, setLastHint] = useState<Hint | null>(null);
+  const [lastPlaced, setLastPlaced] = useState<Placed | null>(null);
   const bubbleRef = useRef<HTMLDivElement | null>(null);
+  const presence = useExitPresence(hint !== null, 140);
+
+  if (hint !== null && hint !== lastHint) setLastHint(hint);
+  if (placed !== null && placed !== lastPlaced) setLastPlaced(placed);
 
   useEffect(() => {
     let timer: number | null = null;
@@ -76,11 +83,11 @@ export function PaperTooltipLayer() {
   }, []);
 
   // 先量气泡自身尺寸再定位，所以未定位的那一帧只用来量尺寸（CSS 里 visibility: hidden）。
-  // 定位与方向在同一次提交里定下来，入场动画才只跑一遍、且朝着正确的方向。
+  // 定位与方向在同一次提交里定下来，过渡因此只跑一遍、且朝着正确的方向。
   useLayoutEffect(() => {
     const el = bubbleRef.current;
     if (!hint || !el) {
-      setPlaced(null);
+      if (!hint) setPlaced(null);
       return;
     }
     const box = el.getBoundingClientRect();
@@ -91,6 +98,7 @@ export function PaperTooltipLayer() {
       Math.max(half + EDGE_PX, window.innerWidth - half - EDGE_PX),
     );
     setPlaced({
+      hint,
       place: above ? "above" : "below",
       style: {
         top: above ? hint.rect.top - box.height - GAP_PX : hint.rect.bottom + GAP_PX,
@@ -100,19 +108,24 @@ export function PaperTooltipLayer() {
     });
   }, [hint]);
 
-  if (!hint) return null;
+  // 打开时只用为这条提示量出的位置（新提示首帧不带旧位置量尺寸）；退场时沿用最后一次。
+  const activeHint = hint ?? (presence.present ? lastHint : null);
+  const activePlaced = hint ? (placed?.hint === hint ? placed : null) : (presence.present ? lastPlaced : null);
+  if (!presence.present || !activeHint) return null;
 
   return (
     <div
       ref={bubbleRef}
       className="paper-tooltip"
-      data-place={placed?.place}
-      data-ready={placed ? "true" : undefined}
+      data-state={hint !== null && activePlaced ? "open" : "closed"}
+      data-place={activePlaced?.place}
+      data-ready={activePlaced ? "true" : undefined}
       // 文案与目标的 aria-label 同一份，浮层只是视觉补充，不参与播报。
       aria-hidden="true"
-      style={placed?.style}
+      style={activePlaced?.style}
+      onTransitionEnd={presence.onTransitionEnd}
     >
-      {hint.text}
+      {activeHint.text}
     </div>
   );
 }

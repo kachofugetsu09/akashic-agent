@@ -1910,19 +1910,28 @@ input {
     + var(--composer-dock-end)
   );
   z-index: 6;
-  /* 挂载时淡入上浮；reduced-motion 下 token 归零即瞬时。 */
-  animation: scroll-return-in var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+  opacity: 0;
+  translate: -50% 4px;
+  pointer-events: none;
+  transition:
+    opacity var(--ak-sys-duration-snap) var(--ak-sys-motion-standard),
+    translate var(--ak-sys-duration-snap) var(--ak-sys-motion-standard),
+    bottom var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
 }
 
-@keyframes scroll-return-in {
-  from {
+.desktop-scroll-return[data-state="open"] {
+  opacity: 1;
+  translate: -50% 0;
+  pointer-events: auto;
+  transition-duration: var(--ak-sys-duration-short), var(--ak-sys-duration-short), var(--ak-sys-duration-short);
+  @starting-style {
     opacity: 0;
     translate: -50% 4px;
   }
-  to {
-    opacity: 1;
-    translate: -50% 0;
-  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .desktop-scroll-return { transition: none; }
 }
 
 .home-state {
@@ -2279,8 +2288,9 @@ input {
   padding: var(--composer-control-inset) var(--composer-control-inset) var(--composer-control-inset) 15px;
   background: var(--chat-lift, var(--ak-paper-editing));
   box-shadow: none;
-  /* Focus only changes border-color — never padding/radius/height. */
-  transition-property: border-color;
+  /* Focus only changes border-color; expand/compact smoothly eases padding & height. */
+  interpolate-size: allow-keywords;
+  transition-property: border-color, padding, height, min-height;
   transition-duration: var(--ak-sys-duration-short);
   transition-timing-function: var(--ak-sys-motion-standard);
 }
@@ -2644,14 +2654,19 @@ form.composer:focus-within [data-slot="input-group"] {
 
   .compact-navigation-overlay {
     background-color: var(--chat-scrim);
+    animation: none;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 200ms var(--ak-sys-motion-emphasized, cubic-bezier(0.05, 0.7, 0.1, 1));
   }
 
   .compact-navigation-overlay[data-state="open"] {
-    animation: chat-scrim-in 280ms var(--ak-sys-motion-emphasized, cubic-bezier(0.05, 0.7, 0.1, 1)) both;
-  }
-
-  .compact-navigation-overlay[data-state="closed"] {
-    animation: chat-scrim-out 200ms var(--ak-sys-motion-emphasized, cubic-bezier(0.05, 0.7, 0.1, 1)) both;
+    opacity: 1;
+    pointer-events: auto;
+    transition-duration: 280ms;
+    @starting-style {
+      opacity: 0;
+    }
   }
 
   .compact-navigation-dialog {
@@ -2665,7 +2680,10 @@ form.composer:focus-within [data-slot="input-group"] {
     max-height: none;
     box-sizing: border-box;
     translate: none;
-    transform: translateX(0);
+    transform: translateX(-85%);
+    opacity: 0;
+    filter: blur(3px);
+    pointer-events: none;
     gap: 0;
     overflow: hidden;
     border: 0;
@@ -2682,14 +2700,24 @@ form.composer:focus-within [data-slot="input-group"] {
     --chat-group-gap: 16px;
     background: var(--ak-paper-canvas);
     box-shadow: none;
+    animation: none;
+    transition:
+      transform 220ms var(--ak-sys-motion-emphasized, cubic-bezier(0.05, 0.7, 0.1, 1)),
+      opacity 180ms var(--ak-sys-motion-standard),
+      filter 180ms var(--ak-sys-motion-standard);
   }
 
   .compact-navigation-dialog[data-state="open"] {
-    animation: chat-drawer-in 340ms var(--ak-sys-motion-emphasized, cubic-bezier(0.05, 0.7, 0.1, 1)) both;
-  }
-
-  .compact-navigation-dialog[data-state="closed"] {
-    animation: chat-drawer-out 240ms var(--ak-sys-motion-emphasized, cubic-bezier(0.05, 0.7, 0.1, 1)) both;
+    transform: translateX(0);
+    opacity: 1;
+    filter: blur(0);
+    pointer-events: auto;
+    transition-duration: 320ms, 220ms, 220ms;
+    @starting-style {
+      transform: translateX(-100%);
+      opacity: 0.75;
+      filter: blur(0);
+    }
   }
 
   .compact-navigation-dialog .chat-sidebar {
@@ -2715,6 +2743,7 @@ form.composer:focus-within [data-slot="input-group"] {
    不改变控件尺寸与热区，也不参与布局；触碰不到 --chat-* 几何，只动 transform / opacity / filter。 */
 .icon-swap {
   display: grid;
+  flex: none;
   place-items: center;
 }
 
@@ -2757,8 +2786,7 @@ form.composer:focus-within [data-slot="input-group"] {
   .icon-swap__tick > path { animation: none; stroke-dashoffset: 0; }
 }
 
-/* —— 纸气泡提示：挂在 document 上的单个浮层，控件只写 data-tip，不包 DOM ——
-   进入延迟与离开瞬时由 JS 控制（见 paper-tooltip.tsx），这里只管外观与入场那一帧。 */
+/* 定位与方向都由 JS 在同一次提交里定下，过渡因此可被打断、且朝着正确的方向进退。 */
 .paper-tooltip {
   position: fixed;
   z-index: 95;
@@ -2777,37 +2805,40 @@ form.composer:focus-within [data-slot="input-group"] {
   transform: translateX(-50%);
   pointer-events: none;
   box-shadow: var(--ak-elevation-float);
+  opacity: 0;
+  translate: 0 3px;
+  transition:
+    opacity var(--ak-sys-duration-instant) var(--ak-sys-motion-standard),
+    translate var(--ak-sys-duration-instant) var(--ak-sys-motion-standard);
 }
 
-/* 定位与方向都由 JS 在同一次提交里定下，动画因此只跑一遍。 */
-.paper-tooltip[data-ready="true"] {
-  animation: ak-tooltip-in 120ms var(--ak-sys-motion-standard);
+.paper-tooltip[data-place="below"] {
+  translate: 0 -3px;
 }
 
-/* 位移朝目标的方向来：气泡在目标上方就往上落，翻到下方就往下落。 */
-@keyframes ak-tooltip-in {
-  from { opacity: 0; translate: 0 3px; }
+.paper-tooltip[data-ready="true"][data-state="open"] {
+  opacity: 1;
+  translate: 0 0;
+  transition-duration: var(--ak-sys-duration-snap), var(--ak-sys-duration-snap);
+  @starting-style {
+    opacity: 0;
+    translate: 0 3px;
+  }
 }
 
-.paper-tooltip[data-ready="true"][data-place="below"] {
-  animation-name: ak-tooltip-in-below;
-}
-
-@keyframes ak-tooltip-in-below {
-  from { opacity: 0; translate: 0 -3px; }
+.paper-tooltip[data-ready="true"][data-place="below"][data-state="open"] {
+  @starting-style {
+    opacity: 0;
+    translate: 0 -3px;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .paper-tooltip[data-ready="true"],
-  .paper-tooltip[data-ready="true"][data-place="below"] { animation-name: ak-tooltip-in-plain; }
-}
-
-@keyframes ak-tooltip-in-plain {
-  from { opacity: 0; }
+  .paper-tooltip { transition: none; translate: 0 0; }
 }
 
 /* —— 文案换挡：同一格里的句子换手，旧句向上 4px 退场，新句从下方 4px 补上来 ——
-   位移只 4px，属于状态切换；reduced-motion 下只留淡入淡出。 */
+   全链路走纯 CSS transition，连续变化可打断；reduced-motion 下只留淡入淡出。 */
 .swap-text {
   display: inline-block;
   transition:
@@ -2823,20 +2854,21 @@ form.composer:focus-within [data-slot="input-group"] {
 }
 
 .swap-text[data-swap="in"] {
-  animation: ak-swap-text-in var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+  opacity: 0;
+  translate: 0 4px;
+  filter: blur(3px);
+  transition: none;
 }
 
-@keyframes ak-swap-text-in {
-  from {
-    opacity: 0;
-    translate: 0 4px;
-    filter: blur(3px);
-  }
+.swap-text[data-swap="idle"] {
+  opacity: 1;
+  translate: 0 0;
+  filter: blur(0);
+  transition-duration: var(--ak-sys-duration-short), var(--ak-sys-duration-short), var(--ak-sys-duration-short);
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .swap-text { translate: none; filter: none; }
-  .swap-text[data-swap="in"] { animation: none; }
+  .swap-text { translate: none; filter: none; transition: none; }
 }
 
 /* —— 桌面 WebUI：非对称 Lucide 光学对齐 —— */
@@ -2848,32 +2880,11 @@ form.composer:focus-within [data-slot="input-group"] {
   translate: 0 0.5px;
 }
 
-@keyframes chat-drawer-in {
-  from { transform: translateX(-100%); }
-  to { transform: translateX(0); }
-}
-
-@keyframes chat-drawer-out {
-  from { transform: translateX(0); }
-  to { transform: translateX(-100%); }
-}
-
-@keyframes chat-scrim-in {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
-
-@keyframes chat-scrim-out {
-  from { opacity: 1; }
-  to { opacity: 0; }
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .compact-navigation-dialog[data-state="open"],
-  .compact-navigation-dialog[data-state="closed"],
-  .compact-navigation-overlay[data-state="open"],
-  .compact-navigation-overlay[data-state="closed"] {
-    animation: none;
+  .compact-navigation-dialog,
+  .compact-navigation-overlay {
+    transition: none;
+    filter: none;
   }
 }
 
@@ -3383,26 +3394,47 @@ form.composer:focus-within [data-slot="input-group"] {
 .thread-find button:disabled { opacity: 0.35; cursor: default; }
 .thread-find button:focus-visible { outline: 2px solid var(--md-sys-color-primary); outline-offset: -2px; }
 @media (hover: hover) { .thread-find button:not(:disabled):hover { color: var(--chat-ink); background: color-mix(in oklab, var(--md-sys-color-on-surface) 6%, transparent); } }
-.thread-find__meta {
+.thread-find__meta-wrap {
   grid-column: 1 / 3;
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows var(--ak-sys-duration-snap) var(--ak-sys-motion-standard);
+}
+.thread-find[data-has-query="true"] .thread-find__meta-wrap {
+  grid-template-rows: 1fr;
+  transition-duration: var(--ak-sys-duration-expand);
+}
+.thread-find__meta {
+  min-height: 0;
+  overflow: clip;
   display: flex;
   align-items: center;
   gap: 2px;
-  max-height: 0;
-  padding-inline: 10px 16px;
+  padding: 0 16px 0 10px;
   border-block-start: 0 solid var(--chat-line);
   opacity: 0;
-  translate: 0 -8px;
+  translate: 0 -4px;
   pointer-events: none;
   color: var(--chat-muted);
   font-size: var(--chat-type-control);
   line-height: 24px;
-  transition: max-height 0.2s ease-out, opacity 0.2s ease-out, padding 0.2s ease-out, translate 0.2s ease-out, border-width 0.2s ease-out;
+  transition:
+    opacity var(--ak-sys-duration-snap) var(--ak-sys-motion-standard),
+    translate var(--ak-sys-duration-snap) var(--ak-sys-motion-standard),
+    padding var(--ak-sys-duration-snap) var(--ak-sys-motion-standard),
+    border-width var(--ak-sys-duration-snap) var(--ak-sys-motion-standard);
 }
-.thread-find[data-has-query="true"] .thread-find__meta { max-height: 48px; padding-block: 6px; border-block-start-width: 1px; opacity: 1; translate: 0 0; pointer-events: auto; }
+.thread-find[data-has-query="true"] .thread-find__meta {
+  padding-block: 6px;
+  border-block-start-width: 1px;
+  opacity: 1;
+  translate: 0 0;
+  pointer-events: auto;
+  transition-duration: var(--ak-sys-duration-expand);
+}
 .thread-find__count { margin-inline-start: auto; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .find-region-count { margin-inline-start: 6px; color: var(--chat-muted); white-space: nowrap; }
 :where([data-chat-width~="820"]) .thread-find { inset-inline: max(8px, env(safe-area-inset-left, 0px)) max(8px, env(safe-area-inset-right, 0px)); width: auto; max-width: none; }
 ::highlight(thread-find) { background-color: light-dark(oklch(0.9 0.12 95 / 0.7), oklch(0.62 0.12 85 / 0.45)); color: inherit; }
 ::highlight(thread-find-active) { background-color: light-dark(oklch(0.78 0.16 62), oklch(0.75 0.16 62)); color: oklch(0.2 0 0); }
-@media (prefers-reduced-motion: reduce) { .thread-find__meta { transition: none; } .thread-find__spin { animation-duration: 2s; } }
+@media (prefers-reduced-motion: reduce) { .thread-find__meta-wrap, .thread-find__meta { transition: none; } .thread-find__spin { animation-duration: 2s; } }
