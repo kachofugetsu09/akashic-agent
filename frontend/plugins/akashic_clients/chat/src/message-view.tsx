@@ -450,9 +450,9 @@ function ContextNoticeRow({ text }: { text: string }) {
   return <div className="context-notice" data-disclosure-root="" data-open={open || undefined}>
     <button type="button" className="process-trigger" data-disclosure-trigger="" aria-expanded={open}
       onClick={() => setOpen((current) => !current)}>
-      <Gauge className="process-trigger-icon" size={13} aria-hidden="true" />
+      <Gauge className="process-trigger-icon" size={14} aria-hidden="true" />
       <span className="process-trigger-summary">{text}</span>
-      <ChevronDown className={`process-chevron${open ? " open" : ""}`} size={13} aria-hidden="true" />
+      <ChevronDown className={`process-chevron${open ? " open" : ""}`} size={14} aria-hidden="true" />
     </button>
     <Disclosure open={open}>
       <p className="process-content process-text" role="status">{text}</p>
@@ -557,7 +557,7 @@ function CollapsedToolGroup({ count, durationMs, findText, children }: {
           <span className="tool-step-heading">
             <span className="tool-step-title">
               {/* 箭头在前、计数在后：一眼看出这一行是折叠入口，而不是一条已完成记录。 */}
-              <ChevronDown className={`tool-group-caret ${open ? "open" : ""}`} size={13} aria-hidden="true" />
+              <ChevronDown className={`tool-group-caret ${open ? "open" : ""}`} size={14} aria-hidden="true" />
               <span>{count} 个更早步骤</span>
             </span>
             <span className="tool-step-description"><FindRegionCount count={matches} /></span>
@@ -754,7 +754,7 @@ function TurnProcessSummary({ items, durationMs, children }: {
           onClick={() => { setMounted(true); toggle(); }}>
           <span className="tool-step-heading">
             <span className="tool-step-title">
-              <Icon className="tool-step-icon" size={13} aria-hidden="true" />
+              <Icon className="tool-step-icon" size={14} aria-hidden="true" />
               <span>{label}</span>
             </span>
             <span className="tool-step-description">{failed ? <em className="turn-process-failed">{failed} 个失败</em> : null}<FindRegionCount count={matches} /></span>
@@ -762,7 +762,7 @@ function TurnProcessSummary({ items, durationMs, children }: {
               {durationMs !== undefined ? formatTurnDuration(durationMs) : ""}
               <CollapseHint open={open} lead={durationMs !== undefined} />
             </span>
-            <ChevronDown className={`tool-step-chevron ${open ? "open" : ""}`} size={13} aria-hidden="true" />
+            <ChevronDown className={`tool-step-chevron ${open ? "open" : ""}`} size={14} aria-hidden="true" />
           </span>
         </button>
       </div>
@@ -789,10 +789,10 @@ function InlineReplyProcess({ messages, toolResults, beforeReasoning }: {
       <button type="button" className="process-trigger" data-disclosure-trigger="" aria-expanded={open}
         onPointerEnter={() => setMounted(true)} onFocus={() => setMounted(true)}
         onClick={() => { setMounted(true); setOpen((current) => !current); }}>
-        {count ? <Wrench className="process-trigger-icon" size={13} aria-hidden="true" />
-          : <Brain className="process-trigger-icon" size={13} aria-hidden="true" />}
+        {count ? <Wrench className="process-trigger-icon" size={14} aria-hidden="true" />
+          : <Brain className="process-trigger-icon" size={14} aria-hidden="true" />}
         <span className="process-trigger-summary">{count ? `思考并调用 ${count} 个工具` : "思考过程"}</span>
-        <ChevronDown className={`process-chevron${open ? " open" : ""}`} size={13} aria-hidden="true" />
+        <ChevronDown className={`process-chevron${open ? " open" : ""}`} size={14} aria-hidden="true" />
       </button>
       <Disclosure open={open}>
         {mounted ? <TimelineProcess flow={settled} beforeReasoning={beforeReasoning} /> : null}
@@ -1154,7 +1154,7 @@ function TimelineToolCallRow({ name, arguments: args }: { name: string; argument
   return <div className="timeline-details timeline-tool-call" data-disclosure-root="" data-open={open || undefined}>
     <button type="button" className="timeline-details__trigger" data-disclosure-trigger="" aria-expanded={open}
       onClick={() => setOpen((current) => !current)}>
-      <ChevronDown className={`timeline-details__chevron${open ? " open" : ""}`} size={13} aria-hidden="true" />
+      <ChevronDown className={`timeline-details__chevron${open ? " open" : ""}`} size={14} aria-hidden="true" />
       <span>工具调用 · {name}</span>
     </button>
     <Disclosure open={open}>
@@ -1530,13 +1530,13 @@ function ThinkingRowTrigger({ content, findText, rowRef, onPrefetch, onFindOpen 
     <div ref={rowRef} className="process-trigger-sticky">
       <ReasoningTrigger className={`process-trigger ${isStreaming ? "is-streaming" : ""}`}
         onPointerEnter={onPrefetch} onFocus={onPrefetch}>
-        <Brain className="process-trigger-icon" size={13} aria-hidden="true" />
+        <Brain className="process-trigger-icon" size={14} aria-hidden="true" />
         <span className="process-trigger-label">
           {isStreaming ? "正在思考" : duration ? `已思考 ${duration}s` : "已思考"}
         </span>
         {content ? <ThinkingTail content={content} /> : null}
         <FindRegionCount count={matches} />
-        <ChevronDown className={`process-chevron ${isOpen ? "open" : ""}`} size={13} aria-hidden="true" />
+        <ChevronDown className={`process-chevron ${isOpen ? "open" : ""}`} size={14} aria-hidden="true" />
       </ReasoningTrigger>
     </div>
   );
@@ -1751,12 +1751,12 @@ function ToolStepSummary({
   return (
     <span className="tool-step-heading">
       <span className="tool-step-title">
-        <Wrench className="tool-step-icon" size={13} />
+        <Wrench className="tool-step-icon" size={14} />
         <span>{block.name}</span>
       </span>
       <ToolDescriptionText description={description} />
       <span className="tool-step-state"><FindRegionCount count={matches} />{stateLabel}<CollapseHint open={open} lead={Boolean(stateLabel)} /></span>
-      {expandable ? <ChevronDown className={`tool-step-chevron ${open ? "open" : ""}`} size={13} /> : null}
+      {expandable ? <ChevronDown className={`tool-step-chevron ${open ? "open" : ""}`} size={14} /> : null}
     </span>
   );
 }
@@ -1978,7 +1978,7 @@ function TaskRowContent({ view, open, expandable, matches }: { view: TaskView; o
       <span className="delegated-row-meta">
         <FindRegionCount count={matches} />
         <span className={`delegated-state-label is-${view.tone}`}>{view.stateLabel}</span>
-        {expandable ? <ChevronDown className={`tool-step-chevron ${open ? "open" : ""}`} size={13} aria-hidden="true" /> : null}
+        {expandable ? <ChevronDown className={`tool-step-chevron ${open ? "open" : ""}`} size={14} aria-hidden="true" /> : null}
       </span>
     </span>
   );
@@ -2068,7 +2068,7 @@ function TaskBatchCard({ members, onCopyToolDetail }: {
           <span className={`delegated-group-counts${counts.live ? " is-live" : counts.failed ? " is-error" : ""}`}>{counts.summary}</span>
           <span className="delegated-group-right">
             <FindRegionCount count={matches} />
-            <ChevronDown className={`tool-group-caret ${open ? "open" : ""}`} size={13} aria-hidden="true" />
+            <ChevronDown className={`tool-group-caret ${open ? "open" : ""}`} size={14} aria-hidden="true" />
           </span>
         </button>
       </div>

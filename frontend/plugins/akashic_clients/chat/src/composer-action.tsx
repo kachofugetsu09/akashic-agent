@@ -9,7 +9,7 @@ export type ComposerActionMode = "send" | "stop";
 
 const SendGlyph = () => (
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-    <path d="M12 19V5M5 12l7-7 7 7" />
+    <path d="M12 21V7M5 14l7-7 7 7" />
   </svg>
 );
 

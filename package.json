@@ -18,7 +18,8 @@
     "baseline:webui-performance:browser": "node scripts/webui-performance/run-browser-scenarios.mjs --update-baseline",
     "typecheck": "tsc --noEmit && tsc --noEmit -p frontend/plugins/design/editor/tsconfig.json",
     "check:css-tokens": "node scripts/check_css_tokens.mjs",
-    "check:narrow-ui": "node scripts/check_narrow_ui.mjs"
+    "check:narrow-ui": "node scripts/check_narrow_ui.mjs",
+    "check:optical-alignment": "node scripts/check_optical_alignment.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

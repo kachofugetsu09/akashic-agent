@@ -1662,7 +1662,7 @@ input {
   --composer-dock-gap: 4px;
   /* 统计行浮在输入卡下方的底距里、不占流（见 .composer-stats-line），消息区不再为它预留高度。 */
   --composer-stats-line: 0px;
-  --composer-dock-end: max(20px, env(safe-area-inset-bottom, 0px));
+  --composer-dock-end: max(24px, env(safe-area-inset-bottom, 0px));
 }
 
 .akashic-chat .chat-shell {
@@ -1693,7 +1693,7 @@ input {
 
 .conversation-heading {
   display: flex;
-  min-block-size: 52px;
+  min-block-size: 53px;
   flex: 0 0 auto;
   align-items: center;
   gap: 2px;
@@ -2224,8 +2224,8 @@ input {
    首条消息落地后回到底部 dock。上下 auto 外边距均分自由空间。 */
 .chat-main.is-empty {
   overflow-y: auto;
-  /* 16px 吸收簇内 hero/状态块上下内边距的非对称，让感知矩形中心落在窗口几何中心。 */
-  padding-block-end: 16px;
+  /* 36px 吸收簇内上轻（问候小字）下重（48px 输入胶囊）的光学重心差，让感知重心落在窗口视觉中心。 */
+  padding-block-end: 36px;
 }
 
 /* 空态簇对整个 chat-main 高度居中：标题条是悬浮 chrome，
@@ -2341,8 +2341,8 @@ input {
 
 .composer .composer-action-button .icon-swap__slot > svg,
 .composer .composer-tool > svg {
-  width: 15px;
-  height: 15px;
+  width: 16px;
+  height: 16px;
 }
 
 .composer [data-slot="input-group"] {
@@ -2881,8 +2881,17 @@ form.composer:focus-within [data-slot="input-group"] {
   translate: 0.5px -0.5px;
 }
 
-.compact-navigation-trigger .lucide-menu {
-  translate: 0 0.5px;
+.theme-menu__mode > :is(.lucide-moon, .lucide-sun-moon),
+.chat-sidebar__footer-actions :is(.lucide-moon, .lucide-sun-moon) {
+  translate: 0.5px -0.5px;
+}
+
+.navigation-row-menu__item > svg {
+  translate: 0 1px;
+}
+
+.navigation-row-menu__item > :is(.lucide-pin, .lucide-pin-off) {
+  translate: 0.5px 1.5px;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -2894,7 +2903,7 @@ form.composer:focus-within [data-slot="input-group"] {
 }
 
 .desktop-scroll-return .lucide-arrow-down {
-  translate: 0 1px;
+  translate: 0 -1px;
 }
 
 /* 提问目录：只在右侧留白放得下刻度的宽屏指针设备上出现（阅读列偏左，右侧留白 ≥ 70px）。
@@ -3074,7 +3083,7 @@ form.composer:focus-within [data-slot="input-group"] {
 
   /* 2px + (44 - 20) / 2 + Menu 线条起笔 ≈ 16px：汉堡横线与正文、输入卡左缘同一条线。 */
   .conversation-heading {
-    min-block-size: 52px;
+    min-block-size: 53px;
     padding-inline: max(2px, env(safe-area-inset-left, 0px)) max(16px, env(safe-area-inset-right, 0px));
   }
 
@@ -3393,7 +3402,7 @@ form.composer:focus-within [data-slot="input-group"] {
   max-width: 70vw;
   overflow: hidden;
   border: 0;
-  border-radius: var(--ak-radius-full);
+  border-radius: calc(var(--ak-radius-lg) + 6px);
   background: var(--ak-paper-sheet);
   box-shadow: 0 0 0 1px var(--ak-rule-default), var(--ak-elevation-float);
   color: var(--chat-ink);
@@ -3442,7 +3451,7 @@ form.composer:focus-within [data-slot="input-group"] {
     border-width var(--ak-sys-duration-snap) var(--ak-sys-motion-standard);
 }
 .thread-find[data-has-query="true"] .thread-find__meta {
-  padding-block: 6px;
+  padding-block: 6px 8px;
   border-block-start-width: 1px;
   opacity: 1;
   translate: 0 0;
