@@ -443,7 +443,7 @@
   .shell-inventory-empty button { padding: 4px 0; font: inherit; font-size: 13px; border: 0; background: transparent; color: var(--ak-ink-muted); cursor: pointer; }
   .shell-inventory-filter button[aria-pressed="true"] { color: var(--ak-ink-primary); font-weight: 600; }
   .shell-inventory-group h4,
-  .shell-inventory-sub-head { margin: 0 0 8px; font-size: 13px; font-weight: 600; color: var(--ak-ink-secondary); }
+  .shell-inventory-sub-head { margin: 0 0 8px; font-size: 13px; font-weight: 600; color: var(--ak-ink-secondary); text-wrap: balance; }
   .shell-inventory-group h4 span,
   .shell-inventory-sub-head > span:not(.shell-inventory-chevron) { margin-inline-start: 4px; font-weight: 400; color: var(--ak-ink-muted); font-variant-numeric: tabular-nums; }
   /* 插件列表同样收进分组卡：名称下一行是说明，展开的详情就地出现在行内。 */
@@ -452,12 +452,12 @@
   .shell-inventory-name { display: grid; flex: 1 1 auto; min-width: 0; gap: 1px; padding-block: 8px; }
   .shell-inventory-name small { overflow: hidden; font-size: 13px; line-height: 18px; color: var(--ak-ink-muted); text-overflow: ellipsis; white-space: nowrap; }
   .shell-inventory-head,
-  .shell-inventory-sub-head { display: flex; width: 100%; min-height: 44px; align-items: center; gap: 10px; padding: 0; font: inherit; text-align: start; border: 0; background: transparent; color: inherit; cursor: pointer; }
+  .shell-inventory-sub-head { display: flex; width: 100%; min-height: 44px; align-items: center; gap: 10px; padding: 0; font: inherit; text-align: start; border: 0; background: transparent; color: inherit; cursor: pointer; transition: background-color var(--ak-sys-duration-short, 150ms) var(--ak-sys-motion-standard, cubic-bezier(0.2, 0, 0, 1)); }
   .shell-inventory-head { padding-inline: 16px; }
   .shell-inventory-head:hover { background: color-mix(in oklab, var(--ak-ink-primary) 4%, transparent); }
   .shell-inventory-head:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: -2px; }
-  .shell-inventory-head strong { min-width: 0; overflow-wrap: anywhere; font-size: 14px; font-weight: 500; }
-  .shell-inventory-status { flex: 0 0 auto; white-space: nowrap; font-size: 13px; color: var(--ak-ink-muted); }
+  .shell-inventory-head strong { min-width: 0; overflow-wrap: anywhere; font-size: 14px; font-weight: 500; text-wrap: balance; }
+  .shell-inventory-status { flex: 0 0 auto; white-space: nowrap; font-size: 13px; font-variant-numeric: tabular-nums; color: var(--ak-ink-muted); }
   .shell-inventory-row[data-phase="failed"] .shell-inventory-status { color: var(--ak-color-status-error); }
   .shell-inventory-row[data-phase="pending"] .shell-inventory-status { color: var(--ak-color-status-warning); }
   /* deslop-ignore-next-line 19 */
@@ -469,8 +469,8 @@
   .shell-inventory-sub-head { min-height: 36px; margin: 0; }
   .shell-inventory-sub-head small { margin-inline-start: auto; font-weight: 400; color: var(--ak-ink-muted); }
   .shell-inventory-body { display: grid; gap: 10px; max-width: 44em; padding: 0 16px 16px; font-size: 13px; line-height: 20px; color: var(--ak-ink-secondary); }
-  .shell-inventory-body p { margin: 0; }
-  .shell-inventory-error { margin: 0; white-space: pre-wrap; color: var(--ak-color-status-error); }
+  .shell-inventory-body p { margin: 0; text-wrap: pretty; }
+  .shell-inventory-error { margin: 0; white-space: pre-wrap; text-wrap: pretty; color: var(--ak-color-status-error); }
   .shell-inventory-hint, .shell-inventory-switch small { color: var(--ak-ink-muted); }
   .shell-inventory-switch { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; color: var(--ak-ink-primary); cursor: pointer; }
   .shell-inventory-switch input { appearance: none; position: relative; width: 36px; height: 20px; margin: 0; border-radius: var(--ak-radius-full); background: var(--ak-rule-strong); cursor: pointer; }
@@ -486,9 +486,9 @@
   .shell-inventory-tech-trigger .shell-inventory-chevron svg { width: 14px; height: 14px; }
   .shell-inventory-body dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 16px; margin: 8px 0 0; }
   .shell-inventory-body dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
-  .shell-disclosure { display: grid; grid-template-rows: 0fr; transition: grid-template-rows var(--ak-sys-duration-snap, 120ms) var(--ak-sys-motion-standard); }
+  .shell-disclosure { display: grid; grid-template-rows: 0fr; transition: grid-template-rows var(--ak-sys-duration-snap, 120ms) var(--ak-sys-motion-standard, cubic-bezier(0.2, 0, 0, 1)); }
   .shell-disclosure.open { grid-template-rows: 1fr; transition-duration: var(--ak-sys-duration-expand, 200ms); }
-  .shell-disclosure__inner { min-width: 0; min-height: 0; overflow: clip; opacity: 0; translate: 0 -4px; transition: opacity var(--ak-sys-duration-snap, 120ms) ease-out, translate var(--ak-sys-duration-snap, 120ms) var(--ak-sys-motion-standard); }
+  .shell-disclosure__inner { min-width: 0; min-height: 0; overflow: clip; opacity: 0; translate: 0 -4px; transition: opacity var(--ak-sys-duration-snap, 120ms) ease-out, translate var(--ak-sys-duration-snap, 120ms) var(--ak-sys-motion-standard, cubic-bezier(0.2, 0, 0, 1)); }
   .shell-disclosure.open > .shell-disclosure__inner { opacity: 1; translate: 0 0; transition-duration: var(--ak-sys-duration-expand, 200ms), var(--ak-sys-duration-expand, 200ms); }
   .shell-disclosure.is-instant,
   .shell-disclosure.is-instant > .shell-disclosure__inner { transition: none; }

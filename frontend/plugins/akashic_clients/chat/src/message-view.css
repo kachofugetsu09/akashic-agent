@@ -41,6 +41,7 @@
 .user-text-clamp {
   --clamp-fade-alpha: 0;
   overflow: clip;
+  text-wrap: pretty;
   transition: --clamp-fade-alpha var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
 }
 
@@ -115,6 +116,11 @@
 .agent-content h2 { font-size: 1.22em; }
 .agent-content h3 { font-size: 1.1333em; }
 .agent-content h4 { font-size: 1.04em; }
+
+.agent-content p,
+.process-text p {
+  text-wrap: pretty;
+}
 
 .agent-content :where(p, li) :where(strong, b) {
   font-weight: 540;
@@ -221,7 +227,7 @@
   border-block-end: 0;
 }
 
-/* 图片按 dsh 式裸排：圆角、无边框无底色，只限高防止刷屏。 */
+/* 正文与附件图片统一走 1px 内描边（--ak-color-image-outline，与 .media-preview__media 同一 token），高光贴边也不融入纸底。 */
 .agent-content img,
 .process-markdown img {
   display: block;
@@ -232,7 +238,8 @@
   margin-block: 0.35rem;
   border-radius: var(--ak-radius-md);
   object-fit: contain;
-  outline: none;
+  outline: 1px solid var(--ak-color-image-outline);
+  outline-offset: -1px;
 }
 
 .media-preview__media:not(.is-video) {
@@ -1677,6 +1684,7 @@ button.tool-step-summary:active {
   color: var(--ak-color-text-secondary);
   font-size: 0.6875rem;
   letter-spacing: 0.045em;
+  text-wrap: balance;
 }
 
 .tool-detail-copy {
@@ -1855,6 +1863,7 @@ button.tool-step-summary:active {
   font-size: 0.875rem;
   font-weight: 500;
   line-height: 1.4;
+  text-wrap: balance;
 }
 
 .media-preview__bar :is(a, button) {
@@ -2259,15 +2268,17 @@ button.tool-step-summary:active {
 .timeline-failure-actions button:hover,
 .timeline-failure-actions button:focus-visible { text-decoration-color: currentColor; }
 .timeline-failure-actions button:focus-visible,
+.timeline-failure-history__trigger:focus-visible,
 .timeline-failure-history summary:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 3px; border-radius: var(--ak-radius-xs); }
 .timeline-failure-actions button:disabled { color: var(--ak-ink-muted); text-decoration-line: none; cursor: default; }
 .timeline-failure-history { color: var(--ak-ink-muted); font-size: 0.8125rem; }
-.timeline-failure-history summary { min-height: 2.25rem; display: inline-flex; align-items: center; cursor: pointer; list-style: none; }
+.timeline-failure-history__trigger,
+.timeline-failure-history summary { min-height: 2.25rem; display: inline-flex; align-items: center; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; cursor: pointer; list-style: none; }
 .timeline-failure-history summary::-webkit-details-marker { display: none; }
 .timeline-failure-history ol { margin: 0; padding: 0; list-style: none; line-height: 1.6; }
 .timeline-failure-history time { margin-inline-end: 0.75em; font-variant-numeric: tabular-nums; }
 @media (max-width: 820px), (hover: none) {
-  .timeline-failure-actions button, .timeline-failure-history summary { min-height: 2.75rem; }
+  .timeline-failure-actions button, .timeline-failure-history__trigger, .timeline-failure-history summary { min-height: 2.75rem; }
 }
 /* 与落定后的消息同一节奏：只靠列表 gap 分隔，结束换成历史消息时不跳行。 */
 .reply-activity { overflow-wrap: anywhere; }
@@ -2556,9 +2567,12 @@ button.tool-step-summary:active {
   line-height: 1.5;
 }
 
+.attempt-status__details,
 .attempt-status > details { flex: 1; min-width: 0; }
-.attempt-status summary { cursor: pointer; list-style: none; overflow-wrap: anywhere; }
+.attempt-status__trigger,
+.attempt-status summary { padding: 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: start; cursor: pointer; list-style: none; overflow-wrap: anywhere; }
 .attempt-status summary::-webkit-details-marker { display: none; }
+.attempt-status__trigger:focus-visible,
 .attempt-status summary:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 2px; border-radius: var(--ak-radius-xs); }
 
 .attempt-status code {
@@ -2632,11 +2646,13 @@ button.tool-step-summary:active {
   font-size: 0.8125rem;
   cursor: pointer;
   translate: -50% -100%;
-  animation: selection-quote-in var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+  opacity: 1;
+  transition: opacity var(--ak-sys-duration-short) var(--ak-sys-motion-standard), scale var(--ak-sys-duration-instant) var(--ak-sys-motion-standard);
+  @starting-style { opacity: 0; }
 }
+.selection-quote:active { scale: 0.97; }
 .selection-quote.is-below { translate: -50% 0; }
 .selection-quote:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 2px; }
-@keyframes selection-quote-in { from { opacity: 0; } }
 
 /* 会话引用条：一行 chip，与回复引用同一套间距语言，但可以并排多个。 */
 .composer-references {
