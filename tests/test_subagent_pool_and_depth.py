@@ -4,11 +4,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import random
 from pathlib import Path
 from typing import cast
 from agent.plugin_composition import Context
-from uuid import uuid4
 
 import pytest
 
@@ -327,6 +325,24 @@ async def test_per_root_session_capacity_pool_default_8_and_external_sharing(tmp
             res_retry = await spawn.invoke("ka-after", prep_retry)
             assert res_retry.outcome == "success"
 
+            # 取消也必须归还槽位，否则名额会悄悄泄漏：先补满，再取消一个
+            prep_fill = await spawn.prepare({"task": "fill", "label": "tf"}, src_a)
+            assert isinstance(prep_fill, dict)
+            fill_jid = Request.model_validate(prep_fill["request"]).job_id
+            job_ids_a.append(fill_jid)
+            releases[fill_jid] = asyncio.Event()
+            active_waiters.append(asyncio.create_task(launch("ka-fill", prep_fill)))
+            await asyncio.wait_for(entered.setdefault(fill_jid, asyncio.Event()).wait(), timeout=5)
+            prep_full = await spawn.prepare({"task": "full", "label": "tx"}, src_a)
+            assert isinstance(prep_full, dict)
+            assert (await spawn.invoke("ka-full", prep_full)).outcome == "error"
+            await jobs.cancel(job_ids_a[1])
+            await active_waiters[1]
+            prep_cancel = await spawn.prepare({"task": "after-cancel", "label": "tc"}, src_a)
+            assert isinstance(prep_cancel, dict)
+            res_cancel = await spawn.invoke("ka-after-cancel", prep_cancel)
+            assert res_cancel.outcome == "success"
+
             # 清理剩余阻塞任务
             ext_release.set()
             for jid in job_ids_a[1:]:
@@ -394,64 +410,6 @@ async def test_uniform_max_depth_across_sync_and_external(tmp_path: Path):
         await tasks2.close()
         await root2.dispose()
         log2.close()
-
-
-@pytest.mark.asyncio
-async def test_monkey_concurrent_trees_capacity_and_cancellation_invariants(tmp_path: Path):
-    """随机并发 Monkey 测试：多棵根会话树交织派发/阻塞/取消/完成，验证容量绝不越界且无槽位泄漏。"""
-    rng = random.Random(20261117)
-    log, root, tasks, ctx, jobs, _runners, spawn, entered, releases, _seen = await _mount_fixture(
-        tmp_path, max_active=4, max_depth=2
-    )
-    roots = ["tree-alpha", "tree-beta", "tree-gamma"]
-    waiters: list[asyncio.Task[Result]] = []
-    try:
-        sources = {r: _parent_source(log, r, f"{r}-in") for r in roots}
-
-        async def run_one(idx: int, rname: str, ro: bool):
-            async with ctx.runtime_scope():
-                prep = await spawn.prepare({"task": f"m-{idx}", "label": f"m{idx}", "read_only": ro}, sources[rname])
-                assert isinstance(prep, dict)
-                jid = Request.model_validate(prep["request"]).job_id
-                releases[jid] = asyncio.Event()
-                async def invoke_scoped():
-                    async with ctx.runtime_scope():
-                        return await spawn.invoke(f"mkey-{idx}-{uuid4().hex[:6]}", prep)
-
-                res_task = asyncio.create_task(invoke_scoped())
-
-                async def driver():
-                    # 等进入执行或被容量拒绝
-                    await asyncio.sleep(rng.uniform(0.0, 0.03))
-                    if rng.random() < 0.25:
-                        async with ctx.runtime_scope():
-                            await jobs.cancel(jid)
-                    releases[jid].set()
-                    return await res_task
-
-                out = await driver()
-                async with ctx.runtime_scope():
-                    assert jobs.active_count_for_root(rname) <= 4
-                return out
-
-        for i in range(42):
-            waiters.append(asyncio.create_task(run_one(i, rng.choice(roots), rng.random() < 0.4)))
-            if i % 6 == 5:
-                await asyncio.sleep(0.01)
-
-        results = await asyncio.gather(*waiters)
-        assert len(results) == 42
-        async with ctx.runtime_scope():
-            for rname in roots:
-                assert jobs.active_count_for_root(rname) == 0
-    finally:
-        for ev in releases.values():
-            ev.set()
-        if waiters:
-            await asyncio.gather(*waiters, return_exceptions=True)
-        await tasks.close()
-        await root.dispose()
-        log.close()
 
 
 @pytest.mark.asyncio

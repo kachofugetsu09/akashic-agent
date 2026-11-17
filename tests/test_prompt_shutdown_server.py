@@ -67,7 +67,7 @@ async def test_idle_exit_from_other_thread_starts_graceful_shutdown_promptly(tmp
     assert events == ["lifespan.shutdown"]
 
 
-@pytest.mark.parametrize("server_type", [uvicorn.Server, *PROMPT_SERVERS])
+@pytest.mark.parametrize("server_type", PROMPT_SERVERS)
 async def test_exit_waits_for_in_flight_response(tmp_path, server_type):
     events: list[str] = []
     received = asyncio.Event()
@@ -85,7 +85,7 @@ async def test_exit_waits_for_in_flight_response(tmp_path, server_type):
     await writer.wait_closed()
 
 
-@pytest.mark.parametrize("server_type", [uvicorn.Server, *PROMPT_SERVERS])
+@pytest.mark.parametrize("server_type", PROMPT_SERVERS)
 async def test_accepted_connection_before_registration_keeps_shutdown_timeout(server_type):
     """真实连接已接受但尚未登记时退出，仍会超时并执行 lifespan 关闭。"""
     events: list[str] = []

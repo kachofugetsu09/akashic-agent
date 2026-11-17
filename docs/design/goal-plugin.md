@@ -251,18 +251,9 @@ Akashic 的 `react` 在模型没有工具调用时提交最终 Output 并结束 
 3. 假模型连续返回空响应（`EmptyResponseError` → Control failure）→ 3 轮后 blocked。
 4. 用户在目标轮次中发送新消息 → 目标轮次被同来源取消，用户轮次完成后继续。
 
-### Monkey test
+### 随机压力测试
 
-`tests/test_goal_monkey.py`：固定随机种子，生成 200 组操作序列（set/resume/pause/clear/complete/blocked/empty/activity/restart/preempt），每组 50 步，覆盖：
-
-- 同一 Session 最多一个目标；
-- 终态不会自动回到 active；
-- `continuations` 在单个 goal_id 内单调不减；
-- 空转计数只在无活动轮次增长，活动轮次清零；
-- 任何操作序列后 OWNER_STATE 记录都能 round-trip 通过 schema 校验；
-- 重复 key 的操作不会改变第二次结果；
-- 旧 goal_id 的结算不会写到新目标；
-- 用户 Input 与续跑追加的竞争：事务冲突时不会同时产生两个 pending Input。
+曾有 `tests/test_goal_monkey.py`（200 组随机操作序列）。单测只守核心功能退化，压力测试已移除；其中唯一的运行时级断言「预算耗尽即停」并入 `tests/test_goal_runtime.py`。
 
 ## 变更与持久化
 
@@ -282,12 +273,12 @@ protected_state:
 
 ## 验收
 
-分层验收：第 1 层只跑 state/store/tools/command；runtime/integration 在第 2 层，monkey 在第 3 层。
+分层验收：第 1 层只跑 state/store/tools/command；runtime/integration 在第 2 层。
 
-- `pytest tests/test_goal_state.py tests/test_goal_store.py tests/test_goal_tools.py tests/test_goal_command.py tests/test_goal_runtime.py tests/test_goal_monkey.py`
+- `pytest tests/test_goal_state.py tests/test_goal_store.py tests/test_goal_tools.py tests/test_goal_command.py tests/test_goal_runtime.py`
 - 集成测试里至少一条真实 `/goal` → 续跑 → `complete` 的账本证据。
 - `python -m pytest tests/test_default_reply.py -q` 不回归。
-- PR 按 stacked 顺序合并：状态/命令/工具 → 续跑/熔断 → 预算/展示/monkey。
+- PR 按 stacked 顺序合并：状态/命令/工具 → 续跑/熔断 → 预算/展示。
 
 ## 评审记录
 

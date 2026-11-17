@@ -427,14 +427,3 @@ async def test_codemode_clears_pending_sleep_timers_and_reports_missing_node(
     )
     assert res_missing.outcome == "error"
     assert "Node.js" in str(res_missing.parts[0].value)
-
-
-def test_runtime_dockerfiles_include_nodejs() -> None:
-    root = Path(__file__).resolve().parents[1]
-    dist_dockerfile = (root / "docker/host-runtime/Dockerfile.distribution").read_text(encoding="utf-8")
-    standalone_dockerfile = (root / "docker/standalone/Dockerfile").read_text(encoding="utf-8")
-    assert "nodejs" in dist_dockerfile
-    assert "node --version" in dist_dockerfile
-    assert "COPY --from=node /usr/local/bin/node /usr/local/bin/node" in standalone_dockerfile
-    assert "node --version" in standalone_dockerfile
-

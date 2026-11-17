@@ -1,7 +1,7 @@
 from plugins.context.api import check_summary as _model_summary_check
 import asyncio
 from collections.abc import Mapping
-from contextlib import asynccontextmanager, nullcontext
+from contextlib import asynccontextmanager
 from typing import Any
 from uuid import uuid4
 from plugins.models.contract import ToolCall as ModelToolCall
@@ -28,10 +28,8 @@ from plugins.ledger.contract import OwnerTransaction
 from plugins.ledger.contract import CallRef, ContentPart, Control, Input, Message, Output, ToolCall, ToolResult
 
 @asynccontextmanager
-async def runtime(tmp_path, complete, invoke, *, max_steps=4, authorize_hook=None,
-                  reducer=None, material_source=None, estimate=None, preview_state=None, terminal_tools=frozenset(),
-                  state_owner=None, model_max_attempts=1, parallel_ids=frozenset(), max_parallel_calls=1, tool_schemas=None,
-                  without_abort=False, drop_receipt=None):
+async def runtime(tmp_path, complete, invoke, *, max_steps=4, material_source=None,
+                  parallel_ids=frozenset(), max_parallel_calls=1, without_abort=False, drop_receipt=None):
     log = MessageLog(tmp_path / "sessions.db")
     store = ModelsStore(tmp_path / "models.db", tmp_path / "backups")
     store.initialize()
@@ -47,11 +45,11 @@ async def runtime(tmp_path, complete, invoke, *, max_steps=4, authorize_hook=Non
         async def complete(self, request):
             return await complete(request)
         def estimate_context_tokens(self, messages, tools=()):
-            return 100 if estimate is None else estimate(messages, tools)
+            return 100
         def estimate_appended_message_tokens(self, messages):
             return 0
         max_tool_schemas = None
-    model = _BoundChat(descriptor, Driver(), store, max_attempts=model_max_attempts)
+    model = _BoundChat(descriptor, Driver(), store)
     log.save_binding("tool", {"target": "test-file-effect"})
     def writer(body, call_ref=None):
         return log.writer(
@@ -72,8 +70,6 @@ async def runtime(tmp_path, complete, invoke, *, max_steps=4, authorize_hook=Non
         assert binding == "tool"
         yield Target()
     async def authorize(binding, arguments):
-        if authorize_hook is not None:
-            await authorize_hook()
         return {"decision": "allowed"}
     execution = ToolExecution(
         log.owner("tools"), tasks, open_tool, authorize, task_key="tools",
@@ -84,8 +80,6 @@ async def runtime(tmp_path, complete, invoke, *, max_steps=4, authorize_hook=Non
 
         @property
         def schemas(self) -> tuple[Mapping[str, Any], ...]:
-            if tool_schemas is not None:
-                return tool_schemas()
             return ({"type": "function", "function": {
                 "name": "example", "parameters": {"type": "object"},
             }},)
@@ -180,16 +174,14 @@ async def runtime(tmp_path, complete, invoke, *, max_steps=4, authorize_hook=Non
                 uuid4().hex, Control("abandon", head, reason), expected_source_head=head,
             )
 
-        with preview_state.open(task, reader.session_id, source) if preview_state is not None else nullcontext(None) as preview:
-            try:
-                return await react(reader, output, model=model, context=ContextBuilder(),
-                                   projection=projection, materials=materials, content=Content(), tools=menu,
-                                   max_output_tokens=100, max_steps=max_steps, reduce=reducer, preview=preview, terminal_tools=terminal_tools,
-                                   state=None if state_owner is None else log.owner(state_owner),
-                                   max_parallel_calls=max_parallel_calls, check_start=menu.check_start,
-                                   aborted=None if without_abort else aborted)
-            finally:
-                controls.expire()
+        try:
+            return await react(reader, output, model=model, context=ContextBuilder(),
+                               projection=projection, materials=materials, content=Content(), tools=menu,
+                               max_output_tokens=100, max_steps=max_steps, state=None,
+                               max_parallel_calls=max_parallel_calls, check_start=menu.check_start,
+                               aborted=None if without_abort else aborted)
+        finally:
+            controls.expire()
     conversation = Conversation(reader=log.reader("s"), inputs=writer(Input), controls=writer(Control),
                                 tasks=tasks)
     @asynccontextmanager

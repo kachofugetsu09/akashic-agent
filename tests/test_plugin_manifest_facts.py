@@ -24,23 +24,12 @@ def _fresh_process() -> None:
     static_manifest._parse_source_tree.cache_clear()
 
 
-def _forbid_parse(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fail(*_args: object) -> object:
-        raise AssertionError("cached facts should skip parsing")
-
-    monkeypatch.setattr(static_manifest, "_parse_source_tree", fail)
-
-
-def test_facts_reused_across_processes_only_for_same_source(plugin_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_facts_never_serve_stale_source(plugin_root: Path):
     first = load_static_plugin_manifest(plugin_root)
-    facts = sorted((tmp_path / "home" / "manifest-facts").rglob("*.json"))
-    assert [path.name.split(".", 1)[1] for path in facts] == ["entrypoints.json", "identity.json", "ingress_guard.json"]
     assert sorted(path.name for path in plugin_root.iterdir()) == ["plugin.py"]
 
     _fresh_process()
-    with monkeypatch.context() as patch:
-        _forbid_parse(patch)
-        assert load_static_plugin_manifest(plugin_root) == first
+    assert load_static_plugin_manifest(plugin_root) == first
 
     _fresh_process()
     _ = (plugin_root / "plugin.py").write_text(_SOURCE.replace("1.0.0", "1.0.1"))

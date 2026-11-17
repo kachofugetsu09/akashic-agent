@@ -53,12 +53,6 @@ class MaterialModelDriver:
     block_external_calls: bool = False
     entered: asyncio.Event = field(default_factory=asyncio.Event)
     opened: list[DriverConnectionDescriptor] = field(default_factory=list)
-    chat_bindings: list[BoundModelDescriptor] = field(default_factory=list)
-    embedding_bindings: list[EmbeddingSpaceDescriptor] = field(default_factory=list)
-    chat_requests: list[ModelRequest] = field(default_factory=list)
-    embedding_requests: list[tuple[EmbeddingSpaceDescriptor, tuple[str, ...]]] = (
-        field(default_factory=list)
-    )
     closed: int = 0
 
     def definition(self) -> ModelDriverDefinition:
@@ -112,7 +106,6 @@ class MaterialModelDriver:
     ) -> _FixtureChat:
         """Bind a chat model that records calls through the ordinary Models path."""
 
-        self.chat_bindings.append(descriptor)
         return _FixtureChat(self, descriptor)
 
     def bind_embedding(
@@ -122,7 +115,6 @@ class MaterialModelDriver:
     ) -> _FixtureEmbedding:
         """Bind an embedding model that returns its declared vector dimension."""
 
-        self.embedding_bindings.append(descriptor)
         return _FixtureEmbedding(self, descriptor)
 
     async def wait_if_blocked(self) -> None:
@@ -142,10 +134,6 @@ class MaterialModelDriver:
 
         self.entered.clear()
         self.opened.clear()
-        self.chat_bindings.clear()
-        self.embedding_bindings.clear()
-        self.chat_requests.clear()
-        self.embedding_requests.clear()
         self.closed = 0
 
 
@@ -163,7 +151,6 @@ class _FixtureChat:
         self._descriptor = descriptor
 
     async def complete(self, request: ModelRequest) -> LLMResponse:
-        self._driver.chat_requests.append(request)
         await self._driver.wait_if_blocked()
         return LLMResponse(content=f"fixture:{self._descriptor.model_id}")
 
@@ -194,7 +181,6 @@ class _FixtureEmbedding:
 
     async def embed(self, texts: Sequence[str]) -> EmbeddingResult:
         saved = tuple(texts)
-        self._driver.embedding_requests.append((self._descriptor, saved))
         await self._driver.wait_if_blocked()
         vector = tuple(float(index + 1) for index in range(self._descriptor.dimensions))
         return EmbeddingResult(vectors=tuple(vector for _ in saved))

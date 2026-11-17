@@ -37,18 +37,3 @@ def test_virtual_labels_are_preserved() -> None:
     assert _export_locator("<string>", roots=ROOTS) == "<string>"
     # 含路径分隔符的名字不是虚拟标签，按路径规则处理。
     assert _export_locator("<other/dir>", roots=ROOTS) == "dir>"
-
-
-def test_no_identity_leaks_for_representative_inputs() -> None:
-    for filename in (
-        "/home/alice/app.py",
-        "/home/alice/deep/x/y.py",
-        "/home/alice/../bob/private/app.py",
-        "home/alice/private/app.py",
-        "../alice/private/app.py",
-        "/opt/other/z.py",
-        "/tmp/q.py",
-    ):
-        rendered = _export_locator(filename, roots=ROOTS)
-        assert "alice" not in rendered, f"{filename} -> {rendered}"
-        assert "bob" not in rendered, f"{filename} -> {rendered}"

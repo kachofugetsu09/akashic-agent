@@ -4,7 +4,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import random
 from pathlib import Path
 from uuid import uuid4
 
@@ -322,78 +321,6 @@ async def test_subagent_send_steer_cold_resume_and_parent_scoped_read(tmp_path: 
             assert isinstance(bad_read, dict)
             bad_rres = await read_tool.invoke("bad-r", bad_read)
             assert bad_rres.outcome == "error" and "无权" in str(bad_rres.parts[0].value)
-    finally:
-        for ev in releases.values():
-            ev.set()
-        await tasks.close()
-        await root.dispose()
-        log.close()
-
-
-@pytest.mark.asyncio
-async def test_monkey_parallel_batches_always_and_send_interleaving(tmp_path: Path):
-    """随机并发 Monkey 测试：混合 always / settled_only 批唤醒、主动取消与 subagent_send 冷恢复。"""
-    rng = random.Random(202611173)
-    (
-        log, root, tasks, ctx, jobs, spawn, send_tool, read_tool,
-        entered, releases, _watches, watch_outcomes, watch_tasks,
-    ) = await _mount_pr3_fixture(tmp_path, max_active=20)
-    try:
-        async with ctx.runtime_scope():
-            # 构造 4 个并发 settled_only 批次（每批 2-3 个）和 4 个 always 后台任务
-            all_jids: list[str] = []
-            for b in range(4):
-                count = rng.choice([2, 3])
-                srcs = _parent_batch_source(log, "monkey-root", f"mb-{b}", count)
-                for i, src in enumerate(srcs):
-                    prep = await spawn.prepare({
-                        "task": f"m-{b}-{i}", "label": f"m-{b}-{i}",
-                        "run_in_background": True, "completion_wake": "settled_only",
-                    }, src)
-                    assert isinstance(prep, dict)
-                    jid = Request.model_validate(prep["request"]).job_id
-                    all_jids.append(jid)
-                    releases[jid] = asyncio.Event()
-                    res = await spawn.invoke(f"mk-{b}-{i}", prep)
-                    assert res.outcome == "success"
-
-            for a in range(4):
-                src = _parent_batch_source(log, "monkey-root", f"ma-{a}", 1)[0]
-                prep = await spawn.prepare({
-                    "task": f"always-{a}", "label": f"always-{a}",
-                    "run_in_background": True, "completion_wake": "always",
-                }, src)
-                assert isinstance(prep, dict)
-                jid = Request.model_validate(prep["request"]).job_id
-                all_jids.append(jid)
-                releases[jid] = asyncio.Event()
-                res = await spawn.invoke(f"mka-{a}", prep)
-                assert res.outcome == "success"
-
-            # 随机顺序放行或取消任务
-            shuffled = list(all_jids)
-            rng.shuffle(shuffled)
-            for jid in shuffled:
-                await asyncio.sleep(rng.uniform(0.0, 0.015))
-                if rng.random() < 0.2:
-                    await jobs.cancel(jid)
-                releases[jid].set()
-
-            await asyncio.gather(*watch_tasks)
-            while jobs.active_count_for_root("monkey-root") > 0:
-                await asyncio.sleep(0.02)
-
-            # 4 个 settled_only 批次应恰好各唤醒 1 次 + 4 个 always 各唤醒 1 次 = 8 次唤醒
-            wakes = [out for _, out in watch_outcomes if out is not None]
-            assert len(wakes) == 8
-
-            # 随机对几个已完成子任务读进展并追问一次
-            src_check = _parent_batch_source(log, "monkey-root", "mcheck", 1)[0]
-            for jid in rng.sample(all_jids, 3):
-                rp = await read_tool.prepare({"job_id": jid}, src_check)
-                assert isinstance(rp, dict)
-                rr = await read_tool.invoke(f"mread-{jid}", rp)
-                assert rr.outcome == "success"
     finally:
         for ev in releases.values():
             ev.set()

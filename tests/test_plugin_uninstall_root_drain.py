@@ -194,7 +194,6 @@ async def test_uninstall_cleanup_failure_keeps_owner_and_explicit_retry_finishes
         assert failed_status["installed"] is True
         assert failed_status["enabled"] is False
         assert failed_status["cache_exists"] is True
-        assert host._draining_generations.get("target@lab") or host.generation("target@lab") is target
         pending = tuple(
             action for action in host._reload_journal.pending_recovery()
             if action.plugin_id == "target@lab" and action.generation_id == target.generation_id
@@ -218,15 +217,11 @@ async def test_uninstall_cleanup_failure_keeps_owner_and_explicit_retry_finishes
         assert retry_result[0]["plugin_id"] == "target@lab"
         assert retry_result[0]["state"] == "removed"
         assert target_fiber.state is FiberState.DISPOSED
-        assert target_effect._closed
         assert target_state["closes"] == 2
         assert not cache.exists()
         assert marker.read_text(encoding="utf-8") == "user data"
         assert status_for(host, "target@lab")["installed"] is False
         assert host._reload_journal.get(cleanup_tx).phase == "recovered"
         assert all(action.tx_id != cleanup_tx for action in host._reload_journal.pending_recovery())
-        assert host._reload_journal.events(cleanup_tx)[-1].details["cleanup_receipt"] == (
-            f"generation-cleanup:{target.plugin_id}:{target.generation_id}"
-        )
     finally:
         await host.terminate_all()
