@@ -1678,8 +1678,9 @@ input {
   --composer-ring-focus: color-mix(in oklab, var(--ak-ink-primary) 26%, transparent);
   /* token-exempt: 输入卡的托起影是负扩散的宽影，elevation 档位里没有这种只往下沉的形状 */
   --composer-lift-shadow: 0 6px 18px -8px color-mix(in oklab, var(--ak-color-shadow) 18%, transparent);
-  /* 状态签浮在输入卡左上方、不占流（见 .composer-status-anchor），消息区不为它预留高度。 */
-  --composer-stats-line: 0px;
+  /* 状态签浮在输入卡左上方、不占流（见 .composer-status-anchor）；消息区底部常驻留出一签高（6 间隔 + 24 签），
+     最后一行不被签压住，签出现、消失也不让正文跳动。 */
+  --composer-stats-line: 30px;
   --composer-dock-end: max(24px, env(safe-area-inset-bottom, 0px));
 }
 
@@ -2553,7 +2554,8 @@ form.composer:focus-within [data-slot="input-group"] {
     clip-path: inset(50%);
     white-space: nowrap;
   }
-  /* 状态签收起后不再给插话卡和复制提示让位。 */
+  /* 状态签收起后不再给插话卡、复制提示和消息区留位。 */
+  .chat-main { --composer-stats-line: 0px; }
   .composer-wrap:has(.composer-stats-line) > .steer-cards { margin-block-end: 0; }
   .composer-wrap:has(.composer-stats-line) > .copy-notice { inset-block-end: calc(100% + 8px); }
 }

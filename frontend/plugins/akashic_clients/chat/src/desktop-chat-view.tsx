@@ -396,7 +396,7 @@ function useComposerClearance(wrapRef: React.RefObject<HTMLDivElement | null>): 
         return value.endsWith("rem") ? parseFloat(value) * rem : parseFloat(value) || 0;
       };
       // 生成中的统计行本来就在预算里，不重复计入。
-      const grown = Math.max(0, Math.round(wrap.offsetHeight - length("--composer-compact-h") - length("--composer-stats-line")));
+      const grown = Math.max(0, Math.round(wrap.offsetHeight - length("--composer-compact-h")));
       if (grown !== lastGrown) {
         lastGrown = grown;
         if (grown === 0) main.style.removeProperty("--composer-grown");
