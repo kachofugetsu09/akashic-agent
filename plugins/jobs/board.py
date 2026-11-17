@@ -10,7 +10,7 @@ from .contract import JobOutcome, JobSnapshot, JobWatch
 
 _WAKE = "wake:"
 _SETTLED_KEPT = 20
-DEFAULT_MAX_WAKES = 3
+DEFAULT_MAX_WAKES: int | None = None
 
 
 @dataclass(slots=True, eq=False)
