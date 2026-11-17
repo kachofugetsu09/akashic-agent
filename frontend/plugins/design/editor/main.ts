@@ -1,11 +1,11 @@
-import { createApp, defineComponent, h, onBeforeUnmount, onMounted, reactive, watchEffect, type PropType } from "vue";
+import { createApp, defineComponent, h, onBeforeUnmount, onMounted, reactive, ref, watch, watchEffect, type PropType } from "vue";
 import { createDefaultEditorState, createEditor, getCanvasKit, type Editor, type Tool } from "@open-pencil/core";
 import { SceneGraph } from "@open-pencil/scene-graph";
 import { CanvasRoot, CanvasSurface, EDITOR_KEY, toolCursor, useCanvasContext, useCanvasInput, useEditorCommands, useTextEdit } from "@open-pencil/vue";
 import canvasKitWasm from "canvaskit-wasm/bin/canvaskit.wasm";
 import { DESIGN_CHANNEL, type DesignFromFrame, type DesignToFrame, type RelayedResponse } from "./contract";
 import { Documents, type DocumentHost } from "./documents";
-import { configureFonts } from "./fonts";
+import { configureFonts, preferNewestFonts } from "./fonts";
 import { iconSvg, type IconName } from "./icons";
 import { bindKeyboard } from "./keyboard";
 import { LayersPanel, PropertiesPanel } from "./panels";
@@ -92,14 +92,43 @@ const ToolDock = defineComponent({
   },
 });
 
+// GPU 重置、休眠唤醒或页面里 WebGL 上下文太多时，浏览器会收走画布的上下文，open-pencil 不会自己恢复，画布从此一片空白。
+// 丢失时声明要恢复；上下文回来（或迟迟不回来）就让外壳重建整块画布，场景与视口都在编辑器里，不受影响。
+const CONTEXT_RESTORE_WAIT_MS = 1500;
+function recoverLostContext(canvas: HTMLCanvasElement, rebuild: () => void): () => void {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const lost = (event: Event) => {
+    event.preventDefault();
+    timer ??= setTimeout(rebuild, CONTEXT_RESTORE_WAIT_MS);
+  };
+  const restored = () => {
+    if (timer !== null) clearTimeout(timer);
+    rebuild();
+  };
+  canvas.addEventListener("webglcontextlost", lost);
+  canvas.addEventListener("webglcontextrestored", restored);
+  return () => {
+    if (timer !== null) clearTimeout(timer);
+    canvas.removeEventListener("webglcontextlost", lost);
+    canvas.removeEventListener("webglcontextrestored", restored);
+  };
+}
+
 // CanvasRoot 只负责绘制：指针、文字编辑与光标要像 open-pencil 应用的 EditorCanvas 一样另外接上。
 const CanvasInput = defineComponent({
   props: {
     editor: { type: Object as PropType<Editor>, required: true },
     documents: { type: Object as PropType<Documents>, required: true },
+    onContextLost: { type: Function as PropType<() => void>, required: true },
   },
   setup(props) {
     const canvas = useCanvasContext();
+    // 1. 画布就绪后换上按最新子集排序的字体提供器，之后补字形的回调也由它接管
+    watch(canvas.ready, (ready) => { if (ready) void preferNewestFonts(props.editor); }, { immediate: true });
+    // 2. 上下文丢失后交给外壳重建画布
+    watch(canvas.canvasRef, (element, _previous, onCleanup) => {
+      if (element) onCleanup(recoverLostContext(element, props.onContextLost));
+    }, { immediate: true });
     const enabled = () => props.documents.state.busy === 0;
     const input = useCanvasInput(canvas.canvasRef, props.editor, canvas.hitTestSectionTitle,
       canvas.hitTestComponentLabel, canvas.hitTestFrameTitle, undefined, undefined, enabled);
@@ -120,6 +149,9 @@ const Shell = defineComponent({
   },
   setup(props) {
     const commands = useEditorCommands();
+    // 画布丢了 WebGL 上下文后换一个 key，CanvasRoot 整个重新挂载，拿新的画布元素与上下文
+    const surface = ref(0);
+    const rebuild = () => { surface.value++; };
     let unbind = () => {};
     onMounted(() => { unbind = bindKeyboard(window, props.editor, commands.runCommand, () => props.documents.state.busy > 0); });
     onBeforeUnmount(() => unbind());
@@ -132,7 +164,8 @@ const Shell = defineComponent({
         h("div", { class: "design-body", inert: state.busy > 0 }, [
           !empty && panels.layers && h(LayersPanel),
           h("div", { class: "design-stage" }, [
-            h(CanvasRoot, null, () => [h(CanvasSurface, { class: "design-canvas" }), h(CanvasInput, { editor: props.editor, documents: props.documents })]),
+            h(CanvasRoot, { key: surface.value }, () => [h(CanvasSurface, { class: "design-canvas" }),
+              h(CanvasInput, { editor: props.editor, documents: props.documents, onContextLost: rebuild })]),
             !empty && state.view === "canvas" && h(ToolDock, { editor: props.editor }),
             !empty && state.view === "preview" && state.page && h(PreviewFrame, { html: state.page }),
             empty && h("div", { class: "design-empty" }, [
