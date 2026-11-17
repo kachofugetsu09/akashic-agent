@@ -38,6 +38,7 @@ RUN printf '%s\n' \
         wqy-zenhei \
         curl \
         git \
+        nodejs \
         python \
         python-pip \
         util-linux \
@@ -98,7 +99,8 @@ RUN test -n "${AKASHIC_SOURCE_COMMIT}" \
     && test -f /opt/akashic/source/config.example.toml \
     && /opt/venv/bin/python -m compileall -q -j 0 /opt/akashic/source \
     && /opt/venv/bin/python -c "from pathlib import Path; assert Path('/opt/akashic/distribution/requirements.lock').read_bytes() == Path('/opt/akashic/source/docker/host-runtime/requirements.lock').read_bytes(), 'Build lock differs from Core lock'" \
-    && /opt/venv/bin/python -c "import akashic_sdk; assert akashic_sdk.__file__.startswith('/opt/akashic/source/sdk/python/src/')"
+    && /opt/venv/bin/python -c "import akashic_sdk; assert akashic_sdk.__file__.startswith('/opt/akashic/source/sdk/python/src/')" \
+    && node --version
 
 RUN --mount=type=cache,target=/root/.cache/pip \
     export PIP_CACHE_DIR=/root/.cache/pip \

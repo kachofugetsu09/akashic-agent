@@ -87,13 +87,14 @@ async def _run_js_sandbox(
     scope: NestedToolScope,
     args: CodemodeInput,
 ) -> Result:
-    node_bin = shutil.which("node")
+    search_path = os.environ.get("PATH") or "/usr/local/bin:/usr/bin:/bin"
+    node_bin = shutil.which("node", path=search_path)
     if not node_bin:
-        return Result("error", (ContentPart("text", "codemode 需要宿主机安装 Node.js (`node`)"),))
+        return Result("error", (ContentPart("text", "codemode 需要运行环境安装 Node.js (`node`)"),))
 
     minimal_env = {
-        "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
-        "LANG": os.environ.get("LANG", "C.UTF-8"),
+        "PATH": search_path,
+        "LANG": os.environ.get("LANG") or "C.UTF-8",
     }
     proc = await asyncio.create_subprocess_exec(
         node_bin,
@@ -183,11 +184,12 @@ async def _run_js_sandbox(
                 if op == "call":
                     call_id = frame.get("id")
                     if host_calls >= args.max_calls:
-                        await write_reply({
-                            "id": call_id,
-                            "ok": False,
-                            "error": f"Exceeded max_calls limit ({args.max_calls})",
-                        })
+                        with suppress(BrokenPipeError, ConnectionResetError):
+                            await write_reply({
+                                "id": call_id,
+                                "ok": False,
+                                "error": f"Exceeded max_calls limit ({args.max_calls})",
+                            })
                         continue
                     host_calls += 1
                     tool_name = str(frame.get("name") or "")
