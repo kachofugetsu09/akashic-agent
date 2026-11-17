@@ -871,7 +871,7 @@ function SessionSortMenu({ sort, onSort }: { sort: SessionSortId; onSort: (sort:
     <DropdownMenuTrigger asChild>
       <button type="button" className="navigation-section__icon conversation-sort-trigger"
         aria-label={`会话排序：${current.label}`} data-tip="会话排序">
-        <ArrowUpDown size={15} aria-hidden="true" />
+        <ArrowUpDown size={14} aria-hidden="true" />
       </button>
     </DropdownMenuTrigger>
     <DropdownMenuContent className="navigation-row-menu" align="end" sideOffset={4} collisionPadding={12} aria-label="会话排序">

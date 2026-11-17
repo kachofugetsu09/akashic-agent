@@ -1,4 +1,4 @@
-const ICON = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="M7 16l4-4 4 4 5-6"/></svg>';
+const ICON = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 3.5v13A1.5 1.5 0 0 0 5.5 18H20"/><path d="M7.5 13l3.5-4 3 3 4.5-5.5"/></svg>';
 const RANGES = [[1, "今天"], [7, "7 天"], [30, "30 天"]];
 const SOURCE_LABEL = {conversation: "对话", programmatic: "程序调用", wake: "主动消息", subagent: "子智能体"};
 const MODE_KEY = "akashic.models.quota-mode";

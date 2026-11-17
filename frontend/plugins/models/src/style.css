@@ -376,7 +376,7 @@
 }
 .settings-role-pick:hover { background: var(--ak-paper-quiet); }
 .settings-role-pick-value { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.settings-role-pick > svg { flex: none; width: 1.125rem; height: 1.125rem; color: var(--ak-ink-secondary); }
+.settings-role-pick > svg { flex: none; width: 1rem; height: 1rem; color: var(--ak-ink-secondary); translate: 0 -0.5px; }
 .settings-role-grid select,
 .settings-form-grid input,
 .settings-form-grid select {

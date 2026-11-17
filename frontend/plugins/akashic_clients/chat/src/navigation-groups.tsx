@@ -221,7 +221,7 @@ export function GroupNavigation({
       <span>{heading}</span>
       {openCreate ? <button type="button" className="navigation-section__icon" aria-label={`新建${provider.label}`}
         data-tip={`新建${provider.label}`} onClick={openCreate}>
-        <Plus size={15} aria-hidden="true" />
+        <Plus size={14} aria-hidden="true" />
       </button> : null}
     </header>
     {!searching && provider.notice ? <NavigationGroupMount source={section.source} renderer={provider.notice}

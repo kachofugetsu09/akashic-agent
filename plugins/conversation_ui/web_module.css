@@ -169,7 +169,7 @@
 .conversation-tools-bar {
   position: relative;
   display: flex;
-  height: 42px;
+  height: 43px;
   min-width: 0;
   align-items: center;
   gap: 4px;
@@ -465,7 +465,7 @@
 /* 触控输入下开关、关闭与标签的可点区域不小于 44px；指针输入保持紧凑尺寸。 */
 @media (pointer: coarse) {
   .conversation-tools-bar {
-    height: 52px;
+    height: 53px;
   }
 
   .conversation-tools-tab-item {

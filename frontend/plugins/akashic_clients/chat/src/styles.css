@@ -1693,7 +1693,7 @@ input {
 
 .conversation-heading {
   display: flex;
-  min-block-size: 52px;
+  min-block-size: 53px;
   flex: 0 0 auto;
   align-items: center;
   gap: 2px;
@@ -2341,8 +2341,8 @@ input {
 
 .composer .composer-action-button .icon-swap__slot > svg,
 .composer .composer-tool > svg {
-  width: 15px;
-  height: 15px;
+  width: 16px;
+  height: 16px;
 }
 
 .composer [data-slot="input-group"] {
@@ -2881,10 +2881,6 @@ form.composer:focus-within [data-slot="input-group"] {
   translate: 0.5px -0.5px;
 }
 
-.compact-navigation-trigger .lucide-menu {
-  translate: 0 0.5px;
-}
-
 @media (prefers-reduced-motion: reduce) {
   .compact-navigation-dialog,
   .compact-navigation-overlay {
@@ -2894,7 +2890,7 @@ form.composer:focus-within [data-slot="input-group"] {
 }
 
 .desktop-scroll-return .lucide-arrow-down {
-  translate: 0 1px;
+  translate: 0 -1px;
 }
 
 /* 提问目录：只在右侧留白放得下刻度的宽屏指针设备上出现（阅读列偏左，右侧留白 ≥ 70px）。
@@ -3074,7 +3070,7 @@ form.composer:focus-within [data-slot="input-group"] {
 
   /* 2px + (44 - 20) / 2 + Menu 线条起笔 ≈ 16px：汉堡横线与正文、输入卡左缘同一条线。 */
   .conversation-heading {
-    min-block-size: 52px;
+    min-block-size: 53px;
     padding-inline: max(2px, env(safe-area-inset-left, 0px)) max(16px, env(safe-area-inset-right, 0px));
   }
 
