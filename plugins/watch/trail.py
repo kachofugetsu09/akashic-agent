@@ -15,10 +15,13 @@ _HOST = re.compile(r"https?://(?:www\.)?([\w-]+(?:\.[\w-]+)*\.[a-z]{2,})", re.I)
 # 反向域名写法的应用标识，整个参数值就是它才算
 _APP = re.compile(r"[a-z][a-z0-9_]*(?:\.[a-z0-9_]+){2,}")
 _LINE = re.compile(r"^- \[\d{4}-(\d\d-\d\d) \d\d:\d\d\] .*?｜去过：([^｜]*)")
+# 命令行里每一段开头的"程序 子命令"，只看第一行；shell 自己的关键字和翻文件用的基础命令不算去处
+_COMMAND = re.compile(r"(?:^|&&|\|\||[;|])\s*([a-z][\w-]*) ([a-z][\w-]*)")
+_PLAIN = frozenset("for do if then while function cat ls echo grep find mv cp rm head tail sed awk cd mkdir touch wc sort test ip ps which sleep date".split())
 SHOWN, KEPT_DAYS = 12, 30
 
 
-# 一个回合去过哪些地方：调用参数里出现的站点和应用，按第一次出现的顺序。不认具体是哪个工具。
+# 一个回合去过哪些地方：调用参数里出现的站点、应用和命令行里用到的程序，按第一次出现的顺序。不认具体是哪个工具。
 def places(messages: Iterable[Message]) -> list[str]:
     seen: dict[str, None] = {}
     for message in messages:
@@ -29,6 +32,10 @@ def places(messages: Iterable[Message]) -> list[str]:
                 for value in _strings(part.arguments):
                     if _APP.fullmatch(value):
                         seen.setdefault(value)
+                command = part.arguments.get("command")
+                for match in _COMMAND.finditer(command.split("\n", 1)[0] if isinstance(command, str) else ""):
+                    if match.group(1) not in _PLAIN:
+                        seen.setdefault(" ".join(match.groups()))
     return list(seen)
 
 
