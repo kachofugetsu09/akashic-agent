@@ -549,6 +549,11 @@
   border-block-end: 0 !important;
 }
 
+:where(.agent-content, .process-markdown, .user-bubble) .code-header-actions .code-action-btn {
+  min-width: 44px;
+  min-height: 44px;
+}
+
 :where([data-chat-width]:not([data-chat-width~="36rem"])) {
   :where(.agent-content, .process-markdown, .user-bubble) .code-header-actions .code-action-btn {
     min-width: 36px;
@@ -567,11 +572,6 @@
   font-size: var(--chat-type-caption, 0.75rem);
   font-weight: 500;
   color: var(--ak-ink-secondary);
-}
-
-:where(.agent-content, .process-markdown, .user-bubble) .code-header-actions .code-action-btn {
-  min-width: 44px;
-  min-height: 44px;
 }
 
 /* markstream 的复制钮颜色走它根上的 --code-action-*（写死的近黑、浅灰底），在代码块上改接设计 token，深浅主题一致；

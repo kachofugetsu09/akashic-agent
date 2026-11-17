@@ -27,6 +27,8 @@ import { parseArgs } from "node:util";
 import { chromium } from "playwright-core";
 import {
   analyzeAndRenderInCanvasPage,
+  analyzeNestedInCanvasPage,
+  collectNestedLayoutInFrame,
   collectOpticalTargetsInFrame,
   disableInkIsolationInFrame,
   enableInkIsolationInFrame,
@@ -158,6 +160,36 @@ export async function captureOpticalSnapshot(page, canvasPage, { label, outDir, 
     }
   }
 
+  // 1.5 采集 L2/L3/L4 多层嵌套容器几何
+  let nestedLayout = null;
+  for (const frame of page.frames()) {
+    const fbox = frame === page.mainFrame()
+      ? { x: 0, y: 0 }
+      : await (await frame.frameElement().catch(() => null))?.boundingBox().catch(() => null);
+    if (!fbox) continue;
+    const sub = await frame.evaluate(collectNestedLayoutInFrame).catch(() => null);
+    if (!sub) continue;
+    const shift = (r) => (r ? { ...r, x: +(r.x + fbox.x).toFixed(2), y: +(r.y + fbox.y).toFixed(2), r: +(r.r + fbox.x).toFixed(2), b: +(r.b + fbox.y).toFixed(2), cx: +(r.cx + fbox.x).toFixed(2), cy: +(r.cy + fbox.y).toFixed(2) } : null);
+    if (!nestedLayout || sub.hasChatMain) {
+      const shifted = { ...sub };
+      for (const k of ["chatMain", "sidebar", "heading", "toolsBar", "firstMsgP", "userBubble", "scrollReturn", "composerWrap", "composer", "textarea", "modelPicker", "composerTool", "actionBtn", "composerReply", "statsLine", "codeHdr", "codeTitle", "codeCopy"]) {
+        shifted[k] = shift(sub[k]);
+      }
+      if (!nestedLayout) {
+        nestedLayout = shifted;
+      } else {
+        for (const k of Object.keys(shifted)) {
+          if (shifted[k] != null && shifted[k] !== false) nestedLayout[k] = shifted[k];
+        }
+      }
+    } else if (!nestedLayout.settingsDialog && sub.settingsDialog) {
+      nestedLayout.settingsDialog = shift(sub.settingsDialog);
+      nestedLayout.settingsNavH2 = shift(sub.settingsNavH2);
+      nestedLayout.settingsHeadingH3 = shift(sub.settingsHeadingH3);
+      nestedLayout.settingsClose = shift(sub.settingsClose);
+    }
+  }
+
   // 2. 原图截屏
   const origBuf = await page.screenshot({ animations: "disabled" });
 
@@ -176,9 +208,11 @@ export async function captureOpticalSnapshot(page, canvasPage, { label, outDir, 
   }
 
   // 4. 在专用 Canvas Page 中计算光学质心与生成拼版/透视图
+  const origB64 = origBuf.toString("base64");
+  const inkB64 = inkBuf.toString("base64");
   const analyzed = await analyzeAndRenderInCanvasPage(canvasPage, {
-    origPngBase64: origBuf.toString("base64"),
-    inkPngBase64: inkBuf.toString("base64"),
+    origPngBase64: origB64,
+    inkPngBase64: inkB64,
     dpr,
     viewport,
     targets,
@@ -191,12 +225,36 @@ export async function captureOpticalSnapshot(page, canvasPage, { label, outDir, 
   writeFileSync(resolve(outDir, overlayFile), Buffer.from(analyzed.overlayPngBase64, "base64"));
   writeFileSync(resolve(outDir, sheetFile), Buffer.from(analyzed.sheetPngBase64, "base64"));
 
+  let nestedFile = null;
+  let composerFile = null;
+  let nestedChecks = [];
+  if (nestedLayout) {
+    const nested = await analyzeNestedInCanvasPage(canvasPage, {
+      origPngBase64: origB64,
+      inkPngBase64: inkB64,
+      dpr,
+      viewport,
+      layout: nestedLayout,
+      label,
+    });
+    nestedChecks = nested.checks;
+    nestedFile = `nested-${safeLabel}.png`;
+    writeFileSync(resolve(outDir, nestedFile), Buffer.from(nested.nestedPngBase64, "base64"));
+    if (nested.composerPngBase64) {
+      composerFile = `composer-${safeLabel}.png`;
+      writeFileSync(resolve(outDir, composerFile), Buffer.from(nested.composerPngBase64, "base64"));
+    }
+  }
+
   return {
     label,
     viewport,
     count: analyzed.count,
     overlayFile,
     sheetFile,
+    nestedFile,
+    composerFile,
+    nestedChecks,
     results: analyzed.results,
   };
 }
@@ -346,15 +404,21 @@ async function main() {
   const findings = allItems
     .filter((item) => item.severityScore >= threshold)
     .sort((a, b) => b.severityScore - a.severityScore);
+  const nestedChecks = snapshots.flatMap((s) => s.nestedChecks || []);
+  const nestedFindings = nestedChecks.filter((c) => !c.passed);
 
   const report = {
     url: values.url,
     thresholdPx: threshold,
     totalInspected: allItems.length,
     findingCount: findings.length,
-    snapshots: snapshots.map(({ label, viewport, count, overlayFile, sheetFile }) => ({
-      label, viewport, count, overlayFile, sheetFile,
+    nestedCheckCount: nestedChecks.length,
+    nestedFindingCount: nestedFindings.length,
+    snapshots: snapshots.map(({ label, viewport, count, overlayFile, sheetFile, nestedFile, composerFile }) => ({
+      label, viewport, count, overlayFile, sheetFile, nestedFile, composerFile,
     })),
+    nestedFindings,
+    nestedChecks,
     findings,
     allItems,
   };
@@ -364,6 +428,9 @@ async function main() {
     outDir,
     totalInspected: report.totalInspected,
     findingCount: report.findingCount,
+    nestedCheckCount: report.nestedCheckCount,
+    nestedFindingCount: report.nestedFindingCount,
+    nestedFindings,
     topFindings: findings.slice(0, 15).map((f) => ({
       view: f.view,
       category: f.category,
@@ -377,7 +444,7 @@ async function main() {
     })),
   }, null, 2));
 
-  if (values.strict && findings.length > 0) {
+  if (values.strict && (findings.length > 0 || nestedFindings.length > 0)) {
     process.exitCode = 1;
   }
 }

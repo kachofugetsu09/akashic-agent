@@ -1662,7 +1662,7 @@ input {
   --composer-dock-gap: 4px;
   /* 统计行浮在输入卡下方的底距里、不占流（见 .composer-stats-line），消息区不再为它预留高度。 */
   --composer-stats-line: 0px;
-  --composer-dock-end: max(20px, env(safe-area-inset-bottom, 0px));
+  --composer-dock-end: max(24px, env(safe-area-inset-bottom, 0px));
 }
 
 .akashic-chat .chat-shell {
@@ -2224,8 +2224,8 @@ input {
    首条消息落地后回到底部 dock。上下 auto 外边距均分自由空间。 */
 .chat-main.is-empty {
   overflow-y: auto;
-  /* 16px 吸收簇内 hero/状态块上下内边距的非对称，让感知矩形中心落在窗口几何中心。 */
-  padding-block-end: 16px;
+  /* 36px 吸收簇内上轻（问候小字）下重（48px 输入胶囊）的光学重心差，让感知重心落在窗口视觉中心。 */
+  padding-block-end: 36px;
 }
 
 /* 空态簇对整个 chat-main 高度居中：标题条是悬浮 chrome，

@@ -226,8 +226,8 @@
   .shell-settings-close {
     position: absolute;
     z-index: 2;
-    inset-block-start: 14px;
-    inset-inline-end: 14px;
+    inset-block-start: 19px;
+    inset-inline-end: 18px;
     display: grid;
     width: 32px;
     height: 32px;

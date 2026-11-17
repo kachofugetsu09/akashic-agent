@@ -783,3 +783,340 @@ export async function analyzeAndRenderInCanvasPage(canvasPage, { origPngBase64, 
     };
   }, { origPngBase64, inkPngBase64, dpr, viewport, targets, label });
 }
+
+/**
+ * 在页面（或同源 iframe）内采集“多层嵌套容器关系”几何信息（L2 控件⊂容器、L3 容器⊂主区、L4 主区/弹框⊂视口）。
+ */
+export function collectNestedLayoutInFrame() {
+  const rectOf = (el) => {
+    if (!el) return null;
+    const b = el.getBoundingClientRect();
+    if (b.width <= 0 || b.height <= 0) return null;
+    const cs = getComputedStyle(el);
+    if (cs.display === "none" || cs.visibility === "hidden" || parseFloat(cs.opacity) === 0) return null;
+    return {
+      x: +b.left.toFixed(2),
+      y: +b.top.toFixed(2),
+      w: +b.width.toFixed(2),
+      h: +b.height.toFixed(2),
+      r: +(b.left + b.width).toFixed(2),
+      b: +(b.top + b.height).toFixed(2),
+      cx: +(b.left + b.width / 2).toFixed(2),
+      cy: +(b.top + b.height / 2).toFixed(2),
+      radius: parseFloat(cs.borderTopLeftRadius) || 0,
+      pad: [
+        parseFloat(cs.paddingTop) || 0,
+        parseFloat(cs.paddingRight) || 0,
+        parseFloat(cs.paddingBottom) || 0,
+        parseFloat(cs.paddingLeft) || 0,
+      ],
+      border: [
+        parseFloat(cs.borderTopWidth) || 0,
+        parseFloat(cs.borderRightWidth) || 0,
+        parseFloat(cs.borderBottomWidth) || 0,
+        parseFloat(cs.borderLeftWidth) || 0,
+      ],
+    };
+  };
+  const q = (s) => document.querySelector(s);
+  const qa = (s) => [...document.querySelectorAll(s)];
+
+  return {
+    hasChatMain: Boolean(q(".chat-main")),
+    isEmpty: q(".chat-main")?.classList.contains("is-empty") ?? false,
+    isMobileLayout: Boolean(q("[data-chat-width~='820'], [data-chat-short]")),
+    isNarrowComposer: Boolean(q("[data-chat-width~='36rem']")),
+    chatMain: rectOf(q(".chat-main")),
+    sidebar: rectOf(q(".chat-sidebar")),
+    heading: rectOf(q(".conversation-heading")),
+    toolsBar: rectOf(q(".conversation-tools-bar")),
+    firstMsgP: rectOf(q(".agent-content p, .timeline-output .plain-message-response, .agent-content")),
+    userBubble: rectOf(qa(".user-bubble").at(-1)),
+    scrollReturn: rectOf(q(".desktop-scroll-return[data-state='open']")),
+    homeHero: rectOf(q(".home-hero, .home-state__ready")),
+    composerWrap: rectOf(q(".composer-wrap")),
+    composer: rectOf(q("form.composer")),
+    isComposerCompact: q("form.composer")?.classList.contains("is-compact") ?? false,
+    textarea: rectOf(q("form.composer textarea")),
+    modelPicker: rectOf(q("form.composer .model-picker__trigger")),
+    composerTool: rectOf(q("form.composer .composer-tool")),
+    actionBtn: rectOf(q("form.composer .composer-action-button")),
+    actionBtnMode: q("form.composer .composer-action-button")?.getAttribute("data-mode") || null,
+    composerReply: rectOf(q("form.composer .composer-reply")),
+    statsLine: rectOf(q(".composer-stats-line")),
+    codeHdr: rectOf(q(".code-block-header")),
+    codeTitle: rectOf(q(".code-block-header .code-header-title")),
+    codeCopy: rectOf(q(".code-block-header .code-action-btn")),
+    settingsDialog: rectOf(q("dialog.shell-settings-dialog[open]")),
+    settingsNavH2: rectOf(q("dialog.shell-settings-dialog[open] .shell-settings-nav h2")),
+    settingsHeadingH3: rectOf(q("dialog.shell-settings-dialog[open] .shell-settings-heading h3")),
+    settingsClose: rectOf(q("dialog.shell-settings-dialog[open] .shell-settings-close")),
+  };
+}
+
+/**
+ * 计算 L2/L3/L4 多层嵌套对齐误差，并在独立 canvas 页中绘制嵌套框线诊断图与发送框模糊体积带。
+ */
+export async function analyzeNestedInCanvasPage(canvasPage, {
+  origPngBase64,
+  inkPngBase64,
+  dpr,
+  viewport,
+  layout,
+  label,
+}) {
+  return canvasPage.evaluate(async ({ origB64, inkB64, dpr, viewport, layout, label }) => {
+    const loadImg = (b64) => new Promise((res, rej) => {
+      const img = new Image();
+      img.onload = () => res(img);
+      img.onerror = rej;
+      img.src = `data:image/png;base64,${b64}`;
+    });
+    const [origImg, inkImg] = await Promise.all([loadImg(origB64), loadImg(inkB64)]);
+
+    const inkCanvas = document.createElement("canvas");
+    inkCanvas.width = inkImg.width;
+    inkCanvas.height = inkImg.height;
+    const ictx = inkCanvas.getContext("2d", { willReadFrequently: true });
+    ictx.drawImage(inkImg, 0, 0);
+
+    const measureInk = (box) => {
+      if (!box) return null;
+      const sx = Math.max(0, Math.round(box.x * dpr));
+      const sy = Math.max(0, Math.round(box.y * dpr));
+      const sw = Math.min(inkImg.width - sx, Math.round(box.w * dpr));
+      const sh = Math.min(inkImg.height - sy, Math.round(box.h * dpr));
+      if (sw < 2 || sh < 2) return null;
+      const px = ictx.getImageData(sx, sy, sw, sh).data;
+      let sum = 0;
+      let cx = 0;
+      let cy = 0;
+      for (let y = 0; y < sh; y++) {
+        for (let x = 0; x < sw; x++) {
+          const i = (y * sw + x) * 4;
+          const w = Math.max(px[i], px[i + 1], px[i + 2]);
+          if (w > 24) {
+            sum += w;
+            cx += (x + 0.5) * w;
+            cy += (y + 0.5) * w;
+          }
+        }
+      }
+      if (sum < 10) return null;
+      return {
+        inkCx: +(box.x + (cx / sum) / dpr).toFixed(2),
+        inkCy: +(box.y + (cy / sum) / dpr).toFixed(2),
+      };
+    };
+
+    const checks = [];
+    const addCheck = (level, name, deltaPx, limitPx, detail) => {
+      const absDelta = +Math.abs(deltaPx).toFixed(2);
+      checks.push({
+        view: label,
+        level,
+        name,
+        deltaPx: +deltaPx.toFixed(2),
+        absDelta,
+        limitPx,
+        passed: absDelta <= limitPx,
+        detail,
+      });
+    };
+
+    const c = layout.composer;
+    const taInk = measureInk(layout.textarea);
+    const mpInk = measureInk(layout.modelPicker);
+
+    // L2: 发送/停止按钮在 form.composer 内的对称与圆角同心度
+    if (c && layout.actionBtn) {
+      const a = layout.actionBtn;
+      const padT = a.y - c.y - c.border[0];
+      const padB = c.b - c.border[2] - a.b;
+      const padR = c.r - c.border[1] - a.r;
+      const btnPaintedR = layout.isNarrowComposer ? 18 : a.h / 2;
+      const effectiveInset = (layout.isNarrowComposer ? padR + a.border[1] : padR) + c.border[1];
+      if (layout.isComposerCompact) {
+        addCheck("L2", "composer-action-vertical-inset", padT - padB, 1.0, { padT: +padT.toFixed(2), padB: +padB.toFixed(2), mode: layout.actionBtnMode });
+      }
+      addCheck("L2", "composer-action-concentric-radius", c.radius - btnPaintedR - effectiveInset, 1.5, {
+        outerRadius: c.radius,
+        innerRadius: btnPaintedR,
+        inset: +effectiveInset.toFixed(2),
+      });
+    }
+
+    // L2: 紧凑发送框内部文字与模型胶囊垂直对齐（弹窗打开时遮罩会干扰底层颜色，跳过）
+    if (c && layout.isComposerCompact && !layout.settingsDialog && taInk && mpInk) {
+      addCheck("L2", "composer-text-vs-model-y", taInk.inkCy - mpInk.inkCy, 1.5, {
+        textareaInkCy: taInk.inkCy,
+        modelPickerInkCy: mpInk.inkCy,
+        composerCy: c.cy,
+      });
+    }
+
+    // L2: 设置弹窗标题栏 h2/h3 与关闭按钮 × 对齐（仅桌面双栏态，移动端关闭钮位于独立顶栏）
+    if (layout.settingsDialog && layout.settingsDialog.w >= 680 && layout.settingsHeadingH3 && layout.settingsClose) {
+      addCheck("L2", "settings-close-vs-heading-y", layout.settingsClose.cy - layout.settingsHeadingH3.cy, 1.5, {
+        closeCy: layout.settingsClose.cy,
+        headingCy: layout.settingsHeadingH3.cy,
+        navTitleCy: layout.settingsNavH2?.cy ?? null,
+      });
+      if (layout.settingsNavH2) {
+        addCheck("L2", "settings-nav-vs-heading-y", layout.settingsNavH2.cy - layout.settingsHeadingH3.cy, 2.0, {
+          navTitleCy: layout.settingsNavH2.cy,
+          headingCy: layout.settingsHeadingH3.cy,
+        });
+      }
+    }
+
+    // L2: 代码块头栏 title 与复制按钮对齐
+    if (layout.codeHdr && layout.codeTitle && layout.codeCopy) {
+      addCheck("L2", "code-header-title-vs-copy-y", layout.codeTitle.cy - layout.codeCopy.cy, 1.0, {
+        headerH: layout.codeHdr.h,
+        titleCy: layout.codeTitle.cy,
+        copyCy: layout.codeCopy.cy,
+      });
+    }
+
+    // L3: 宽屏阅读竖线（消息正文左缘 == composer 输入文字左缘）
+    if (!layout.isMobileLayout && layout.firstMsgP && layout.textarea && c && !layout.isEmpty) {
+      addCheck("L3", "reading-left-line", layout.firstMsgP.x - (c.x + 16), 1.5, {
+        msgTextLeft: layout.firstMsgP.x,
+        composerInnerTextX: +(c.x + 16).toFixed(2),
+      });
+    }
+
+    // L3: 底部统计行底距平衡（不贴底死角）
+    if (!layout.isNarrowComposer && layout.chatMain && layout.statsLine && c) {
+      const topGap = layout.statsLine.y - c.b;
+      const bottomGap = layout.chatMain.b - layout.statsLine.b;
+      if (bottomGap < 3.5) {
+        addCheck("L3", "composer-stats-bottom-clearance", 4.0 - bottomGap, 0.5, {
+          topGap: +topGap.toFixed(2),
+          bottomGap: +bottomGap.toFixed(2),
+        });
+      }
+    }
+
+    // L3: 空态视觉簇（问候 + 输入框）在 .chat-main 内的垂直光学中心（弹窗遮罩打开时跳过）
+    if (layout.isEmpty && !layout.settingsDialog && layout.chatMain && layout.homeHero && c) {
+      const m = layout.chatMain;
+      const clusterTop = layout.homeHero.y;
+      const clusterBot = (layout.composerWrap || c).b;
+      // 下方输入卡较上方文字更重，按 46% / 54% 权重估算感知重心
+      const clusterOpticalCy = clusterTop + (clusterBot - clusterTop) * 0.54;
+      addCheck("L3", "empty-cluster-optical-center-y", clusterOpticalCy - m.cy, 25.0, {
+        clusterTop,
+        clusterBot,
+        clusterOpticalCy: +clusterOpticalCy.toFixed(2),
+        chatMainCy: m.cy,
+      });
+    }
+
+    // L4: 顶栏与工作台栏底边对齐、设置弹窗视口居中
+    if (layout.heading && layout.toolsBar) {
+      addCheck("L4", "heading-vs-workbench-bottom", layout.heading.b - layout.toolsBar.b, 0.5, {
+        headingBottom: layout.heading.b,
+        toolsBarBottom: layout.toolsBar.b,
+      });
+    }
+    if (layout.settingsDialog) {
+      addCheck("L4", "settings-dialog-viewport-center", Math.hypot(layout.settingsDialog.cx - viewport.width / 2, layout.settingsDialog.cy - viewport.height / 2), 2.0, {
+        dialogCx: layout.settingsDialog.cx,
+        dialogCy: layout.settingsDialog.cy,
+      });
+    }
+
+    // 绘制带嵌套框线标注的整页图
+    const out = document.createElement("canvas");
+    out.width = origImg.width;
+    out.height = origImg.height;
+    const octx = out.getContext("2d");
+    octx.drawImage(origImg, 0, 0);
+
+    const drawBox = (box, color, tag, dashed = false) => {
+      if (!box) return;
+      octx.save();
+      octx.strokeStyle = color;
+      octx.lineWidth = 1.5 * dpr;
+      if (dashed) octx.setLineDash([4 * dpr, 4 * dpr]);
+      octx.strokeRect(box.x * dpr, box.y * dpr, box.w * dpr, box.h * dpr);
+      if (tag) {
+        octx.fillStyle = color;
+        octx.font = `600 ${11 * dpr}px monospace`;
+        octx.fillText(tag, box.x * dpr + 4 * dpr, Math.max(12 * dpr, box.y * dpr - 4 * dpr));
+      }
+      octx.restore();
+    };
+    drawBox(layout.chatMain, "#a855f7", "L4 chat-main", true);
+    drawBox(layout.settingsDialog, "#a855f7", "L4 settings-dialog", true);
+    drawBox(layout.composerWrap, "#f97316", "L3 composer-wrap", true);
+    drawBox(layout.composer, "#38bdf8", "L2 form.composer");
+    drawBox(layout.actionBtn, "#22c55e", "L1 action");
+    drawBox(layout.composerTool, "#22c55e", "");
+    drawBox(layout.modelPicker, "#22c55e", "");
+    drawBox(layout.statsLine, "#f97316", "");
+    drawBox(layout.scrollReturn, "#f97316", "L3 return");
+
+    if (layout.firstMsgP) {
+      octx.save();
+      octx.strokeStyle = "rgba(251, 113, 133, 0.85)";
+      octx.lineWidth = 1.2 * dpr;
+      octx.setLineDash([5 * dpr, 3 * dpr]);
+      octx.beginPath();
+      octx.moveTo(layout.firstMsgP.x * dpr, 0);
+      octx.lineTo(layout.firstMsgP.x * dpr, out.height);
+      octx.stroke();
+      octx.restore();
+    }
+
+    // 生成输入卡（L2）原图 vs 模糊体积对照长条
+    let composerPngBase64 = null;
+    if (c) {
+      const sx = Math.max(0, Math.round((c.x - 16) * dpr));
+      const sy = Math.max(0, Math.round((c.y - 16) * dpr));
+      const sw = Math.min(origImg.width - sx, Math.round((c.w + 32) * dpr));
+      const sh = Math.min(origImg.height - sy, Math.round((c.h + 36) * dpr));
+      const comp = document.createElement("canvas");
+      comp.width = sw;
+      comp.height = sh * 2 + 10 * dpr;
+      const cctx = comp.getContext("2d");
+      cctx.fillStyle = "#111317";
+      cctx.fillRect(0, 0, comp.width, comp.height);
+      cctx.drawImage(origImg, sx, sy, sw, sh, 0, 0, sw, sh);
+      cctx.save();
+      cctx.fillStyle = "#080a0d";
+      cctx.fillRect(0, sh + 10 * dpr, sw, sh);
+      cctx.filter = `blur(${4 * dpr}px)`;
+      cctx.drawImage(inkImg, sx, sy, sw, sh, 0, sh + 10 * dpr, sw, sh);
+      cctx.restore();
+
+      const ox = c.x * dpr - sx;
+      const oy = c.y * dpr - sy + sh + 10 * dpr;
+      cctx.strokeStyle = "#38bdf8";
+      cctx.lineWidth = 1.5 * dpr;
+      cctx.strokeRect(ox, oy, c.w * dpr, c.h * dpr);
+      cctx.setLineDash([3 * dpr, 3 * dpr]);
+      cctx.strokeStyle = "rgba(56, 189, 248, 0.55)";
+      cctx.beginPath();
+      cctx.moveTo(ox, oy + (c.h * dpr) / 2);
+      cctx.lineTo(ox + c.w * dpr, oy + (c.h * dpr) / 2);
+      cctx.stroke();
+      cctx.setLineDash([]);
+      for (const sub of [layout.textarea, layout.modelPicker, layout.composerTool, layout.actionBtn]) {
+        if (!sub) continue;
+        cctx.strokeStyle = "#22c55e";
+        cctx.lineWidth = dpr;
+        cctx.strokeRect(sub.x * dpr - sx, sub.y * dpr - sy + sh + 10 * dpr, sub.w * dpr, sub.h * dpr);
+      }
+      composerPngBase64 = comp.toDataURL("image/png").split(",")[1];
+    }
+
+    return {
+      checks,
+      nestedPngBase64: out.toDataURL("image/png").split(",")[1],
+      composerPngBase64,
+    };
+  }, { origB64: origPngBase64, inkB64: inkPngBase64, dpr, viewport, layout, label });
+}
