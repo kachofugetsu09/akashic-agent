@@ -175,46 +175,47 @@ async def test_workbench_dashboard_routes_and_runner_ui_rpc(tmp_path: Path):
             assert len(listed["subagents"]) == 1
             assert listed["subagents"][0]["label"] == "WB 任务"
 
-        # 2. 验证 dashboard HTTP 接口（通过 TestClient 在同一事件循环跑完异步路由需要 httpx/ASGITransport）
+        # 2. 验证 dashboard HTTP 接口（直接脱离 ctx.runtime_scope() 调用，与真实 FastAPI 请求一致，含冷索引加载）
         import httpx
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
-            async with ctx.runtime_scope():
-                r_tree = await client.get("/api/dashboard/subagent/tree", params={"session": "wb-root"})
-                assert r_tree.status_code == 200
-                assert len(r_tree.json()["subagents"]) == 1
+            jobs._index_loaded = False
+            jobs._index_loading = None
+            r_tree = await client.get("/api/dashboard/subagent/tree", params={"session": "wb-root"})
+            assert r_tree.status_code == 200
+            assert len(r_tree.json()["subagents"]) == 1
 
-                r_msgs = await client.get("/api/dashboard/subagent/messages", params={"session": "wb-root", "job_id": jid})
-                assert r_msgs.status_code == 200
-                assert any("workbench task" in json.dumps(m, ensure_ascii=False) for m in r_msgs.json()["messages"])
+            r_msgs = await client.get("/api/dashboard/subagent/messages", params={"session": "wb-root", "job_id": jid})
+            assert r_msgs.status_code == 200
+            assert any("workbench task" in json.dumps(m, ensure_ascii=False) for m in r_msgs.json()["messages"])
 
-                # 跨会话禁止访问
-                r_forbid = await client.get("/api/dashboard/subagent/messages", params={"session": "other-root", "job_id": jid})
-                assert r_forbid.status_code == 403
+            # 跨会话禁止访问
+            r_forbid = await client.get("/api/dashboard/subagent/messages", params={"session": "other-root", "job_id": jid})
+            assert r_forbid.status_code == 403
 
-                # 空白字符发送应返回 422
-                r_blank = await client.post("/api/dashboard/subagent/send", json={
-                    "session": "wb-root", "job_id": jid, "message": "   \n ",
-                })
-                assert r_blank.status_code == 422
+            # 空白字符发送应返回 422
+            r_blank = await client.post("/api/dashboard/subagent/send", json={
+                "session": "wb-root", "job_id": jid, "message": "   \n ",
+            })
+            assert r_blank.status_code == 422
 
-                # 分页 before_seq 与 has_more 检查
-                r_lim = await client.get("/api/dashboard/subagent/messages", params={"session": "wb-root", "job_id": jid, "limit": 1})
-                assert r_lim.status_code == 200 and r_lim.json()["has_more"] is True
-                first_seq = r_lim.json()["messages"][0]["seq"]
-                r_prev = await client.get("/api/dashboard/subagent/messages", params={"session": "wb-root", "job_id": jid, "before_seq": first_seq, "limit": 10})
-                assert r_prev.status_code == 200 and len(r_prev.json()["messages"]) >= 1
+            # 分页 before_seq 与 has_more 检查
+            r_lim = await client.get("/api/dashboard/subagent/messages", params={"session": "wb-root", "job_id": jid, "limit": 1})
+            assert r_lim.status_code == 200 and r_lim.json()["has_more"] is True
+            first_seq = r_lim.json()["messages"][0]["seq"]
+            r_prev = await client.get("/api/dashboard/subagent/messages", params={"session": "wb-root", "job_id": jid, "before_seq": first_seq, "limit": 10})
+            assert r_prev.status_code == 200 and len(r_prev.json()["messages"]) >= 1
 
-                # 通过 dashboard POST /send 续聊；运行期间 session_tree 仍保留完整 session_id / parent_session_id
-                r_send = await client.post("/api/dashboard/subagent/send", json={
-                    "session": "wb-root", "job_id": jid, "message": "dashboard follow up",
-                })
-                assert r_send.status_code == 200
-                assert r_send.json()["mode"] == "resumed_background"
-                r_tree_live = await client.get("/api/dashboard/subagent/tree", params={"session": "wb-root"})
-                assert r_tree_live.status_code == 200
-                live_node = r_tree_live.json()["subagents"][0]
-                assert live_node["session_id"] == f"subagent:{jid}"
-                assert live_node["parent_session_id"] == "wb-root"
+            # 通过 dashboard POST /send 续聊；运行期间 session_tree 仍保留完整 session_id / parent_session_id
+            r_send = await client.post("/api/dashboard/subagent/send", json={
+                "session": "wb-root", "job_id": jid, "message": "dashboard follow up",
+            })
+            assert r_send.status_code == 200
+            assert r_send.json()["mode"] == "resumed_background"
+            r_tree_live = await client.get("/api/dashboard/subagent/tree", params={"session": "wb-root"})
+            assert r_tree_live.status_code == 200
+            live_node = r_tree_live.json()["subagents"][0]
+            assert live_node["session_id"] == f"subagent:{jid}"
+            assert live_node["parent_session_id"] == "wb-root"
         while jobs.active_count_for_root("wb-root") > 0:
             await asyncio.sleep(0.02)
     finally:
