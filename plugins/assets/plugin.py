@@ -4,7 +4,7 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import PurePosixPath
 
-from agent.plugin_composition import Context, Effect
+from agent.plugin_composition import CompositionError, Context, Effect, FiberState
 from plugins.assets.contract import INSTALLED_ASSETS, InstalledAsset
 
 api_version = 3
@@ -66,7 +66,7 @@ class Assets:
     def __call__(self, consumer: Context) -> tuple[InstalledAsset, ...]:
         consumer.require_runtime_identity(INSTALLED_ASSETS, self)
         return tuple(sorted(
-            self._entries,
+            (item for item, owner in self._entries.items() if owner.fiber.state is FiberState.ACTIVE),
             key=lambda item: (item.owner_id, item.category, str(item.root_dir)),
         ))
 
@@ -74,14 +74,21 @@ class Assets:
     async def open(
         self, consumer: Context, *, category: str,
     ) -> AsyncIterator[tuple[InstalledAsset, ...]]:
-        """异步读取跨越换代时，持有选中资产的原贡献者。"""
+        """异步读取跨越换代时，持有选中且 ACTIVE 资产的贡献者；正在卸载的贡献者跳过。"""
         async with self._ctx.runtime_scope(), AsyncExitStack() as stack:
-            # 取得目录与接纳原 owner 之间没有可挂起的业务操作。
-            assets = tuple(item for item in self(consumer) if item.category == category)
-            owners = tuple(dict.fromkeys(self._entries[item] for item in assets))
-            for owner in owners:
-                await stack.enter_async_context(owner.runtime_scope())
-            yield assets
+            candidates = tuple(
+                (item, self._entries[item])
+                for item in self(consumer)
+                if item.category == category
+            )
+            admitted_owners: set[Context] = set()
+            for owner in dict.fromkeys(owner for _, owner in candidates):
+                try:
+                    _ = await stack.enter_async_context(owner.runtime_scope())
+                except CompositionError:
+                    continue
+                admitted_owners.add(owner)
+            yield tuple(item for item, owner in candidates if owner in admitted_owners)
 
     def contributors(self) -> tuple[Context, ...]:
         return tuple(dict.fromkeys(self._entries.values()))

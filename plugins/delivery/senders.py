@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass
 
 from pydantic import BaseModel, ConfigDict
 
-from agent.plugin_composition import Context, Effect
+from agent.plugin_composition import Context, Effect, FiberState
 from plugins.ledger.contract import Bindings
 from plugins.ledger.contract import Message
 from plugins.delivery.contract import (
@@ -125,10 +125,15 @@ class Senders:
     def candidates(self) -> tuple[Mapping[str, object], ...]:
         rows = {name: {"name": name, "owner": item.descriptor.owner, "title": name,
                        "route": None, "enabled": True, "available": True}
-                for name, item in self._registrations.items()}
-        for name, (ctx, title, route, status) in self._candidates.items():
+                for name, item in self._registrations.items()
+                if item.context.fiber.state is FiberState.ACTIVE}
+        for name, (ctx, title, route, status) in tuple(self._candidates.items()):
+            if ctx.fiber.state is not FiberState.ACTIVE:
+                continue
+            reg = self._registrations.get(name)
+            available = reg is not None and reg.context.fiber.state is FiberState.ACTIVE
             rows[name] = {"name": name, "owner": ctx.runtime.plugin_id, "title": title,
-                          "route": route, **status(), "available": name in self._registrations}
+                          "route": route, **status(), "available": available}
         return tuple(rows[name] for name in sorted(rows))
 
     def bind(self, name: str, bindings: Bindings) -> str:

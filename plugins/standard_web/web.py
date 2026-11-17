@@ -7,7 +7,7 @@ from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from agent.plugin_composition import Context, Effect
+from agent.plugin_composition import Context, Effect, FiberState
 from plugins.tools.contract import (
     normalize_tool_parameters,
     validate_tool_parameters,
@@ -53,10 +53,14 @@ class Providers:
     async def register_fetch(self, ctx: Context, provider: WebFetchProvider, label: str = "") -> Effect:
         return await self._register(ctx, "fetch", provider, label)
 
-    # 设置页的选项：插件短名与显示名，按当前已登记的提供方列出。
+    # 设置页的选项：插件短名与显示名，按当前 ACTIVE 已登记的提供方列出。
     def choices(self, kind: Kind) -> list[dict[str, str]]:
-        return sorted(({"value": plugin.split("@")[0], "label": self._labels[(item, plugin)] or plugin.split("@")[0]}
-                       for item, plugin in self._entries if item == kind), key=lambda choice: choice["label"])
+        return sorted(
+            ({"value": plugin.split("@")[0], "label": self._labels[(item, plugin)] or plugin.split("@")[0]}
+             for (item, plugin), (owner, _) in self._entries.items()
+             if item == kind and owner.fiber.state is FiberState.ACTIVE),
+            key=lambda choice: choice["label"],
+        )
 
     # 身份取自贡献方 Context，不接受调用方指定其他插件。
     async def _register(self, ctx: Context, kind: Kind, provider: WebSearchProvider | WebFetchProvider, label: str) -> Effect:
@@ -81,7 +85,11 @@ class Providers:
     # 1. 配置了就只用它；2. 未配置时恰好一个才自动选择，否则说明如何选。
     def select(self, kind: Kind) -> tuple[Context, WebSearchProvider | WebFetchProvider] | str:
         wanted = self._config.search_provider if kind == "search" else self._config.fetch_provider
-        entries = {plugin: entry for (item, plugin), entry in self._entries.items() if item == kind}
+        entries = {
+            plugin: entry
+            for (item, plugin), entry in self._entries.items()
+            if item == kind and entry[0].fiber.state is FiberState.ACTIVE
+        }
         label = _KIND_LABEL[kind]
         if wanted:
             found = [entry for plugin, entry in entries.items() if wanted in (plugin, plugin.split("@")[0])]

@@ -5,7 +5,7 @@ from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from agent.plugin_composition import Context, Effect
+from agent.plugin_composition import Context, Effect, FiberState
 from plugins.channels.contract import CHANNEL_INPUT_V2 as CHANNEL_INPUT, ChannelInboundMessage
 from plugins.ledger.contract import MESSAGE_WRITERS, ContentPart, ContentReferences, Message, MessageReader, MessageWriter, UserInputs
 from plugins.sources.contract import (
@@ -141,7 +141,7 @@ class Sources:
         return tuple(
             registration.source
             for registration in self._items.values()
-            if registration.visible
+            if registration.visible and registration.source.context.fiber.state is FiberState.ACTIVE
         )
 
     async def changes(self) -> AsyncGenerator[tuple[Source, ...], None]:
