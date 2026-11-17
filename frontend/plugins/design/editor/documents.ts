@@ -2,6 +2,7 @@ import { reactive } from "vue";
 import { exportFigFile, fontManager, parseFigFile, type Editor } from "@open-pencil/core";
 import { SceneGraph } from "@open-pencil/scene-graph";
 import type { DesignIndicator, DesignView } from "./contract";
+import { preferNewestFonts } from "./fonts";
 import { rebase } from "./merge";
 
 // 文字用到的字体（含中日韩回退）按需取回后重新排版、重绘：画框标签显示的是图层名，名字里的字一并取回；
@@ -12,6 +13,7 @@ export async function loadDocumentFonts(editor: Editor): Promise<void> {
   await ensureFallback(nodes.map((node) => `${node.name}${node.type === "TEXT" ? node.text : ""}`).join(""));
   await editor.loadFontsForNodes(graph.getPages().flatMap((page) => page.childIds));
   if (graph !== editor.graph) return;
+  await preferNewestFonts(editor);
   for (const node of nodes) if (node.type === "TEXT") node.textPicture = null;
   for (const page of graph.getPages()) editor.runLayoutForNode(page.id);
   editor.renderer?.invalidateAllPictures();
