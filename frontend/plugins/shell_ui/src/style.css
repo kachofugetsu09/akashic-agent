@@ -481,9 +481,17 @@
   .shell-inventory-switch input:checked::after { transform: translateX(16px); }
   .shell-inventory-switch input:disabled { opacity: 0.5; cursor: progress; }
   .shell-inventory-switch input:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 2px; }
-  .shell-inventory-body summary { width: fit-content; color: var(--ak-ink-muted); cursor: pointer; }
+  .shell-inventory-body summary,
+  .shell-inventory-tech-trigger { display: inline-flex; align-items: center; gap: 4px; width: fit-content; padding: 0; border: 0; background: transparent; font: inherit; color: var(--ak-ink-muted); cursor: pointer; }
+  .shell-inventory-tech-trigger .shell-inventory-chevron svg { width: 14px; height: 14px; }
   .shell-inventory-body dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 16px; margin: 8px 0 0; }
   .shell-inventory-body dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+  .shell-disclosure { display: grid; grid-template-rows: 0fr; transition: grid-template-rows var(--ak-sys-duration-snap, 120ms) var(--ak-sys-motion-standard); }
+  .shell-disclosure.open { grid-template-rows: 1fr; transition-duration: var(--ak-sys-duration-expand, 200ms); }
+  .shell-disclosure__inner { min-width: 0; min-height: 0; overflow: clip; opacity: 0; translate: 0 -4px; transition: opacity var(--ak-sys-duration-snap, 120ms) ease-out, translate var(--ak-sys-duration-snap, 120ms) var(--ak-sys-motion-standard); }
+  .shell-disclosure.open > .shell-disclosure__inner { opacity: 1; translate: 0 0; transition-duration: var(--ak-sys-duration-expand, 200ms), var(--ak-sys-duration-expand, 200ms); }
+  .shell-disclosure.is-instant,
+  .shell-disclosure.is-instant > .shell-disclosure__inner { transition: none; }
   .shell-inventory-empty { display: grid; justify-items: start; gap: 4px; font-size: 13px; color: var(--ak-ink-muted); }
   .shell-inventory-empty p { margin: 0; }
 

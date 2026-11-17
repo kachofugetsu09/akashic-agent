@@ -31,14 +31,30 @@
   .desktop-message-placeholder .user-bubble { max-height: calc(12lh + 18px + 32px); }
 }
 
-/* 长输入收成 12 行，末两行渐隐提示还有内容；展开后不限高。 */
+@property --clamp-fade-alpha {
+  syntax: "<number>";
+  inherits: false;
+  initial-value: 1;
+}
+
+/* 长输入收成 12 行，末两行渐隐提示还有内容；展开后不限高，过渡期间裁切溢出并淡去渐隐。 */
+.user-text-clamp {
+  --clamp-fade-alpha: 0;
+  overflow: clip;
+  transition: --clamp-fade-alpha var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+}
+
 .user-text-clamp:not([data-state="open"]) {
   max-height: 12lh;
-  overflow: hidden;
 }
 
 .user-text-clamp[data-state="clamped"] {
-  mask-image: linear-gradient(to bottom, #000 calc(100% - 2lh), transparent);
+  --clamp-fade-alpha: 1;
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 2lh), rgb(0 0 0 / calc(1 - var(--clamp-fade-alpha))));
+}
+
+.user-text-clamp[data-state="open"] {
+  --clamp-fade-alpha: 0;
 }
 
 /* 开关是气泡上的一行次级文字，不是按钮外观。 */
@@ -492,7 +508,7 @@
   transition: inset-block-start var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
   container-type: scroll-state;
 }
-:where(.agent-content) :is(.turn-process.is-open, .thinking-row[data-state="open"]) .reading-code-stream-label {
+:where(.agent-content) :is(.turn-process.is-open, .thinking-row:is([data-state="open"], [data-sticky="true"])) .reading-code-stream-label {
   inset-block-start: calc(var(--heading-cover, 0px) + var(--code-sticky-layers) * var(--tool-sticky-h));
 }
 
@@ -606,20 +622,20 @@
 }
 /* 展开的过程组、思考里，上面已有吸顶的摘要行，块头停在它下面，不叠在一起。
    摘要会嵌套（过程组里的思考，两行摘要都吸住），按祖先里展开的摘要层数让位；生成中的语言标签同一规则。 */
-:where(.agent-content) :is(.turn-process.is-open, .thinking-row[data-state="open"]) {
+:where(.agent-content) :is(.turn-process.is-open, .thinking-row:is([data-state="open"], [data-sticky="true"])) {
   --code-sticky-layers: 1;
 }
-:where(.agent-content) .turn-process.is-open .thinking-row[data-state="open"] {
+:where(.agent-content) .turn-process.is-open .thinking-row:is([data-state="open"], [data-sticky="true"]) {
   --code-sticky-layers: 2;
 }
 /* 思考进了工具组时组头也吸住，多让一层（与上方思考行让位规则同构）。 */
-:where(.agent-content) .tool-group.is-open .tool-group-items .thinking-row[data-state="open"] {
+:where(.agent-content) .tool-group.is-open .tool-group-items .thinking-row:is([data-state="open"], [data-sticky="true"]) {
   --code-sticky-layers: 2;
 }
-:where(.agent-content) .turn-process.is-open .turn-process-items .tool-group.is-open .tool-group-items .thinking-row[data-state="open"] {
+:where(.agent-content) .turn-process.is-open .turn-process-items .tool-group.is-open .tool-group-items .thinking-row:is([data-state="open"], [data-sticky="true"]) {
   --code-sticky-layers: 3;
 }
-:where(.agent-content) :is(.turn-process.is-open, .thinking-row[data-state="open"]) .code-block-container > .code-block-header {
+:where(.agent-content) :is(.turn-process.is-open, .thinking-row:is([data-state="open"], [data-sticky="true"])) .code-block-container > .code-block-header {
   inset-block-start: calc(var(--heading-cover, 0px) + var(--code-sticky-layers) * var(--tool-sticky-h));
 }
 
@@ -1165,7 +1181,7 @@
   font-style: normal;
 }
 
-.turn-process.is-open .turn-process-items :is(.tool-step-sticky.is-open, .thinking-row[data-state="open"] .process-trigger-sticky) {
+.turn-process.is-open .turn-process-items :is(.tool-step-sticky.is-open, .thinking-row:is([data-state="open"], [data-sticky="true"]) .process-trigger-sticky) {
   top: calc(var(--heading-cover, 0px) + var(--tool-sticky-h));
 }
 
@@ -1175,13 +1191,13 @@
 
 /* 思考进了工具组之后，组内展开的思考行会和组头抢同一个吸附位：组头 z-index 3 且带纸面
    底色，会把思考的标题行（也就是点回收起的地方）压在下面。让位规则要与工具行同构。 */
-.tool-group.is-open .tool-group-items .thinking-row[data-state="open"] .process-trigger-sticky {
+.tool-group.is-open .tool-group-items .thinking-row:is([data-state="open"], [data-sticky="true"]) .process-trigger-sticky {
   top: calc(var(--heading-cover, 0px) + var(--tool-sticky-h));
   z-index: 2;
 }
 
 .turn-process.is-open .turn-process-items .tool-group.is-open .tool-group-items
-  .thinking-row[data-state="open"] .process-trigger-sticky {
+  .thinking-row:is([data-state="open"], [data-sticky="true"]) .process-trigger-sticky {
   top: calc(var(--heading-cover, 0px) + 2 * var(--tool-sticky-h));
 }
 
@@ -1292,8 +1308,19 @@
 }
 
 /* 展开时长内容滚动期间 trigger 吸附在视口顶，随时可收起；纸面上只留底色与一根发丝线。
-   button 上 sticky 在部分内核不生效，吸附放在外包 div。 */
-.thinking-row[data-state="open"] .process-trigger-sticky {
+   行高在收起与展开态保持一致，吸顶边框平滑淡入淡出。 */
+.process-trigger-sticky {
+  display: flex;
+  min-height: var(--tool-sticky-h, 28px);
+  align-items: center;
+  box-shadow: inset 0 -1px 0 transparent;
+  transition:
+    top var(--ak-sys-duration-short) var(--ak-sys-motion-standard),
+    background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard),
+    box-shadow var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+}
+
+.thinking-row:is([data-state="open"], [data-sticky="true"]) .process-trigger-sticky {
   position: sticky;
   top: var(--heading-cover, 0px);
   z-index: 2;
@@ -1326,12 +1353,12 @@
    鼠标下收起着的箭头在悬停或键盘聚焦该行时才出现；展开着的保留，它告诉人怎么收回去。
    本轮与工具组的摘要行、图文回复前段收纳过程的摘要行、触屏照旧常驻。 */
 @media (hover: hover) and (pointer: fine) {
-  .process-trigger:not(.inline-reply-process > details > summary) .process-chevron:not(.open),
+  .process-trigger:not(.inline-reply-notice > .process-trigger) .process-chevron:not(.open),
   .tool-step-summary:not(.turn-process-summary, .tool-group-summary) .tool-step-chevron:not(.open) {
     opacity: 0;
     transition: opacity var(--ak-sys-duration-short) var(--ak-sys-motion-standard), translate var(--ak-sys-duration-short) var(--ak-sys-motion-standard), transform var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
   }
-  .context-notice[open] > .process-trigger .process-chevron,
+  .context-notice[data-open="true"] > .process-trigger .process-chevron,
   .process-trigger:is(:hover, :focus-visible) .process-chevron:not(.open),
   .tool-step-summary:is(:hover, :focus-visible) .tool-step-chevron:not(.open) {
     opacity: 1;
@@ -1347,14 +1374,6 @@
   color: var(--ak-color-text-secondary);
   outline: none;
 }
-
-/* 展开瞬间到位、只淡入：思考常有几千像素，过渡高度每帧都要重排整段（Claude Desktop 同样不做高度动画）。 */
-.thinking-row > .process-content[data-state="open"] {
-  animation: thinking-content-in var(--ak-sys-duration-short) ease-out;
-}
-
-@keyframes thinking-content-in { from { opacity: 0; translate: 0 2px; filter: blur(3px); } }
-@media (prefers-reduced-motion: reduce) { .thinking-row > .process-content[data-state="open"] { animation-name: none; } }
 
 .process-text {
   max-width: 72ch;
@@ -1431,7 +1450,7 @@
   display: block;
   width: 100%;
   min-width: 0;
-  min-height: 24px;
+  min-height: var(--tool-sticky-h, 28px);
   border: 0;
   border-radius: var(--ak-radius-sm);
   padding: 2px 0;
@@ -1500,6 +1519,8 @@ button.tool-step-summary:active {
 }
 
 .tool-step-state {
+  display: inline-flex;
+  align-items: baseline;
   font-size: 0.6875rem;
   font-variant-numeric: tabular-nums;
   line-height: 1.3;
@@ -1522,7 +1543,8 @@ button.tool-step-summary:active {
   color: var(--ak-color-status-error);
 }
 
-/* 展开区：grid 行过渡高度，内层淡入并下移 4px。
+/* 展开区：grid 行过渡高度，内层淡入并下移 4px。容器常驻 DOM，开合只切 class，首次点开也有过渡；
+   不加 @starting-style：它只会让“挂载即展开”的行（如历史里出错的工具步骤）在切会话时多播一次展开。
    展开比收起慢：展开是「我要读」，用 --ak-sys-duration-expand（200ms）走完全程；
    收起是「读完了」，用 --ak-sys-duration-snap（120ms）迅速让位，与桌面端同一不对称口径。
    内层只能用 overflow: clip，hidden 会建立滚动容器，让嵌套行的 sticky 失效。 */
@@ -1559,17 +1581,22 @@ button.tool-step-summary:active {
   transition-duration: var(--ak-sys-duration-expand), var(--ak-sys-duration-expand);
 }
 
-/* 吸顶状态下的收起瞬间完成，由脚本把行放回原位后再淡入下方内容。 */
-.tool-step-disclosure.is-instant,
-.tool-step-disclosure.is-instant > .tool-step-disclosure-inner {
-  transition: none;
-}
-
 /* 展开的工具行吸在消息列表顶部，读到哪都能收起；嵌在工具组里的行让出一行组标题的高度。
-   行高在展开时固定，嵌套偏移才能直接用变量计算。button 上 sticky 在部分内核不生效，吸附放在外包 div。 */
+   行高在收起与展开态保持固定，开关过程不跳行、发丝线平滑淡入淡出。 */
 .process-trace,
 .turn-process {
   --tool-sticky-h: 28px;
+}
+
+.tool-step-sticky {
+  display: flex;
+  min-height: var(--tool-sticky-h);
+  align-items: center;
+  box-shadow: inset 0 -1px 0 transparent;
+  transition:
+    top var(--ak-sys-duration-short) var(--ak-sys-motion-standard),
+    background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard),
+    box-shadow var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
 }
 
 /* --heading-cover：窄屏浮在滚动区上方的标题栏在场时的遮挡高度，吸顶行让到它下面。 */
@@ -1577,9 +1604,7 @@ button.tool-step-summary:active {
   position: sticky;
   top: var(--heading-cover, 0px);
   z-index: 3;
-  display: flex;
   height: var(--tool-sticky-h);
-  align-items: center;
   background: var(--ak-color-bg-canvas);
   box-shadow: inset 0 -1px 0 color-mix(in oklab, var(--ak-color-text-primary) 7%, transparent);
 }
@@ -1590,11 +1615,31 @@ button.tool-step-summary:active {
 }
 
 .tool-step-collapse-hint {
+  display: inline-grid;
+  grid-template-columns: 0fr;
+  opacity: 0;
+  visibility: hidden;
   color: var(--ak-color-text-secondary);
   /* 收起提示是控件文字，跟着工具行走界面字体。 */
   font-family: var(--ak-type-ui);
   font-size: 0.6875rem;
   font-weight: 400;
+  transition:
+    grid-template-columns var(--ak-sys-duration-snap) var(--ak-sys-motion-standard),
+    opacity var(--ak-sys-duration-snap) var(--ak-sys-motion-standard),
+    visibility var(--ak-sys-duration-snap) allow-discrete;
+}
+
+.tool-step-collapse-hint.is-open {
+  grid-template-columns: 1fr;
+  opacity: 1;
+  visibility: visible;
+  transition-duration: var(--ak-sys-duration-expand), var(--ak-sys-duration-expand), var(--ak-sys-duration-expand);
+}
+
+.tool-step-collapse-hint > span {
+  overflow: hidden;
+  white-space: nowrap;
 }
 
 @media (pointer: coarse) {
@@ -2109,10 +2154,17 @@ button.tool-step-summary:active {
 
   .process-chevron,
   .process-trigger,
+  .process-trigger-sticky,
   .tool-step-summary,
+  .tool-step-sticky,
   .tool-step-chevron,
+  .tool-step-collapse-hint,
   .tool-step-disclosure,
   .tool-step-disclosure-inner,
+  .tool-result-nested__chevron,
+  .timeline-details__chevron,
+  .compaction-boundary__chevron,
+  .user-text-clamp,
   .tool-result-more,
   .tool-detail-copy,
   .message-reply-reference,
@@ -2176,9 +2228,13 @@ button.tool-step-summary:active {
    含这些块的气泡直接占满允许的最大宽度。 */
 .timeline-message .user-bubble:has(pre, table, .code-block-container, .reading-math-display) { width: 100%; }
 .timeline-details { margin-block: 0.5rem; color: var(--ak-color-text-secondary); }
-.timeline-details summary { cursor: pointer; padding-block: 0.5rem; overflow-wrap: anywhere; }
+.timeline-details summary,
+.timeline-details__trigger { display: flex; width: 100%; align-items: center; gap: 6px; padding: 0.5rem 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: start; cursor: pointer; overflow-wrap: anywhere; }
+.timeline-details__chevron { flex: none; transition: transform var(--ak-sys-duration-short) var(--ak-sys-motion-standard); }
+.timeline-details__chevron.open { transform: rotate(180deg); }
 .timeline-details summary:focus-visible,
-.timeline-result-heading button:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 3px; }
+.timeline-details__trigger:focus-visible,
+.timeline-result-heading button:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 3px; border-radius: var(--ak-radius-xs); }
 .timeline-details pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 0.8125rem; }
 .timeline-details p { overflow-wrap: anywhere; }
 .timeline-result-heading { border-inline-start: 2px solid var(--ak-color-border-default); padding-inline-start: 0.875rem; }
@@ -2282,14 +2338,32 @@ button.tool-step-summary:active {
 .tool-result-fields { margin: 0; }
 .tool-result-fields > div { margin-block: 0.5rem; }
 .tool-result-fields dt,
-.tool-result-fields summary {
+.tool-result-fields summary,
+.tool-result-nested__trigger {
   color: var(--ak-ink-secondary);
   font-family: var(--ak-type-technical);
   font-size: var(--chat-type-caption);
   overflow-wrap: anywhere;
 }
+.tool-result-nested__trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+.tool-result-nested__chevron {
+  flex: none;
+  transition: transform var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+}
+.tool-result-nested__chevron.open {
+  transform: rotate(180deg);
+}
 .tool-result-fields dd { margin: 0.25rem 0 0; min-width: 0; }
-.tool-result-fields details { padding-inline-start: 0.75rem; border-inline-start: 1px solid var(--ak-rule-subtle); }
+.tool-result-fields details,
+.tool-result-nested { padding-inline-start: 0.75rem; border-inline-start: 1px solid var(--ak-rule-subtle); }
 /* 失败输出照常用正文墨色（整段日志染红只会喧嚣、难读）；错误语义由标题色与左侧 2px 细线承担。 */
 .tool-detail-section.is-error .tool-detail-heading h4 { color: var(--ak-color-status-error); }
 .tool-result-data.error .tool-result {
@@ -2299,17 +2373,18 @@ button.tool-step-summary:active {
   border-inline-start: 2px solid color-mix(in oklab, var(--ak-color-status-error) 60%, transparent);
 }
 
-/* 上下文提示：沿用思考行的触发行；原生 details 的三角标记换成右侧 chevron。 */
-.context-notice > summary {
+/* 上下文提示：沿用思考行的触发行。 */
+.context-notice > button.process-trigger {
   display: flex;
   align-items: center;
-  list-style: none;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  text-align: start;
   cursor: pointer;
 }
 
-.context-notice > summary::-webkit-details-marker { display: none; }
-.context-notice[open] .process-chevron { rotate: 180deg; }
-.context-notice > .process-content { margin: 2px 0 6px; }
+.context-notice > .tool-step-disclosure > .tool-step-disclosure-inner > .process-content { margin: 2px 0 6px; }
 
 /* 压缩边界分隔条：参考 Claude Desktop 的低调状态行 + 发丝线分隔，默认收起一行，点开看细节。 */
 .compaction-row {
@@ -2322,11 +2397,14 @@ button.tool-step-summary:active {
 }
 
 .compaction-boundary__trigger {
+  width: 100%;
   min-height: 44px;
   display: flex;
   align-items: center;
   gap: 10px;
-  list-style: none;
+  border: 0;
+  background: transparent;
+  font: inherit;
   cursor: pointer;
   padding: 4px 0;
   color: var(--ak-ink-muted);
@@ -2335,8 +2413,6 @@ button.tool-step-summary:active {
   user-select: none;
   transition: color var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
 }
-
-.compaction-boundary__trigger::-webkit-details-marker { display: none; }
 
 .compaction-boundary.is-standalone .compaction-boundary__trigger::before,
 .compaction-boundary__trigger::after {
@@ -2381,11 +2457,11 @@ button.tool-step-summary:active {
 }
 
 .compaction-boundary__trigger:is(:hover, :focus-visible) .compaction-boundary__chevron,
-.compaction-boundary[open] .compaction-boundary__chevron {
+.compaction-boundary[data-open="true"] .compaction-boundary__chevron {
   opacity: 0.85;
 }
 
-.compaction-boundary[open] .compaction-boundary__chevron {
+.compaction-boundary[data-open="true"] .compaction-boundary__chevron {
   transform: rotate(180deg);
 }
 

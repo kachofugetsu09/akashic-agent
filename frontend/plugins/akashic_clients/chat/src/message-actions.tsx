@@ -119,6 +119,9 @@ export function focusMessagePart(element: HTMLElement, messageId: string, partIn
     const target = find() ?? element;
     const disclosure = target.closest("details");
     if (disclosure) disclosure.open = true;
+    // 自定义折叠可能包着目标，也可能就在目标（整条过程项）里面。
+    const customDisclosure = target.closest("[data-disclosure-root]") ?? target.querySelector("[data-disclosure-root]");
+    customDisclosure?.querySelector<HTMLButtonElement>('[data-disclosure-trigger][aria-expanded="false"]')?.click();
     target.focus({ preventScroll: true });
     target.scrollIntoView({ block: "center", behavior: "instant" });
   };

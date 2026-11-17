@@ -286,7 +286,7 @@ export function GroupNavigationRow({
   // 折叠时分组行汇总会话状态，展开后状态回到各自的会话前。
   const collapsedStatus = open ? undefined : summarizeStatus(items.map((item) => item.status));
   // 只有用户显式点按开合（非初始挂载、非搜索驱动）才播 200ms 展开 / 120ms 收起动画；
-  // 初始就是展开态、搜索打开或从无结果搜索恢复挂载时都带 is-instant 瞬时完成。
+  // 初始就是展开态、搜索打开或从无结果搜索恢复挂载时首帧带 is-instant 瞬时落位，并在下一帧恢复过渡能力。
   const [wasOpen, setWasOpen] = useState(open);
   const [wasSearching, setWasSearching] = useState(searching);
   const [closing, setClosing] = useState(false);
@@ -304,6 +304,11 @@ export function GroupNavigationRow({
       else if (closing) setClosing(false);
     }
   }
+  useEffect(() => {
+    if (!instant || searching) return;
+    const frame = window.requestAnimationFrame(() => setInstant(false));
+    return () => window.cancelAnimationFrame(frame);
+  }, [instant, searching]);
   useEffect(() => {
     if (!closing) return;
     if (typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches) {

@@ -129,7 +129,7 @@ export function PluginInventory({ http, inventory, active }: {
           <span className="shell-inventory-chevron" aria-hidden="true" dangerouslySetInnerHTML={markup(CHEVRON)} />
           基础组件 <span>{base.length}</span><small>通常不需要改动</small>
         </button>
-        {(searching || infraOpen) && list(base)}
+        <ShellDisclosure open={searching || infraOpen} instant={searching}>{list(base)}</ShellDisclosure>
       </div>}
     </section>}
     {external.length > 0 && <section className="shell-inventory-group">
@@ -159,6 +159,7 @@ function InventoryRow({ row, rows, open, note, flip, toggle }: {
   const waiting = row.enabled ? row.dependents.map((id) => rows.find((item) => item.id === id)?.name ?? id) : [];
   const hint = waiting.length === 0 ? ""
     : `停用后，${waiting.slice(0, 2).join("、")}${waiting.length > 2 ? ` 等 ${waiting.length} 个插件` : ""}会等待依赖`;
+  const [techOpen, setTechOpen] = useState(false);
   return <li className="shell-inventory-row" data-phase={row.phase === "stopping" && row.error ? "failed" : row.phase}>
     <button type="button" className="shell-inventory-head" aria-expanded={open} onClick={flip}>
       <span className="shell-inventory-name"><strong>{row.name}</strong>{row.description && <small>{row.description}</small>}</span>
@@ -167,26 +168,46 @@ function InventoryRow({ row, rows, open, note, flip, toggle }: {
         : <span className="shell-inventory-dot" role="img" aria-label="运行中" />}
       <span className="shell-inventory-chevron" aria-hidden="true" dangerouslySetInnerHTML={markup(CHEVRON)} />
     </button>
-    {open && <div className="shell-inventory-body">
-      {row.error && <p className="shell-inventory-error">{row.error}</p>}
-      {note?.kind === "error" && <p className="shell-inventory-error" role="alert">{note.text}</p>}
-      {row.missing_services.length > 0 && <p>缺少 <code>{row.missing_services.join("、")}</code>，依赖恢复后自动运行。</p>}
-      {row.locked
-        ? <p className="shell-inventory-hint">插件管理依赖它，不能停用</p>
-        : <label className="shell-inventory-switch">
-          <input type="checkbox" role="switch" checked={busy ? note.enabled : row.enabled} disabled={busy}
-            onChange={(event) => toggle(event.target.checked)} />
-          启用
-          {hint && <small>{hint}</small>}
-        </label>}
-      <details>
-        <summary>技术信息</summary>
-        <dl>
-          <dt>ID</dt><dd><code>{row.id}</code></dd>
-          {row.version && <><dt>版本</dt><dd><code>{row.version}</code></dd></>}
-          <dt>运行</dt><dd><code>{row.phase}</code></dd>
-        </dl>
-      </details>
-    </div>}
+    <ShellDisclosure open={open}>
+      <div className="shell-inventory-body">
+        {row.error && <p className="shell-inventory-error">{row.error}</p>}
+        {note?.kind === "error" && <p className="shell-inventory-error" role="alert">{note.text}</p>}
+        {row.missing_services.length > 0 && <p>缺少 <code>{row.missing_services.join("、")}</code>，依赖恢复后自动运行。</p>}
+        {row.locked
+          ? <p className="shell-inventory-hint">插件管理依赖它，不能停用</p>
+          : <label className="shell-inventory-switch">
+            <input type="checkbox" role="switch" checked={busy ? note.enabled : row.enabled} disabled={busy}
+              onChange={(event) => toggle(event.target.checked)} />
+            启用
+            {hint && <small>{hint}</small>}
+          </label>}
+        <div className="shell-inventory-tech">
+          <button type="button" className="shell-inventory-tech-trigger" aria-expanded={techOpen} onClick={() => setTechOpen((value) => !value)}>
+            <span className="shell-inventory-chevron" aria-hidden="true" dangerouslySetInnerHTML={markup(CHEVRON)} />
+            <span>技术信息</span>
+          </button>
+          <ShellDisclosure open={techOpen}>
+            <dl>
+              <dt>ID</dt><dd><code>{row.id}</code></dd>
+              {row.version && <><dt>版本</dt><dd><code>{row.version}</code></dd></>}
+              <dt>运行</dt><dd><code>{row.phase}</code></dd>
+            </dl>
+          </ShellDisclosure>
+        </div>
+      </div>
+    </ShellDisclosure>
   </li>;
+}
+
+function ShellDisclosure({ open, instant = false, children }: {
+  open: boolean;
+  instant?: boolean;
+  children: React.ReactNode;
+}): React.ReactElement {
+  const [mounted, setMounted] = useState(open);
+  if (open && !mounted) setMounted(true);
+  return <div className={`shell-disclosure${open ? " open" : ""}${instant ? " is-instant" : ""}`}
+    aria-hidden={!open} inert={!open ? true : undefined}>
+    <div className="shell-disclosure__inner">{mounted ? children : null}</div>
+  </div>;
 }
