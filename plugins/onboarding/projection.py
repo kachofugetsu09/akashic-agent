@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, cast
 
-from agent.plugin_composition import Context, Effect
+from agent.plugin_composition import CompositionError, Context, Effect, FiberState
 from agent.plugin_composition.runtime_catalog import RUNTIME_CATALOG
 from plugins.onboarding.contract import Ability, Step
 
@@ -56,7 +56,8 @@ class Registry:
         items = cast(list[dict[str, Any]], graph["plugins"])
         targets: dict[str, set[int]] = {}
         for registration in self.steps.values():
-            targets.setdefault(registration.context.runtime.plugin_id, set()).update(registration.step.function_fibers)
+            if registration.context.fiber.state is FiberState.ACTIVE:
+                targets.setdefault(registration.context.runtime.plugin_id, set()).update(registration.step.function_fibers)
         edges: dict[str, set[str]] = {}
         unresolved: set[str] = set()
         for item in items:
@@ -84,6 +85,8 @@ class Registry:
             return result
         rows = []
         for key, registration in tuple(self.steps.items()):
+            if registration.context.fiber.state is not FiberState.ACTIVE:
+                continue
             owner = registration.context.runtime.plugin_id
             step = registration.step
             rows.append({"id": key, "owner": owner, "key": step.key, "title": step.title,
@@ -118,5 +121,10 @@ class Registry:
 
     async def status(self, key: str) -> dict[str, object]:
         registration = self.steps[key]
-        async with registration.context.runtime_scope():
-            return await registration.step.status()
+        if registration.context.fiber.state is not FiberState.ACTIVE:
+            raise KeyError(key)
+        try:
+            async with registration.context.runtime_scope():
+                return await registration.step.status()
+        except CompositionError as error:
+            raise KeyError(key) from error

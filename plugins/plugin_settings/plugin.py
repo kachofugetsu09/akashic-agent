@@ -3,7 +3,7 @@
 from collections.abc import Callable
 from importlib import import_module
 
-from agent.plugin_composition import Context, Effect
+from agent.plugin_composition import Context, Effect, FiberState
 from plugins.ui.contract import UI, Configuration, SETTINGS_SLOT
 
 from .contract import SETTINGS_FORMS, SettingsEntry, SettingsForm
@@ -43,10 +43,17 @@ class Forms:
         return await ctx.effect(setup, label=f"settings-form:{key}")
 
     def entries(self) -> tuple[SettingsEntry, ...]:
-        return tuple(self._entries[key] for key in sorted(self._entries))
+        return tuple(
+            self._entries[key]
+            for key in sorted(self._entries)
+            if self._entries[key].context.fiber.state is FiberState.ACTIVE
+        )
 
     def entry(self, key: str) -> SettingsEntry:
-        return self._entries[key]
+        item = self._entries[key]
+        if item.context.fiber.state is not FiberState.ACTIVE:
+            raise KeyError(key)
+        return item
 
     def contributors(self) -> tuple[Context, ...]:
         return tuple(entry.context for entry in self._entries.values())

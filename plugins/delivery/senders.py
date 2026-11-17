@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass
 
 from pydantic import BaseModel, ConfigDict
 
-from agent.plugin_composition import Context, Effect
+from agent.plugin_composition import CompositionError, Context, Effect, FiberState
 from plugins.ledger.contract import Bindings
 from plugins.ledger.contract import Message
 from plugins.delivery.contract import (
@@ -125,10 +125,17 @@ class Senders:
     def candidates(self) -> tuple[Mapping[str, object], ...]:
         rows = {name: {"name": name, "owner": item.descriptor.owner, "title": name,
                        "route": None, "enabled": True, "available": True}
-                for name, item in self._registrations.items()}
-        for name, (ctx, title, route, status) in self._candidates.items():
+                for name, item in self._registrations.items()
+                if item.context.fiber.state is FiberState.ACTIVE}
+        for name, (ctx, title, route, status) in tuple(self._candidates.items()):
+            if ctx.fiber.state is not FiberState.ACTIVE:
+                continue
+            try:
+                state = status()
+            except CompositionError:
+                continue
             rows[name] = {"name": name, "owner": ctx.runtime.plugin_id, "title": title,
-                          "route": route, **status(), "available": name in self._registrations}
+                          "route": route, **state, "available": name in self._registrations and self._registrations[name].context.fiber.state is FiberState.ACTIVE}
         return tuple(rows[name] for name in sorted(rows))
 
     def bind(self, name: str, bindings: Bindings) -> str:
@@ -139,8 +146,12 @@ class Senders:
         )
 
     def bind_all(self, bindings: Bindings) -> Mapping[str, str]:
-        """固定当前可选发送者；归档工具按此集合选路，不读取之后的注册表。"""
-        return {name: self.bind(name, bindings) for name in sorted(self._registrations)}
+        """固定当前 ACTIVE 可选发送者；归档工具按此集合选路，不读取之后的注册表。"""
+        return {
+            name: self.bind(name, bindings)
+            for name in sorted(self._registrations)
+            if self._registrations[name].context.fiber.state is FiberState.ACTIVE
+        }
 
     @asynccontextmanager
     async def open(self, metadata: Mapping[str, object]) -> AsyncGenerator[Sender]:
