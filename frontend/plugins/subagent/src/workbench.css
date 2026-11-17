@@ -286,14 +286,13 @@
 }
 
 .subagent-wb__brief-text {
-  margin: 0;
   padding-top: 6px;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
   color: var(--ak-ink-secondary);
-  font-family: var(--ak-type-ui);
-  font-size: 12.5px;
-  line-height: 1.6;
+}
+
+.subagent-wb__brief-text .md-prose {
+  font-size: 13px;
+  line-height: 1.65;
 }
 
 /* 纸面主内容流（去除层层白卡和 #0/#1 编号） */
@@ -320,14 +319,38 @@
   font-weight: 600;
 }
 
-.subagent-wb__text {
-  margin: 0;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
+/* 正文与文件预览同一套 Markdown 排版（plugin-kit/markdown-prose）；面板内收紧字号，首尾不留段距。 */
+.subagent-wb__md {
+  min-width: 0;
   color: var(--ak-ink-primary);
-  font-family: var(--ak-type-reading);
-  font-size: 13.5px;
-  line-height: 1.65;
+}
+
+.subagent-wb__md .md-prose {
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.subagent-wb__md .md-prose > :first-child {
+  margin-block-start: 0;
+}
+
+.subagent-wb__md .md-prose > :last-child {
+  margin-block-end: 0;
+}
+
+.subagent-wb__md .md-prose h1 {
+  margin-block: 20px 10px;
+  font-size: 1.3em;
+}
+
+.subagent-wb__md .md-prose h2 {
+  margin-block: 20px 8px;
+  font-size: 1.15em;
+}
+
+.subagent-wb__md .md-prose pre {
+  padding: 10px 12px;
+  font-size: 12.5px;
 }
 
 /* Claude 风格细竖轴过程流 */
@@ -436,23 +459,81 @@
   overflow-wrap: anywhere;
 }
 
-.subagent-wb__activity-row {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  padding: 2px 4px;
+.subagent-wb__activity-note {
+  margin: 0;
+  padding: 2px 8px;
   color: var(--ak-ink-secondary);
   font-size: 12px;
-  line-height: 1.5;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
-.subagent-wb__activity-dot {
-  width: 5px;
-  height: 5px;
+.subagent-wb__tool-trigger.is-static {
+  cursor: default;
+}
+
+.subagent-wb__tool-flag {
   flex: none;
-  border-radius: 50%;
-  background: var(--ak-ink-muted);
-  transform: translateY(-1px);
+  padding: 0 6px;
+  border-radius: var(--ak-radius-xs);
+  background: color-mix(in oklab, var(--ak-color-status-error) 12%, transparent);
+  color: var(--ak-color-status-error);
+  font-size: 11px;
+  line-height: 18px;
+}
+
+.subagent-wb__tool-flag.is-live {
+  background: var(--ak-paper-quiet);
+  color: var(--ak-ink-secondary);
+}
+
+.subagent-wb__tool-item[data-state="error"] .subagent-wb__tool-name {
+  color: var(--ak-color-status-error);
+}
+
+.subagent-wb__tool-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 2px 0 6px 20px;
+}
+
+.subagent-wb__tool-detail .subagent-wb__tool-raw {
+  margin: 0;
+  max-height: 360px;
+  overflow: auto;
+}
+
+.subagent-wb__tool-raw.is-output {
+  white-space: pre;
+  overflow-wrap: normal;
+}
+
+.subagent-wb__tool-label {
+  display: flex;
+  white-space: nowrap;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0 0 4px;
+  color: var(--ak-ink-muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.subagent-wb__tool-meta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--ak-type-technical);
+  font-weight: 400;
+}
+
+.subagent-wb__tool-empty {
+  margin: 0;
+  color: var(--ak-ink-muted);
+  font-size: 12px;
 }
 
 .subagent-wb__control {

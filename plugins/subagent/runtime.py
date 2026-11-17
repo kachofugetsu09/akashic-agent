@@ -20,6 +20,7 @@ from .inputs import CONTENT, CHECK_ORIGIN
 from .inputs import CONVERSATION_COMPLETE
 from .inputs import DELIVERY
 from .inputs import REPLY_PROGRAM
+from .inputs import TOOLS
 from plugins.ledger.contract import MessageConflict, MessagePage, MessageReader, OwnerRecord, OwnerTransaction, SessionAttributes
 from plugins.ledger.contract import CallRef, ContentPart, Control, Input, Message, Output, ToolCall, ToolResult, with_truncated_head
 from plugins.ledger.contract import json_value
@@ -520,22 +521,36 @@ class Subagents:
             return await reader.read_async(lambda current: current.read_page(after_seq=after_seq, through_seq=upper, limit=size))
         return await reader.read_tail_async(before_seq=before_seq, through_seq=head, limit=size)
 
-    @staticmethod
-    def _message_item(msg: Message) -> dict[str, object]:
+    # 工具名按 binding 解析，失败（历史 binding 已不可读）时留空，前端按参数猜测兜底。
+    def _tool_name(self, binding_id: str) -> str:
+        try:
+            tool = self.ctx.require(BINDINGS).describe(binding_id, TOOLS)["tool"]
+        except (KeyError, ValueError, TypeError, CompositionError):
+            return ""
+        return str(cast(Mapping[str, object], tool).get("name") or "") if isinstance(tool, Mapping) else ""
+
+    # 面板与 subagent_read 共用的消息投影：工具结果带 call_ref 与 outcome，便于挂回对应调用。
+    def _message_item(self, msg: Message) -> dict[str, object]:
         parts_summary: list[dict[str, object]] = []
         if isinstance(msg.body, (Input, Output, ToolResult)):
             for part in msg.body.parts:
                 if isinstance(part, ToolCall):
-                    parts_summary.append({"kind": "tool_call", "binding_id": part.binding_id, "arguments": json_value(part.arguments)})
+                    parts_summary.append({"kind": "tool_call", "binding_id": part.binding_id,
+                                          "tool": self._tool_name(part.binding_id),
+                                          "arguments": json_value(part.arguments)})
                 elif isinstance(part, ContentPart) and part.kind == "text":
                     parts_summary.append({"kind": "text", "value": str(part.value)})
                 elif isinstance(part, ContentPart):
                     parts_summary.append({"kind": part.kind})
         elif isinstance(msg.body, Control):
             parts_summary.append({"kind": "control", "action": msg.body.action, "reason": msg.body.reason})
-        return {"seq": msg.seq, "message_id": msg.message_id, "author": msg.author,
-                "kind": type(msg.body).__name__.lower(), "timestamp": msg.recorded_at.isoformat(),
-                "parts": parts_summary}
+        item: dict[str, object] = {"seq": msg.seq, "message_id": msg.message_id, "author": msg.author,
+                                   "kind": type(msg.body).__name__.lower(), "timestamp": msg.recorded_at.isoformat(),
+                                   "parts": parts_summary}
+        if isinstance(msg.body, ToolResult):
+            item["call_ref"] = {"message_id": msg.body.call_ref.message_id, "part_index": msg.body.call_ref.part_index}
+            item["outcome"] = msg.body.outcome
+        return item
 
     async def read_child_messages(
         self,
