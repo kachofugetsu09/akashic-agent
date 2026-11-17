@@ -19,6 +19,7 @@ def build_spawn_subagent_prompt(
     depth: int = 1,
     max_depth: int = 1,
     cwd: str | None = None,
+    fork: bool = False,
 ) -> str:
     """根据只读开关、深度限制与工作目录生成简明的子任务上下文提示。"""
     workspace_path = str(workspace.expanduser().resolve())
@@ -30,6 +31,7 @@ def build_spawn_subagent_prompt(
         depth_line += "（已达上限，请直接完成当前任务，不要再继续派发子任务）"
 
     if effective_read_only:
+        tail = f"工作区根目录：{workspace_path}" if fork else f"工作目录：{working_dir}\n工作区根目录：{workspace_path}"
         return f"""\
 {SUBAGENT_DELEGATION_CONTEXT}
 
@@ -37,10 +39,21 @@ def build_spawn_subagent_prompt(
 - 优先使用已有只读/检索工具完成定位与核实；多个独立查询可并行发起，直接以文本输出结论。
 - {depth_line}
 
-工作目录：{working_dir}
-工作区根目录：{workspace_path}
+{tail}
 """
 
+    if fork:
+        return f"""\
+{SUBAGENT_DELEGATION_CONTEXT}
+
+当前模式：继承父会话工具（分叉共享上下文，可按所获授工具在任务指定路径调研、读写文件与执行命令）。
+- 可在工作目录及任务指令提供的专属目录读写文件、运行命令或调用已继承的插件工具。
+- shell 返回 execution_id 时，用 write_stdin 空 chars 等待输出，放弃前必须调用 task_stop。
+- 若创建或修改了文件，在最终回复中列出文件路径与验证结果。
+- {depth_line}
+
+工作区根目录：{workspace_path}
+"""
     return f"""\
 {SUBAGENT_DELEGATION_CONTEXT}
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import dataclass
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Literal, cast
 from uuid import uuid4
@@ -9,6 +10,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from agent.plugin_composition import Context
+from core.common.file_io import run_file_io
 from pathlib import Path
 from plugins.ledger.contract import BINDINGS
 from plugins.working_directory.contract import WORKING_DIRECTORY
@@ -29,6 +31,7 @@ from .request import (
 )
 from .contract import SUBAGENT_PROGRAM
 from .runtime import SubagentBusy, Subagents, completion
+from .worktree import git_repo_info
 
 
 class Prepared(BaseModel):
@@ -185,6 +188,27 @@ async def resolve_cwd(ctx: Context, session_id: str, requested: str | None, *, f
     return str(candidate.resolve())
 
 
+@dataclass(frozen=True, slots=True)
+class WorktreePlan:
+    repo: str
+    path: str
+    branch: str
+    cwd: str
+
+
+# worktree 规划只在 prepare 固定路径与分支；git 探测放进 worker，不阻塞事件循环。
+async def plan_worktree(cwd: Path, task_dir: Path, job_id: str) -> WorktreePlan | str:
+    try:
+        repo_info = await run_file_io(lambda: git_repo_info(cwd))
+    except ValueError as error:
+        return str(error)
+    if repo_info is None:
+        return "isolation='worktree' 需要当前工作目录位于 Git 仓库内"
+    repo_root, rel_subdir = repo_info
+    wt_root = (task_dir / "worktree").resolve()
+    return WorktreePlan(str(repo_root), str(wt_root), f"subagent/{job_id[:12]}", str((wt_root / rel_subdir).resolve()))
+
+
 class Spawn:
     """固定请求与工具权限；相同效果 key 只接纳一次，不复制最终正文。"""
 
@@ -234,6 +258,14 @@ class Spawn:
             cwd = await resolve_cwd(self.ctx, parent_session_id, args.cwd, fallback=task_dir)
         except ValueError as error:
             return str(error)
+        worktree: WorktreePlan | None = None
+        if args.isolation == "worktree":
+            planned = await plan_worktree(Path(cwd), task_dir, job_id)
+            if isinstance(planned, str):
+                return planned
+            worktree = planned
+            cwd = worktree.cwd
+        fork_through_seq = source.messages[-1].seq if args.fork else None
         nested_scope = current_nested_tool_scope()
         caller_allowed = None if nested_scope is None else set(nested_scope.tools)
         names = tuple(
@@ -282,14 +314,18 @@ class Spawn:
             parent_session_id=parent_session_id, parent_message_id=source.call_ref.message_id,
             parent_part_index=source.call_ref.part_index,
             origin=origin, sink=sink, program_binding=bindings.bind(SUBAGENT_PROGRAM, {}), tools=fixed,
-            model_id=model.model_id, reasoning_effort=model.reasoning_effort, cwd=cwd)
+            model_id=model.model_id, reasoning_effort=model.reasoning_effort, cwd=cwd,
+            fork=args.fork, fork_through_seq=fork_through_seq,
+            isolation=args.isolation, worktree_repo=None if worktree is None else worktree.repo,
+            worktree_path=None if worktree is None else worktree.path,
+            worktree_branch=None if worktree is None else worktree.branch)
         return Prepared(task=args.task, request=request).model_dump()
 
     async def invoke(self, key: str, arguments: Mapping[str, object]) -> Result:
         prepared = Prepared.model_validate(json_value(arguments))
         try:
             await self.jobs.accept(key, prepared.request, prepared.task)
-        except SubagentBusy as error:
+        except (SubagentBusy, RuntimeError) as error:
             return Result("error", (ContentPart("text", str(error)),))
         if prepared.request.background:
             _ = await self.jobs.start(key)
@@ -322,6 +358,9 @@ class Spawn:
         outcome = await self.jobs.outcome(reader)
         if outcome is None:
             raise ValueError("子任务结算记录缺少消息终态")
+        note = self.jobs.worktree_note(request)
+        if note is not None:
+            outcome = (outcome[0], f"{outcome[1]}\n\n{note}" if outcome[1] else note)
         return Result("success" if outcome[0] == "completed" else "error",
                       (ContentPart("text", completion(request, outcome, limit=self.jobs.result_chars)),))
 

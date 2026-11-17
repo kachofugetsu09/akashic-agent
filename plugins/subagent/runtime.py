@@ -21,16 +21,19 @@ from .inputs import CONVERSATION_COMPLETE
 from .inputs import DELIVERY
 from .inputs import REPLY_PROGRAM
 from plugins.ledger.contract import MessageConflict, MessageReader, OwnerRecord, OwnerTransaction, SessionAttributes
-from plugins.ledger.contract import ContentPart, Control, Input, Message, Output, ToolCall, ToolResult, with_truncated_head
+from plugins.ledger.contract import CallRef, ContentPart, Control, Input, Message, Output, ToolCall, ToolResult, with_truncated_head
 from plugins.ledger.contract import json_value
 from plugins.sources.contract import (
     SourceGuard,
 )
 
+from pathlib import Path
 from .request import Request, check_request
+from .worktree import cleanup_worktree, create_worktree, inspect_preserved_worktree
 from plugins.models.contract import MODEL_SELECTION
 
 from plugins.working_directory.contract import WORKING_DIRECTORY
+from plugins.context.contract import MATERIALS_V4
 from plugins.jobs.contract import JOB_NOTICES, JobOutcome, JobWatch
 from .contract import SUBAGENT_PROGRAM
 
@@ -38,6 +41,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_MAX_ACTIVE = 8
 DEFAULT_RESULT_CHARS = 100_000
 DEFAULT_MAX_DEPTH = 1
+FORK_TOOL_PLACEHOLDER = "Forked subagent context; parallel tool call omitted to preserve shared KV-cache prefix."
 
 
 
@@ -81,6 +85,8 @@ class Subagents:
         self._watched_bg: set[str] = set()
         self._watch_batches: dict[str, _BgBatch] = {}
         self._notices_recovered = False
+        self._worktree_notes: dict[str, str | None] = {}
+        self._worktree_locks: dict[str, asyncio.Lock] = {}
 
     def read(self, key: str) -> tuple[OwnerRecord, Request, MessageReader] | None:
         record = self.ctx.require(OWNER_STATE).open(self.ctx).read(key)
@@ -246,6 +252,48 @@ class Subagents:
         if self._batches.get(bkey) is batch:
             del self._batches[bkey]
 
+    @staticmethod
+    def _worktree_target(request: Request) -> tuple[Path, Path, str] | None:
+        if request.isolation != "worktree" or not request.worktree_repo or not request.worktree_branch:
+            return None
+        wt_str = request.worktree_path or request.cwd
+        return None if not wt_str else (Path(request.worktree_repo), Path(wt_str), request.worktree_branch)
+
+    def worktree_note(self, request: Request) -> str | None:
+        # 清理后记下结论（含"已回收"的 None），只有重启后没有结论时才回到 git 现场查询。
+        if request.job_id in self._worktree_notes:
+            return self._worktree_notes[request.job_id]
+        target = self._worktree_target(request)
+        return None if target is None else inspect_preserved_worktree(*target)
+
+    # 同一仓库的 worktree 创建与回收串行，避免并发 git 改 ref/worktree 元数据时互相拿不到锁。
+    def _worktree_lock(self, repo: Path) -> asyncio.Lock:
+        return self._worktree_locks.setdefault(str(repo), asyncio.Lock())
+
+    async def _ensure_worktree(self, request: Request) -> bool:
+        target = self._worktree_target(request)
+        if target is None:
+            return False
+        async with self._worktree_lock(target[0]):
+            existed = target[1].exists()
+            await run_file_io(lambda: create_worktree(*target))
+            self._worktree_notes.pop(request.job_id, None)
+            return not existed
+
+    async def _cleanup_request_worktree(self, request: Request) -> None:
+        target = self._worktree_target(request)
+        if target is None:
+            return
+        async with self._worktree_lock(target[0]):
+            _removed, note = await run_file_io(lambda: cleanup_worktree(*target))
+            self._worktree_notes[request.job_id] = note
+
+    def _with_worktree_note(self, request: Request, outcome: tuple[str, str]) -> tuple[str, str]:
+        note = self.worktree_note(request)
+        if note is None:
+            return outcome
+        return outcome[0], f"{outcome[1]}\n\n{note}" if outcome[1] else note
+
     def _finish_bg_outcome(
         self,
         key: str,
@@ -254,6 +302,7 @@ class Subagents:
         *,
         resumed: bool = False,
     ) -> None:
+        outcome = self._with_worktree_note(request, outcome)
         fut = self._bg_futures.pop(key, None)
         if fut is not None and not fut.done():
             fut.set_result(outcome)
@@ -403,6 +452,7 @@ class Subagents:
                 return "steered"
             if self.active_count_for_root(child_root) >= limit:
                 raise SubagentBusy(f"subagent capacity reached for session tree: max={limit}; resume rejected")
+            _ = await self._ensure_worktree(request)
             writer = self.ctx.require(MESSAGE_WRITERS).bind(
                 self.ctx,
                 author="parent",
@@ -448,7 +498,7 @@ class Subagents:
         if task is not None:
             _ = await task.join()
         outcome = await self.outcome(reader)
-        status, text = ("completed", "") if outcome is None else outcome
+        status, text = ("completed", "") if outcome is None else self._with_worktree_note(request, outcome)
         return {"job_id": job_id, "mode": "resumed_sync", "status": status, "result": text[:self.result_chars]}
 
     async def read_child_messages(
@@ -512,6 +562,120 @@ class Subagents:
             "messages": items,
         }
 
+    # 父会话已被摘要连续覆盖的前缀不复制：父模型自己也只读窗口之后的原文，长会话分叉不会整段搬运全部历史。
+    async def _fork_window_start(self, request: Request) -> int:
+        assert request.fork_through_seq is not None
+        with self.ctx.borrow(MATERIALS_V4) as materials:
+            if materials is None:
+                return -1
+            covered = await materials.history_start(request.parent_session_id)
+        if covered is None:
+            return -1
+        # 1. 与回复程序取窗一致：当前未闭合的父回合必须完整保留。
+        parent = self.ctx.require(MESSAGE_CATALOG).reader(request.parent_session_id)
+        latest_input = parent.latest_input_seq(request.parent_source, through_seq=request.fork_through_seq)
+        return max(-1, min(covered.after_seq, request.fork_through_seq if latest_input is None else latest_input - 1))
+
+    async def _seed_fork_prefix(self, request: Request) -> None:
+        if not request.fork or request.fork_through_seq is None:
+            return
+        catalog = self.ctx.require(MESSAGE_CATALOG)
+        parent_reader = catalog.reader(request.parent_session_id)
+        child_reader = catalog.reader(request.session_id)
+        after_seq = await self._fork_window_start(request)
+        parent_msgs = [
+            pm
+            for pm in await parent_reader.committed_snapshot_async(after_seq=after_seq, through_seq=request.fork_through_seq)
+            if pm.source == request.parent_source
+        ]
+        # 1. 若历史上存在未结算但已被 abandon/pause/failure 终止的 Output，不得为其补写伪成功 ToolResult。
+        abandoned_outputs: set[str] = set()
+        pending_output_ids: list[str] = []
+        existing_results: dict[tuple[str, int], tuple[Literal["success", "denied", "error", "interrupted"], tuple[ContentPart, ...]]] = {}
+        for pm in parent_msgs:
+            if isinstance(pm.body, ToolResult):
+                txt_parts = tuple(
+                    ContentPart("text", str(p.value))
+                    for p in pm.body.parts
+                    if isinstance(p, ContentPart) and p.kind == "text"
+                )
+                existing_results[(pm.body.call_ref.message_id, pm.body.call_ref.part_index)] = (
+                    pm.body.outcome,
+                    txt_parts or (ContentPart("text", ""),),
+                )
+            elif isinstance(pm.body, Output) and pm.body.finish == "continue":
+                pending_output_ids.append(pm.message_id)
+            elif isinstance(pm.body, Control) and pm.body.action in {"abandon", "pause", "failure"}:
+                abandoned_outputs.update(pending_output_ids)
+                pending_output_ids.clear()
+            elif isinstance(pm.body, Input):
+                pending_output_ids.clear()
+
+        text_check = self.ctx.require(CONTENT).check_text
+        msg_writer = self.ctx.require(MESSAGE_WRITERS).bind(
+            self.ctx,
+            author="subagent",
+            source="subagent",
+            body_types=(Input, Output),
+            content={"text": text_check},
+            check_call=lambda _call: None,
+        )(request.session_id)
+        try:
+            for pm in parent_msgs:
+                if isinstance(pm.body, Input):
+                    in_id = f"fork:{request.job_id}:in:{pm.seq}"
+                    if child_reader.get(in_id) is not None:
+                        continue
+                    tparts = tuple(
+                        ContentPart("text", str(p.value))
+                        for p in pm.body.parts
+                        if isinstance(p, ContentPart) and p.kind == "text"
+                    )
+                    if tparts:
+                        _ = await msg_writer.append_async(in_id, Input(tparts))
+                elif isinstance(pm.body, Output):
+                    if pm.message_id in abandoned_outputs:
+                        continue
+                    copied_parts: list[ContentPart | ToolCall] = []
+                    call_map: list[tuple[int, int]] = []  # (orig_part_idx, new_part_idx)
+                    for orig_idx, p in enumerate(pm.body.parts):
+                        if isinstance(p, ContentPart) and p.kind == "text" and str(p.value):
+                            copied_parts.append(ContentPart("text", str(p.value)))
+                        elif isinstance(p, ToolCall):
+                            # 仅保留已有结果的工具调用，或当前分叉点（parent_message_id）的并行调用槽位
+                            has_res = (pm.message_id, orig_idx) in existing_results
+                            if has_res or pm.message_id == request.parent_message_id:
+                                new_idx = len(copied_parts)
+                                copied_parts.append(ToolCall(p.binding_id, dict(p.arguments)))
+                                call_map.append((orig_idx, new_idx))
+                    if not copied_parts:
+                        continue
+                    out_id = f"fork:{request.job_id}:out:{pm.seq}"
+                    if child_reader.get(out_id) is None:
+                        _ = await msg_writer.append_async(out_id, Output(tuple(copied_parts), pm.body.finish))
+                    for orig_idx, new_idx in call_map:
+                        res_id = f"fork:{request.job_id}:res:{pm.seq}:{new_idx}"
+                        if child_reader.get(res_id) is not None:
+                            continue
+                        cref = CallRef(out_id, new_idx)
+                        outcome, rparts = existing_results.get(
+                            (pm.message_id, orig_idx),
+                            (cast(Literal["success", "denied", "error", "interrupted"], "success"), (ContentPart("text", FORK_TOOL_PLACEHOLDER),)),
+                        )
+                        res_writer = self.ctx.require(MESSAGE_WRITERS).bind(
+                            self.ctx,
+                            author="tool",
+                            source="subagent",
+                            body_types=(ToolResult,),
+                            content={"text": text_check},
+                        )(request.session_id, call_ref=cref)
+                        try:
+                            _ = await res_writer.append_async(res_id, ToolResult(cref, outcome, rparts))
+                        finally:
+                            res_writer.expire()
+        finally:
+            msg_writer.expire()
+
     async def accept(self, key: str, request: Request, text: str) -> None:
         """同一来源准入锁覆盖容量检查与持久提交，重放不再占额。"""
         ctx = self.ctx
@@ -528,6 +692,7 @@ class Subagents:
                     raise SubagentBusy(f"subagent capacity reached for session tree: max={limit}; current spawn rejected")
             _ = await ctx.require(SESSION_ADMISSION).ensure_async(ctx, request.session_id,
                 SessionAttributes(visibility="internal", learning="excluded"))
+            created_wt = await self._ensure_worktree(request)
             if request.cwd is not None:
                 # 2. 子会话的工作目录决定相对路径落在哪：父会话没设目录时 cwd 是还没建的任务目录，先建出来再写。
                 task_dir = ctx.workspace_root("subagent-runs") / request.job_id
@@ -540,6 +705,8 @@ class Subagents:
                             _ = await directories.switch("subagent-init:" + request.job_id, prepared_switch)
                         except Exception:
                             logger.warning("子任务初始工作目录写入失败 job=%s cwd=%s", request.job_id, request.cwd, exc_info=True)
+            if request.fork:
+                await self._seed_fork_prefix(request)
             writer = ctx.require(MESSAGE_WRITERS).bind(ctx, author="subagent", source="subagent",
                 body_types=(Input,), content={"text": ctx.require(CONTENT).check_text,
                     "model.selection": ctx.require(MODEL_SELECTION).check,
@@ -547,7 +714,10 @@ class Subagents:
             # 子回合按原输入里的 model.selection 冻结模型，与会话里手选模型走同一条路径。
             selection = () if request.model_id is None else (ContentPart("model.selection", {
                 "model_id": request.model_id, "reasoning_effort": request.reasoning_effort}),)
-            body = Input((ContentPart("text", text), *selection, ContentPart("subagent.request", request.model_dump())))
+            directive = text
+            if request.fork and request.cwd is not None:
+                directive = f"{text}\n\n[工作目录：{request.cwd}]"
+            body = Input((ContentPart("text", directive), *selection, ContentPart("subagent.request", request.model_dump())))
             created = False
 
             def committed(value: bool) -> None:
@@ -584,6 +754,8 @@ class Subagents:
                         self._watch_background(key, request)
             finally:
                 writer.expire()
+                if not created and created_wt:
+                    await self._cleanup_request_worktree(request)
                 if created:
                     await self._trace(request, "started")
 
@@ -682,12 +854,14 @@ class Subagents:
             if not drained_more:
                 break
 
+        await self._cleanup_request_worktree(request)
         if was_bg or key in self._watched_bg:
             self._finish_bg_outcome(key, request, outcome, resumed=was_resumed)
             self._watched_bg.discard(key)
         await self._trace(request, outcome[0])
 
     async def _settle(self, key: str) -> None:
+        found = self.read(key)
         state = self.ctx.require(OWNER_STATE).open(self.ctx)
         def commit(tx: OwnerTransaction) -> None:
             record = tx.read(key)
@@ -695,6 +869,9 @@ class Subagents:
             _ = tx.save(key, {**record.value, "settled": True}, expected_version=record.version)
         await state.transact_async(commit)
         self._release_active(key)
+        if found is not None:
+            _, request, _ = found
+            await self._cleanup_request_worktree(request)
 
     def _release_active(self, key: str) -> None:
         self._active.pop(key, None)
@@ -962,8 +1139,9 @@ class Subagents:
                                     elif notices is not None or request.sink is None:
                                         await self._settle(key)
                                         self._finish_bg_outcome(key, request, outcome, resumed=is_resumed)
-                                    elif await self._announce(key, request, reader, outcome):
+                                    else:
                                         await self._settle(key)
+                                        _ = await self._announce(key, request, reader, self._with_worktree_note(request, outcome))
                 except CompositionError as error:
                     if entered or error.code != "OWNER_UNAVAILABLE":
                         raise
