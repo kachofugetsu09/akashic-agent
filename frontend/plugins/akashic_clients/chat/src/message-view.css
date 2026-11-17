@@ -1377,7 +1377,7 @@
 /* 展开的思考正文缩进到行标签之下，字色保持第三级。 */
 .process-content {
   min-width: 0;
-  padding-left: 19px;
+  padding-left: 20px;
   color: var(--ak-color-text-secondary);
   outline: none;
 }
@@ -1488,13 +1488,13 @@ button.tool-step-summary:active {
   grid-template-columns: auto minmax(0, 1fr) auto auto;
   min-height: 22px;
   align-items: center;
-  /* icon 13px + gap 6px = 19px，与展开详情的缩进一致。 */
+  /* icon 14px + gap 6px = 20px，与展开详情的缩进一致。 */
   gap: 6px;
 }
 
 .tool-step-icon {
   flex: none;
-  width: 13px;
+  width: 14px;
 }
 
 .tool-step-icon,
@@ -1666,7 +1666,7 @@ button.tool-step-summary:active {
   gap: 8px;
   margin-top: 2px;
   border-left: 0;
-  padding: 0 0 6px 19px;
+  padding: 0 0 6px 20px;
   background: transparent;
 }
 

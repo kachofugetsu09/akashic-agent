@@ -23,10 +23,28 @@ export function collectOpticalTargetsInFrame(frameId) {
   };
   const onTop = (el) => {
     const r = el.getBoundingClientRect();
-    const x = Math.min(W - 1, Math.max(0, r.left + r.width / 2));
-    const y = Math.min(H - 1, Math.max(0, r.top + r.height / 2));
-    const hit = document.elementFromPoint(x, y);
-    return !!hit && (hit === el || el.contains(hit) || hit.contains(el));
+    const hitSelf = (px, py) => {
+      if (px < 0 || py < 0 || px >= W || py >= H) return true;
+      const hit = document.elementFromPoint(px, py);
+      return !!hit && (hit === el || el.contains(hit) || hit.contains(el));
+    };
+    const cx = Math.min(W - 1, Math.max(0, r.left + r.width / 2));
+    const cy = Math.min(H - 1, Math.max(0, r.top + r.height / 2));
+    if (!hitSelf(cx, cy)) return false;
+    // 宽按钮或边角被弹层局部盖住时（如主题浮层盖住底层导航行右侧），不把残缺轮廓误报为光学偏移
+    if (r.width > 48 || r.height > 48) {
+      const ix = Math.min(8, r.width / 4);
+      const iy = Math.min(6, r.height / 4);
+      if (
+        !hitSelf(r.left + ix, r.top + iy) ||
+        !hitSelf(r.right - ix, r.top + iy) ||
+        !hitSelf(r.left + ix, r.bottom - iy) ||
+        !hitSelf(r.right - ix, r.bottom - iy)
+      ) {
+        return false;
+      }
+    }
+    return true;
   };
   const isMaskElement = (el) => {
     const s = getComputedStyle(el);
