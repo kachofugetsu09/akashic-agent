@@ -97,7 +97,8 @@ class Subagents:
         self._settled_views: dict[str, dict[str, object]] = {}
 
     def read(self, key: str) -> tuple[OwnerRecord, Request, MessageReader] | None:
-        record = self.ctx.require(OWNER_STATE).open(self.ctx).read(key)
+        with self.ctx.call_scope():
+            record = self.ctx.require(OWNER_STATE).open(self.ctx).read(key)
         if record is None:
             return None
         session_id, input_id, _ = _pointer(record)
@@ -188,24 +189,26 @@ class Subagents:
     def _ensure_index(self) -> None:
         if self._index_loaded:
             return
-        self._apply_index(self._scan_index(self.ctx.require(OWNER_STATE).open(self.ctx), self.ctx.require(MESSAGE_CATALOG)))
+        with self.ctx.call_scope():
+            self._apply_index(self._scan_index(self.ctx.require(OWNER_STATE).open(self.ctx), self.ctx.require(MESSAGE_CATALOG)))
 
     async def ensure_index(self) -> None:
         # 1. 并发调用共享同一次后台扫描，避免两份快照先后覆盖内存索引。
         if self._index_loaded:
             return
-        if self._index_loading is None:
-            state = self.ctx.require(OWNER_STATE).open(self.ctx)
-            catalog = self.ctx.require(MESSAGE_CATALOG)
-            self._index_loading = asyncio.ensure_future(run_file_io(lambda: self._scan_index(state, catalog)))
-        loading = self._index_loading
-        try:
-            scan = await asyncio.shield(loading)
-        except Exception:
-            if self._index_loading is loading:
-                self._index_loading = None
-            raise
-        self._apply_index(scan)
+        async with self.ctx.runtime_scope():
+            if self._index_loading is None:
+                state = self.ctx.require(OWNER_STATE).open(self.ctx)
+                catalog = self.ctx.require(MESSAGE_CATALOG)
+                self._index_loading = asyncio.ensure_future(run_file_io(lambda: self._scan_index(state, catalog)))
+            loading = self._index_loading
+            try:
+                scan = await asyncio.shield(loading)
+            except Exception:
+                if self._index_loading is loading:
+                    self._index_loading = None
+                raise
+            self._apply_index(scan)
 
     def resolve_lineage(self, session_id: str) -> tuple[str, int]:
         """解析某会话所属的顶层根会话 ID 及当前嵌套深度（根会话为 0）。"""
@@ -438,72 +441,72 @@ class Subagents:
         background: bool = False,
     ) -> dict[str, object]:
         """向同一会话树下的子任务追加消息：运行中走 Steer 插话，空闲时冷恢复继续对话。"""
-        await self.ensure_index()
-        found = self._find_by_job_id(job_id)
-        if found is None:
-            raise KeyError(f"未找到子任务: {job_id}")
-        key, _record, request, reader = found
-        child_root = request.root_session_id or self.resolve_lineage(request.session_id)[0]
-        if child_root != caller_root_id:
-            raise PermissionError("无权向其他会话树的子任务发送消息")
+        async with self.ctx.runtime_scope():
+            await self.ensure_index()
+            found = self._find_by_job_id(job_id)
+            if found is None:
+                raise KeyError(f"未找到子任务: {job_id}")
+            key, _record, request, reader = found
+            child_root = request.root_session_id or self.resolve_lineage(request.session_id)[0]
+            if child_root != caller_root_id:
+                raise PermissionError("无权向其他会话树的子任务发送消息")
 
+            state = self.ctx.require(OWNER_STATE).open(self.ctx)
+            limit = self.max_active
 
-        state = self.ctx.require(OWNER_STATE).open(self.ctx)
-        limit = self.max_active
+            async def send_or_reopen(_slot: TaskSlot) -> str:
+                current = state.read(key)
+                assert current is not None
+                # 1. 在同一准入锁内判断活跃态：未结算或仍在 _active 则入队 Steer，与 _run 末尾排空无竞态
+                if not current.value["settled"] or key in self._active:
+                    wake = self._wake_events.setdefault(request.session_id, asyncio.Event())
+                    self._steers.setdefault(request.session_id, []).append((f"steer:{uuid4().hex}", message))
+                    wake.set()
+                    return "steered"
+                if self.active_count_for_root(child_root) >= limit:
+                    raise SubagentBusy(f"subagent capacity reached for session tree: max={limit}; resume rejected")
+                _ = await self._ensure_worktree(request)
+                writer = self.ctx.require(MESSAGE_WRITERS).bind(
+                    self.ctx,
+                    author="parent",
+                    source="subagent",
+                    body_types=(Input,),
+                    content={"text": self.ctx.require(CONTENT).check_text},
+                )(request.session_id)
+                try:
+                    prepared = await writer.prepare_async(f"subagent-send:{uuid4().hex}", Input((ContentPart("text", message),)))
+                    def commit(tx: OwnerTransaction) -> None:
+                        row = tx.read(key)
+                        assert row is not None
+                        if row.value["settled"] is not True:
+                            raise SubagentBusy("子任务状态刚切换为活跃，请重试")
+                        _ = tx.save(
+                            key,
+                            {**row.value, "settled": False, "background": background, "resumed": True},
+                            expected_version=row.version,
+                        )
+                        _ = tx.append_prepared(prepared)
+                    await state.transact_async(commit)
+                    self._active[key] = self._active_entry(request, child_root)
+                    if background:
+                        self._watched_bg.discard(key)
+                        self._watch_background(key, request, resumed=True)
+                finally:
+                    writer.expire()
+                return "reopened"
 
-        async def send_or_reopen(_slot: TaskSlot) -> str:
-            current = state.read(key)
-            assert current is not None
-            # 1. 在同一准入锁内判断活跃态：未结算或仍在 _active 则入队 Steer，与 _run 末尾排空无竞态
-            if not current.value["settled"] or key in self._active:
-                wake = self._wake_events.setdefault(request.session_id, asyncio.Event())
-                self._steers.setdefault(request.session_id, []).append((f"steer:{uuid4().hex}", message))
-                wake.set()
-                return "steered"
-            if self.active_count_for_root(child_root) >= limit:
-                raise SubagentBusy(f"subagent capacity reached for session tree: max={limit}; resume rejected")
-            _ = await self._ensure_worktree(request)
-            writer = self.ctx.require(MESSAGE_WRITERS).bind(
-                self.ctx,
-                author="parent",
-                source="subagent",
-                body_types=(Input,),
-                content={"text": self.ctx.require(CONTENT).check_text},
-            )(request.session_id)
-            try:
-                prepared = await writer.prepare_async(f"subagent-send:{uuid4().hex}", Input((ContentPart("text", message),)))
-                def commit(tx: OwnerTransaction) -> None:
-                    row = tx.read(key)
-                    assert row is not None
-                    if row.value["settled"] is not True:
-                        raise SubagentBusy("子任务状态刚切换为活跃，请重试")
-                    _ = tx.save(
-                        key,
-                        {**row.value, "settled": False, "background": background, "resumed": True},
-                        expected_version=row.version,
-                    )
-                    _ = tx.append_prepared(prepared)
-                await state.transact_async(commit)
-                self._active[key] = self._active_entry(request, child_root)
-                if background:
-                    self._watched_bg.discard(key)
-                    self._watch_background(key, request, resumed=True)
-            finally:
-                writer.expire()
-            return "reopened"
-
-        action = await self.ctx.require(TASKS).open(self.ctx).admit_async(("admission",), send_or_reopen)
-        self._bump()
-        if action == "steered":
-            return {"job_id": job_id, "mode": "steered", "status": "queued"}
-        task = await self.start(key)
-        if background:
-            return {"job_id": job_id, "mode": "resumed_background", "status": "running"}
-        if task is not None:
-            _ = await task.join()
-        outcome = await self.outcome(reader)
-        status, text = ("completed", "") if outcome is None else self._with_worktree_note(request, outcome)
-        return {"job_id": job_id, "mode": "resumed_sync", "status": status, "result": text[:self.result_chars]}
+            action = await self.ctx.require(TASKS).open(self.ctx).admit_async(("admission",), send_or_reopen)
+            self._bump()
+            if action == "steered":
+                return {"job_id": job_id, "mode": "steered", "status": "queued"}
+            task = await self.start(key)
+            if background:
+                return {"job_id": job_id, "mode": "resumed_background", "status": "running"}
+            if task is not None:
+                _ = await task.join()
+            outcome = await self.outcome(reader)
+            status, text = ("completed", "") if outcome is None else self._with_worktree_note(request, outcome)
+            return {"job_id": job_id, "mode": "resumed_sync", "status": status, "result": text[:self.result_chars]}
 
     # 只读请求窗口：after_seq>=0 从游标向后取一页，否则取 before_seq 之前（缺省为结尾）的一页。
     @staticmethod
@@ -544,36 +547,37 @@ class Subagents:
         limit: int = 50,
     ) -> dict[str, object]:
         """按父会话树权限读取 internal 子任务会话消息，保持主侧栏不可见。"""
-        await self.ensure_index()
-        found = self._find_by_job_id(job_id)
-        if found is None:
-            raise KeyError(f"未找到子任务: {job_id}")
-        key, record, request, reader = found
-        child_root = request.root_session_id or self.resolve_lineage(request.session_id)[0]
-        if child_root != caller_root_id:
-            raise PermissionError("无权读取其他会话树的子任务记录")
-        head = reader.head()
-        page = await self._read_window(reader, head, after_seq=after_seq, before_seq=before_seq, limit=limit)
-        items = [self._message_item(msg) for msg in page.messages]
-        has_more = page.has_more
-        # 2. 运行中直接报 running；已结算用结算时缓存的终态视图，轮询不再整段读子会话。
-        active = not bool(record.value["settled"]) or key in self._active
-        status = "running" if active else str(self._settled_status(request).get("status", "settled"))
-        return {
-            "job_id": request.job_id,
-            "label": request.label,
-            "session_id": request.session_id,
-            "root_session_id": child_root,
-            "depth": request.depth,
-            "read_only": request.read_only,
-            "model_id": request.model_id,
-            "cwd": request.cwd,
-            "active": active,
-            "status": status,
-            "head_seq": head,
-            "has_more": has_more,
-            "messages": items,
-        }
+        async with self.ctx.runtime_scope():
+            await self.ensure_index()
+            found = self._find_by_job_id(job_id)
+            if found is None:
+                raise KeyError(f"未找到子任务: {job_id}")
+            key, record, request, reader = found
+            child_root = request.root_session_id or self.resolve_lineage(request.session_id)[0]
+            if child_root != caller_root_id:
+                raise PermissionError("无权读取其他会话树的子任务记录")
+            head = reader.head()
+            page = await self._read_window(reader, head, after_seq=after_seq, before_seq=before_seq, limit=limit)
+            items = [self._message_item(msg) for msg in page.messages]
+            has_more = page.has_more
+            # 2. 运行中直接报 running；已结算用结算时缓存的终态视图，轮询不再整段读子会话。
+            active = not bool(record.value["settled"]) or key in self._active
+            status = "running" if active else str(self._settled_status(request).get("status", "settled"))
+            return {
+                "job_id": request.job_id,
+                "label": request.label,
+                "session_id": request.session_id,
+                "root_session_id": child_root,
+                "depth": request.depth,
+                "read_only": request.read_only,
+                "model_id": request.model_id,
+                "cwd": request.cwd,
+                "active": active,
+                "status": status,
+                "head_seq": head,
+                "has_more": has_more,
+                "messages": items,
+            }
 
     # 父会话已被摘要连续覆盖的前缀不复制：父模型自己也只读窗口之后的原文，长会话分叉不会整段搬运全部历史。
     async def _fork_window_start(self, request: Request) -> int:
@@ -932,49 +936,50 @@ class Subagents:
 
     async def cancel(self, job_id: str) -> bool:
         """取消意图先保存，再撤销新决策并等待原效果排空。"""
-        await self.ensure_index()
-        found = self._find_by_job_id(job_id)
-        if found is None:
-            return False
-        key, record, request, reader = found
-        stopped: Task | None = None
+        async with self.ctx.runtime_scope():
+            await self.ensure_index()
+            found = self._find_by_job_id(job_id)
+            if found is None:
+                return False
+            key, record, request, reader = found
+            stopped: Task | None = None
 
-        async def cancel(slot: TaskSlot) -> bool:
-            def committed() -> None:
-                nonlocal stopped
-                stopped = slot.current
+            async def cancel(slot: TaskSlot) -> bool:
+                def committed() -> None:
+                    nonlocal stopped
+                    stopped = slot.current
+                    if stopped is not None:
+                        stopped.cancel(interrupt=True)
+
+                # 读期间可能完成；只对检查过的来源前缀提交 pause。
+                while True:
+                    head = reader.head(source="subagent")
+                    outcome = await self.outcome(reader, through_seq=head)
+                    if outcome is not None:
+                        return outcome[0] == "cancelled"
+                    if record.value["settled"]:
+                        raise ValueError("子任务结算记录缺少终态")
+                    try:
+                        await self._control(request, "pause", "用户取消子任务", expected_source_head=head,
+                                            on_commit=committed)
+                    except MessageConflict:
+                        if reader.head(source="subagent") == head:
+                            raise
+                        continue
+                    return True
+
+            try:
+                cancelled = await self.ctx.require(TASKS).open(self.ctx).admit_async(("job", key), cancel)
+            finally:
+                # 即使调用者在提交中取消，真实 pause 也先撤销原 Task 并排空。
                 if stopped is not None:
-                    stopped.cancel(interrupt=True)
-
-            # 读期间可能完成；只对检查过的来源前缀提交 pause。
-            while True:
-                head = reader.head(source="subagent")
-                outcome = await self.outcome(reader, through_seq=head)
-                if outcome is not None:
-                    return outcome[0] == "cancelled"
-                if record.value["settled"]:
-                    raise ValueError("子任务结算记录缺少终态")
-                try:
-                    await self._control(request, "pause", "用户取消子任务", expected_source_head=head,
-                                        on_commit=committed)
-                except MessageConflict:
-                    if reader.head(source="subagent") == head:
-                        raise
-                    continue
-                return True
-
-        try:
-            cancelled = await self.ctx.require(TASKS).open(self.ctx).admit_async(("job", key), cancel)
-        finally:
-            # 即使调用者在提交中取消，真实 pause 也先撤销原 Task 并排空。
-            if stopped is not None:
-                await drain(stopped)
-        if not cancelled:
-            return False
-        task = await self.start(key)
-        if task is not None:
-            await drain(task)
-        return True
+                    await drain(stopped)
+            if not cancelled:
+                return False
+            task = await self.start(key)
+            if task is not None:
+                await drain(task)
+            return True
 
     # Save report failure under the child source before releasing the parent lane.
     async def _report_failure(
