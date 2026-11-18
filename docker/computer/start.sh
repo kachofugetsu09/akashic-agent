@@ -130,6 +130,7 @@ fi
 # kiosk 不画标签条和地址栏，那些由观看面板本地绘制。
 # 每个 Agent 标签是独立窗口，被挡住的窗口和后台标签也照常渲染、计时。
 # 关掉最后一个窗口时浏览器不退出，由 driver 补开空白页；OpenCLI 扩展调试时不弹提示条占画面。
+# 关掉往返缓存：OpenCLI 用完把标签切回空白页，旧站点页面不再在后台留一个渲染进程。
 # shellcheck disable=SC2086
 chromium $proxy_args \
   --user-data-dir=/data/profile \
@@ -149,8 +150,6 @@ chromium $proxy_args \
   --disable-gpu \
   --disable-quic \
   --disable-features=BackForwardCache \
-  --renderer-process-limit=6 \
-  --js-flags=--max-old-space-size=512 \
   --hide-crash-restore-bubble \
   --no-first-run \
   --no-default-browser-check \

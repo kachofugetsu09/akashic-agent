@@ -156,7 +156,6 @@ export class BrowserBackend extends EventEmitter {
           created: null,
           claimed: null,
           status: null,
-          lastActiveAt: Date.now(),
         };
         this.tabs.set(target.targetId, tab);
       }
@@ -245,8 +244,6 @@ export class BrowserBackend extends EventEmitter {
   async execute(params, context) {
     const { target, method, commandParams = {} } = params;
     const connection = await this.attach(target.tabId);
-    const activeTab = this.tabs.size ? [...this.tabs.values()].find((item) => item.id === target.tabId) : null;
-    if (activeTab) activeTab.lastActiveAt = Date.now();
     const key = JSON.stringify([context?.session_id, target.tabId, target.sessionId ?? ""]);
     let input = this.inputs.get(key);
     if (!input) {
@@ -439,7 +436,6 @@ export class BrowserBackend extends EventEmitter {
           session_id: context.session_id,
           turn_id: context.turn_id,
         };
-        tab.lastActiveAt = Date.now();
         return { id: tab.id, title: tab.title, url: tab.url };
       }
       case "claimUserTab": {
@@ -452,16 +448,12 @@ export class BrowserBackend extends EventEmitter {
           session_id: context.session_id,
           turn_id: context.turn_id,
         };
-        tab.lastActiveAt = Date.now();
         return { id: tab.id, title: tab.title, url: tab.url };
       }
-      case "markTab": {
-        const marked = this.tab(params.tabId);
-        this.checkOwner(marked, context);
-        marked.status = params.status;
-        marked.lastActiveAt = Date.now();
+      case "markTab":
+        this.checkOwner(this.tab(params.tabId), context);
+        this.tab(params.tabId).status = params.status;
         return;
-      }
       case "nameSession":
         this.sessionNames.set(context.session_id, params.name);
         return;
