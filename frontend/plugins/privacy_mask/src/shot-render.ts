@@ -54,12 +54,20 @@ function findPii(text: string): { start: number; end: number; kind: PiiKind }[] 
   return hits.filter((hit, index) => hits.findIndex((other) => other.start <= hit.start && other.end > hit.start) === index);
 }
 
-// 计数全部识别结果；需要遮挡的类型包成色块。
+// 副本里的文字节点，连同代码块等 open shadow root 里的。
+function textNodes(root: Node, into: Text[] = []): Text[] {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT);
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    if (node instanceof Text) into.push(node);
+    else if (node instanceof Element && node.shadowRoot) textNodes(node.shadowRoot, into);
+  }
+  return into;
+}
+
+// 计数全部识别结果；需要遮挡的类型包成色块。色块写内联样式：影子树里外部样式表够不着。
 function markPii(root: HTMLElement, cover: (kind: PiiKind) => boolean): Partial<Record<PiiKind, number>> {
   const found: Partial<Record<PiiKind, number>> = {};
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-  const nodes: Text[] = [];
-  for (let node = walker.nextNode(); node; node = walker.nextNode()) nodes.push(node as Text);
+  const nodes = textNodes(root);
   for (const node of nodes) {
     const text = node.data;
     const hits = findPii(text);
@@ -72,6 +80,7 @@ function markPii(root: HTMLElement, cover: (kind: PiiKind) => boolean): Partial<
       parts.push(text.slice(at, hit.start));
       const block = document.createElement("span");
       block.className = "privacy-shot-pii";
+      block.style.cssText = "background: var(--ak-ink-primary); color: transparent; border-radius: 3px; -webkit-box-decoration-break: clone; box-decoration-break: clone;";
       block.textContent = text.slice(hit.start, hit.end);
       parts.push(block);
       at = hit.end;

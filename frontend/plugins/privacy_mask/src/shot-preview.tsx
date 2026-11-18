@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { ChevronLeft, Download, Share } from "lucide-react";
+import { Check, ChevronDown, ChevronLeft, ChevronRight, Download, Share, SlidersHorizontal } from "lucide-react";
 import { render, type MessageSelection, type PluginUiHostContext } from "@akashic/chat-ui-v1";
 import type { PrivacyMaskEngine } from "./privacy-engine";
-import { renderShot, type PiiKind, type ShotOptions, type ShotResult } from "./shot-render";
+import { PII_LABEL, renderShot, type PiiKind, type ShotOptions, type ShotResult } from "./shot-render";
 
-// 截图对话：宿主选范围 → 预览（默认遮敏感信息；截屏打码开着时全部模糊）→ 分享/保存/复制。
+// 截图对话：宿主选范围 → 预览即编辑（打码三档、宽度、包含项收进「调整」）→ 分享/保存/复制。
 
 type Initial = { around: string } | { from: string; to: string };
 
@@ -14,10 +14,19 @@ export async function startScreenshot(context: Pick<PluginUiHostContext, "select
   if (!selection) return;
   const host = document.createElement("div");
   document.body.append(host);
+  // 全屏预览期间背后的聊天不进 Tab 序；关掉后焦点回到原处。
+  const returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const background = [...document.body.children].filter((element): element is HTMLElement => element instanceof HTMLElement && element !== host && !element.inert);
+  for (const element of background) element.inert = true;
   let unmount = () => {};
-  const close = () => { unmount(); host.remove(); };
+  const release = () => {
+    unmount();
+    host.remove();
+    for (const element of background) element.inert = false;
+  };
+  const close = () => { release(); returnFocus?.focus(); };
   const reselect = () => {
-    close();
+    release();
     void startScreenshot(context, engine, { from: selection.messageIds[0], to: selection.messageIds[selection.messageIds.length - 1] });
   };
   unmount = render(host, <ShotPreview selection={selection} screenMasked={engine.getSnapshot().enabled} onClose={close} onReselect={reselect} />);
@@ -36,31 +45,33 @@ function ShotPreview({ selection, screenMasked, onClose, onReselect }: {
   onReselect(): void;
 }) {
   // 1. 打码默认值：屏幕已开截屏打码 → 全部模糊；否则先遮敏感信息，识别不到再说
-  const [options] = useState<ShotOptions>(() => ({
+  const [options, setOptions] = useState<ShotOptions>({
     mask: screenMasked ? "all" : "pii", unmasked: {}, wide: !touch(), process: false, time: true, footer: true,
-  }));
+  });
   const [result, setResult] = useState<ShotResult | null>(null);
   const [urls, setUrls] = useState<string[]>([]);
   const [busy, setBusy] = useState(true);
   const [failure, setFailure] = useState("");
+  const [sheet, setSheet] = useState(false);
   const [toast, setToast] = useState("");
-  const generation = useRef(0);
   const root = useRef<HTMLDivElement>(null);
 
+  // 选项变了或预览关了，这一代就作废：晚到的结果不建 URL、不回写。
   useEffect(() => {
-    const ticket = ++generation.current;
+    let live = true;
     setBusy(true);
-    renderShot(selection, options, () => generation.current === ticket).then((next) => {
-      if (!next) return;
+    renderShot(selection, options, () => live).then((next) => {
+      if (!next || !live) return;
       setResult(next);
       setUrls(next.images.map((image) => URL.createObjectURL(image.blob)));
       setFailure("");
       setBusy(false);
     }).catch((error: unknown) => {
-      if (generation.current !== ticket) return;
+      if (!live) return;
       setFailure(error instanceof Error ? error.message : String(error));
       setBusy(false);
     });
+    return () => { live = false; };
   }, [options, selection]);
   useEffect(() => () => urls.forEach((url) => URL.revokeObjectURL(url)), [urls]);
   useEffect(() => {
@@ -68,11 +79,12 @@ function ShotPreview({ selection, screenMasked, onClose, onReselect }: {
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       event.stopPropagation();
-      onClose();
+      if (sheet) setSheet(false);
+      else onClose();
     };
     document.addEventListener("keydown", onKey, true);
     return () => document.removeEventListener("keydown", onKey, true);
-  }, [onClose]);
+  }, [onClose, sheet]);
   useEffect(() => {
     if (!toast) return;
     const timer = window.setTimeout(() => setToast(""), 2200);
@@ -80,6 +92,8 @@ function ShotPreview({ selection, screenMasked, onClose, onReselect }: {
   }, [toast]);
 
   const images = result?.images ?? [];
+  // 生成中或失败时旧图和当前选项对不上，导出入口一律停用。
+  const ready = images.length > 0 && !busy && !failure;
   const act = shotActions(images, urls, setToast);
   return <div ref={root} className="privacy-shot-preview" role="dialog" aria-modal="true" aria-label="截图预览" tabIndex={-1}>
     <header className="privacy-shot-preview__top">
@@ -88,7 +102,9 @@ function ShotPreview({ selection, screenMasked, onClose, onReselect }: {
       <button type="button" onClick={onClose}>关闭</button>
     </header>
     <div className="privacy-shot-preview__body" data-busy={busy || undefined}>
-      <p className="privacy-shot-summary">{summaryText(options, result)}</p>
+      <button type="button" className="privacy-shot-summary" onClick={() => setSheet(true)}>
+        {summaryText(options, result)}<ChevronDown size={14} aria-hidden="true" />
+      </button>
       <p className="privacy-shot-meta" role="status">{busy ? "正在生成…" : failure ? `没能生成图片：${failure}` : metaText(images)}</p>
       <div className="privacy-shot-images">
         {images.map((image, index) => <figure key={urls[index]}>
@@ -98,11 +114,13 @@ function ShotPreview({ selection, screenMasked, onClose, onReselect }: {
       </div>
     </div>
     <footer className="privacy-shot-preview__actions">
+      <button type="button" onClick={() => setSheet(true)}><SlidersHorizontal size={16} aria-hidden="true" />调整</button>
       <span />
-      <button type="button" disabled={!images.length} onClick={act.save}><Download size={16} aria-hidden="true" />保存</button>
-      {"share" in navigator ? <button type="button" disabled={!images.length} className={touch() ? "is-primary" : ""} onClick={act.share}><Share size={16} aria-hidden="true" />分享</button> : null}
-      {touch() ? null : <button type="button" disabled={!images.length} className="is-primary" onClick={act.copy}>复制图片</button>}
+      <button type="button" disabled={!ready} onClick={act.save}><Download size={16} aria-hidden="true" />保存</button>
+      {"share" in navigator ? <button type="button" disabled={!ready} className={touch() ? "is-primary" : ""} onClick={act.share}><Share size={16} aria-hidden="true" />分享</button> : null}
+      {touch() ? null : <button type="button" disabled={!ready} className="is-primary" onClick={act.copy}>复制图片</button>}
     </footer>
+    {sheet ? <ShotSheet options={options} found={result?.found ?? {}} onChange={setOptions} onClose={() => setSheet(false)} /> : null}
     {toast ? <p className="privacy-shot-toast" role="status">{toast}</p> : null}
   </div>;
 }
@@ -152,4 +170,39 @@ function shotActions(images: ShotResult["images"], urls: string[], toast: (text:
       }
     },
   };
+}
+
+// 调整面板：打码放最上面；按类型取消再折一层；样式与包含项各一行。
+function ShotSheet({ options, found, onChange, onClose }: {
+  options: ShotOptions;
+  found: Partial<Record<PiiKind, number>>;
+  onChange(next: ShotOptions): void;
+  onClose(): void;
+}) {
+  const set = (patch: Partial<ShotOptions>) => onChange({ ...options, ...patch });
+  const kinds = Object.entries(found) as [PiiKind, number][];
+  const seg = <K extends "mask" | "wide">(key: K, value: ShotOptions[K], label: string) => <button type="button"
+    aria-pressed={options[key] === value} onClick={() => set({ [key]: value } as Partial<ShotOptions>)}>{label}</button>;
+  const toggle = (key: "process" | "time" | "footer", label: string) => <button type="button" className="privacy-shot-check"
+    aria-pressed={options[key]} onClick={() => set({ [key]: !options[key] })}><span><Check size={12} aria-hidden="true" /></span>{label}</button>;
+  return <>
+    <div className="privacy-shot-scrim" onClick={onClose} />
+    <div className="privacy-shot-sheet" role="group" aria-label="调整截图">
+      <div className="privacy-shot-sheet__row"><strong>打码</strong>
+        <div className="privacy-shot-seg">{seg("mask", "off", "不打码")}{seg("mask", "pii", "敏感信息")}{seg("mask", "all", "全部模糊")}</div></div>
+      {options.mask === "pii" && kinds.length ? <details className="privacy-shot-kinds">
+        <summary>按类型：{kinds.map(([kind, count]) => `${PII_LABEL[kind]} ${count}`).join("、")}<ChevronRight size={14} aria-hidden="true" /></summary>
+        <div>{kinds.map(([kind, count]) => <button key={kind} type="button" className="privacy-shot-check" aria-pressed={!options.unmasked[kind]}
+          onClick={() => set({ unmasked: { ...options.unmasked, [kind]: !options.unmasked[kind] } })}>
+          <span><Check size={12} aria-hidden="true" /></span>{PII_LABEL[kind]} {count}</button>)}</div>
+      </details> : null}
+      <p className="privacy-shot-sheet__hint">{options.mask === "all" ? "和截屏打码一样：消息内容全部模糊，只留版式。"
+        : options.mask === "pii" && !kinds.length ? "选中范围里没有识别到手机号、邮箱、用户名或密钥。" : ""}</p>
+      <div className="privacy-shot-sheet__row"><strong>宽度</strong>
+        <div className="privacy-shot-seg">{seg("wide", false, "手机")}{seg("wide", true, "宽屏")}</div></div>
+      <div className="privacy-shot-sheet__row"><strong>包含</strong>
+        <div className="privacy-shot-sheet__checks">{toggle("process", "过程")}{toggle("time", "时间")}{toggle("footer", "页脚")}</div></div>
+      <button type="button" className="privacy-shot-sheet__done" onClick={onClose}>好了</button>
+    </div>
+  </>;
 }
