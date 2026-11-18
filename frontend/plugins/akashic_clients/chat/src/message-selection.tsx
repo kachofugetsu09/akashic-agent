@@ -2,16 +2,20 @@ import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, typ
 import { createPortal } from "react-dom";
 import { ArrowDown, ArrowUp } from "lucide-react";
 import { useStickToBottomContext } from "use-stick-to-bottom";
-import type { MessageSelection, MessageSelectionRequest } from "@akashic/chat-ui-v1";
+import type { MessageSelection, MessageSelectionRequest, MessageSelectionStage } from "@akashic/chat-ui-v1";
 import "./message-selection.css";
 
 // 消息选择模式：插件经 selectMessages 请求，宿主接管顶栏与输入区，用户框一段连续消息。
 // 范围按 DOM 里的消息锚点计：实时行与时间线行都带 data-message-id，不必穿过两套消息模型。
 
 const ANCHOR = ".web-message-anchor[data-message-id]";
+const STAGE_OMIT = ".shared-message-actions, .shared-message-delivery, .plugin-ui-host, .reading-code-copy, .code-header-actions, [data-static-code-copy]";
+// 过程：时间线的折叠摘要与思考/工具步骤，实时行的思考触发行与工具步骤；正文同在 .process-trace 里，不能整块删。
+const STAGE_PROCESS = ".turn-process, .flow-thinking, .flow-tool, .flow-notice, .tool-group, .tool-step, .process-trigger-sticky, .process-content";
 const EDGE_SCROLL = 64;
 
 interface Pending {
+  id: number;
   request: MessageSelectionRequest;
   resolve(value: MessageSelection | null): void;
 }
@@ -26,6 +30,7 @@ type Geometry = { top: number; height: number; left: number; width: number } | n
 // 同一文档只有一个聊天：请求放在模块里，插件挂载与消息行都不必穿过组件树拿上下文。
 let pending: Pending | null = null;
 let layers = 0;
+let requests = 0;
 const listeners = new Set<() => void>();
 
 function publish(next: Pending | null): void {
@@ -48,7 +53,12 @@ function settle(value: MessageSelection | null): void {
 export function selectMessages(request: MessageSelectionRequest): Promise<MessageSelection | null> {
   if (layers === 0) return Promise.resolve(null);
   settle(null);
-  return new Promise((resolve) => publish({ request, resolve }));
+  return new Promise((resolve) => publish({ id: ++requests, request, resolve }));
+}
+
+// 选择期间视口外的行也要完整渲染，确认后的副本才有富文本。
+export function useMessageSelectionActive(): boolean {
+  return useSyncExternalStore(subscribe, () => pending !== null);
 }
 
 function anchorsIn(scroller: HTMLElement): HTMLElement[] {
@@ -96,6 +106,50 @@ function tapRange(anchors: HTMLElement[], range: Range | null, index: number): R
   return index - a <= b - index ? pick(index, b) : pick(a, index);
 }
 
+// 只读副本：沿用聊天样式挂在 chat-main 里的页外位置；去掉操作、插件挂载与延迟渲染标记。
+// cloneNode 不带影子树：代码块等自定义元素的内容在 open shadow root 里，按同序遍历逐个补上。
+function copyShadowRoots(source: Element, copy: Element): void {
+  const from = [source, ...source.querySelectorAll("*")];
+  const to = [copy, ...copy.querySelectorAll("*")];
+  from.forEach((element, index) => {
+    const root = element.shadowRoot;
+    const target = to[index];
+    if (!root || !target) return;
+    const shadow = target.shadowRoot ?? target.attachShadow({ mode: "open" });
+    const children = [...root.children];
+    shadow.replaceChildren(...[...root.childNodes].map((node) => node.cloneNode(true)));
+    shadow.adoptedStyleSheets = [...root.adoptedStyleSheets];
+    [...shadow.children].forEach((child, at) => { if (children[at]) copyShadowRoots(children[at], child); });
+  });
+}
+
+function stageMessages(scroller: HTMLElement, ids: readonly string[], options: { width: number; process: boolean; time: boolean }): MessageSelectionStage {
+  // 1. 沿用消息列表容器的类名：列表的纵向排布与间距由它的组件类给出，写死会让问答叠在一起
+  const sources = ids.flatMap((id) => scroller.querySelector<HTMLElement>(`.web-message-anchor[data-message-id="${CSS.escape(id)}"]`) ?? []);
+  if (sources.length !== ids.length) throw new Error("选中的消息已不在当前会话里，请重新选择");
+  const stage = document.createElement("div");
+  stage.className = `${sources[0]?.parentElement?.className ?? "conversation-content"} message-selection-stage`;
+  stage.style.width = `${options.width}px`;
+  // 副本只供排版拍照：不进 Tab 序与读屏，正文链接等也点不到。
+  stage.inert = true;
+  stage.setAttribute("aria-hidden", "true");
+  // 2. 逐条复制并去掉交互件，按选项去掉过程与时间
+  const omit = [STAGE_OMIT, options.process ? "" : STAGE_PROCESS, options.time ? "" : ".shared-message-meta time"].filter(Boolean).join(", ");
+  for (const source of sources) {
+    const copy = source.cloneNode(true) as HTMLElement;
+    copyShadowRoots(source, copy);
+    copy.classList.remove("history-isolated");
+    copy.removeAttribute("data-selection");
+    copy.removeAttribute("tabindex");
+    for (const element of copy.querySelectorAll(omit)) element.remove();
+    for (const meta of copy.querySelectorAll(".shared-message-meta")) if (!meta.querySelector("time")) meta.remove();
+    for (const image of copy.querySelectorAll("img")) image.loading = "eager";
+    stage.append(copy);
+  }
+  (scroller.closest(".chat-main") ?? document.body).append(stage);
+  return { element: stage, release: () => stage.remove() };
+}
+
 export function MessageSelectionLayer({ sessionId }: { sessionId: string }) {
   const { scrollRef } = useStickToBottomContext();
   const current = useSyncExternalStore(subscribe, () => pending);
@@ -110,7 +164,8 @@ export function MessageSelectionLayer({ sessionId }: { sessionId: string }) {
   useEffect(() => () => settle(null), [sessionId]);
   const [scroller, setScroller] = useState<HTMLElement | null>(null);
   useLayoutEffect(() => { setScroller(current ? scrollRef.current : null); }, [current, scrollRef]);
-  return current && scroller ? <SelectionSession pending={current} scroller={scroller} /> : null;
+  // 按请求身份重建：顶替的新请求要重新算初始范围，不沿用上一个会话的状态。
+  return current && scroller ? <SelectionSession key={current.id} pending={current} scroller={scroller} /> : null;
 }
 
 function SelectionSession({ pending: request, scroller }: { pending: Pending; scroller: HTMLElement }) {
@@ -156,6 +211,7 @@ function SelectionSession({ pending: request, scroller }: { pending: Pending; sc
     return () => scroller.removeEventListener("scroll", update);
   }, [geometry, scroller]);
 
+  // 3. Esc 取消；退出时停掉拖动循环（按住把手时被取消，把手已卸载收不到 pointerup）
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
@@ -163,7 +219,10 @@ function SelectionSession({ pending: request, scroller }: { pending: Pending; sc
       settle(null);
     };
     document.addEventListener("keydown", onKey, true);
-    return () => document.removeEventListener("keydown", onKey, true);
+    return () => {
+      document.removeEventListener("keydown", onKey, true);
+      drag.current = null;
+    };
   }, []);
 
   const anchors = anchorsIn(scroller);
@@ -171,7 +230,7 @@ function SelectionSession({ pending: request, scroller }: { pending: Pending; sc
   const confirm = () => {
     if (!current) return;
     const ids = anchors.slice(current[0], current[1] + 1).map(idOf);
-    settle({ messageIds: ids });
+    settle({ messageIds: ids, stage: (options) => stageMessages(scroller, ids, options) });
   };
   const startDrag = (edge: "from" | "to", y: number) => {
     drag.current = { edge, y };

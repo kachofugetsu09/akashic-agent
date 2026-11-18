@@ -6,6 +6,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import { useStickToBottomContext } from "use-stick-to-bottom";
 
 import { MessageReplyReference, SharedMessageActions } from "./message-actions";
+import { useMessageSelectionActive } from "./message-selection";
 import { PluginUiSlot } from "./plugin-ui-runtime";
 import type { ChatMessage } from "./chat-message";
 import { ChatMessageView, TimelineMessageView } from "./message-view";
@@ -163,7 +164,9 @@ const DesktopMessageRow = React.memo(function DesktopMessageRow({
     };
   }, [enhancementSuspended, nearViewport]);
 
-  const renderFullMessage = nearViewport || message.streaming === true;
+  // 选择消息期间视口外的行也完整渲染：确认后的副本按显示内容复制。
+  const selecting = useMessageSelectionActive();
+  const renderFullMessage = nearViewport || message.streaming === true || selecting;
   return (
     <>
       {dayBreak ? <DaySeparator label={dayBreak} /> : null}
@@ -543,7 +546,8 @@ function useNarrowMessageGestures(scrollRef: React.RefObject<HTMLElement | null>
     const onStart = (event: TouchEvent) => {
       const target = event.target instanceof Element ? event.target : null;
       gesture = null;
-      if (!chatLayout().narrow || event.touches.length !== 1 || !target || target.closest("pre, table, .reading-table, input, textarea")) return;
+      // 选择模式里点按与把手归选择层，左滑引用、右滑开抽屉都停用。
+      if (!chatLayout().narrow || event.touches.length !== 1 || !target || target.closest("pre, table, .reading-table, input, textarea, [data-message-selecting]")) return;
       const touch = event.touches[0];
       gesture = { x: touch.clientX, y: touch.clientY, anchor: target.closest<HTMLElement>(".web-message-anchor"),
         fromEdge: touch.clientX < 24, axis: null, dx: 0 };

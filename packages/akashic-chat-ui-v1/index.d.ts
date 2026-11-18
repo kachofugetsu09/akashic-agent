@@ -81,6 +81,18 @@ export interface MessageSelectionRequest {
 /** 用户确认的范围；messageIds 按显示顺序。 */
 export interface MessageSelection {
   messageIds: readonly string[];
+  /**
+   * 按范围排一份只读副本：沿用聊天样式、去掉操作按钮与插件挂载，挂在页面外，宽度固定。
+   * process 为 false 时去掉思考与工具过程；time 为 false 时去掉时间。用完调用 release。
+   * 所选消息已不在当前会话视图里（切走会话、被删除）时抛出错误，不返回缺条的副本。
+   */
+  stage(options: { width: number; process: boolean; time: boolean }): MessageSelectionStage;
+}
+
+export interface MessageSelectionStage {
+  /** 副本根元素；每条消息是它的一个直接子元素，插件可以追加自己的页眉页脚。 */
+  element: HTMLElement;
+  release(): void;
 }
 
 /**
