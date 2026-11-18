@@ -1,7 +1,8 @@
-import { Eye, EyeOff } from "lucide-react";
+import { Eye, EyeOff, ScanLine } from "lucide-react";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { HeaderMarkerActions, MarqueeText, render, type PluginUiDefinition } from "@akashic/chat-ui-v1";
 import { acquirePrivacyMaskEngine, type PrivacyMaskEngine } from "./privacy-engine";
+import { startScreenshot } from "./shot-preview";
 import "./plugin-ui.css";
 
 function PrivacyMaskControl({ engine }: { engine: PrivacyMaskEngine }) {
@@ -139,6 +140,20 @@ function PrivacyMaskControl({ engine }: { engine: PrivacyMaskEngine }) {
 
 const definition: PluginUiDefinition = {
   slots: {
+    // 回答工具栏的截图钮：框住这一轮（提问到这条回答），预览时沿用截屏打码的状态。
+    "message.actions": {
+      mount(host, context) {
+        const engine = acquirePrivacyMaskEngine();
+        const unmount = render(host, <button type="button" aria-label="截图这一轮" data-tip="截图"
+          onClick={() => { void startScreenshot(context, engine, { around: context.messageId }); }}>
+          <ScanLine size={16} aria-hidden="true" />
+        </button>);
+        return () => {
+          unmount();
+          engine.release();
+        };
+      },
+    },
     "header.end": {
       mount(host) {
         const engine = acquirePrivacyMaskEngine();

@@ -1,11 +1,11 @@
-"""截屏隐私打码：侧栏底栏动作与对话顶栏标记共享同一份浏览器端脱敏状态（导航与会话标题骨架条 + 对话全部内容模糊）。"""
+"""截屏隐私打码与对话截图：侧栏底栏动作、对话顶栏标记与回答工具栏的截图共享同一份浏览器端脱敏状态。"""
 from agent.plugin_composition import Context
 from plugins.ui.contract import UI, UI_SLOTS, PluginUiDefinition, PluginUiRpcInvalidRequest
 
 api_version = 3
 name = "privacy_mask"
 version = "1.0.0"
-desc = "截屏隐私打码：一键将侧栏会话标题化为骨架条，并将对话全部内容高斯模糊"
+desc = "截屏隐私打码：一键将侧栏会话标题化为骨架条、对话内容高斯模糊；也能把一段对话截成长图并打码"
 author = "Akashic Core"
 inject = (UI,)
 
@@ -32,7 +32,7 @@ async def apply(ctx: Context) -> None:
 
         _ = await child.require(UI_SLOTS).register_plugin_ui(
             child,
-            PluginUiDefinition(module="plugin_ui.js", stylesheet="plugin_ui.css", slots=("header.end",)),
+            PluginUiDefinition(module="plugin_ui.js", stylesheet="plugin_ui.css", slots=("header.end", "message.actions")),
             query=query,
         )
 

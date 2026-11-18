@@ -275,3 +275,165 @@ html[data-privacy-content="true"] :is(
   user-select: none !important;
   transition: filter 180ms cubic-bezier(0.22, 1, 0.36, 1);
 }
+
+/* 对话截图（shot-preview.tsx / shot-render.ts） */
+.privacy-shot-pii {
+  border-radius: var(--ak-radius-xs);
+  background: var(--ak-ink-primary);
+  color: transparent !important;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+
+/* 截屏打码开着时全局模糊也会命中副本：副本只按自己选的档位打码。 */
+html[data-privacy-content="true"] .privacy-shot:not([data-mask="all"]) * {
+  filter: none !important;
+}
+
+.privacy-shot[data-mask="all"] :is(
+  .user-bubble > *,
+  .agent-content > *,
+  .user-row > :not(.user-bubble),
+  .timeline-message.timeline-input > :not(.user-bubble)
+) {
+  filter: blur(6px);
+}
+
+.privacy-shot-footer {
+  display: flex;
+  justify-content: space-between;
+  margin-block-start: 24px;
+  padding-block-start: 12px;
+  border-block-start: 1px solid var(--ak-rule-subtle);
+  color: var(--ak-ink-muted);
+  font: 0.75rem/1.4 var(--ak-type-ui);
+}
+
+.privacy-shot-footer b { color: var(--ak-ink-secondary); font-weight: 600; }
+
+.privacy-shot-continued {
+  margin-block-end: 16px;
+  color: var(--ak-ink-muted);
+  font: 0.75rem/1.4 var(--ak-type-ui);
+  text-align: center;
+}
+
+.privacy-shot-preview {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  background: var(--ak-paper-canvas);
+  color: var(--ak-ink-primary);
+  font-family: var(--ak-type-ui);
+  outline: none;
+}
+
+.privacy-shot-preview button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-block-size: 44px;
+  padding-inline: 14px;
+  border: 1px solid var(--ak-rule-default);
+  border-radius: var(--ak-radius-sm);
+  background: var(--ak-paper-editing);
+  color: var(--ak-ink-primary);
+  font: inherit;
+  font-size: 0.9375rem;
+  cursor: pointer;
+}
+
+.privacy-shot-preview button:disabled { opacity: 0.45; cursor: default; }
+
+.privacy-shot-preview button.is-primary {
+  border-color: transparent;
+  background: var(--ak-rule-focus);
+  color: var(--md-sys-color-on-primary);
+  font-weight: 600;
+}
+
+.privacy-shot-preview__top {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  min-block-size: 53px;
+  padding-inline: 8px;
+  border-block-end: 1px solid var(--ak-rule-subtle);
+}
+
+.privacy-shot-preview__top button { justify-self: start; border-color: transparent; background: none; color: var(--ak-ink-secondary); }
+.privacy-shot-preview__top button:last-child { justify-self: end; }
+
+.privacy-shot-preview__body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 16px 24px;
+  background: var(--ak-paper-quiet);
+}
+
+.privacy-shot-summary {
+  margin: 8px 0 4px;
+  color: var(--ak-ink-secondary);
+  font-size: 0.8125rem;
+  text-align: center;
+}
+
+.privacy-shot-meta {
+  margin: 0 0 12px;
+  color: var(--ak-ink-muted);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.privacy-shot-images {
+  display: grid;
+  justify-items: center;
+  gap: 12px;
+  transition: opacity var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+}
+
+.privacy-shot-preview__body[data-busy] .privacy-shot-images { opacity: 0.45; }
+.privacy-shot-images figure { margin: 0; inline-size: 100%; max-inline-size: 440px; }
+
+.privacy-shot-images img {
+  display: block;
+  inline-size: 100%;
+  block-size: auto;
+  border-radius: var(--ak-radius-xs);
+  box-shadow: var(--ak-elevation-float), 0 0 0 1px var(--ak-rule-subtle);
+}
+
+.privacy-shot-images figcaption { margin-block-start: 6px; color: var(--ak-ink-muted); font-size: 0.75rem; text-align: center; }
+
+.privacy-shot-preview__actions {
+  display: flex;
+  gap: 8px;
+  padding: 10px 12px max(10px, env(safe-area-inset-bottom, 0px));
+  border-block-start: 1px solid var(--ak-rule-subtle);
+}
+
+.privacy-shot-preview__actions > span { flex: 1; }
+
+@media (pointer: coarse) {
+  .privacy-shot-preview__actions > span { display: none; }
+  .privacy-shot-preview__actions > button { flex: 1; }
+}
+
+.privacy-shot-toast {
+  position: absolute;
+  inset-block-end: 84px;
+  inset-inline-start: 50%;
+  translate: -50% 0;
+  max-inline-size: calc(100% - 32px);
+  margin: 0;
+  padding: 10px 14px;
+  border-radius: var(--ak-radius-md);
+  background: var(--ak-ink-primary);
+  color: var(--ak-paper-canvas);
+  font-size: 0.875rem;
+  box-shadow: var(--ak-elevation-float);
+}
