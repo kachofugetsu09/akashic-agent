@@ -16,6 +16,7 @@ import { DesktopConversationMessages, DesktopTimelineMessages, messageDayKey, wi
 import { MediaGalleryViewer, ReplyActivityView } from "./message-view";
 import { MessageSquarePlus } from "lucide-react";
 import { ThreadFind, useThreadFind } from "./thread-find";
+import { MessageSelectionLayer } from "./message-selection";
 import { CompactNavigation } from "./compact-navigation";
 import { NewChatScope } from "./new-chat-scope";
 import { DesktopSidebar } from "./desktop-sidebar";
@@ -218,6 +219,7 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
           <DesktopAutoScroll sessionId={activeSessionId} messages={messages} status={status} streamStore={streamStore}
             timelineMessages={timelineMessages} replyActivities={replyActivities} />
           {hasMessages ? <ThreadFind {...find} /> : null}
+          {hasMessages ? <MessageSelectionLayer sessionId={activeSessionId} /> : null}
           <NarrowReadingChrome />
           <ComposerPageKeys />
           <ToggleKeepsPlace />

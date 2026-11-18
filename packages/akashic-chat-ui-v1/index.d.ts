@@ -61,6 +61,26 @@ export interface PluginUiHostContext {
     accepts(name: string): boolean;
     open(name: string, payload: unknown): Promise<WorkbenchIntentStatus>;
   };
+  /**
+   * 让用户在当前会话里框一段连续消息：宿主接管顶栏与输入区，点选或拖把手调整范围。
+   * 只在点击或键盘激活的处理函数里调用；取消、切走会话或当前没有会话时得到 null。
+   */
+  selectMessages(request: MessageSelectionRequest): Promise<MessageSelection | null>;
+}
+
+/** 消息选择模式的文案与初始范围。 */
+export interface MessageSelectionRequest {
+  /** 顶栏标题，例如「截图」。 */
+  title: string;
+  /** 底栏主按钮，例如「预览」。 */
+  confirmLabel: string;
+  /** around：框住这条消息所在的一轮（它前面最近的一次提问到它）；from/to：恢复上次的范围。 */
+  initial?: { around: string } | { from: string; to: string };
+}
+
+/** 用户确认的范围；messageIds 按显示顺序。 */
+export interface MessageSelection {
+  messageIds: readonly string[];
 }
 
 /**
