@@ -7,6 +7,7 @@ import { PluginUiResultCache } from "./plugin-ui-result-cache";
 import { composerControls } from "./composer-contributions";
 import type { ScopeFields } from "./scope-fields";
 import { openInWorkbench, subscribeWorkbenchIntents, workbenchAccepts } from "./shell-workbench";
+import { selectMessages } from "./message-selection";
 
 import type { ComposerControls, ComposerSuggestProvider, DestinationControls, DestinationForm, HeaderMetaControls, NavigationControls, NavigationDestinationsProvider, NavigationForm, NavigationFormControls, NavigationGroupsProvider, NavigationNotice, PluginUiDefinition, PluginUiHostContext, PluginUiMountSlotName, PluginUiQueryOptions, PluginUiSlotFacts, PluginUiSlotName, ScopeFieldControls, SidebarPanelControls, SidebarPanelProvider, ToolSummaryFacts, ToolSummaryProvider, ToolTaskSummary } from "@akashic/chat-ui-v1";
 
@@ -1062,6 +1063,7 @@ function MountedPlugin({
           accepts: workbenchAccepts,
           open: (name, payload) => live ? openInWorkbench(name, sessionId ?? "", payload) : Promise.resolve("invalid"),
         },
+        selectMessages: (request) => live ? selectMessages(request) : Promise.resolve(null),
         ...(composer ? { composer: composer.controls } : {}),
         ...(dimension ? { scope: { dimension, ...(scopeValue ? { value: scopeValue } : {}) } } : {}),
         ...(scopeFields ? { fields: scopeFields.controls } : {}),
