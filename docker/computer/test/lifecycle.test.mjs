@@ -222,7 +222,39 @@ test("cancel releases direct and emulated CDP touch inputs", async () => {
       );
       assert.equal(driver.closed, false);
     }
-    await driver.browser.endTurn(context);
+      await driver.browser.endTurn(context);
+  } finally {
+    await driver.close();
+  }
+});
+
+test("reapIdleTabs closes stale background and duplicate blank tabs but keeps front and handoff", async () => {
+  const driver = new ComputerDriver();
+  await driver.start();
+  try {
+    const frontTarget = await driver.openPage("data:text/html,<title>front</title>");
+    const staleTarget = await driver.openPage("data:text/html,<title>stale</title>");
+    const handoffTarget = await driver.openPage("data:text/html,<title>handoff</title>");
+    const extraBlank = await driver.openPage("about:blank");
+    // 切回 frontTarget 作为可见页
+    await driver.show(frontTarget);
+
+    // 标记 handoffTarget 状态，并把非可见页的 lastActiveAt 设为 40 分钟前
+    const { targetId: handoffTid } = await driver.viewTarget(handoffTarget);
+    driver.browser.tabs.get(handoffTid).status = "handoff";
+    const past = Date.now() - 40 * 60 * 1000;
+    for (const tab of driver.browser.tabs.values()) {
+      if (tab.targetId !== driver.browser.screen.front) tab.lastActiveAt = past;
+    }
+
+    const reaped = await driver.reapIdleTabs({ tabIdleMs: 1_800_000, blankIdleMs: 30_000 });
+    assert.ok(reaped >= 2, `expected at least 2 reaped tabs, got ${reaped}`);
+
+    const remainingUrls = (await driver.browser.listTabs()).map((t) => t.url);
+    assert.ok(remainingUrls.some((u) => u.includes("front")), "front tab must stay");
+    assert.ok(remainingUrls.some((u) => u.includes("handoff")), "handoff tab must stay");
+    assert.ok(!remainingUrls.some((u) => u.includes("stale")), "stale background tab must be reaped");
+    assert.ok(remainingUrls.filter((u) => u === "about:blank").length <= 1, "at most 1 blank tab remains");
   } finally {
     await driver.close();
   }

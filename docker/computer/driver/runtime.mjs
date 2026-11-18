@@ -12,7 +12,7 @@ const HUMAN_WAIT_MS = 40_000;
 
 /** 一个容器只有一个带个人 profile 的浏览器；各 Session 隔离 JS 绑定并各自串行，Session 之间并行。 */
 export class ComputerDriver extends EventEmitter {
-  constructor({ anonymousIdleMs = 600000 } = {}) {
+  constructor({ anonymousIdleMs = 300000 } = {}) {
     super();
     this.anonymous = new AnonymousBrowsers(anonymousIdleMs);
     this.browser = new BrowserBackend(undefined, undefined, null, this.anonymous.contexts);
@@ -208,9 +208,54 @@ export class ComputerDriver extends EventEmitter {
     return { backend, tabId, targetId: backend.tab(tabId).targetId };
   }
 
+  touchFront() {
+    const front = this.browser.screen.front;
+    if (!front) return;
+    const tab = this.browser.tabs.get(front);
+    if (tab) tab.lastActiveAt = Date.now();
+  }
+
+  /** 清理长期闲置的后台冗余标签与重复空白页，保留当前可见页、活跃 Turn 与等待接管的 handoff 页。 */
+  async reapIdleTabs({ tabIdleMs = 1_800_000, blankIdleMs = 30_000, now = Date.now() } = {}) {
+    if (this.closed || this.control || this.actives.size || this.agentJobs.size || this.humanJobs.size) {
+      return 0;
+    }
+    const tabs = await this.browser.listTabs();
+    if (tabs.length <= 1) return 0;
+    let remaining = tabs.length;
+    let closed = 0;
+    let blanksLeft = tabs.filter((t) => t.url === "about:blank").length;
+    for (const entry of tabs) {
+      if (remaining <= 1) break;
+      const tab = this.browser.tabs.get(this.browser.tab(entry.id).targetId);
+      if (!tab) continue;
+      if (tab.targetId === this.browser.screen.front) continue;
+      if (tab.created || tab.claimed || tab.status === "handoff") continue;
+      const idle = now - (tab.lastActiveAt ?? now);
+      const isDuplicateBlank = entry.url === "about:blank" && blanksLeft > 1 && idle >= blankIdleMs;
+      const isStaleBackground = tabIdleMs > 0 && idle >= tabIdleMs;
+      if (!isDuplicateBlank && !isStaleBackground) continue;
+      try {
+        const result = await this.browser.browser.send("Target.closeTarget", { targetId: tab.targetId });
+        if (result?.success) {
+          remaining--;
+          if (entry.url === "about:blank") blanksLeft--;
+          closed++;
+          console.log(`Computer reaped idle background tab (${entry.url})`);
+        }
+      } catch (error) {
+        console.error("Computer tab reap failed:", error.message);
+      }
+    }
+    if (closed > 0) this.emit("targets");
+    return closed;
+  }
+
   /** 把一个标签提到屏幕最前；所有观看者看到的是同一块屏幕。 */
   async show(id) {
-    const { targetId } = await this.viewTarget(id);
+    const { backend, tabId, targetId } = await this.viewTarget(id);
+    const tab = backend.tabs.get(targetId);
+    if (tab) tab.lastActiveAt = Date.now();
     await this.browser.screen.show(this.browser.browser, targetId);
     // 接管期间切到另一个匿名浏览器时，由接管持有它，人工操作不被闲置回收打断。
     const control = this.control, instance = this.anonymous.instances.get(id.split(":")[0]);
@@ -224,7 +269,9 @@ export class ComputerDriver extends EventEmitter {
 
   /** 人工导航：在标签里打开地址、后退、前进或刷新；临时附着，用完就断开。 */
   async navigate(id, action, url = "") {
-    const { targetId } = await this.viewTarget(id);
+    const { backend, targetId } = await this.viewTarget(id);
+    const tab = backend.tabs.get(targetId);
+    if (tab) tab.lastActiveAt = Date.now();
     const connection = this.browser.browser;
     const { sessionId } = await connection.send("Target.attachToTarget", { targetId, flatten: true });
     try {

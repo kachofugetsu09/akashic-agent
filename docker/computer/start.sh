@@ -148,6 +148,9 @@ chromium $proxy_args \
   --disable-dev-shm-usage \
   --disable-gpu \
   --disable-quic \
+  --disable-features=BackForwardCache \
+  --renderer-process-limit=6 \
+  --js-flags=--max-old-space-size=512 \
   --hide-crash-restore-bubble \
   --no-first-run \
   --no-default-browser-check \

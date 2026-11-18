@@ -42,8 +42,19 @@ async function readyDriver() {
   await computer.wake();
   return driverReady;
 }
+function optionalDuration(name, defaultMs) {
+  const raw = process.env[name];
+  if (raw === undefined) return defaultMs;
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value < 0)
+    throw new Error(`${name} must be non-negative milliseconds`);
+  return value;
+}
+
+const tabIdleMs = optionalDuration("COMPUTER_TAB_IDLE_MS", 1800000);
+
 const computer = new ComputerLifecycle({
-  idleMs: duration("COMPUTER_IDLE_MS", 600000),
+  idleMs: duration("COMPUTER_IDLE_MS", 300000),
   onChange: scheduleState,
   async start(exited) {
     // 1. 图形进程就绪后才创建 driver；控制服务健康检查不会走这里。
@@ -62,7 +73,7 @@ const computer = new ComputerLifecycle({
     }
     if (failure) throw failure;
     // 重启后旧一代可能还有迟到的事件；只转发当前这一代的。
-    const owner = new ComputerDriver({ anonymousIdleMs: duration("COMPUTER_ANONYMOUS_IDLE_MS", 600000) });
+    const owner = new ComputerDriver({ anonymousIdleMs: duration("COMPUTER_ANONYMOUS_IDLE_MS", 300000) });
     driver = owner;
     owner.on("cursor", (state) => { if (driver === owner) publishCursor(state); });
     owner.on("control", () => { if (driver === owner) scheduleState(); });
@@ -778,7 +789,10 @@ const server = createServer(async (request, response) => {
     } else if (request.method === "POST" && url.pathname === "/view/touch") {
       // 观看者直接操作页面不经过网关：续期防止休眠；input 表示人刚按下键鼠，持有租约让 Agent 停下。
       const payload = await body(request);
-      if (computer.state === "ready") computer.touch();
+      if (computer.state === "ready") {
+        computer.touch();
+        driver?.touchFront();
+      }
       // 拿不到租约（浏览器正在休眠或重启）不影响人的输入，也不能断开画面。
       if (payload.input === true && computer.state === "ready")
         await holdLease().catch(error => console.error("Computer viewer lease:", error.message));
@@ -923,10 +937,20 @@ async function refreshIdentity() {
   }
 }
 refreshTimer = setTimeout(refreshIdentity, 900000);
+const tabReapTimer = setInterval(() => {
+  if (computer.state === "ready" && driver) {
+    void driver.reapIdleTabs({ tabIdleMs }).catch((error) =>
+      console.error("Computer idle tab reap:", error.message),
+    );
+  }
+}, Math.min(tabIdleMs > 0 ? tabIdleMs : 60000, 60000));
+tabReapTimer.unref();
+
 async function stop() {
   if (stopping) return;
   stopping = true;
   clearTimeout(refreshTimer);
+  clearInterval(tabReapTimer);
   server.close();
   for (const client of eventClients.keys()) client.end();
   openCliServer.close();

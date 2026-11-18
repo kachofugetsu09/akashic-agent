@@ -12,7 +12,7 @@ OpenCLI is a command-line program, not the Browser Use tool. Run it with the ord
 1. Run `opencli` through `shell`; never send OpenCLI arguments to a Browser tool.
 2. Prefer a site adapter. Run `opencli list -f json` and the leaf command's `--help -f json` before guessing commands or flags.
 3. Request `-f json` for structured adapter output. `PUBLIC` and `LOCAL` adapters need no browser; `COOKIE`, `INTERCEPT`, and `UI` adapters need the Browser Bridge.
-4. Browser-backed site adapters use `--window background --site-session persistent --keep-tab true` so one logged-in session can be reused.
+4. For multi-step logged-in workflows that must survive across turns (or need user handoff), use `--window background --site-session persistent --keep-tab true`. For one-shot reads or background scrapes, omit `--keep-tab true` and close the session tab with `opencli browser <session> tab close <targetId>` when finished so Chromium renderer memory is released immediately.
 5. Before browser-dependent work, run `opencli doctor`. Daemon, Extension, and Connectivity must all be ready.
 6. Preserve the exact shell exit code, stdout, stderr, and error. Do not silently fall back to raw HTTP or another browser profile.
 7. Never start another browser, close the persistent Chromium process, delete its profile, or remove `Singleton*` files. The Computer plugin owns that lifecycle.
