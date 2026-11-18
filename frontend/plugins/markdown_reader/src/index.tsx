@@ -1274,6 +1274,7 @@ function FileManagerApp({
   const keepTail = segments.length > maxTail ? maxTail : segments.length;
   const collapsedSegments = segments.length > keepTail ? segments.slice(0, segments.length - keepTail) : [];
   const visibleSegments = keepTail > 0 ? segments.slice(segments.length - keepTail) : [];
+  const hideInlineRoot = panelWidth > 0 && panelWidth < 460 && collapsedSegments.length > 0;
 
   const filteredItems = useMemo(() => {
     const needle = filterText.trim().toLowerCase();
@@ -1497,27 +1498,31 @@ function FileManagerApp({
               ) : (
                 <>
                   <nav className="md-crumbs" aria-label="路径导航">
-                    <button
-                      type="button"
-                      className={`md-crumb md-crumb-root ${segments.length === 0 ? "is-current" : ""}`}
-                      title="/"
-                      aria-current={segments.length === 0 ? "location" : undefined}
-                      onClick={() => void loadFiles("/", "", { dir: -1 })}
-                    >
-                      <Home size={12} strokeWidth={1.75} aria-hidden="true" />
-                      {segments.length === 0 && (
-                        <span className="md-name md-sr-name" title="/">
-                          /
-                        </span>
-                      )}
-                    </button>
+                    {!hideInlineRoot && (
+                      <button
+                        type="button"
+                        className={`md-crumb md-crumb-root ${segments.length === 0 ? "is-current" : ""}`}
+                        title="/"
+                        aria-current={segments.length === 0 ? "location" : undefined}
+                        onClick={() => void loadFiles("/", "", { dir: -1 })}
+                      >
+                        <Home size={12} strokeWidth={1.75} aria-hidden="true" />
+                        {segments.length === 0 && (
+                          <span className="md-name md-sr-name" title="/">
+                            /
+                          </span>
+                        )}
+                      </button>
+                    )}
 
                     {collapsedSegments.length > 0 && (
                       <span
                         className="md-crumb-ellipsis-wrap"
                         onClick={(e) => e.stopPropagation()}
                       >
-                        <ChevronRight size={12} className="md-crumb-sep" aria-hidden="true" />
+                        {!hideInlineRoot && (
+                          <ChevronRight size={12} className="md-crumb-sep" aria-hidden="true" />
+                        )}
                         <button
                           type="button"
                           className="md-crumb-ellipsis"
@@ -1541,6 +1546,20 @@ function FileManagerApp({
                               className="md-floating-menu md-ellipsis-menu"
                               role="menu"
                             >
+                              {hideInlineRoot && (
+                                <button
+                                  type="button"
+                                  className="md-menu-row"
+                                  title="/"
+                                  onClick={() => {
+                                    setEllipsisOpen(false);
+                                    void loadFiles("/", "", { dir: -1 });
+                                  }}
+                                >
+                                  <Home size={14} strokeWidth={1.75} className="md-icon-plain" aria-hidden="true" />
+                                  <span>/</span>
+                                </button>
+                              )}
                               {collapsedSegments.map((seg) => (
                                 <button
                                   key={seg.path}
