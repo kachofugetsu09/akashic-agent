@@ -12,6 +12,7 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { build } from "esbuild";
 import { chromium } from "playwright-core";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -174,7 +175,10 @@ const htmlPage = `<!doctype html>
 <script type="importmap">
 {
   "imports": {
-    "@akashic/chat-app-v1": "/chat-stub.js"
+    "@akashic/chat-app-v1": "/chat-stub.js",
+    "react": "/sdk/react.js",
+    "react/jsx-runtime": "/sdk/jsx-runtime.js",
+    "react-dom/client": "/sdk/react-dom-client.js"
   }
 }
 </script>
@@ -200,6 +204,7 @@ const htmlPage = `<!doctype html>
     }
   };
 
+  await import("/sdk-runtime.js");
   const { activate: activateConv } = await import("/plugins/conversation_ui/web_module.js");
   const { activate: activateFiles } = await import("/plugins/markdown_reader/web_module.js");
 
@@ -292,6 +297,25 @@ export function mountChat(host, bridge) {
 }
 `;
 
+const sdkRuntimeBuild = await build({
+  stdin: {
+    contents: `
+      import * as React from "react";
+      import * as ReactJSXRuntime from "react/jsx-runtime";
+      import * as ReactDOM from "react-dom";
+      import * as ReactDOMClient from "react-dom/client";
+      window.__akashicRuntime = { React, ReactJSXRuntime, ReactDOM, ReactDOMClient };
+    `,
+    resolveDir: repo,
+    loader: "js",
+  },
+  bundle: true,
+  format: "esm",
+  write: false,
+  define: { "process.env.NODE_ENV": '"production"' },
+});
+const sdkRuntimeJs = sdkRuntimeBuild.outputFiles[0].text;
+
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, "http://127.0.0.1");
   if (url.pathname === "/") {
@@ -299,9 +323,25 @@ const server = createServer(async (req, res) => {
     res.end(htmlPage);
     return;
   }
+  if (url.pathname === "/sdk-runtime.js") {
+    res.writeHead(200, { "Content-Type": "text/javascript; charset=utf-8" });
+    res.end(sdkRuntimeJs);
+    return;
+  }
   if (url.pathname === "/chat-stub.js") {
     res.writeHead(200, { "Content-Type": "text/javascript; charset=utf-8" });
     res.end(chatStubJs);
+    return;
+  }
+  if (url.pathname.startsWith("/sdk/")) {
+    const sdkRoot = resolve(repo, "frontend/plugins/ui/dashboard/public/sdk");
+    const file = resolve(sdkRoot, "." + url.pathname.slice(4));
+    if (!file.startsWith(sdkRoot + "/")) {
+      res.writeHead(403).end();
+      return;
+    }
+    res.writeHead(200, { "Content-Type": "text/javascript; charset=utf-8" });
+    res.end(readFileSync(file));
     return;
   }
   if (url.pathname.startsWith("/plugins/")) {
@@ -485,45 +525,65 @@ try {
           const next = pick(["main", "proj", "other", ""]);
           await page.evaluate((s) => window.__setSession(s), next);
         } else if (action === "root_chip") {
-          const navBtn = page.locator(".md-bar button", { hasText: "目录" });
-          if (await navBtn.getAttribute("aria-pressed") === "false") await navBtn.click();
-          const chips = page.locator(".md-roots .md-root-chip");
-          const n = await chips.count();
-          if (n > 0) await chips.nth(Math.floor(rng() * n)).click({ timeout: 1500 });
+          const backBtn = page.locator(".md-bar button[aria-label='返回目录']");
+          if (await backBtn.isVisible().catch(() => false)) await backBtn.click();
+          const sidebarRows = page.locator(".md-nav .md-sidebar-row");
+          const sn = await sidebarRows.count();
+          if (sn > 0 && await sidebarRows.first().isVisible().catch(() => false)) {
+            await sidebarRows.nth(Math.floor(rng() * sn)).click({ timeout: 1500 });
+          } else {
+            const trigger = page.locator(".md-places-trigger");
+            if (await trigger.isVisible().catch(() => false)) {
+              await trigger.click({ timeout: 1500 });
+              const items = page.locator(".md-places-menu .md-menu-row");
+              const mn = await items.count();
+              if (mn > 0) await items.nth(Math.floor(rng() * Math.max(1, mn - 2))).click({ timeout: 1500 });
+            }
+          }
         } else if (action === "crumb") {
-          const navBtn = page.locator(".md-bar button", { hasText: "目录" });
-          if (await navBtn.getAttribute("aria-pressed") === "false") await navBtn.click();
-          const crumbs = page.locator(".md-crumbs .md-crumb");
+          const crumbs = page.locator(".md-crumbs .md-crumb:not(.is-current)");
           const n = await crumbs.count();
           if (n > 0) await crumbs.nth(Math.floor(rng() * n)).click({ timeout: 1500 });
         } else if (action === "entry") {
-          const navBtn = page.locator(".md-bar button", { hasText: "目录" });
-          if (await navBtn.getAttribute("aria-pressed") === "false") await navBtn.click();
+          const backBtn = page.locator(".md-bar button[aria-label='返回目录']");
+          if (await backBtn.isVisible().catch(() => false)) await backBtn.click();
           const rows = page.locator(".md-list .md-entry:not([disabled])");
           const n = await rows.count();
           if (n > 0) await rows.nth(Math.floor(rng() * n)).click({ timeout: 1500 });
         } else if (action === "submit_path") {
-          const navBtn = page.locator(".md-bar button", { hasText: "目录" });
-          if (await navBtn.getAttribute("aria-pressed") === "false") await navBtn.click();
-          const pathBtn = page.locator(".md-nav-actions button", { hasText: "路径" });
-          if (await pathBtn.getAttribute("aria-pressed") === "false") await pathBtn.click();
+          const editBtn = page.locator(".md-location-edit");
+          if (await editBtn.isVisible().catch(() => false)) await editBtn.click({ timeout: 1500 });
           await page.getByRole("textbox", { name: "服务端目录或文件路径" }).fill(pick(PATH_SAMPLES));
           await page.locator(".md-open button[type='submit']").click({ timeout: 1500 });
         } else if (action === "pin") {
-          const navBtn = page.locator(".md-bar button", { hasText: "目录" });
-          if (await navBtn.getAttribute("aria-pressed") === "false") await navBtn.click();
-          const pin = page.locator(".md-nav-actions button", { hasText: "收藏" });
-          if (await pin.isVisible()) await pin.click({ timeout: 1500 });
+          const backBtn = page.locator(".md-bar button[aria-label='返回目录']");
+          if (await backBtn.isVisible().catch(() => false)) await backBtn.click();
+          const sidePin = page.locator(".md-sidebar-pin-btn");
+          if (await sidePin.isVisible().catch(() => false)) {
+            await sidePin.click({ timeout: 1500 });
+          } else {
+            const trigger = page.locator(".md-places-trigger");
+            if (await trigger.isVisible().catch(() => false)) {
+              await trigger.click({ timeout: 1500 });
+              const pinRow = page.locator(".md-places-menu .md-menu-row", { hasText: "收藏当前目录" });
+              if (await pinRow.isVisible().catch(() => false)) await pinRow.click({ timeout: 1500 });
+            }
+          }
         } else if (action === "hidden") {
-          const navBtn = page.locator(".md-bar button", { hasText: "目录" });
-          if (await navBtn.getAttribute("aria-pressed") === "false") await navBtn.click();
-          await page.locator(".md-filter-row button", { hasText: "隐藏项" }).click({ timeout: 1500 });
+          const backBtn = page.locator(".md-bar button[aria-label='返回目录']");
+          if (await backBtn.isVisible().catch(() => false)) await backBtn.click();
+          const hiddenBtn = page.locator(".md-status-btn", { hasText: "隐藏项" });
+          if (await hiddenBtn.isVisible().catch(() => false)) await hiddenBtn.click({ timeout: 1500 });
         } else if (action === "filter") {
-          const navBtn = page.locator(".md-bar button", { hasText: "目录" });
-          if (await navBtn.getAttribute("aria-pressed") === "false") await navBtn.click();
-          await page.getByRole("searchbox", { name: "筛选当前目录" }).fill(pick(["", "mem", "item-1", "不存在"]));
+          const backBtn = page.locator(".md-bar button[aria-label='返回目录']");
+          if (await backBtn.isVisible().catch(() => false)) await backBtn.click();
+          const searchBox = page.getByRole("searchbox", { name: "筛选当前目录" });
+          if (!(await searchBox.isVisible().catch(() => false))) {
+            await page.locator(".md-bar button[aria-label='筛选当前目录']").click({ timeout: 1500 });
+          }
+          await searchBox.fill(pick(["", "mem", "item-1", "不存在"]));
         } else if (action === "view_mode") {
-          const candidates = page.locator(".md-tools button:visible, .md-banner button:visible");
+          const candidates = page.locator(".md-tools button:visible, .md-banner button:visible, .md-view-seg button:visible");
           const n = await candidates.count();
           if (n > 0) await candidates.nth(Math.floor(rng() * n)).click({ timeout: 1500 });
         } else if (action === "quote") {
