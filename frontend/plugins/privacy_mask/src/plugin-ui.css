@@ -270,7 +270,7 @@ html[data-privacy-content="true"] :is(
   .plugin-ui-slot[data-slot="header.end"] .header-marker:not([data-privacy-ui]) .header-marker__panel > code,
   .md-reader article,
   .sites-stage
-) {
+):not(.privacy-shot *) {
   filter: blur(6px) !important;
   user-select: none !important;
   transition: filter 180ms cubic-bezier(0.22, 1, 0.36, 1);
@@ -283,11 +283,6 @@ html[data-privacy-content="true"] :is(
   color: transparent !important;
   -webkit-box-decoration-break: clone;
   box-decoration-break: clone;
-}
-
-/* 截屏打码开着时全局模糊也会命中副本：副本只按自己选的档位打码。 */
-html[data-privacy-content="true"] .privacy-shot:not([data-mask="all"]) * {
-  filter: none !important;
 }
 
 .privacy-shot[data-mask="all"] :is(
@@ -348,7 +343,8 @@ html[data-privacy-content="true"] .privacy-shot:not([data-mask="all"]) * {
 
 .privacy-shot-preview button:disabled { opacity: 0.45; cursor: default; }
 
-.privacy-shot-preview button.is-primary {
+.privacy-shot-preview button.is-primary,
+.privacy-shot-sheet__done {
   border-color: transparent;
   background: var(--ak-rule-focus);
   color: var(--md-sys-color-on-primary);
@@ -374,11 +370,14 @@ html[data-privacy-content="true"] .privacy-shot:not([data-mask="all"]) * {
   background: var(--ak-paper-quiet);
 }
 
-.privacy-shot-summary {
-  margin: 8px 0 4px;
+.privacy-shot-preview .privacy-shot-summary {
+  display: flex;
+  margin-inline: auto;
+  min-block-size: 36px;
+  border-color: transparent;
+  background: none;
   color: var(--ak-ink-secondary);
   font-size: 0.8125rem;
-  text-align: center;
 }
 
 .privacy-shot-meta {
@@ -422,6 +421,96 @@ html[data-privacy-content="true"] .privacy-shot:not([data-mask="all"]) * {
   .privacy-shot-preview__actions > span { display: none; }
   .privacy-shot-preview__actions > button { flex: 1; }
 }
+
+.privacy-shot-scrim {
+  position: absolute;
+  inset: 0;
+  background: var(--ak-scrim-overlay);
+}
+
+.privacy-shot-sheet {
+  position: absolute;
+  inset-inline: 0;
+  inset-block-end: 0;
+  max-inline-size: 520px;
+  margin-inline: auto;
+  padding: 12px 16px max(12px, env(safe-area-inset-bottom, 0px));
+  border-radius: var(--ak-radius-lg) var(--ak-radius-lg) 0 0;
+  background: var(--ak-paper-editing);
+  box-shadow: var(--ak-elevation-overlay);
+}
+
+.privacy-shot-sheet__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-block-size: 52px;
+}
+
+.privacy-shot-sheet__row strong { flex: none; font-size: 0.9375rem; }
+.privacy-shot-sheet__checks { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.privacy-shot-sheet__hint { margin: 0 0 4px; color: var(--ak-ink-muted); font-size: 0.8125rem; line-height: 1.5; }
+.privacy-shot-sheet__hint:empty { display: none; }
+.privacy-shot-preview .privacy-shot-sheet__done { inline-size: 100%; margin-block-start: 8px; }
+
+.privacy-shot-seg {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--ak-rule-default);
+  border-radius: var(--ak-radius-md);
+}
+
+.privacy-shot-preview .privacy-shot-seg button {
+  min-block-size: 40px;
+  padding-inline: 12px;
+  border-color: transparent;
+  background: none;
+  color: var(--ak-ink-muted);
+  font-size: 0.875rem;
+}
+
+.privacy-shot-preview .privacy-shot-seg button[aria-pressed="true"] {
+  background: var(--ak-paper-sheet);
+  color: var(--ak-ink-primary);
+  font-weight: 600;
+}
+
+.privacy-shot-preview .privacy-shot-check { min-block-size: 40px; padding-inline: 10px; font-size: 0.875rem; color: var(--ak-ink-muted); }
+.privacy-shot-preview .privacy-shot-check[aria-pressed="true"] { color: var(--ak-ink-primary); }
+
+.privacy-shot-check > span {
+  display: grid;
+  place-items: center;
+  inline-size: 16px;
+  block-size: 16px;
+  border: 1.5px solid var(--ak-ink-muted);
+  border-radius: var(--ak-radius-xs);
+  color: transparent;
+}
+
+.privacy-shot-check[aria-pressed="true"] > span {
+  border-color: var(--ak-rule-focus);
+  background: var(--ak-rule-focus);
+  color: var(--md-sys-color-on-primary);
+}
+
+.privacy-shot-kinds summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-block-size: 40px;
+  color: var(--ak-ink-secondary);
+  font-size: 0.8125rem;
+  list-style: none;
+  cursor: pointer;
+}
+
+.privacy-shot-kinds summary::-webkit-details-marker { display: none; }
+.privacy-shot-kinds summary svg { transition: rotate var(--ak-sys-duration-short) var(--ak-sys-motion-standard); }
+.privacy-shot-kinds[open] summary svg { rotate: 90deg; }
+.privacy-shot-kinds > div { display: flex; flex-wrap: wrap; gap: 8px; padding-block-end: 8px; }
 
 .privacy-shot-toast {
   position: absolute;
