@@ -79,7 +79,7 @@
   fill: var(--ak-sys-color-warning);
 }
 
-/* 1. 顶部导航工具栏（总高 45px，含 1px 底边后内高为偶数 44px，避免 0.5px 亚像素下沉） */
+/* 1. 顶部导航工具栏（总高 45px，含 1px 底边后内高为偶数 44px，横向 12px 与宿主 .conversation-tools-bar 左侧基准线对齐） */
 .md-bar {
   position: relative;
   z-index: 20;
@@ -88,7 +88,7 @@
   align-items: center;
   gap: 6px;
   height: 45px;
-  padding: 0 10px;
+  padding: 0 12px;
   border-bottom: 1px solid var(--ak-rule-subtle);
   background: var(--ak-paper-canvas);
 }
@@ -157,7 +157,11 @@
 }
 
 .md-status-btn > svg {
-  translate: 0 -1px;
+  translate: 0 -0.5px;
+}
+
+.md-status-btn > span {
+  translate: 0 0.75px;
 }
 
 /* 停靠模式下位置下拉胶囊 */
@@ -809,15 +813,16 @@
   background: var(--ak-paper-editing);
 }
 
-/* 阅读子工具条（39px 含 1px 底边 = 38px 偶数内高） */
+/* 阅读子工具条（最小高 41px 含 1px 底边 = 40px 偶数内高，上下各 6px 对称留白） */
 .md-reader-bar {
   display: flex;
   flex: none;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  height: 39px;
-  padding: 0 12px;
+  gap: 6px 10px;
+  min-height: 41px;
+  padding: 6px 12px;
   border-bottom: 1px solid var(--ak-rule-subtle);
   background: var(--ak-paper-quiet);
 }
@@ -848,8 +853,9 @@
   display: flex;
   flex: 0 1 auto;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
   min-width: 0;
+  max-width: 100%;
   overflow-x: auto;
   scrollbar-width: none;
 }
@@ -859,14 +865,15 @@
 }
 
 .md-tool-btn {
+  position: relative;
   gap: 5px;
   height: 28px;
-  padding: 0 8px;
+  padding: 0 9px;
   border: 1px solid var(--ak-rule-subtle) !important;
   background: var(--ak-paper-editing) !important;
   color: var(--ak-ink-primary) !important;
   font-size: 12px;
-  line-height: 1;
+  line-height: 16px;
 }
 
 @media (hover: hover) {
@@ -1116,13 +1123,14 @@
 }
 
 .md-status-btn {
-  gap: 4px;
+  position: relative;
+  gap: 5px;
   height: 22px;
-  padding: 0 6px;
+  padding: 0 7px;
   border-radius: var(--ak-radius-xs) !important;
   color: var(--ak-ink-secondary) !important;
   font-size: 11.5px;
-  line-height: 1;
+  line-height: 16px;
 }
 
 @media (hover: hover) {
@@ -1140,12 +1148,8 @@
 
 @container (max-width: 380px) {
   .md-reader .md-prose {
-    padding: 16px 14px 48px;
+    padding: 18px 14px 48px;
     font-size: 14px;
-  }
-
-  .md-bar {
-    padding-inline: 8px;
   }
 
   .md-places-label {
@@ -1153,37 +1157,93 @@
   }
 }
 
-/* 触屏：可点控件满足 44px 热区，地址栏可折行保证面包屑不被挤压，输入框 16px 防缩放 */
+/* 触控：保持与宿主 53px 顶栏一致的视觉比例与上下留白，所有工具栏控件统一高度并通过 ::after 扩至 44px+ 触控热区 */
 @media (pointer: coarse) {
   .md-bar {
     flex-wrap: wrap;
     height: auto;
-    min-height: 45px;
-    padding: 6px 10px;
+    min-height: 53px;
+    padding: 8px 12px;
+    gap: 8px 6px;
   }
 
-  .md-location {
-    min-width: 180px;
+  .md-places-trigger,
+  .md-location,
+  .md-view-seg,
+  .md-icon-btn {
+    position: relative;
     height: 36px;
   }
 
-  .md-reader button:not(.md-code-ln):not(.md-crumb):not(.md-crumb-ellipsis):not(.md-location-edit):not(.md-status-btn):not(.md-seg-btn) {
-    min-width: 44px;
-    min-height: 44px;
+  .md-icon-btn {
+    width: 36px;
   }
 
-  .md-view-seg {
-    height: 44px;
+  .md-location {
+    min-width: 116px;
   }
 
   .md-seg-btn {
-    min-width: 34px;
-    height: 40px;
+    position: relative;
+    width: 32px;
+    height: 32px;
+  }
+
+  .md-reader-bar {
+    min-height: 49px;
+    padding: 8px 12px;
+    gap: 8px 10px;
+  }
+
+  .md-tool-btn {
+    height: 32px;
+    padding: 0 10px;
+    gap: 6px;
+    font-size: 12.5px;
+  }
+
+  .md-status-bar {
+    height: auto;
+    min-height: 37px;
+    padding: 6px 12px;
+  }
+
+  .md-status-btn {
+    height: 24px;
+    padding: 0 8px;
+  }
+
+  .md-icon-btn::after,
+  .md-places-trigger::after,
+  .md-seg-btn::after,
+  .md-location-edit::after {
+    content: "";
+    position: absolute;
+    inset: -4px;
+  }
+
+  .md-tool-btn::after {
+    content: "";
+    position: absolute;
+    inset: -6px -2px;
+  }
+
+  .md-status-btn::after {
+    content: "";
+    position: absolute;
+    inset: -10px -4px;
+  }
+
+  .md-entry,
+  .md-sidebar-row,
+  .md-menu-row,
+  .md-outline button {
+    min-height: 44px;
   }
 
   .md-open input,
   .md-filter-inner input {
-    min-height: 44px;
+    min-height: 40px;
     font-size: 16px;
   }
 
