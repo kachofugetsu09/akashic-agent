@@ -159,6 +159,33 @@
   .message-selection-bar > button:hover { background: var(--ak-paper-sheet); color: var(--chat-ink); }
 }
 
+/* 只读副本：页外排版供插件拍照；历史行的 content-visibility 在页外会跳过渲染，统一改回可见。
+   双类选择器压过 .conversation-content 给输入区留的底部空白。 */
+.conversation-content.message-selection-stage {
+  position: fixed;
+  inset-block-start: 0;
+  inset-inline-start: -100000px;
+  box-sizing: border-box;
+  max-inline-size: none;
+  margin: 0;
+  padding: 28px 20px 20px;
+  background: var(--ak-paper-canvas);
+  color: var(--chat-ink);
+  pointer-events: none;
+}
+
+.message-selection-stage,
+.message-selection-stage * {
+  content-visibility: visible !important;
+}
+
+/* 宽屏的时间行悬停才显现、窄屏只留最后一条；副本里没有悬停与展开，统一显示。 */
+.message-selection-stage .shared-message-meta {
+  display: flex !important;
+  opacity: 1 !important;
+  visibility: visible !important;
+}
+
 @media (prefers-reduced-motion: reduce) {
   [data-selection],
   .message-selection-frame {
