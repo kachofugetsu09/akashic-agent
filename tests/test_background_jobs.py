@@ -7,14 +7,18 @@ from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 
+from types import SimpleNamespace
+
 import pytest
 import pytest_asyncio
 
 from agent.plugin_composition import ServiceKey
+from agent.plugin_composition.tasks import RestartRejectedError
 from plugins.channels.contract import CHANNEL_INPUT_V2 as CHANNEL_INPUT, ChannelInboundMessage
+from plugins.delivery.contract import FINAL_OUTPUT_DELIVERY
 from plugins.jobs.board import JobBoard
 from plugins.jobs.contract import JOB_NOTICES, JobOutcome, JobWatch
-from plugins.ledger.contract import Control, Input, Output, ToolResult
+from plugins.ledger.contract import ContentPart, ContentReferences, Control, Input, Output, ToolResult
 from tests.test_default_reply import application, live_root
 
 _FIXTURE = '''
@@ -376,3 +380,59 @@ async def test_jobs_unload_cancels_active_wake(tmp_path):
                 assert log.reader("test:room").snapshot() == original
             finally:
                 release.set()
+
+
+@pytest.mark.asyncio
+async def test_job_final_output_wait_works_from_external_context(tmp_path):
+    async with application(tmp_path, replying=True, extra_sources=_job_sources) as (log, host):
+        _calls, gate = await _send(host)
+        _ = await _rows_until(log, lambda rows: _finished(rows, 1))
+        gate.set()
+        rows = await _rows_until(log, lambda rows: any(
+            row.source == "job:fake-1" and isinstance(row.body, Output) and row.body.finish == "complete"
+            for row in rows
+        ))
+        ending = next(row for row in reversed(rows) if row.source == "job:fake-1" and isinstance(row.body, Output))
+        async with live_root(host) as root:
+            final_delivery = root.context.require(FINAL_OUTPUT_DELIVERY)
+            assert final_delivery.supports("job:fake-1")
+            turn = SimpleNamespace(source="job:fake-1", ending_message_id=ending.message_id)
+            async with asyncio.timeout(5):
+                await final_delivery.wait(log.reader("test:room"), turn)
+
+
+@pytest.mark.asyncio
+async def test_job_final_output_wait_rejects_missing_sender_immediately(tmp_path):
+    async with application(tmp_path, replying=True, extra_sources=_job_sources) as (log, host):
+        session_id = "missing-channel:room"
+        w_in = log.writer(
+            session_id,
+            author="user",
+            source="conversation",
+            body_types=(Input,),
+            content={
+                "text": lambda v: ContentReferences(),
+                "channel.origin": lambda v: ContentReferences(),
+            },
+        )
+        w_in.append(
+            "u-missing",
+            Input((
+                ContentPart("channel.origin", {"channel": "nonexistent", "chat_id": "room", "sender": "u"}),
+                ContentPart("text", "deploy"),
+            )),
+        )
+        w_out = log.writer(
+            session_id,
+            author="model",
+            source="job:fake-missing",
+            body_types=(Output,),
+            content={"text": lambda v: ContentReferences()},
+        )
+        w_out.append("o-missing", Output((ContentPart("text", "submitted"),), "complete"))
+        async with live_root(host) as root:
+            final_delivery = root.context.require(FINAL_OUTPUT_DELIVERY)
+            turn = SimpleNamespace(source="job:fake-missing", ending_message_id="o-missing")
+            with pytest.raises(RestartRejectedError, match="没有发送能力"):
+                async with asyncio.timeout(2):
+                    await final_delivery.wait(log.reader(session_id), turn)
