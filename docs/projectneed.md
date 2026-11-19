@@ -809,7 +809,7 @@ Core 只负责通用传输、revision、运行实例引用、调度、取消和�
 
 新插件只通过运行 Root 下的 Context、Service、Inject、Fiber 和 Effect 组合能力；Job、Channel、Prompt、Tool、UI、MCP、存储和外部效果由各自领域 Service 定义，Core 不维护新的固定插件能力总表。`inject` 只表达 Fiber 激活所必需的硬依赖；可选能力由使用点查询，或由不阻塞 Root readiness 的嵌套 Fiber 承载。listener、后台 task 和其他注册随所属 Fiber 逆序回收，依赖消失、重启和卸载后不得残留。
 
-通用事件只有五种 dispatch 合同：`emit` 同步串行并立即传播失败；`serial` 逐个等待且只有显式 `Bail` 可以短路；`parallel` 只接收异步 listener，并发执行、等待全部 settle 后聚合失败；`transform` 按注册顺序把同类型 immutable payload 显式变换成下一份；`observe` 调用全部 observer、等待异步 settle，并把普通失败隔离成 Incident 而不改写最终事实。listener 只使用同一运行图内稳定注册顺序，不增加 priority、listener dependency DAG 或通用 waterfall。同步并发由有界 Executor Service 执行插件显式提交的纯同步任务；工作线程不得取得 Context、Fiber 或 Core 权限。
+通用事件按已采纳的 ADR-0155 只保留两种有真实消费者的 dispatch 合同：`emit` 同步串行并立即传播失败；`serial` 逐个等待且只有显式 `Bail` 可以短路（lifecycle 信号明确拒绝 `Bail`）。listener 只使用同一运行图内稳定注册顺序，不增加 priority、listener dependency DAG 或通用 waterfall；此前设计的 `parallel`、`transform`、`observe` 派发与通用 `ExecutorService` 已按 ADR-0155 移除，后续若出现真实需求由消费插件带着明确用例再行引入。
 
 组合拓扑只能表达能力与依赖关系，不能自行发起安装应用。底座唯一拥有制品身份、组合装配、Scope、调用与资源保护、接纳与已选输入提交；具体能力、业务验证、配置和数据由其 owner 管理。每次 Fiber activation 固定自己的实际依赖绑定；图中登记随各 owner 的 Effect 生命周期增减，整张图本身不是封存结果，不列举各类扩展目录。迁移完成后删除旧协议，不为仓库内插件长期保留适配器。
 

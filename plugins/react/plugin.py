@@ -503,8 +503,14 @@ async def _run_ordered(
     try:
         await _settle(tools, call, commit_after=commit_after, scope=scope)
     except BaseException:
-        # 已落盘的回执放行后继；提交前失败或被前驱中止时不能把后继门打开。
-        if _committed(reader, call):
+        # 已落盘的回执放行后继；提交前失败、被前驱中止或查询本身异常时不能把后继门打开，
+        # 且必须保留原始异常而不是被查询异常掩盖（#2117）。
+        committed = False
+        try:
+            committed = _committed(reader, call)
+        except Exception:
+            committed = False
+        if committed:
             gate.release()
         else:
             gate.abort()
@@ -523,6 +529,7 @@ async def _settle_group(
     """同组调用重叠执行；提交门只在前驱完成后打开。"""
     gates = [_OrderGate() for _ in calls]
     tasks: list[asyncio.Task[None]] = []
+    scopes: list[RuntimeScope] = []
     in_flight: set[asyncio.Task[None]] = set()
     try:
         for index, call in enumerate(calls):
@@ -533,6 +540,8 @@ async def _settle_group(
                     if failure is not None:
                         raise failure
             scope = None if capture_scope is None else capture_scope()
+            if scope is not None:
+                scopes.append(scope)
             task = asyncio.create_task(_run_ordered(
                 reader, tools, call, gates[index], gates[index - 1] if index else None, scope,
             ))
@@ -548,9 +557,11 @@ async def _settle_group(
             await _drain_group(tasks)
         raise
     finally:
-        # 普通失败仍收集同批已启动调用。
+        # 普通失败仍收集同批已启动调用；子任务首次运行前就被取消时其未进入的 scope 由这里兜底释放（#2116）。
         if tasks:
             _ = await asyncio.gather(*tasks, return_exceptions=True)
+        for scope in scopes:
+            scope.discard()
 
 
 # 同组调用排空期间又收到中断时继续转给它们；排空完成前不离开。

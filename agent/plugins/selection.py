@@ -164,6 +164,7 @@ class PluginSelection:
     def _write(self, value: Mapping[str, object], *, initialize: bool) -> None:
         """同步完整文件后原子发布；发布后的失败不回写旧选择。"""
         replacing = False
+        temporary: Path | None = None
         ref = cast(str | None, value["root_ref"])
         try:
             if initialize:
@@ -181,8 +182,14 @@ class PluginSelection:
                 temporary.unlink()
             else:
                 os.replace(temporary, self.path)
+            temporary = None
             sync_directory(self.path.parent)
         except BaseException as error:
+            if temporary is not None:
+                try:
+                    temporary.unlink(missing_ok=True)
+                except OSError:
+                    pass
             observed, observation_error = None, None
             try:
                 observed = self.read()

@@ -1203,13 +1203,24 @@ def _legacy_actor(message: Message) -> Actor:
     return _LEGACY_ROLES[role]
 
 
-# 本进程内由 Ledger 实际 INSERT 过、包含 ToolCall 的 Output 消息 ID；公共合同模块不随插件实现热更新。
-# 工具恢复凭此区分“本进程新发调用”与“上个进程遗留调用”，避免依赖可能回拨的墙钟（ADR-0100 / #2112）。
-PROCESS_CALL_OUTPUTS: set[str] = set()
+# 本进程内由 Ledger 实际 INSERT 过、且仍有未结算 ToolCall 的 Output 映射（message_id → 未结算 part_index 集合）。
+# 公共合同模块不随插件实现热更新；工具恢复凭此区分“本进程新发调用”与“上个进程遗留调用”，
+# 避免依赖可能回拨的墙钟（ADR-0100 / #2112），并在全部回执提交后回收，避免长期进程无限增长（#2119）。
+PROCESS_CALL_OUTPUTS: dict[str, set[int]] = {}
 
 
-def mark_process_call_output(message_id: str) -> None:
-    PROCESS_CALL_OUTPUTS.add(message_id)
+def mark_process_call_output(message_id: str, part_indexes: Sequence[int]) -> None:
+    if part_indexes:
+        PROCESS_CALL_OUTPUTS[message_id] = set(part_indexes)
+
+
+def resolve_process_call_output(message_id: str, part_index: int) -> None:
+    pending = PROCESS_CALL_OUTPUTS.get(message_id)
+    if pending is None:
+        return
+    pending.discard(part_index)
+    if not pending:
+        PROCESS_CALL_OUTPUTS.pop(message_id, None)
 
 
 def is_process_call_output(message_id: str) -> bool:
