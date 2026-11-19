@@ -439,7 +439,7 @@ function registerModels(ctx, mount, catalogResource) {
         const enabled = toggle.querySelector("input");
         enabled.checked = connection.availability !== "disabled";
         enabled.setAttribute("aria-label", `启用 ${connection.name}`);
-        enabled.addEventListener("change", () => report(setConnectionEnabled(connection, enabled)));
+        enabled.addEventListener("change", () => report(setConnectionEnabled(connection, enabled, card)));
         row.append(head, toggle);
         row.insertAdjacentHTML("beforeend", CHEVRON_ICON);
         fillProviderHead(head, entry, connection);
@@ -535,15 +535,59 @@ function registerModels(ctx, mount, catalogResource) {
         }).catch((reason) => { quotaAt = 0; throw reason; });
       }
 
-      // 开关直接生效；停用承担默认模型的连接前先确认，失败时回到实际状态。
-      async function setConnectionEnabled(connection, input) {
+      function clearInlineConfirm(host) {
+        host.querySelector(":scope > .settings-inline-confirm")?.remove();
+      }
+
+      // 两步内联确认替代系统 window.confirm：留在原卡片/底栏内完成决定。
+      function promptInlineConfirm(host, message, confirmLabel, onConfirm, beforeNode = null) {
+        clearInlineConfirm(host);
+        const bar = document.createElement("div");
+        bar.className = "settings-inline-confirm";
+        bar.setAttribute("role", "alertdialog");
+        const text = document.createElement("span");
+        text.className = "settings-inline-confirm__text";
+        text.textContent = message;
+        const actions = document.createElement("div");
+        actions.className = "settings-inline-confirm__actions";
+        const cancel = document.createElement("button");
+        cancel.type = "button";
+        cancel.className = "settings-inline-confirm__cancel";
+        cancel.textContent = "取消";
+        const confirm = document.createElement("button");
+        confirm.type = "button";
+        confirm.className = "settings-inline-confirm__danger";
+        confirm.textContent = confirmLabel;
+        cancel.addEventListener("click", () => bar.remove());
+        confirm.addEventListener("click", () => { bar.remove(); onConfirm(); });
+        actions.append(cancel, confirm);
+        bar.append(text, actions);
+        if (beforeNode && beforeNode.parentElement === host) host.insertBefore(bar, beforeNode);
+        else host.append(bar);
+        cancel.focus();
+      }
+
+      // 开关直接生效；停用承担默认模型的连接改为行内两步确认，失败时回到实际状态。
+      async function setConnectionEnabled(connection, input, card = null, skipDefaultCheck = false) {
         const enable = input.checked;
+        if (enable && card) clearInlineConfirm(card);
         const roles = Object.values(catalog.roleBindings ?? {});
         const hostsDefault = catalog.models.some((model) => model.connectionId === connection.id
           && (roles.includes(model.id) || model.id === catalog.defaultEmbeddingModelId));
-        if (!enable && hostsDefault
-            && !window.confirm(`默认模型在 ${connection.name} 上，停用后用到它的对话会失败，需另选默认模型。仍然停用？`)) {
+        if (!enable && hostsDefault && !skipDefaultCheck) {
           input.checked = true;
+          if (card) {
+            promptInlineConfirm(
+              card,
+              `默认模型在 ${connection.name} 上，停用后用到它的对话需另选默认模型。`,
+              "确认停用",
+              () => {
+                input.checked = false;
+                void report(setConnectionEnabled(connection, input, card, true));
+              },
+              card.querySelector(".settings-provider-editor"),
+            );
+          }
           return;
         }
         if (activeEditor?.connectionId === connection.id && !closeActiveEditor()) {
@@ -1749,15 +1793,24 @@ function registerModels(ctx, mount, catalogResource) {
           footer.innerHTML = `<button type="button" class="settings-secondary-button" data-cancel>取消</button><button type="button" class="settings-primary-button" data-save>保存</button>`;
           dialogHost.append(footer);
           syncFooter();
-          footer.querySelector("[data-cancel]").addEventListener("click", () => { closeActiveEditor(); });
-          footer.querySelector("[data-save]").addEventListener("click", () => {
-            const warning = modelManager.removalWarning();
-            if (warning && !window.confirm(warning)) return;
+          footer.querySelector("[data-cancel]").addEventListener("click", () => {
+            clearInlineConfirm(dialogHost);
+            closeActiveEditor();
+          });
+          const performSave = () => {
             const form = dialogHost.querySelector("form");
             if (providerDirty && form) { form.requestSubmit(); return; }
             actions.selectModels()
               .then((saved) => finish(saved ? `${connection.name} 的修改已保存` : "没有需要保存的修改"))
               .catch((reason) => modelManager.showError(reason));
+          };
+          footer.querySelector("[data-save]").addEventListener("click", () => {
+            const warning = modelManager.removalWarning();
+            if (warning) {
+              promptInlineConfirm(dialogHost, warning, "确认移除并保存", performSave, footer);
+              return;
+            }
+            performSave();
           });
         }
         const leaveDocument = event => { if (!event.persisted) report(auth.close()); };

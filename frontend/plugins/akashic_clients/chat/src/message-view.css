@@ -584,7 +584,44 @@
 
 :is(.agent-content, .process-markdown, .user-bubble) .code-header-actions .code-action-btn:is([aria-label="已复制"], [aria-label="Copied"]) {
   color: var(--ak-sys-color-success);
-  background: color-mix(in srgb, var(--ak-sys-color-success) 12%, transparent);
+  background: color-mix(in oklab, var(--ak-sys-color-success) 12%, transparent);
+}
+
+:is(.agent-content, .process-markdown, .user-bubble) .code-header-actions .code-action-btn:is([aria-label="已复制"], [aria-label="Copied"])[data-copy-lines]::after,
+.reading-code-copy[data-copied="true"][data-copy-lines]::after {
+  content: " · " attr(data-copy-lines);
+  font-family: var(--ak-type-ui);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+/* 复制源头扫光显影（@dev_ya "Copy that shows what it copied"）：短暂亮出被复制的区块范围，切走或过期即干净撤回。 */
+:where(.agent-content, .process-markdown, .user-bubble) .code-block-container {
+  transition:
+    border-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard),
+    box-shadow var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+}
+
+:where(.agent-content, .process-markdown, .user-bubble) .code-block-container:is([data-copied-highlight="true"], :has(.code-action-btn:is([aria-label="已复制"], [aria-label="Copied"])), :has(.reading-code-copy[data-copied="true"])) {
+  border-color: color-mix(in oklab, var(--ak-color-action-primary) 42%, var(--ak-rule-subtle)) !important;
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--ak-color-action-primary) 20%, transparent);
+}
+
+:where(.agent-content, .process-markdown, .user-bubble) .code-block-container:is([data-copied-highlight="true"], :has(.code-action-btn:is([aria-label="已复制"], [aria-label="Copied"])), :has(.reading-code-copy[data-copied="true"])) :is(.code-editor-container, .reading-code-pre, pre) {
+  background: color-mix(in oklab, var(--ak-color-action-primary) 7%, transparent) !important;
+}
+
+.web-message-anchor:has(.shared-message-actions button.copied) :is(.user-bubble, .agent-content) {
+  background: color-mix(in oklab, var(--ak-color-action-primary) 5%, transparent);
+  border-radius: var(--ak-radius-md);
+  transition: background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+}
+
+.tool-detail-section[data-copied-highlight="true"] {
+  border-radius: var(--ak-radius-sm);
+  background: color-mix(in oklab, var(--ak-color-action-primary) 7%, transparent);
+  transition: background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
 }
 
 /* markstream 默认把代码区限高 500px 并在块内纵向滚动：回复流里多出一个嵌套滚动区（滚轮先滚代码、底边硬切半行），
@@ -2478,7 +2515,7 @@ button.tool-step-summary:active {
 
 .compaction-boundary__detail {
   margin: 4px 0 8px;
-  padding: 8px 12px;
+  padding: 10px 12px;
   border: 1px solid var(--ak-rule-subtle);
   border-radius: var(--ak-radius-md);
   background: var(--ak-paper-quiet);
@@ -2487,23 +2524,145 @@ button.tool-step-summary:active {
   line-height: 1.5;
 }
 
+.compaction-boundary__meta-row {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
 .compaction-boundary__meta {
+  flex: 1 1 auto;
+  min-width: 0;
   margin: 0;
   font-variant-numeric: tabular-nums;
 }
 
-.compaction-boundary__preview {
-  margin: 6px 0 0;
-  padding-top: 6px;
+.compaction-boundary__ratio {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 0 7px;
+  border-radius: var(--ak-radius-full);
+  background: color-mix(in oklab, var(--ak-color-action-primary) 10%, transparent);
+  color: var(--ak-color-action-primary);
+  font-family: var(--ak-type-technical);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.compaction-boundary__grid {
+  display: grid;
+  gap: 10px 14px;
+  margin-top: 8px;
+  padding-top: 8px;
   border-top: 1px solid var(--ak-rule-subtle);
+}
+
+.compaction-boundary__grid.has-anchors {
+  grid-template-columns: minmax(0, 1fr) 196px;
+  align-items: start;
+}
+
+.compaction-boundary__preview {
+  display: grid;
+  gap: 4px;
   max-height: 200px;
   overflow-y: auto;
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-family: inherit;
   font-size: var(--chat-type-caption, 0.75rem);
-  line-height: 1.5;
+  line-height: 1.55;
+  color: var(--ak-ink-secondary);
+}
+
+.compaction-boundary__line {
+  margin: 0;
+  padding: 2px 6px;
+  border-radius: var(--ak-radius-xs);
+  overflow-wrap: anywhere;
+  transition: background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard), color var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+}
+
+.compaction-boundary__line.is-highlighted {
+  background: color-mix(in oklab, var(--ak-color-action-primary) 11%, transparent);
+  color: var(--ak-ink-primary);
+}
+
+.compaction-boundary__anchors {
+  display: grid;
+  gap: 6px;
+}
+
+.compaction-boundary__anchors-title {
   color: var(--ak-ink-muted);
+  font-size: 0.6875rem;
+  font-weight: 600;
+}
+
+.compaction-boundary__anchors-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.compaction-boundary__anchor {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  max-width: 100%;
+  padding: 3px 9px;
+  border: 1px solid var(--ak-rule-default);
+  border-radius: var(--ak-radius-sm);
+  background: var(--ak-paper-canvas);
+  color: var(--ak-ink-primary);
+  font: inherit;
+  font-size: 0.6875rem;
+  line-height: 1.3;
+  text-align: start;
+  cursor: pointer;
+  transition: border-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard), background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+}
+
+.compaction-boundary__anchor > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.compaction-boundary__anchor-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--ak-radius-full);
+  background: var(--ak-color-action-primary);
+  opacity: 0.65;
+}
+
+.compaction-boundary__anchor.is-active {
+  border-color: var(--ak-color-action-primary);
+  background: color-mix(in oklab, var(--ak-color-action-primary) 10%, var(--ak-paper-canvas));
+}
+
+.compaction-boundary__anchor.is-active .compaction-boundary__anchor-dot {
+  opacity: 1;
+}
+
+@media (pointer: coarse) {
+  .compaction-boundary__anchor::after {
+    position: absolute;
+    inset: -8px 0;
+    content: "";
+  }
+}
+
+@media (max-width: 640px) {
+  .compaction-boundary__grid.has-anchors {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .retry-status {
@@ -3110,5 +3269,17 @@ button.tool-step-summary:active {
   color: var(--chat-muted);
   line-height: 1.45;
   overflow-wrap: anywhere;
+}
+
+/* 已落定的子任务 / 批次收起态温和退后，悬停或再点即刻醒回（@dev_ya "Resolve comment" 锚点折回）。 */
+.delegated-card.is-settled,
+.delegated-group.is-settled {
+  opacity: 0.78;
+  transition: opacity var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+}
+
+.delegated-card.is-settled:is(:hover, :focus-within),
+.delegated-group.is-settled:is(:hover, :focus-within) {
+  opacity: 1;
 }
 
