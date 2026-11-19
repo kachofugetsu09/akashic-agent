@@ -43,8 +43,17 @@ class FinalOutputDelivery:
     def __init__(self) -> None:
         self._providers: dict[str, FinalOutputWaiter] = {}
 
+    def _resolve(self, source: str) -> FinalOutputWaiter | None:
+        provider = self._providers.get(source)
+        if provider is not None:
+            return provider
+        prefix, sep, _ = source.partition(":")
+        if sep:
+            return self._providers.get(prefix + sep)
+        return None
+
     def supports(self, source: str) -> bool:
-        return source in self._providers
+        return self._resolve(source) is not None
 
     def register(self, source: str, provider: FinalOutputWaiter) -> None:
         if not source or source in self._providers:
@@ -57,7 +66,7 @@ class FinalOutputDelivery:
             del self._providers[source]
 
     async def wait(self, reader: MessageReader, turn: FinalOutputTurn) -> None:
-        provider = self._providers.get(turn.source)
+        provider = self._resolve(turn.source)
         if provider is None:
             raise ValueError(f"没有来源 {turn.source!r} 的最终 Output provider")
         await provider.wait(reader, turn)

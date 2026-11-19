@@ -16,12 +16,12 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from agent.plugin_composition import CompositionError, Context, ServiceKey
 from agent.plugin_composition.plugin_config import PLUGIN_CONFIG
-from agent.plugin_composition.tasks import Task, independent_task_context
+from agent.plugin_composition.tasks import RestartRejectedError, Task, independent_task_context
 from plugins.content.contract import CONTENT
 from plugins.context.contract import MATERIALS_V4 as MATERIALS
 from plugins.conversation.contract import CONVERSATION_COMPLETE_V2 as CONVERSATION_COMPLETE
 from plugins.delivery.contract import DELIVERY_GUARDED_START as DELIVERY
-from plugins.delivery.contract import DELIVERY_SENDERS
+from plugins.delivery.contract import DELIVERY_SENDERS, FINAL_OUTPUT_DELIVERY, FinalOutputTurn
 from plugins.gateway.contract import RpcMethod
 from plugins.ledger.contract import (
     BINDINGS, MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, ContentPart, Control,
@@ -44,7 +44,7 @@ name = "jobs"
 version = "1.0.0"
 desc = "后台任务完成通知：忙时注入当前回合，闲时唤醒原会话"
 inject = (PLUGIN_CONFIG, MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, CONTENT, MATERIALS,
-          CONVERSATION_COMPLETE, REPLY_PROGRAM, DELIVERY, DELIVERY_SENDERS, BINDINGS)
+          CONVERSATION_COMPLETE, REPLY_PROGRAM, DELIVERY, DELIVERY_SENDERS, FINAL_OUTPUT_DELIVERY, BINDINGS)
 
 _CONVERSATION = "conversation"
 _LIMIT_SOURCE = "jobs:limit"
@@ -482,9 +482,59 @@ def _stopped_outcome(outcome: JobOutcome | None) -> JobOutcome | None:
     return outcome
 
 
+class _JobFinalOutputWaiter:
+    """等待后台任务唤醒回合经 Jobs._deliver 完成正式渠道送达，使 job:* 回调回合支持自部署。"""
+
+    def __init__(self, ctx: Context, *, timeout_s: float = 120.0) -> None:
+        self._ctx = ctx
+        self._timeout_s = timeout_s
+
+    async def wait(self, reader: MessageReader, turn: FinalOutputTurn) -> None:
+        ending = turn.ending_message_id
+        if ending is None:
+            raise RestartRejectedError("最终 Output 缺失")
+        if reader.attributes.visibility == "internal":
+            raise RestartRejectedError("内部会话的后台任务没有外部渠道最终送达")
+        ending_msg = await reader.read_async(lambda current: current.get(ending))
+        if ending_msg is None:
+            raise RestartRejectedError("最终 Output 缺失")
+        origin = _origin(await reader.read_async(lambda current: _latest_user_input(current, ending_msg.seq)))
+        if origin is None:
+            raise RestartRejectedError("后台任务原会话没有可送达的用户渠道")
+        delivery = self._ctx.require(DELIVERY).open(self._ctx)
+        async with asyncio.timeout(self._timeout_s):
+            selection = delivery.selection(ending)
+            while selection is None:
+                await asyncio.sleep(0.01)
+                selection = delivery.selection(ending)
+            if not selection.sinks:
+                raise RestartRejectedError("最终 Output 没有 delivery provider")
+            while True:
+                receipts = tuple(delivery.receipt(ending, sink) for sink in selection.sinks)
+                if any(receipt is not None and receipt.status in {"failed", "rejected"} for receipt in receipts):
+                    raise RestartRejectedError("最终 Output delivery 未确认")
+                if len(receipts) == len(selection.sinks) and all(
+                    receipt is not None and receipt.status == "delivered" for receipt in receipts
+                ):
+                    return
+                await asyncio.sleep(0.01)
+
+
 async def apply(ctx: Context) -> None:
     config = Config.model_validate(ctx.config)
     jobs = Jobs(ctx, config)
+    final_outputs = ctx.require(FINAL_OUTPUT_DELIVERY)
+    job_final_output = _JobFinalOutputWaiter(ctx)
+
+    def register_final_output() -> object:
+        final_outputs.register("job:", job_final_output)
+
+        def unregister_final_output() -> None:
+            final_outputs.unregister("job:", job_final_output)
+
+        return unregister_final_output
+
+    _ = await ctx.effect(register_final_output, label="jobs-final-output")
     await mount_settings(ctx, SETTINGS, ModelSettings(ctx, Config, SETTING_FIELDS),
                          lambda: import_module(".settings_ui", __package__))
     _ = await ctx.spawn(jobs.run(), name="job-notices")
