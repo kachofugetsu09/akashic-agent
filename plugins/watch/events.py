@@ -111,6 +111,12 @@ class EventLog:
             return {}
         return {(event.source, event.key): event.id for path in sorted(self._dir.glob("*.jsonl")) for event in _read(path) if event.key}
 
+    # 当前磁盘日志中仍保留的所有事件编号；清理过期文件后用来裁剪内存索引与合并别名。
+    def live_ids(self) -> set[str]:
+        if not self._dir.exists():
+            return set()
+        return {event.id for path in self._dir.glob("*.jsonl") for event in _read(path)}
+
     # 读出编号大于 after 的事件；范围和事件的保留期一致，积压几天的未判事件也不会被跳过。
     def since(self, after: int, now: datetime, days: int = 14) -> list[Event]:
         found: list[Event] = []

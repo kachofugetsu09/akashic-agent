@@ -33,6 +33,8 @@ class State:
     offsets: dict[str, int] = field(default_factory=dict)
     # 来源名 → 它最近一条状态事件的编号
     current: dict[str, str] = field(default_factory=dict)
+    # 合并相同状态时已接纳但未另写正文的 (来源 → key → 事件编号)，随事件保留期清理
+    aliases: dict[str, dict[str, str]] = field(default_factory=dict)
     wakes: list[str] = field(default_factory=list)
     orders_checked: str | None = None
     review_day: str | None = None
@@ -53,8 +55,23 @@ class Runtime:
         saved = load_json(self._state_path, {}, domain="watch")
         self.state = State(**{key: value for key, value in saved.items() if key in State.__slots__})
         self.state.next_id = max(self.state.next_id, self.log.last_number() + 1)
-        self._keys = self.log.keys()
+        self._keys: dict[tuple[str, str], str] = {}
+        self._sync_keys(self.log.keys(), self.log.live_ids())
         self._skip_noted = ""
+
+    def _sync_keys(self, log_keys: dict[tuple[str, str], str], live_ids: set[str]) -> None:
+        cleaned_aliases: dict[str, dict[str, str]] = {}
+        keys = dict(log_keys)
+        for source, mapping in self.state.aliases.items():
+            if not isinstance(mapping, dict):
+                continue
+            kept = {k: eid for k, eid in mapping.items() if eid in live_ids}
+            if kept:
+                cleaned_aliases[source] = kept
+                for k, eid in kept.items():
+                    keys.setdefault((source, k), eid)
+        self.state.aliases = cleaned_aliases
+        self._keys = keys
 
     async def follow(self) -> None:
         while True:
@@ -84,25 +101,45 @@ class Runtime:
                       offsets: dict[str, int] | None = None) -> list[Event]:
         async with self._lock:
             events: list[Event] = []
+            merged_keys: dict[tuple[str, str], str] = {}
             latest = await run_file_io(lambda: self._current(now))
             places = await run_file_io(lambda: load_places(self.root))
             for source, raw, state in rows:
                 event = name_places(normalize(self.state.next_id + len(events), source, raw, now, state), places)
                 previous = latest.get(event.source)
-                if event.key and ((event.source, event.key) in self._keys or any(other.key == event.key and other.source == event.source for other in events)):
+                if event.key and (
+                    (event.source, event.key) in self._keys
+                    or (event.source, event.key) in merged_keys
+                    or any(other.key == event.key and other.source == event.source for other in events)
+                ):
                     continue
-                # 状态没变的重复上报不算新事件
+                # 状态没变的重复上报不算新事件，但保留期内仍需记住已接纳的 key 以防重试倒流
                 if event.state and previous is not None and (previous.title, previous.text) == (event.title, event.text):
+                    if event.key:
+                        merged_keys[(event.source, event.key)] = previous.id
                     continue
                 events.append(event)
                 if event.state:
                     latest[event.source] = event
-            await run_file_io(lambda: self.log.append(events, now))
-            self._keys.update({(event.source, event.key): event.id for event in events if event.key})
-            self.state.next_id += len(events)
-            self.state.current = {source: event.id for source, event in latest.items()}
-            if offsets is not None:
-                self.state.offsets = offsets
+            written = False
+
+            def append_and_mark() -> None:
+                nonlocal written
+                self.log.append(events, now)
+                written = True
+
+            try:
+                await run_file_io(append_and_mark)
+            finally:
+                if written:
+                    self._keys.update({(event.source, event.key): event.id for event in events if event.key})
+                    for (src, k), eid in merged_keys.items():
+                        self._keys[(src, k)] = eid
+                        self.state.aliases.setdefault(src, {})[k] = eid
+                    self.state.next_id += len(events)
+                    self.state.current = {source: event.id for source, event in latest.items()}
+                    if offsets is not None:
+                        self.state.offsets = offsets
             await self._save()
             return events
 
@@ -130,15 +167,18 @@ class Runtime:
         # 3. 待看列表定时过一眼、每日复盘与清理
         await self._digest(now)
         await self._review(now, orders)
-        await run_file_io(lambda: self._clean(now))
+        log_keys, live_ids = await run_file_io(lambda: self._clean(now))
+        async with self._lock:
+            self._sync_keys(log_keys, live_ids)
         await self._save()
 
     # 事件全文与值班记录留十四天；待看列表三天没处理的条目自动清掉。
-    def _clean(self, now: datetime) -> None:
+    def _clean(self, now: datetime) -> tuple[dict[tuple[str, str], str], set[str]]:
         self.log.prune(now, 14)
         _prune_dated(self.root / "inbox.md", now, 3)
         _prune_dated(self.root / "trail.md", now, trail.KEPT_DAYS)
         _prune_logs(self.root, now, 14)
+        return self.log.keys(), self.log.live_ids()
 
     async def _ingest(self, now: datetime) -> None:
         offsets = dict(self.state.offsets)
@@ -256,6 +296,8 @@ class Runtime:
                     file.write(f"- {now:%H:%M} #{event.id} [{event.source}] {clip(event.title or event.text, 90)} → {verdict.to}"
                                + (f"｜{verdict.why}" if verdict.why else "") + f"（{outcome.model}）\n")
             _inbox(self.root, now, [verdict for verdict in outcome.verdicts if verdict.to == "inbox"])
+            # 叫醒判定在游标推进前先落入待看列表，避免提交游标后、进入 _wake 前中断导致叫醒丢失（ADR 0149 / #2103）
+            _inbox(self.root, now, [verdict for verdict in outcome.verdicts if verdict.to == "wake"], "值班员认为该叫醒，待交接")
         await run_file_io(write)
 
     async def _scene(self, now: datetime) -> wake.Scene:
@@ -382,12 +424,26 @@ def _inbox(root: Path, now: datetime, verdicts: Sequence[Verdict], note: str = "
     if not verdicts:
         return
     root.mkdir(parents=True, exist_ok=True)
-    with (root / "inbox.md").open("a", encoding="utf-8") as file:
-        for verdict in verdicts:
-            event = verdict.event
-            reason = "；".join(part for part in (note, verdict.why) if part)
-            file.write(f"- [{now:%Y-%m-%d %H:%M}] #{event.id} [{event.source}] {clip(event.title or event.text, 120)}"
-                       + (f" {event.url}" if event.url else "") + (f"｜{reason}" if reason else "") + "\n")
+    path = root / "inbox.md"
+    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    for verdict in verdicts:
+        event = verdict.event
+        reason = "；".join(part for part in (note, verdict.why) if part)
+        rendered = (
+            f"- [{now:%Y-%m-%d %H:%M}] #{event.id} [{event.source}] {clip(event.title or event.text, 120)}"
+            + (f" {event.url}" if event.url else "")
+            + (f"｜{reason}" if reason else "")
+        )
+        marker = f"] #{event.id} "
+        replaced = False
+        for idx, existing in enumerate(lines):
+            if marker in existing:
+                lines[idx] = rendered
+                replaced = True
+                break
+        if not replaced:
+            lines.append(rendered)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 # 上次主 Agent 醒来之后新进待看列表的条数。

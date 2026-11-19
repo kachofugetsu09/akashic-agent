@@ -76,7 +76,7 @@ async def run(directory: Path) -> dict[str, object]:
     workspace.mkdir()
     PluginSelection(workspace).initialize()
     set_plugin_choice(workspace, "channels", enabled=False)
-    for name in ("ledger", "delivery", "channels"):
+    for name in ("ledger", "content", "turn_projection", "delivery", "channels"):
         shutil.copytree(ROOT / "plugins" / name, directory / "sources" / name,
                         ignore=shutil.ignore_patterns("__pycache__"))
     probe = directory / "sources/sender-probe"
@@ -118,7 +118,13 @@ async def run(directory: Path) -> dict[str, object]:
             await second.communicate()
     assert (workspace / "plugin-data/sender-probe-builtin/external-effect").read_text() == "saved-output\n"
     with sqlite3.connect(workspace / "sessions.db") as db:
-        assert db.execute("SELECT * FROM messages ORDER BY seq").fetchall() == original
+        after = db.execute("SELECT * FROM messages ORDER BY seq").fetchall()
+        assert after[:len(original)] == original, (original, after)
+        assert len(after) == len(original) + 1, after
+        notice = db.execute(
+            "SELECT source, body FROM messages ORDER BY seq DESC LIMIT 1"
+        ).fetchone()
+        assert notice is not None and notice[0] == "delivery" and "可能已送达" in notice[1], notice
         assert db.execute("PRAGMA integrity_check").fetchone() == ("ok",)
     return {"killed_after_external_send": True, "recovered_status": "failed", "send_count": 1,
             "source_messages_unchanged": True}

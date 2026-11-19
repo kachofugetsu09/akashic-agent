@@ -20,7 +20,7 @@ from plugins.models.contract import (
 from agent.plugin_composition.tasks import Task
 from plugins.context.contract import MaterialView, ReductionStatus, summary_due
 from plugins.models.contract import ContentTransform, PrepareContent, ReadMessage, rejected_segments
-from plugins.ledger.contract import ContentPart, Control, HistoryWindow, Input, Message, MessageSnapshot, Output, ToolResult
+from plugins.ledger.contract import CallRef, ContentPart, Control, HistoryWindow, Input, Message, MessageSnapshot, Output, ToolCall, ToolResult
 
 from plugins.sources.contract import (
     SourceGuard,
@@ -298,19 +298,53 @@ def own_messages(messages: Sequence[Message], source: str) -> tuple[Message, ...
     return tuple(message for message in messages if message.source == source)
 
 
-# 其他来源最后一次结束之后的消息：那是仍在进行的轮次，工具调用可能尚未配对。
+# 其他来源最后一次结束之后的消息，以及以 failure/abandon 收尾但仍含未配对调用的段，都不暴露给当前来源。
 def hidden_indexes(messages: Sequence[Message], source: str) -> set[int]:
-    finished: set[str] = set()
+    resolved = {
+        message.body.call_ref
+        for message in messages
+        if isinstance(message.body, ToolResult)
+    }
     hidden: set[int] = set()
-    for index in range(len(messages) - 1, -1, -1):
-        message = messages[index]
-        if message.source == source or message.source in finished:
+    segments: dict[str, list[int]] = {}
+    unresolved: dict[str, bool] = {}
+
+    def flush(other_source: str, *, hide: bool) -> None:
+        indexes = segments.pop(other_source, None)
+        has_unresolved = unresolved.pop(other_source, False)
+        if indexes and (hide or has_unresolved):
+            hidden.update(indexes)
+
+    for index, message in enumerate(messages):
+        if message.source == source:
             continue
+        other = message.source
+        segments.setdefault(other, []).append(index)
         body = message.body
-        if isinstance(body, Control) and body.action in {"failure", "abandon"} or isinstance(body, Output) and body.finish != "continue":
-            finished.add(message.source)
-        else:
-            hidden.add(index)
+        if isinstance(body, Output):
+            for part_index, part in enumerate(body.parts):
+                if isinstance(part, ToolCall) and CallRef(message.message_id, part_index) not in resolved:
+                    unresolved[other] = True
+            if body.finish != "continue":
+                flush(other, hide=False)
+        elif isinstance(body, Control) and body.action in {"failure", "abandon"}:
+            flush(other, hide=False)
+
+    for other in list(segments):
+        flush(other, hide=True)
+    # 结算已可见 Output 的 ToolResult（如 abandon 之后补写的回执）必须随原调用保持可见，
+    # 避免出现可见 ToolCall 缺少配对 ToolResult。
+    hidden_output_ids = {
+        messages[idx].message_id
+        for idx in hidden
+        if isinstance(messages[idx].body, Output)
+    }
+    for index, message in enumerate(messages):
+        if message.source != source and isinstance(message.body, ToolResult):
+            if message.body.call_ref.message_id in hidden_output_ids:
+                hidden.add(index)
+            else:
+                hidden.discard(index)
     return hidden
 
 

@@ -176,8 +176,8 @@ def settle_round(
         0 if activity else goal.consecutive_empty + 1
     )
     if not goal.active:
-        # 终态目标只补记最后一轮用量；completed/blocked/paused 的原因保持不变。
-        return _touch(
+        # 终态/停止目标补记最后一轮用量；暂停或阻塞若此时已耗尽预算则转入 BUDGET_LIMITED，避免恢复后超额续跑。
+        settled = _touch(
             goal, stamp,
             tokens_used=goal.tokens_used + tokens,
             settled_through_seq=settled_through_seq,
@@ -185,6 +185,17 @@ def settle_round(
             continuation_id=None,
             usage_coverage=worst_coverage(goal.usage_coverage, coverage),
         )
+        if (
+            settled.status in _STOPPED
+            and settled.token_budget is not None
+            and settled.tokens_used >= settled.token_budget
+        ):
+            return _touch(
+                settled, stamp,
+                status=GoalStatus.BUDGET_LIMITED,
+                last_reason="目标 token 预算已耗尽",
+            )
+        return settled
     updated = _touch(
         goal, stamp,
         tokens_used=goal.tokens_used + tokens,
@@ -244,6 +255,8 @@ def resume(goal: Goal, *, now: datetime | None = None) -> Goal:
         raise ValueError(f"目标状态 {goal.status} 不能恢复")
     if goal.continuations >= DEFAULT_MAX_CONTINUATIONS:
         raise ValueError("已达到自动续跑上限；请清除后重新设置目标")
+    if goal.token_budget is not None and goal.tokens_used >= goal.token_budget:
+        raise ValueError("目标 token 预算已耗尽；请用 /goal budget 增加或清除预算")
     return _touch(
         goal, now or now_utc(),
         status=GoalStatus.ACTIVE,
@@ -256,7 +269,7 @@ def set_token_budget(
     goal: Goal, budget: int | None, *, now: datetime | None = None,
 ) -> Goal:
     if goal.status not in {
-        GoalStatus.ACTIVE, GoalStatus.PAUSED, GoalStatus.BUDGET_LIMITED,
+        GoalStatus.ACTIVE, GoalStatus.PAUSED, GoalStatus.BLOCKED, GoalStatus.BUDGET_LIMITED,
     }:
         raise ValueError(f"目标状态 {goal.status} 不能修改预算")
     stamp = now or now_utc()

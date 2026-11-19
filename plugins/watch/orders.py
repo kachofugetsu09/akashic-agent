@@ -164,10 +164,14 @@ def maintain(root: Path, today: date, fired: frozenset[str] = frozenset()) -> li
             kept.append(raw)
     updated = "\n".join(kept) + "\n"
     if updated != content and path.read_text(encoding="utf-8") == content:
-        path.write_text(updated, encoding="utf-8")
         if archived:
-            with (root / "archive.md").open("a", encoding="utf-8") as file:
-                file.write("\n".join(archived) + "\n")
+            archive_path = root / "archive.md"
+            existing = set(archive_path.read_text(encoding="utf-8").splitlines()) if archive_path.is_file() else set()
+            to_append = [line for line in archived if line not in existing]
+            if to_append:
+                with archive_path.open("a", encoding="utf-8") as file:
+                    file.write("\n".join(to_append) + "\n")
+        path.write_text(updated, encoding="utf-8")
     return parse(path.read_text(encoding="utf-8"))
 
 
