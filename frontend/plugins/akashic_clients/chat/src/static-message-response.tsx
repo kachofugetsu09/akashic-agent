@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, type ComponentType } from "react";
 import type { MessageResponseProps } from "@/components/ai-elements/message-response";
-import { copyReadingCode, jumpToFootnote, watchOverflowEdges } from "./markdown-reading";
+import { copiedCodeLineLabel, copyReadingCode, highlightCopiedBlock, jumpToFootnote, watchOverflowEdges } from "./markdown-reading";
 import { FILE_INTENT, DOCUMENT_INTENT, fileIntent, markdownLinkRef, workbenchAccepts, openFileInWorkbench, useWorkbenchAccepts, workspaceFileRef } from "./shell-workbench";
 import { closeStreamingInline, renderStaticMarkdown, splitStreamingMarkdown } from "./static-markdown";
 
@@ -69,6 +69,7 @@ export const StaticMessageResponse = memo(function StaticMessageResponse({
     const link = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-file-path]") : null;
     if (link?.dataset.filePath) void openFileInWorkbench({ path: link.dataset.filePath, line: link.dataset.fileLine ? Number(link.dataset.fileLine) : null });
   }, []);
+  const copyTimers = useRef(new WeakMap<HTMLButtonElement, number>());
   const copyCode = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
     const target = event.target;
     if (!(target instanceof Element)) return;
@@ -80,16 +81,24 @@ export const StaticMessageResponse = memo(function StaticMessageResponse({
       ?.textContent;
     if (code === null || code === undefined) return;
     void copyReadingCode(code).then(() => {
+      const lines = copiedCodeLineLabel(code);
       button.dataset.copied = "true";
+      if (lines) button.dataset.copyLines = lines;
+      else delete button.dataset.copyLines;
       button.setAttribute("aria-label", "已复制");
       button.title = "已复制";
-      window.setTimeout(() => {
+      highlightCopiedBlock(button.closest<HTMLElement>(".static-code-block, .reading-plain-text"), button);
+      const prevTimer = copyTimers.current.get(button);
+      if (prevTimer) window.clearTimeout(prevTimer);
+      const timer = window.setTimeout(() => {
         if (button.isConnected) {
           delete button.dataset.copied;
+          delete button.dataset.copyLines;
           button.setAttribute("aria-label", "复制代码");
           button.title = "复制代码";
         }
       }, 1500);
+      copyTimers.current.set(button, timer);
     }).catch((error: unknown) => {
       button.setAttribute("aria-label", "复制失败，点击重试");
       button.title = "复制失败，点击重试";

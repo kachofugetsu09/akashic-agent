@@ -3,7 +3,7 @@ import { CheckIcon, CopyIcon } from "lucide-react";
 import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { CodeBlockNode, FootnoteNode as FootnoteRenderer, InlineCodeNode, LinkNode as LinkRenderer, ListNode, ParagraphNode as ParagraphRenderer, PreCodeNode, languageMap, normalizeLanguageIdentifier, resolveLanguageId, type CodeBlockOptions, type NodeComponentProps } from "markstream-react";
 import type { CodeBlockNode as CodeData, FootnoteAnchorNode as FootnoteAnchorData, FootnoteNode as FootnoteData, FootnoteReferenceNode as FootnoteReferenceData, LinkNode as LinkData, ListNode as ListData, ParagraphNode, ParsedNode, TableNode as TableData } from "stream-markdown-parser";
-import { copyReadingCode, isConceptLabel, isNumericColumn, isPlainTextLanguage, stripConceptSeparator, watchOverflowEdges, readOverflowEdges, applyOverflowEdges, scheduleOverflowJob, cancelOverflowJob, type OverflowJob, type OverflowEdges } from "./markdown-reading";
+import { copiedCodeLineLabel, copyReadingCode, highlightCopiedBlock, isConceptLabel, isNumericColumn, isPlainTextLanguage, stripConceptSeparator, watchOverflowEdges, readOverflowEdges, applyOverflowEdges, scheduleOverflowJob, cancelOverflowJob, type OverflowJob, type OverflowEdges } from "./markdown-reading";
 import { renderStaticMarkdown } from "./static-markdown";
 import { loadKatex } from "./reading-math";
 import { DiffLines } from "./tool-result-view";
@@ -201,14 +201,19 @@ export function ReadingTable({ node, ctx, renderNode, indexKey }: NodeComponentP
 /** 复制原始代码，反馈与失败都落到按钮本身。 */
 function PlainCodeCopy({ code }: { code: string }) {
   const [status, setStatus] = useState<"idle" | "copied" | "error">("idle");
+  const [lines, setLines] = useState("");
+  const buttonRef = useRef<HTMLButtonElement>(null);
   const timer = useRef<number>(0);
   useEffect(() => () => window.clearTimeout(timer.current), []);
   const label = status === "copied" ? "已复制" : status === "error" ? "复制失败，点击重试" : "复制代码";
-  return <button type="button" className="reading-code-copy" aria-label={label} title={label}
+  return <button ref={buttonRef} type="button" className="reading-code-copy" aria-label={label} title={label}
     data-copied={status === "copied" ? "true" : undefined}
+    data-copy-lines={status === "copied" && lines ? lines : undefined}
     onClick={() => {
       void copyReadingCode(code).then(() => {
+        setLines(copiedCodeLineLabel(code));
         setStatus("copied");
+        highlightCopiedBlock(buttonRef.current?.closest<HTMLElement>(".reading-plain-text, .code-block-container") ?? null, buttonRef.current);
         window.clearTimeout(timer.current);
         timer.current = window.setTimeout(() => setStatus("idle"), 1500);
       }).catch((error: unknown) => {
@@ -416,7 +421,16 @@ function HighlightedCode(props: NodeComponentProps<CodeData>) {
   useHighlightHandoff(ref, `${isDark ? "dark" : "light"}\u0000${node.language}\u0000${settled.code}`, Boolean(ctx?.renderCodeBlocksAsPre));
   return <div ref={ref} className="reading-code-scroll">
     <CodeBlockNode node={settled} isDark={isDark} loading={Boolean(node.loading)}
-      codeBlockOptions={ctx?.codeBlockOptions} onCopy={ctx?.events.onCopy}
+      codeBlockOptions={ctx?.codeBlockOptions}
+      onCopy={(copiedCode) => {
+        ctx?.events.onCopy?.(copiedCode);
+        const host = ref.current;
+        const container = host?.querySelector<HTMLElement>(".code-block-container") ?? host;
+        const btn = container?.querySelector<HTMLElement>(".code-action-btn") ?? null;
+        const lines = copiedCodeLineLabel(copiedCode);
+        if (btn && lines) btn.dataset.copyLines = lines;
+        highlightCopiedBlock(container ?? null, btn);
+      }}
       {...ctx?.codeBlockThemes}
       {...ctx?.codeBlockProps}
       stream={ctx?.codeBlockStream}

@@ -439,7 +439,7 @@ function registerModels(ctx, mount, catalogResource) {
         const enabled = toggle.querySelector("input");
         enabled.checked = connection.availability !== "disabled";
         enabled.setAttribute("aria-label", `启用 ${connection.name}`);
-        enabled.addEventListener("change", () => report(setConnectionEnabled(connection, enabled)));
+        enabled.addEventListener("change", () => report(setConnectionEnabled(connection, enabled, card)));
         row.append(head, toggle);
         row.insertAdjacentHTML("beforeend", CHEVRON_ICON);
         fillProviderHead(head, entry, connection);
@@ -535,15 +535,77 @@ function registerModels(ctx, mount, catalogResource) {
         }).catch((reason) => { quotaAt = 0; throw reason; });
       }
 
-      // 开关直接生效；停用承担默认模型的连接前先确认，失败时回到实际状态。
-      async function setConnectionEnabled(connection, input) {
+      let inlineConfirmSeq = 0;
+
+      function clearInlineConfirm(host, restoreFocus = false) {
+        const bar = host?.querySelector?.(":scope > .settings-inline-confirm");
+        if (!bar) return;
+        const opener = restoreFocus ? bar.__inlineConfirmOpener : null;
+        bar.remove();
+        if (opener?.isConnected && typeof opener.focus === "function") opener.focus();
+      }
+
+      // 两步内联确认替代系统 window.confirm：留在原卡片/底栏内完成决定。
+      function promptInlineConfirm(host, message, confirmLabel, onConfirm, beforeNode = null, opener = null) {
+        clearInlineConfirm(host);
+        inlineConfirmSeq += 1;
+        const textId = `settings-inline-confirm-${inlineConfirmSeq}`;
+        const bar = document.createElement("div");
+        bar.className = "settings-inline-confirm";
+        bar.setAttribute("role", "alertdialog");
+        bar.setAttribute("aria-labelledby", textId);
+        bar.__inlineConfirmOpener = opener ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null);
+        const text = document.createElement("span");
+        text.id = textId;
+        text.className = "settings-inline-confirm__text";
+        text.textContent = message;
+        const actions = document.createElement("div");
+        actions.className = "settings-inline-confirm__actions";
+        const cancel = document.createElement("button");
+        cancel.type = "button";
+        cancel.className = "settings-inline-confirm__cancel";
+        cancel.textContent = "取消";
+        const confirm = document.createElement("button");
+        confirm.type = "button";
+        confirm.className = "settings-inline-confirm__danger";
+        confirm.textContent = confirmLabel;
+        cancel.addEventListener("click", () => clearInlineConfirm(host, true));
+        confirm.addEventListener("click", () => { bar.remove(); onConfirm(); });
+        bar.addEventListener("keydown", (event) => {
+          if (event.key !== "Escape") return;
+          event.preventDefault();
+          event.stopPropagation();
+          clearInlineConfirm(host, true);
+        });
+        actions.append(cancel, confirm);
+        bar.append(text, actions);
+        if (beforeNode && beforeNode.parentElement === host) host.insertBefore(bar, beforeNode);
+        else host.append(bar);
+        cancel.focus();
+      }
+
+      // 开关直接生效；停用承担默认模型的连接改为行内两步确认，失败时回到实际状态。
+      async function setConnectionEnabled(connection, input, card = null, skipDefaultCheck = false) {
         const enable = input.checked;
+        if (enable && card) clearInlineConfirm(card);
         const roles = Object.values(catalog.roleBindings ?? {});
         const hostsDefault = catalog.models.some((model) => model.connectionId === connection.id
           && (roles.includes(model.id) || model.id === catalog.defaultEmbeddingModelId));
-        if (!enable && hostsDefault
-            && !window.confirm(`默认模型在 ${connection.name} 上，停用后用到它的对话会失败，需另选默认模型。仍然停用？`)) {
+        if (!enable && hostsDefault && !skipDefaultCheck) {
           input.checked = true;
+          if (card) {
+            promptInlineConfirm(
+              card,
+              `默认模型在 ${connection.name} 上，停用后用到它的对话需另选默认模型。`,
+              "确认停用",
+              () => {
+                input.checked = false;
+                void report(setConnectionEnabled(connection, input, card, true));
+              },
+              card.querySelector(".settings-provider-editor"),
+              input,
+            );
+          }
           return;
         }
         if (activeEditor?.connectionId === connection.id && !closeActiveEditor()) {
@@ -1749,16 +1811,53 @@ function registerModels(ctx, mount, catalogResource) {
           footer.innerHTML = `<button type="button" class="settings-secondary-button" data-cancel>取消</button><button type="button" class="settings-primary-button" data-save>保存</button>`;
           dialogHost.append(footer);
           syncFooter();
-          footer.querySelector("[data-cancel]").addEventListener("click", () => { closeActiveEditor(); });
-          footer.querySelector("[data-save]").addEventListener("click", () => {
-            const warning = modelManager.removalWarning();
-            if (warning && !window.confirm(warning)) return;
+          const saveButton = footer.querySelector("[data-save]");
+          dialogHost.addEventListener("input", (event) => {
+            if (!(event.target instanceof Element) || event.target.closest(".settings-inline-confirm")) return;
+            clearInlineConfirm(dialogHost);
+          });
+          dialogHost.addEventListener("change", (event) => {
+            if (!(event.target instanceof Element) || event.target.closest(".settings-inline-confirm")) return;
+            clearInlineConfirm(dialogHost);
+          });
+          footer.querySelector("[data-cancel]").addEventListener("click", () => {
+            clearInlineConfirm(dialogHost);
+            closeActiveEditor();
+          });
+          const performSave = () => {
             const form = dialogHost.querySelector("form");
             if (providerDirty && form) { form.requestSubmit(); return; }
             actions.selectModels()
               .then((saved) => finish(saved ? `${connection.name} 的修改已保存` : "没有需要保存的修改"))
               .catch((reason) => modelManager.showError(reason));
+          };
+          const snapshotRemovalState = () => JSON.stringify({
+            warning: modelManager.removalWarning() ?? "",
+            revision: catalog?.revision ?? 0,
+            bindings: catalog?.roleBindings ?? null,
+            embedding: catalog?.defaultEmbeddingModelId ?? null,
           });
+          const requestSave = () => {
+            const warning = modelManager.removalWarning();
+            if (!warning) { performSave(); return; }
+            const snapshot = snapshotRemovalState();
+            promptInlineConfirm(
+              dialogHost,
+              warning,
+              "确认移除并保存",
+              () => {
+                // 若确认期间草稿、默认绑定或目录版本发生变化，拒绝沿用旧提示，要求按最新状态重新确认。
+                if (snapshotRemovalState() !== snapshot) {
+                  requestSave();
+                  return;
+                }
+                performSave();
+              },
+              footer,
+              saveButton,
+            );
+          };
+          saveButton.addEventListener("click", requestSave);
         }
         const leaveDocument = event => { if (!event.persisted) report(auth.close()); };
         window.addEventListener("pagehide", leaveDocument);

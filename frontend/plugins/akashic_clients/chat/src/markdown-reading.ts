@@ -257,3 +257,42 @@ export function jumpToFootnote(event: ReactMouseEvent<HTMLElement>): void {
   const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   target.scrollIntoView({ block: "center", behavior: reduce ? "auto" : "smooth" });
 }
+
+let copiedHighlightBlock: HTMLElement | null = null;
+let copiedHighlightButton: HTMLElement | null = null;
+let copiedHighlightTimer = 0;
+
+/** 按真实复制文本统计非空末尾行后的代码行数，供复制按钮显示行数回执。 */
+export function copiedCodeLineLabel(code: string): string {
+  const normalized = code.replace(/\r?\n$/u, "");
+  const count = normalized ? normalized.split(/\r?\n/u).length : 0;
+  return count > 0 ? `${count} 行` : "";
+}
+
+/** 仅在剪贴板写入成功后点亮唯一源代码块，1500ms 或切到别块后干净撤回。 */
+export function highlightCopiedBlock(
+  container: HTMLElement | null,
+  button: HTMLElement | null = null,
+): void {
+  window.clearTimeout(copiedHighlightTimer);
+  if (copiedHighlightBlock && copiedHighlightBlock !== container) {
+    delete copiedHighlightBlock.dataset.copiedHighlight;
+  }
+  if (copiedHighlightButton && copiedHighlightButton !== button) {
+    delete copiedHighlightButton.dataset.copyLines;
+  }
+  copiedHighlightBlock = container;
+  copiedHighlightButton = button;
+  if (!container) return;
+  container.dataset.copiedHighlight = "true";
+  copiedHighlightTimer = window.setTimeout(() => {
+    if (copiedHighlightBlock === container) {
+      delete container.dataset.copiedHighlight;
+      copiedHighlightBlock = null;
+    }
+    if (button && copiedHighlightButton === button) {
+      delete button.dataset.copyLines;
+      copiedHighlightButton = null;
+    }
+  }, 1500);
+}

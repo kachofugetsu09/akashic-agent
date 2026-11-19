@@ -9,6 +9,8 @@ const COMMANDCODE_ICON = svgData(`<svg fill="currentColor" fill-rule="evenodd" h
 const CLOSE_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"></path><path d="m6 6 12 12"></path></svg>`;
 const EYE_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"></path><circle cx="12" cy="12" r="3"></circle></svg>`;
 const EYE_OFF_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m2 2 20 20"></path><path d="M6.71 6.71C4.7 8.1 3.24 10.06 2.06 11.65a1 1 0 0 0 0 .7c2.34 5.64 8.94 8.32 14.24 5.36"></path><path d="M10.73 5.08A10.66 10.66 0 0 1 21.94 11.65a1 1 0 0 1 0 .7 10.83 10.83 0 0 1-2.06 3.1"></path><path d="M14.12 14.12A3 3 0 0 1 9.88 9.88"></path></svg>`;
+const COPY_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"></rect><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"></path></svg>`;
+const CHECK_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path></svg>`;
 const SHIELD_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"></path><path d="m9 12 2 2 4-4"></path></svg>`;
 const SPINNER_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="is-spinning" aria-hidden="true"><path d="M21 12a9 9 0 1 1-6.219-8.56"></path></svg>`;
 const ZHIPU_KEYS = "https://open.bigmodel.cn/usercenter/proj-mgmt/apikeys";
@@ -218,23 +220,78 @@ function renderCreate(host, props) {
 }
 
 function keyField(placeholder, required) {
-  return `<label class="settings-secret is-wide"><span>API Key</span><input name="apiKey" aria-label="API Key" type="password" ${required ? "required" : ""} autocomplete="off" placeholder="${placeholder}"><button type="button" data-show-key aria-label="显示 API Key">${EYE_ICON}</button></label>`;
+  return `<label class="settings-secret is-wide"><span>API Key</span><span class="settings-secret-field"><input name="apiKey" aria-label="API Key" type="password" ${required ? "required" : ""} autocomplete="off" placeholder="${placeholder}"><span class="settings-secret-actions"><button type="button" data-copy-key aria-label="复制 API Key" hidden>${COPY_ICON}</button><button type="button" data-show-key aria-label="显示 API Key">${EYE_ICON}</button></span></span></label>`;
 }
 
-// 表单的共同接线：脏标记、显示密钥、关闭。
+// 表单的共同接线：脏标记、显示密钥、复制后即刻掩码收拢、关闭。
 function bindForm(host, props) {
   const form = host.querySelector("form");
   const changed = () => props.dirty(true);
-  form.addEventListener("input", changed);
-  form.addEventListener("change", changed);
+  const apiKeyInput = form.elements.apiKey;
   const showKey = host.querySelector("[data-show-key]");
+  const copyKey = host.querySelector("[data-copy-key]");
+  let copyTimer = 0;
+  let copySeq = 0;
+  const resetCopyVisual = () => {
+    window.clearTimeout(copyTimer);
+    copyTimer = 0;
+    if (!copyKey) return;
+    delete copyKey.dataset.copied;
+    delete copyKey.dataset.copyError;
+    copyKey.setAttribute("aria-label", "复制 API Key");
+    copyKey.innerHTML = COPY_ICON;
+  };
+  const syncCopyButton = () => {
+    if (!copyKey) return;
+    copyKey.hidden = !apiKeyInput.value.trim();
+  };
+  form.addEventListener("input", () => { changed(); syncCopyButton(); resetCopyVisual(); });
+  form.addEventListener("change", () => { changed(); syncCopyButton(); });
+  syncCopyButton();
   showKey.addEventListener("click", () => {
-    const visible = form.elements.apiKey.type === "text";
-    form.elements.apiKey.type = visible ? "password" : "text";
+    const visible = apiKeyInput.type === "text";
+    apiKeyInput.type = visible ? "password" : "text";
     showKey.setAttribute("aria-label", visible ? "显示 API Key" : "隐藏 API Key");
     showKey.innerHTML = visible ? EYE_ICON : EYE_OFF_ICON;
   });
-  host.querySelector("[data-close]").addEventListener("click", props.close);
+  copyKey?.addEventListener("click", () => {
+    const value = apiKeyInput.value;
+    if (!value.trim() || !navigator.clipboard?.writeText) return;
+    const seq = ++copySeq;
+    void navigator.clipboard.writeText(value).then(() => {
+      if (!copyKey.isConnected || seq !== copySeq || apiKeyInput.value !== value) return;
+      delete copyKey.dataset.copyError;
+      copyKey.dataset.copied = "true";
+      copyKey.setAttribute("aria-label", "已复制 API Key");
+      copyKey.innerHTML = CHECK_ICON;
+      // 复制完成即刻掩码收拢，减少明文停留在屏幕上的窗口（@dev_ya 模式）。
+      if (apiKeyInput.type === "text") {
+        apiKeyInput.type = "password";
+        showKey.setAttribute("aria-label", "显示 API Key");
+        showKey.innerHTML = EYE_ICON;
+      }
+      window.clearTimeout(copyTimer);
+      copyTimer = window.setTimeout(() => {
+        if (!copyKey.isConnected || seq !== copySeq) return;
+        resetCopyVisual();
+      }, 1500);
+    }).catch(() => {
+      if (!copyKey.isConnected || seq !== copySeq) return;
+      delete copyKey.dataset.copied;
+      copyKey.dataset.copyError = "true";
+      copyKey.setAttribute("aria-label", "复制失败，请手动复制");
+      window.clearTimeout(copyTimer);
+      copyTimer = window.setTimeout(() => {
+        if (!copyKey.isConnected || seq !== copySeq) return;
+        resetCopyVisual();
+      }, 2000);
+    });
+  });
+  host.querySelector("[data-close]").addEventListener("click", () => {
+    copySeq += 1;
+    window.clearTimeout(copyTimer);
+    props.close();
+  });
   return form;
 }
 

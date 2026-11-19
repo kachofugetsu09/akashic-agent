@@ -386,13 +386,44 @@ const COMPACTION_TRIGGER_LABELS: Record<CompactionBoundaryValue["trigger"], stri
   context_overflow: "容量触顶",
 };
 
-/** 压缩边界：对齐 Claude Desktop 的低调发丝线分隔条，默认收起一行，点开可看节省体积与摘要片段。 */
+interface CompactionAnchor {
+  id: string;
+  label: string;
+  lineIndex: number;
+}
+
+function extractCompactionAnchors(lines: readonly string[]): CompactionAnchor[] {
+  const anchors: CompactionAnchor[] = [];
+  const seen = new Set<string>();
+  const add = (raw: string, lineIndex: number) => {
+    if (anchors.length >= 6) return;
+    const label = raw.trim().replace(/^`|`$/g, "");
+    if (!label || label.length < 3 || label.length > 36 || seen.has(label)) return;
+    seen.add(label);
+    anchors.push({ id: `${lineIndex}-${label}`, label, lineIndex });
+  };
+  for (let lineIndex = 0; lineIndex < lines.length && anchors.length < 6; lineIndex += 1) {
+    const line = lines[lineIndex];
+    const withoutUrls = line.replace(/https?:\/\/\S+/gu, " ");
+    for (const match of line.matchAll(/`([^`\n]{3,36})`/gu)) add(match[1], lineIndex);
+    for (const match of withoutUrls.matchAll(/(?:^|[\s(（【"'`])((?:\/[\w.-]+){2,})/gu)) add(match[1], lineIndex);
+    for (const match of withoutUrls.matchAll(/(?:^|[^\w.])(\d+(?:\.\d+)?\s*(?:GiB|MiB|GB|MB|ms|s|px|tokens?|k|K|%))(?![\w.])/gu)) add(match[1], lineIndex);
+    for (const match of withoutUrls.matchAll(/(\d+(?:\.\d+)?\s*(?:次|个|行))/gu)) add(match[1], lineIndex);
+  }
+  return anchors;
+}
+
+/** 压缩边界：对齐 Claude Desktop 的低调发丝线分隔条，默认收起一行，点开可看节省体积、摘要正文与边缘锚点。 */
 function CompactionBoundaryRow({ boundary, standalone = false }: {
   boundary: CompactionBoundaryValue;
   standalone?: boolean;
 }) {
   const [open, setOpen] = useState(false);
+  const [activeAnchorId, setActiveAnchorId] = useState<string | null>(null);
+  const previewRef = useRef<HTMLDivElement | null>(null);
+  const lineRefs = useRef<(HTMLParagraphElement | null)[]>([]);
   const saved = Math.max(0, boundary.tokens_before - boundary.tokens_after);
+  const ratio = boundary.tokens_before > 0 ? Math.round((saved / boundary.tokens_before) * 100) : 0;
   const verb = boundary.mode === "background" ? "已后台自动压缩" : "已压缩会话";
   const label = saved > 0
     ? `${verb} · 省下 ${formatCompactTokenCount(saved)} tokens`
@@ -402,6 +433,24 @@ function CompactionBoundaryRow({ boundary, standalone = false }: {
   const triggerLabel = boundary.mode === "background"
     ? "后台空闲自动压缩"
     : (COMPACTION_TRIGGER_LABELS[boundary.trigger] ?? "自动压缩");
+  const lines = useMemo(
+    () => (boundary.summary_preview ?? "").split(/\r?\n/u).map((line) => line.trimEnd()).filter(Boolean),
+    [boundary.summary_preview],
+  );
+  const anchors = useMemo(() => extractCompactionAnchors(lines), [lines]);
+  const activeAnchor = anchors.find((anchor) => anchor.id === activeAnchorId) ?? null;
+  const activeLine = activeAnchor?.lineIndex ?? null;
+  const jumpToAnchor = (anchor: CompactionAnchor) => {
+    setActiveAnchorId((current) => (current === anchor.id ? null : anchor.id));
+    if (activeAnchorId !== anchor.id) {
+      const preview = previewRef.current;
+      const lineEl = lineRefs.current[anchor.lineIndex];
+      if (preview && lineEl) {
+        const targetTop = Math.max(0, lineEl.offsetTop - preview.offsetTop - Math.max(0, (preview.clientHeight - lineEl.offsetHeight) / 2));
+        preview.scrollTo({ top: targetTop, behavior: "smooth" });
+      }
+    }
+  };
   return <div className={`compaction-boundary${standalone ? " is-standalone" : ""}`} data-disclosure-root="" data-open={open || undefined}>
     <button type="button" className="compaction-boundary__trigger" data-disclosure-trigger="" aria-expanded={open}
       onClick={() => setOpen((current) => !current)}>
@@ -413,11 +462,45 @@ function CompactionBoundaryRow({ boundary, standalone = false }: {
     </button>
     <Disclosure open={open}>
       <div className="compaction-boundary__detail" role="status">
-        <p className="compaction-boundary__meta">
-          {triggerLabel} · {boundary.tokens_before.toLocaleString()} → {boundary.tokens_after.toLocaleString()} tokens · 第 {boundary.generation} 代摘要
-        </p>
-        {boundary.summary_preview ? (
-          <pre className="compaction-boundary__preview">{boundary.summary_preview}</pre>
+        <div className="compaction-boundary__meta-row">
+          <p className="compaction-boundary__meta">
+            {triggerLabel} · {boundary.tokens_before.toLocaleString()} → {boundary.tokens_after.toLocaleString()} tokens · 第 {boundary.generation} 代摘要
+          </p>
+          {ratio > 0 ? <span className="compaction-boundary__ratio">−{ratio}%</span> : null}
+        </div>
+        {lines.length ? (
+          <div className={`compaction-boundary__grid${anchors.length ? " has-anchors" : ""}`}>
+            <div ref={previewRef} className="compaction-boundary__preview">
+              {lines.map((line, index) => (
+                <p
+                  key={index}
+                  ref={(node) => { lineRefs.current[index] = node; }}
+                  className={`compaction-boundary__line${activeLine === index ? " is-highlighted" : ""}`}
+                >
+                  {line}
+                </p>
+              ))}
+            </div>
+            {anchors.length ? (
+              <aside className="compaction-boundary__anchors" aria-label="摘要保留的关键锚点">
+                <span className="compaction-boundary__anchors-title">保留锚点 · {anchors.length}</span>
+                <div className="compaction-boundary__anchors-list">
+                  {anchors.map((anchor) => (
+                    <button
+                      key={anchor.id}
+                      type="button"
+                      className={`compaction-boundary__anchor${activeAnchorId === anchor.id ? " is-active" : ""}`}
+                      aria-pressed={activeAnchorId === anchor.id}
+                      onClick={() => jumpToAnchor(anchor)}
+                    >
+                      <span className="compaction-boundary__anchor-dot" aria-hidden="true" />
+                      <span>{anchor.label}</span>
+                    </button>
+                  ))}
+                </div>
+              </aside>
+            ) : null}
+          </div>
         ) : null}
       </div>
     </Disclosure>
@@ -1673,7 +1756,11 @@ function ToolDetailSurface({ block, open, onCopyDetail, className = "" }: {
   return (
     <div className={`tool-detail-surface${className ? ` ${className}` : ""}`}>
       {parameters.length > 0 ? (
-        <section className="tool-detail-section" aria-label="工具参数">
+        <section
+          className="tool-detail-section"
+          data-copied-highlight={copiedDetail?.section === "parameters" && copiedDetail.text === parameterCopyText ? "true" : undefined}
+          aria-label="工具参数"
+        >
           <ToolDetailHeading label="参数" onCopy={copy("parameters", parameterCopyText)}
             copied={copiedDetail?.section === "parameters" && copiedDetail.text === parameterCopyText} />
           <dl className="tool-parameter-list">
@@ -1687,7 +1774,11 @@ function ToolDetailSurface({ block, open, onCopyDetail, className = "" }: {
         </section>
       ) : null}
       {open && hasResult ? (
-        <section className={`tool-detail-section${error ? " is-error" : ""}`} aria-label={error ? "工具错误" : "工具结果"}>
+        <section
+          className={`tool-detail-section${error ? " is-error" : ""}`}
+          data-copied-highlight={copiedDetail?.section === "result" && copiedDetail.text === result ? "true" : undefined}
+          aria-label={error ? "工具错误" : "工具结果"}
+        >
           <ToolDetailHeading label={error ? "错误" : "结果"} onCopy={copy("result", result)}
             copied={copiedDetail?.section === "result" && copiedDetail.text === result} />
           {toolHasValue(resultValue) ? <ToolResultContent value={resultValue} error={error}
@@ -2002,9 +2093,10 @@ const TaskCard = memo(function TaskCard({ block, task, member = false, onCopyDet
     onPointerEnter: (event: ReactPointerEvent<HTMLElement>) => { if (event.pointerType === "mouse" && !open) hover.show(event.currentTarget); },
     onPointerLeave: hover.leave,
   };
+  const settled = view.tone === "done" && !open;
   const content = <TaskRowContent view={view} open={open} expandable={hasDetails} matches={matches} />;
   return (
-    <div className={`delegated-card${member ? " is-member" : " is-single"}${view.tone === "error" ? " is-error" : ""}`}>
+    <div className={`delegated-card${member ? " is-member" : " is-single"}${view.tone === "error" ? " is-error" : ""}${settled ? " is-settled" : ""}`}>
       {hasDetails ? (
         <div ref={rowRef} className={`tool-step-sticky${sticky ? " is-open" : ""}`}>
           <button type="button" className="delegated-row-trigger" aria-expanded={open}
@@ -2055,8 +2147,9 @@ function TaskBatchCard({ members, onCopyToolDetail }: {
   const prefetch = () => setMounted(true);
   const findText = useCallback(() => members.map(({ item }) => flowItemFindText(item)).join("\n"), [members]);
   const matches = useFindRegion(rowRef, open, findText, (next) => { setMounted(true); setOpen(next); });
+  const settled = counts.live === 0 && counts.failed === 0 && !open;
   return (
-    <div className={`delegated-group${sticky ? " is-open" : ""}${counts.failed ? " has-error" : ""}`}>
+    <div className={`delegated-group${sticky ? " is-open" : ""}${counts.failed ? " has-error" : ""}${settled ? " is-settled" : ""}`}>
       <div ref={rowRef} className={`tool-step-sticky${sticky ? " is-open" : ""}`}>
         <button type="button" className="delegated-group-summary" aria-expanded={open}
           onPointerEnter={prefetch} onFocus={prefetch} onClick={() => { setMounted(true); toggle(); }}>

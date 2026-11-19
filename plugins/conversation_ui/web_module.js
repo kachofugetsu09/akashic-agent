@@ -190,6 +190,8 @@ const ICONS = {
   collapse: '<path d="M14 10h6M14 10V4M10 14H4M10 14v6M14 10l6-6M10 14l-6 6"/>',
   launch: '<rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M3 9h18"/>',
   split: '<rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M3 12h18"/>',
+  chevronRight: '<path d="m9 18 6-6-6-6"/>',
+  chevronDown: '<path d="m6 9 6 6 6-6"/>',
 };
 
 // 按键换成快捷键写法（与 entry.shortcut 同一套）；输入法组合中、带 Alt 的不算。
@@ -278,7 +280,11 @@ function readGroup(value) {
   if (!value || typeof value !== "object" || !Array.isArray(value.tabs)) return null;
   const tabs = value.tabs.filter((tab) => tab && typeof tab === "object"
     && (tab.tool === null || typeof tab.tool === "string") && (tab.instance === null || typeof tab.instance === "string"));
-  return { tabs, active: Number.isInteger(value.active) ? value.active : 0 };
+  const clusters = Array.isArray(value.clusters)
+    ? value.clusters.filter((c) => c && typeof c === "object" && typeof c.id === "string" && typeof c.label === "string")
+      .map((c) => ({ id: c.id, label: c.label.slice(0, TITLE_LIMIT), collapsed: c.collapsed === true }))
+    : [];
+  return { tabs, active: Number.isInteger(value.active) ? value.active : 0, clusters };
 }
 
 function saveLayout(session, layout) {
@@ -653,7 +659,7 @@ function createRecords(entries, content) {
   const singles = new Map();
   let launchSeq = 0;
   const make = (key, entry, instance, session) => {
-    const record = { key, entry, instance, session, title: null, indicator: null, attention: false, panel: toolPanel(key) };
+    const record = { key, entry, instance, session, title: null, indicator: null, attention: false, clusterId: null, panel: toolPanel(key) };
     Object.assign(record, buildTabItem(record));
     content.append(record.panel);
     return record;
@@ -668,8 +674,8 @@ function createRecords(entries, content) {
   };
 }
 
-function newGroup(tabs, activeKey = undefined) {
-  return { tabs, activeKey: activeKey ?? tabs[0]?.key ?? null };
+function newGroup(tabs, activeKey = undefined, clusters = []) {
+  return { tabs, activeKey: activeKey ?? tabs[0]?.key ?? null, clusters: clusters.map((c) => ({ ...c })) };
 }
 
 function titleOf(record, order) {
@@ -756,6 +762,85 @@ function mountTools(root, chat, tools, entries) {
   });
   let disposed = false;
   let dragging = null;
+  const selectedKeys = new Set();
+  const clusterNodes = new Map();
+
+  function cleanClusters(group) {
+    const counts = new Map();
+    for (const record of group.tabs) {
+      if (record.clusterId) counts.set(record.clusterId, (counts.get(record.clusterId) ?? 0) + 1);
+    }
+    group.clusters = group.clusters.filter((cluster) => (counts.get(cluster.id) ?? 0) >= 2);
+    const liveIds = new Set(group.clusters.map((cluster) => cluster.id));
+    for (const record of group.tabs) {
+      if (record.clusterId && !liveIds.has(record.clusterId)) record.clusterId = null;
+    }
+  }
+
+  function buildClusterPill(cluster, members, group) {
+    let pill = clusterNodes.get(cluster.id);
+    if (!pill) {
+      const rootEl = element("div", "conversation-tools-cluster");
+      const toggleBtn = element("button", "conversation-tools-cluster-pill");
+      toggleBtn.type = "button";
+      const icon = element("span", "conversation-tools-cluster-chevron");
+      const label = element("span", "conversation-tools-cluster-label");
+      const count = element("span", "conversation-tools-cluster-count");
+      const dot = element("span", "conversation-tools-tab-dot");
+      toggleBtn.append(icon, label, count, dot);
+      const ungroupBtn = chromeButton("conversation-tools-cluster-ungroup", "解散分组", "close");
+      rootEl.append(toggleBtn, ungroupBtn);
+      pill = { rootEl, toggleBtn, icon, label, count, ungroupBtn };
+      clusterNodes.set(cluster.id, pill);
+    }
+    const hasActive = members.some((record) => record.key === group.activeKey);
+    const hasBusy = members.some((record) => record.indicator?.busy);
+    const hasAttention = members.some((record) => record.attention);
+    pill.rootEl.classList.toggle("is-collapsed", cluster.collapsed);
+    pill.rootEl.classList.toggle("has-active", hasActive);
+    pill.rootEl.classList.toggle("is-busy", hasBusy);
+    pill.rootEl.classList.toggle("has-attention", hasAttention);
+    pill.toggleBtn.setAttribute("aria-expanded", String(!cluster.collapsed));
+    pill.toggleBtn.title = `${cluster.label} (${members.length}) · 点击${cluster.collapsed ? "展开" : "折叠"}分组`;
+    pill.icon.innerHTML = svgIcon(cluster.collapsed ? "chevronRight" : "chevronDown");
+    pill.label.textContent = cluster.label;
+    pill.count.textContent = String(members.length);
+    pill.toggleBtn.onclick = () => {
+      cluster.collapsed = !cluster.collapsed;
+      update();
+      remember();
+    };
+    pill.ungroupBtn.onclick = (event) => {
+      event.stopPropagation();
+      ungroupCluster(group, cluster.id);
+    };
+    return pill.rootEl;
+  }
+
+  function groupSelectedIn(group) {
+    const members = group.tabs.filter((record) => selectedKeys.has(record.key));
+    if (members.length < 2) return false;
+    const id = newInstanceId();
+    const firstLabel = members[0].label ?? members[0].entry?.label ?? "标签组";
+    const firstIndex = group.tabs.indexOf(members[0]);
+    const remaining = group.tabs.filter((record) => !selectedKeys.has(record.key));
+    for (const record of members) record.clusterId = id;
+    remaining.splice(Math.min(firstIndex, remaining.length), 0, ...members);
+    group.tabs = remaining;
+    group.clusters.push({ id, label: firstLabel, collapsed: false });
+    cleanClusters(group);
+    for (const record of members) selectedKeys.delete(record.key);
+    update();
+    remember();
+    return true;
+  }
+
+  function ungroupCluster(group, clusterId) {
+    for (const record of group.tabs) if (record.clusterId === clusterId) record.clusterId = null;
+    group.clusters = group.clusters.filter((cluster) => cluster.id !== clusterId);
+    update();
+    remember();
+  }
 
   function update() {
     root.classList.toggle("tools-open", state.open);
@@ -788,24 +873,55 @@ function mountTools(root, chat, tools, entries) {
     const counts = new Map();
     chrome.groups.forEach((shell, index) => {
       const group = state.groups[index];
+      if (group) cleanClusters(group);
+      const renderedClusters = new Set();
+      const items = [];
+      const selectedCount = group ? group.tabs.filter((record) => selectedKeys.has(record.key)).length : 0;
       for (const record of group?.tabs ?? []) {
         const order = record.entry ? (counts.get(record.entry.id) ?? 0) + 1 : 0;
         if (record.entry) counts.set(record.entry.id, order);
-        paintTab(record, group, titleOf(record, order));
+        const cluster = record.clusterId ? group.clusters.find((c) => c.id === record.clusterId) : null;
+        paintTab(record, group, titleOf(record, order), cluster);
+        if (cluster && !renderedClusters.has(cluster.id)) {
+          renderedClusters.add(cluster.id);
+          const members = group.tabs.filter((item) => item.clusterId === cluster.id);
+          items.push(buildClusterPill(cluster, members, group));
+        }
+        if (!cluster?.collapsed) items.push(record.item);
       }
-      const items = group?.tabs.map((record) => record.item) ?? [];
+      if (selectedCount >= 2 && group) {
+        if (!shell.clusterActionBtn) {
+          const action = element("button", "conversation-tools-cluster-action");
+          action.type = "button";
+          shell.clusterActionBtn = action;
+        }
+        const action = shell.clusterActionBtn;
+        action.textContent = `成组 · ${selectedCount}`;
+        action.title = `将选中的 ${selectedCount} 个标签合成可折叠组 (${IS_MAC ? "⌘G" : "Ctrl+G"})`;
+        action.onclick = () => groupSelectedIn(group);
+        items.push(action);
+      }
       if (items.length !== shell.tabs.children.length || items.some((item, at) => shell.tabs.children[at] !== item))
         shell.tabs.replaceChildren(...items);
       shell.root.classList.toggle("is-focused", state.groups.length > 1 && index === state.focus);
-      if (group) activeOf(group)?.item.scrollIntoView({ block: "nearest", inline: "nearest" });
+      if (group) {
+        const active = activeOf(group);
+        if (active?.item.isConnected) active.item.scrollIntoView({ block: "nearest", inline: "nearest" });
+      }
     });
+    const liveClusterIds = new Set(state.groups.flatMap((group) => group.clusters.map((cluster) => cluster.id)));
+    for (const id of clusterNodes.keys()) {
+      if (!liveClusterIds.has(id)) clusterNodes.delete(id);
+    }
   }
 
-  function paintTab(record, group, title) {
+  function paintTab(record, group, title, cluster = null) {
     const active = record.key === group.activeKey;
     const detail = record.indicator?.detail;
     record.label = title;
     record.item.classList.toggle("is-active", active);
+    record.item.classList.toggle("is-selected", selectedKeys.has(record.key));
+    record.item.classList.toggle("is-clustered", Boolean(cluster));
     record.item.classList.toggle("is-busy", Boolean(record.indicator?.busy));
     record.item.classList.toggle("has-attention", record.attention);
     record.button.setAttribute("aria-selected", String(active && state.open));
@@ -881,7 +997,8 @@ function mountTools(root, chat, tools, entries) {
       open: state.open || state.held, focus: state.focus,
       groups: state.groups.map((group) => ({
         active: group.tabs.findIndex((record) => record.key === group.activeKey),
-        tabs: group.tabs.map((record) => ({ tool: record.entry?.id ?? null, instance: record.instance })),
+        clusters: group.clusters,
+        tabs: group.tabs.map((record) => ({ tool: record.entry?.id ?? null, instance: record.instance, clusterId: record.clusterId ?? null })),
       })),
     });
   }
@@ -924,6 +1041,10 @@ function mountTools(root, chat, tools, entries) {
     state.focus = state.groups.indexOf(group);
     state.open = true;
     const record = activeOf(group);
+    if (record.clusterId) {
+      const cluster = group.clusters.find((c) => c.id === record.clusterId);
+      if (cluster) cluster.collapsed = false;
+    }
     record.attention = false;
     update();
     remember();
@@ -942,8 +1063,11 @@ function mountTools(root, chat, tools, entries) {
   function removeTab(record, closed) {
     const group = groupOf(record);
     if (!group) return;
+    selectedKeys.delete(record.key);
+    record.clusterId = null;
     const index = group.tabs.indexOf(record);
     group.tabs.splice(index, 1);
+    cleanClusters(group);
     if (group.activeKey === record.key) group.activeKey = (group.tabs[index] ?? group.tabs[index - 1])?.key ?? null;
     if (!group.tabs.length && state.groups.length > 1) {
       state.groups.splice(state.groups.indexOf(group), 1);
@@ -983,8 +1107,10 @@ function mountTools(root, chat, tools, entries) {
     const [upper, lower] = state.groups;
     if (lower) {
       const lowerActive = state.focus === 1 ? activeOf(lower) : null;
-      for (const record of lower.tabs) if (!record.entry) records.drop(record);
+      for (const record of lower.tabs) if (!record.entry) { record.clusterId = null; records.drop(record); }
+      upper.clusters.push(...lower.clusters);
       upper.tabs.push(...lower.tabs.filter((record) => record.entry));
+      cleanClusters(upper);
       if (lowerActive?.entry) upper.activeKey = lowerActive.key;
       state.groups = [upper];
     } else {
@@ -993,6 +1119,8 @@ function mountTools(root, chat, tools, entries) {
       else {
         const index = upper.tabs.indexOf(moving);
         upper.tabs.splice(index, 1);
+        moving.clusterId = null;
+        cleanClusters(upper);
         upper.activeKey = (upper.tabs[index] ?? upper.tabs[index - 1]).key;
       }
       state.groups.push(newGroup([moving]));
@@ -1006,9 +1134,12 @@ function mountTools(root, chat, tools, entries) {
     if (!from || record === before) return;
     const index = from.tabs.indexOf(record);
     from.tabs.splice(index, 1);
+    if (from !== target) record.clusterId = null;
+    cleanClusters(from);
     if (from.activeKey === record.key) from.activeKey = (from.tabs[index] ?? from.tabs[index - 1])?.key ?? null;
     const at = before ? target.tabs.indexOf(before) : -1;
     target.tabs.splice(at < 0 ? target.tabs.length : at, 0, record);
+    cleanClusters(target);
     if (!from.tabs.length) state.groups.splice(state.groups.indexOf(from), 1);
     activate(record.key);
   }
@@ -1031,9 +1162,15 @@ function mountTools(root, chat, tools, entries) {
     const used = new Set();
     const groups = layout.groups.map((spec) => {
       // 当前标签按存下时的下标取，再滤掉恢复不了的标签，下标不会错位。
-      const restored = spec.tabs.map((item) => restoreTab(item, used));
+      const restored = spec.tabs.map((item) => {
+        const tab = restoreTab(item, used);
+        if (tab && typeof item.clusterId === "string") tab.clusterId = item.clusterId;
+        return tab;
+      });
       const tabs = restored.filter(Boolean);
-      return newGroup(tabs, restored[spec.active]?.key);
+      const group = newGroup(tabs, restored[spec.active]?.key, spec.clusters ?? []);
+      cleanClusters(group);
+      return group;
     }).filter((group) => group.tabs.length);
     state.groups = groups.length ? groups : [newGroup([])];
     state.focus = Math.min(layout.focus, state.groups.length - 1);
@@ -1128,22 +1265,47 @@ function mountTools(root, chat, tools, entries) {
     update();
   }
 
-  // 标签条的指针与键盘：点选、中键关闭、关闭按钮；方向键与 Home/End 在本组里换标签，Delete 关闭。
+  // 标签条的指针与键盘：点选、⌘/Ctrl/Shift 多选成组、中键关闭、关闭按钮；方向键与 Home/End 在本组里换标签，Delete 关闭，⌘G 成组。
   function onStripClick(event) {
     const record = allTabs().find((item) => item.item.contains(event.target));
     if (!record) return;
     if (record.close.contains(event.target) || event.button === 1) closeTab(record);
-    else if (event.button === 0) activate(record.key);
+    else if (event.button === 0 && (event.metaKey || event.ctrlKey || event.shiftKey)) {
+      if (selectedKeys.has(record.key)) selectedKeys.delete(record.key);
+      else selectedKeys.add(record.key);
+      update();
+    } else if (event.button === 0) {
+      if (selectedKeys.size) selectedKeys.clear();
+      activate(record.key);
+    }
   }
 
   function onStripKey(event) {
+    const mod = IS_MAC ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey;
+    if (!event.isComposing && mod && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "g" && selectedKeys.size >= 2) {
+      const stripIndex = chrome.groups.findIndex((shell) => shell.bar.contains(event.target));
+      const targetGroup = state.groups[stripIndex] ?? focusedGroup();
+      if (targetGroup && groupSelectedIn(targetGroup)) { event.preventDefault(); return; }
+    }
     const record = allTabs().find((item) => item.button === event.target);
     const group = record ? groupOf(record) : null;
     if (!group) return;
-    const at = group.tabs.indexOf(record);
-    const keys = { ArrowRight: at + 1, ArrowLeft: at - 1, Home: 0, End: group.tabs.length - 1 };
+    if ((event.key === " " || event.key === "Enter") && (event.shiftKey || event.metaKey || event.ctrlKey)) {
+      if (selectedKeys.has(record.key)) selectedKeys.delete(record.key);
+      else selectedKeys.add(record.key);
+      update();
+      event.preventDefault();
+      return;
+    }
+    const visibleTabs = group.tabs.filter((item) => {
+      if (!item.clusterId) return true;
+      const cluster = group.clusters.find((c) => c.id === item.clusterId);
+      return !cluster?.collapsed;
+    });
+    const at = visibleTabs.indexOf(record);
+    const keys = at >= 0 ? { ArrowRight: at + 1, ArrowLeft: at - 1, Home: 0, End: visibleTabs.length - 1 } : {};
     if (event.key === "Delete") closeTab(record);
-    else if (event.key in keys) activate(group.tabs[(keys[event.key] + group.tabs.length) % group.tabs.length].key, true);
+    else if (event.key in keys && visibleTabs.length) activate(visibleTabs[(keys[event.key] + visibleTabs.length) % visibleTabs.length].key, true);
     else return;
     event.preventDefault();
   }
