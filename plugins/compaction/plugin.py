@@ -37,7 +37,7 @@ from plugins.context.contract import (
 )
 from plugins.ledger.contract import ARTIFACT_READ, BINDINGS
 from plugins.ledger.contract import MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE
-from plugins.ledger.contract import ContentPart, ContentReferences, Control, HistoryWindow, Input, Message, MessageReader, Output
+from plugins.ledger.contract import CallRef, ContentPart, ContentReferences, Control, HistoryWindow, Input, Message, MessageReader, Output, ToolCall, ToolResult
 
 from .records import StoredSummary, SummaryLookup, SummaryRecord, SummaryRecords
 from .message_summary import (
@@ -229,18 +229,51 @@ def _latest_conversation(reader: MessageReader) -> Message | None:
 
 
 def _visible_messages(messages: tuple[Message, ...], source: str) -> tuple[Message, ...]:
-    """与 reply_program 保持同一隐藏规则：其他来源尚未收尾的尾部消息不进入后台评估与摘要。"""
-    finished: set[str] = set()
+    """与 reply_program 保持同一隐藏规则：其他来源未收尾或含未配对调用的失败段不进入后台评估与摘要，
+    同时保证结算已可见调用的迟到 ToolResult 保持成对可见（#2126）。"""
+    resolved = {
+        message.body.call_ref
+        for message in messages
+        if isinstance(message.body, ToolResult)
+    }
     hidden: set[int] = set()
-    for index in range(len(messages) - 1, -1, -1):
-        message = messages[index]
-        if message.source == source or message.source in finished:
+    segments: dict[str, list[int]] = {}
+    unresolved: dict[str, bool] = {}
+
+    def flush(other_source: str, *, hide: bool) -> None:
+        indexes = segments.pop(other_source, None)
+        has_unresolved = unresolved.pop(other_source, False)
+        if indexes and (hide or has_unresolved):
+            hidden.update(indexes)
+
+    for index, message in enumerate(messages):
+        if message.source == source:
             continue
+        other = message.source
+        segments.setdefault(other, []).append(index)
         body = message.body
-        if isinstance(body, Control) and body.action in {"failure", "abandon"} or isinstance(body, Output) and body.finish != "continue":
-            finished.add(message.source)
-        else:
-            hidden.add(index)
+        if isinstance(body, Output):
+            for part_index, part in enumerate(body.parts):
+                if isinstance(part, ToolCall) and CallRef(message.message_id, part_index) not in resolved:
+                    unresolved[other] = True
+            if body.finish != "continue":
+                flush(other, hide=False)
+        elif isinstance(body, Control) and body.action in {"failure", "abandon"}:
+            flush(other, hide=False)
+
+    for other in list(segments):
+        flush(other, hide=True)
+    hidden_output_ids = {
+        messages[idx].message_id
+        for idx in hidden
+        if isinstance(messages[idx].body, Output)
+    }
+    for index, message in enumerate(messages):
+        if message.source != source and isinstance(message.body, ToolResult):
+            if message.body.call_ref.message_id in hidden_output_ids:
+                hidden.add(index)
+            else:
+                hidden.discard(index)
     if not hidden:
         return messages
     return tuple(message for index, message in enumerate(messages) if index not in hidden)
@@ -505,6 +538,7 @@ async def apply(ctx: Context) -> None:
 
     session_locks: dict[str, _SessionLock] = {}
     active_bg_tasks: dict[str, asyncio.Task[bool]] = {}
+    checked_heads: dict[str, int] = {}
     sweeper_task: asyncio.Task[None] | None = None
 
     def _session_lock_busy(session_id: str) -> bool:
@@ -1000,6 +1034,7 @@ async def apply(ctx: Context) -> None:
             head, boundary_head = await reader.read_async(
                 lambda current: (current.head(), current.head(source=BOUNDARY_SOURCE)),
             )
+            checked_heads[session_id] = head
             tried = idle_attempts.get(session_id)
             if (latest.seq <= boundary_head or idle_settled.get(session_id) == head
                     or (tried is not None and tried.gap == latest.message_id)):
@@ -1124,16 +1159,20 @@ async def apply(ctx: Context) -> None:
         for session_id in candidates:
             if read_state is None:
                 break
+            checked_heads.pop(session_id, None)
             task = asyncio.create_task(_compact_idle_session(session_id))
             active_bg_tasks[session_id] = task
             try:
                 if await task:
                     compacted += 1
             except Exception:
-                # 单个会话出错不拖垮巡检；同一内容不再重试，有新消息再评估。
+                # 单个会话出错不拖垮巡检；只标记本次实际检查过的快照 head，避免把并发新消息误记为已检查（#2131）。
                 logger.exception("后台空闲预压缩出错，跳过该会话直到有新消息 session=%s", session_id)
-                settle_idle(session_id, await catalog.reader(session_id).head_async())
+                checked = checked_heads.get(session_id)
+                if checked is not None:
+                    settle_idle(session_id, checked)
             finally:
+                checked_heads.pop(session_id, None)
                 if active_bg_tasks.get(session_id) is task:
                     _ = active_bg_tasks.pop(session_id, None)
         return compacted

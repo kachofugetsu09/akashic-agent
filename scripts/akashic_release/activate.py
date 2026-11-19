@@ -444,11 +444,20 @@ def activate_release(
             attempt.update(status="failed", phase="waiting_for_turn", detail=str(error))
             write_json(attempt_path, attempt)
             raise
-    attempt["phase"] = "stopping"
-    write_json(attempt_path, attempt)
-    if self_deploy is not None:
-        self_deploy["phase"] = "restarting"
-        write_json(Path(str(self_deploy["recordPath"])), self_deploy)
+    try:
+        attempt["phase"] = "stopping"
+        write_json(attempt_path, attempt)
+        if self_deploy is not None:
+            self_deploy["phase"] = "restarting"
+            write_json(Path(str(self_deploy["recordPath"])), self_deploy)
+    except BaseException:
+        if self_deploy is not None and stop_ack is not None:
+            from scripts.akashic_release.self_deploy import cancel_stop
+            try:
+                cancel_stop(self_deploy, current)
+            except Exception:
+                pass
+        raise
     # 2. 从停机开始保留失败现场；安装、迁移、Root CAS 由目标镜像统一执行。
     try:
         with measure("release.stop"):

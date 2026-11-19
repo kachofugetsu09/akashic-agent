@@ -36,6 +36,7 @@ class CancelStopParams(StopParams):
 class _DeployBudget(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     input_id: str
+    input_seq: int = -1
     requests: list[str] = Field(max_length=3)
 
 
@@ -52,10 +53,14 @@ async def _reserve_deploy(ctx: Context, reader: MessageReader, call: Message, re
         store = states.open_scoped(ctx, "self-deploy")
         def reserve(tx: OwnerTransaction) -> None:
             previous = tx.read(reader.session_id)
-            budget = (_DeployBudget(input_id=origin.message_id, requests=[]) if previous is None else
+            budget = (_DeployBudget(input_id=origin.message_id, input_seq=origin.seq, requests=[]) if previous is None else
                       _DeployBudget.model_validate(json_value(previous.value)))
             if budget.input_id != origin.message_id:
-                budget = _DeployBudget(input_id=origin.message_id, requests=[])
+                if budget.input_seq >= 0 and origin.seq < budget.input_seq:
+                    raise ValueError("旧用户输入的部署请求已过期，不得覆盖较新输入的部署预算")
+                budget = _DeployBudget(input_id=origin.message_id, input_seq=origin.seq, requests=[])
+            elif budget.input_seq < 0:
+                budget.input_seq = origin.seq
             if request_id in budget.requests:
                 return
             if len(budget.requests) == 3:

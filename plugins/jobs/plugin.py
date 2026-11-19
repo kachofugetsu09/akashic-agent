@@ -317,6 +317,16 @@ class Jobs:
         for notice, identity in await reader.read_async(recorded):
             await self._finish_host(notice.job.job_id)
             self._board.confirm(notice, identity)
+            await self._acknowledge(notice)
+
+    async def _acknowledge(self, notice: Notice) -> None:
+        callback = notice.job.acknowledged
+        if callback is None:
+            return
+        try:
+            await callback()
+        except Exception:
+            logger.warning("后台任务通知确认回调失败 job=%s", notice.job.job_id, exc_info=True)
 
     # 每一步准备材料时调用：当前输入领取未读结算，并在该输入的后续步骤中保持可回放。
     async def materials(self, snapshot: tuple[Message, ...], source: str) -> Mapping[str, object]:
@@ -408,6 +418,7 @@ class Jobs:
             board.release_wake(notice)
             return
         board.finish_wake(notice)
+        await self._acknowledge(notice)
         await self._finish_host(job.job_id)
         _ = await self._deliver(message)
 
@@ -494,22 +505,23 @@ class _JobFinalOutputWaiter:
         ending = turn.ending_message_id
         if ending is None:
             raise RestartRejectedError("最终 Output 缺失")
-        if reader.attributes.visibility == "internal":
-            raise RestartRejectedError("内部会话的后台任务没有外部渠道最终送达")
-        ending_msg = await reader.read_async(lambda current: current.get(ending))
-        if ending_msg is None:
-            raise RestartRejectedError("最终 Output 缺失")
-        origin = _origin(await reader.read_async(lambda current: _latest_user_input(current, ending_msg.seq)))
-        if origin is None:
-            raise RestartRejectedError("后台任务原会话没有可送达的用户渠道")
-        channel, _address = origin
-        try:
-            _ = self._ctx.require(DELIVERY_SENDERS).bind(channel, self._ctx.require(BINDINGS))
-        except KeyError as error:
-            raise RestartRejectedError(f"后台任务回传渠道没有发送能力: {channel}") from error
         delivery = self._ctx.require(DELIVERY).open(self._ctx)
+        selection = delivery.selection(ending)
+        if selection is None:
+            if reader.attributes.visibility == "internal":
+                raise RestartRejectedError("内部会话的后台任务没有外部渠道最终送达")
+            ending_msg = await reader.read_async(lambda current: current.get(ending))
+            if ending_msg is None:
+                raise RestartRejectedError("最终 Output 缺失")
+            origin = _origin(await reader.read_async(lambda current: _latest_user_input(current, ending_msg.seq)))
+            if origin is None:
+                raise RestartRejectedError("后台任务原会话没有可送达的用户渠道")
+            channel, _address = origin
+            try:
+                _ = self._ctx.require(DELIVERY_SENDERS).bind(channel, self._ctx.require(BINDINGS))
+            except KeyError as error:
+                raise RestartRejectedError(f"后台任务回传渠道没有发送能力: {channel}") from error
         async with asyncio.timeout(self._timeout_s):
-            selection = delivery.selection(ending)
             while selection is None:
                 await asyncio.sleep(0.01)
                 selection = delivery.selection(ending)
