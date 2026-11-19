@@ -488,6 +488,7 @@ class _JobFinalOutputWaiter:
     def __init__(self, ctx: Context, *, timeout_s: float = 120.0) -> None:
         self._ctx = ctx
         self._timeout_s = timeout_s
+        self.wait = ctx.entrypoint(self.wait)
 
     async def wait(self, reader: MessageReader, turn: FinalOutputTurn) -> None:
         ending = turn.ending_message_id
@@ -501,6 +502,11 @@ class _JobFinalOutputWaiter:
         origin = _origin(await reader.read_async(lambda current: _latest_user_input(current, ending_msg.seq)))
         if origin is None:
             raise RestartRejectedError("后台任务原会话没有可送达的用户渠道")
+        channel, _address = origin
+        try:
+            _ = self._ctx.require(DELIVERY_SENDERS).bind(channel, self._ctx.require(BINDINGS))
+        except KeyError as error:
+            raise RestartRejectedError(f"后台任务回传渠道没有发送能力: {channel}") from error
         delivery = self._ctx.require(DELIVERY).open(self._ctx)
         async with asyncio.timeout(self._timeout_s):
             selection = delivery.selection(ending)
