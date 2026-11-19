@@ -1324,14 +1324,24 @@ class Fiber:
         self._activation_ready.set()
         await self.root._owner_became_active(self)
 
+    def _close_child_admissions(self) -> None:
+        for child in tuple(self.children):
+            if child.state != FiberState.DISPOSED:
+                child._activation_token = None
+                child.state = FiberState.UNLOADING
+                child._admission_closed.set()
+            child._close_child_admissions()
+
     async def _unload(self, *, next_state: FiberState) -> None:
         # 1. 持本 activation 在途调用的任务不得驱动本次卸载；在撤销
         #    任何状态之前拒绝，避免失败后残留半卸载状态。
         self._reject_self_call_wait()
-        # 2. 撤销本 activation 身份使新调用接纳关闭，再让消费者观察到不可用。
+        # 2. 撤销本 activation 身份使新调用接纳关闭，并同步关闭所有子孙 Fiber 的新调用接纳，
+        #    避免父 Fiber 排空期间或排空超时后全新调用继续进入旧代子服务（#2118）。
         self._activation_token = None
         self.state = FiberState.UNLOADING
         self._admission_closed.set()
+        self._close_child_admissions()
         await self.root._owner_became_inactive(self)
         # 后台循环由 Fiber 停止；先取消并等待，避免排空等待它自己长期持有的许可。
         tasks = tuple(self._tasks)
