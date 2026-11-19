@@ -31,6 +31,8 @@ class JobWatch:
     started_at_ms: int | None = None
     # 生产方提供的停止入口，供用户在界面上终止；返回 False 表示任务已不在运行。缺席时界面不提供停止。
     stop: Callable[[], Awaitable[bool]] | None = None
+    # 父会话持久领取并确认通知后的回调；生产方据此安全清除持久待通知标记，避免交接中断漏发（#2129）。
+    acknowledged: Callable[[], Awaitable[None]] | None = None
 
 
 # 前端只读镜像的一行；时间均为 epoch 毫秒。

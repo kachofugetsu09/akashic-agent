@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 
-from types import SimpleNamespace
+from dataclasses import dataclass
 
 import pytest
 import pytest_asyncio
@@ -382,6 +382,13 @@ async def test_jobs_unload_cancels_active_wake(tmp_path):
                 release.set()
 
 
+@dataclass(frozen=True)
+class _FinalTurn:
+    source: str
+    ending_message_id: str | None
+    message_ids: tuple[str, ...] = ()
+
+
 @pytest.mark.asyncio
 async def test_job_final_output_wait_works_from_external_context(tmp_path):
     async with application(tmp_path, replying=True, extra_sources=_job_sources) as (log, host):
@@ -396,7 +403,7 @@ async def test_job_final_output_wait_works_from_external_context(tmp_path):
         async with live_root(host) as root:
             final_delivery = root.context.require(FINAL_OUTPUT_DELIVERY)
             assert final_delivery.supports("job:fake-1")
-            turn = SimpleNamespace(source="job:fake-1", ending_message_id=ending.message_id)
+            turn = _FinalTurn(source="job:fake-1", ending_message_id=ending.message_id)
             async with asyncio.timeout(5):
                 await final_delivery.wait(log.reader("test:room"), turn)
 
@@ -432,7 +439,7 @@ async def test_job_final_output_wait_rejects_missing_sender_immediately(tmp_path
         w_out.append("o-missing", Output((ContentPart("text", "submitted"),), "complete"))
         async with live_root(host) as root:
             final_delivery = root.context.require(FINAL_OUTPUT_DELIVERY)
-            turn = SimpleNamespace(source="job:fake-missing", ending_message_id="o-missing")
+            turn = _FinalTurn(source="job:fake-missing", ending_message_id="o-missing")
             with pytest.raises(RestartRejectedError, match="没有发送能力"):
                 async with asyncio.timeout(2):
                     await final_delivery.wait(log.reader(session_id), turn)

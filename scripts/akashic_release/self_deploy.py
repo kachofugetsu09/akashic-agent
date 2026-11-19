@@ -207,6 +207,21 @@ def wait_for_stop(record: dict[str, Any], current: dict[str, str]) -> dict[str, 
     return asyncio.run(_prepare_stop(record["request"], current))
 
 
+async def _cancel_stop(request: dict[str, Any], current: dict[str, str]) -> None:
+    from akashic_sdk import AsyncAkashic
+    from plugins.gateway.cli import find_endpoint, read_token
+
+    workspace = Path(current["AKASHIC_WORKSPACE"])
+    endpoint = find_endpoint(workspace)
+    async with await AsyncAkashic.connect(endpoint, workspace_token=read_token(workspace, endpoint)) as client:
+        await client.request("runtime/cancel-stop", request["stop"])
+
+
+def cancel_stop(record: dict[str, Any], current: dict[str, str]) -> None:
+    """在 drained 之后、正式停机之前发生宿主 I/O 故障时，恢复旧 Core 的准入（#2130）。"""
+    asyncio.run(_cancel_stop(record["request"], current))
+
+
 def verify_closed(ack: dict[str, object], current: dict[str, str]) -> None:
     """停止命令成功之外，核对正常关闭证据和实际容器退出。"""
     closed = read_json(

@@ -368,18 +368,26 @@ class Subagents:
                 batch.members[request.job_id] = key
                 self._watch_batches[key] = batch
 
+            pending_clear: list[str] = []
+
             async def settled() -> JobOutcome | None:
                 status, text = await fut
                 if batch is None:
-                    await self._clear_notify((key,))
+                    pending_clear[:] = [key]
                     body = text[:12_000] + ("\n\n结果已截断；完整消息请用 subagent_read 读取。" if len(text) > 12_000 else "")
                     return JobOutcome("completed" if status == "completed" else "failed", f"状态：{status}\n\n{body}")
                 # 1. 批对象在登记时固定，赢家摘除批次后其他成员不会再建一份永远等不到的空批。
                 await batch.settled_event.wait()
                 if batch.winner_job_id != request.job_id:
                     return None
-                await self._clear_notify(tuple(batch.members.values()))
+                pending_clear[:] = list(batch.members.values())
                 return self._batch_summary(batch)
+
+            async def acknowledged() -> None:
+                if pending_clear:
+                    keys = tuple(pending_clear)
+                    pending_clear.clear()
+                    await self._clear_notify(keys)
 
             notices.watch(JobWatch(
                 session_id=request.parent_session_id,
@@ -390,6 +398,7 @@ class Subagents:
                 collect_hint=f'需要完整对话或继续追问，请用 subagent_read(job_id="{request.job_id}") 或 subagent_send。',
                 settled=settled,
                 stop=lambda: self.cancel(request.job_id),
+                acknowledged=acknowledged,
             ))
 
     async def _drain_steers(self, session_id: str, *, task: Task | None = None) -> int:
