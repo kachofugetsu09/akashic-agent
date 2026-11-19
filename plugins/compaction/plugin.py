@@ -33,7 +33,7 @@ from plugins.tools.contract import TOOL_DISPLAY
 from plugins.context.contract import (
     CONTEXT, IDLE_COMPACT_MINUTES, IDLE_COMPACT_TOKENS, MATERIALS_V4, OUTPUT_RESERVE_TOKENS,
     MaterialData, ReductionStatus, SUMMARY_SOFT_LIMIT, background_idle_anchor, background_idle_due,
-    idle_gap_anchor, idle_gap_minutes, idle_summary_due, output_reserve, summary_due,
+    output_reserve, summary_due,
 )
 from plugins.ledger.contract import ARTIFACT_READ, BINDINGS
 from plugins.ledger.contract import MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE
@@ -330,7 +330,7 @@ async def apply(ctx: Context) -> None:
             state = failures[task] = _SummaryFailures(boundary)
         return state
 
-    # 只服务空闲路径，force 与硬水位不读它；有界，满了整体丢弃，代价只是多试一次。
+    # 只服务后台空闲巡检，前台回合不读它；有界，满了整体丢弃，代价只是多试一次。
     idle_attempts: dict[str, _IdleAttempts] = {}
     # 空闲预压缩 [skipped] 日志的去重记录：会话 -> 缺口与原因；有界，满了整体丢弃。
     idle_skip_logged: dict[str, str] = {}
@@ -361,47 +361,15 @@ async def apply(ctx: Context) -> None:
             attempts.paused = False
             logger.info("[resumed] 空闲预压缩: session=%s 已恢复（%s）", session_id, why)
 
-    # 同一会话同一缺口上原因没变就不再打；只在确实出现空闲缺口时才会走到这里。
+    # 同一会话同一末条消息上原因没变就不再打；只有后台巡检判定到期后才会走到这里。
     def skip_idle(snapshot: tuple[Message, ...], reason: str, message: str, *args: object) -> None:
-        session_id, key = snapshot[0].session_id, f"{idle_gap_anchor(snapshot)}:{reason}"
+        session_id, key = snapshot[0].session_id, f"{snapshot[-1].message_id}:{reason}"
         if idle_skip_logged.get(session_id) == key:
             return
         if len(idle_skip_logged) >= 256:
             idle_skip_logged.clear()
         idle_skip_logged[session_id] = key
         logger.info("[skipped] 空闲预压缩: session=%s " + message, session_id, *args)
-
-    # 门控和缩减共用：范围、缺口与阈值都达标，这个缺口没试过，连续失败也未到上限。
-    def idle_due(snapshot: tuple[Message, ...], estimated: int, model: BoundChatModel) -> bool:
-        if estimated <= config.keep_recent_tokens or not idle_summary_due(
-            estimated, snapshot, idle_minutes=_idle_minutes_for(config, snapshot), idle_tokens=config.idle_trigger_tokens,
-        ):
-            log_idle_not_due(snapshot, estimated)
-            return False
-        attempts = idle_attempts_for(snapshot[0].session_id, model.descriptor.binding_id)
-        if attempts.failures >= MAX_SUMMARY_FAILURES:
-            return False
-        if attempts.gap == idle_gap_anchor(snapshot):
-            skip_idle(snapshot, "tried", "同一空闲缺口已试过，不再重试")
-            return False
-        return True
-
-    # 只在停够了时间却没压的时候记原因；连续对话和工具循环里间隔不够是常态，不打日志。
-    def log_idle_not_due(snapshot: tuple[Message, ...], estimated: int) -> None:
-        gap_minutes = idle_gap_minutes(snapshot) if snapshot else None
-        if gap_minutes is None or gap_minutes < max(config.idle_trigger_minutes, 1):
-            return
-        minutes = _idle_minutes_for(config, snapshot)
-        if minutes <= 0 and config.idle_scope == "selected" and config.idle_trigger_minutes > 0:
-            skip_idle(snapshot, "scope", "停了 %.0f 分钟，但会话不在空闲预压缩名单内（idle_scope=selected）", gap_minutes)
-        elif minutes <= 0:
-            skip_idle(snapshot, "off", "空闲预压缩未启用（idle_scope=%s idle_trigger_minutes=%d）",
-                      config.idle_scope, config.idle_trigger_minutes)
-        elif estimated <= config.keep_recent_tokens:
-            skip_idle(snapshot, "recent", "估算 %d tokens 未超过原文保留量 %d", estimated, config.keep_recent_tokens)
-        elif estimated < config.idle_trigger_tokens:
-            skip_idle(snapshot, "tokens", "停了 %.0f 分钟，但估算 %d tokens 低于 idle_trigger_tokens=%d",
-                      gap_minutes, estimated, config.idle_trigger_tokens)
 
     def records() -> SummaryRecords:
         return SummaryRecords(ctx.require(OWNER_STATE).open(ctx))
@@ -652,12 +620,9 @@ async def apply(ctx: Context) -> None:
                 return None
             soft_due = False
         else:
-            if not summary_due(
-                before, window, force=force, snapshot=snapshot,
-                idle_minutes=_idle_minutes_for(config, snapshot), idle_tokens=config.idle_trigger_tokens,
-            ):
+            if not summary_due(before, window, force=force):
                 return None
-            soft_due = force or before >= int(window * SUMMARY_SOFT_LIMIT)
+            soft_due = True
         state = records()
         parent = await run_file_io(lambda: state.head(snapshot[0].session_id))
         ctx_reader = ctx.require(MESSAGE_CATALOG).reader(snapshot[0].session_id)
@@ -914,37 +879,6 @@ async def apply(ctx: Context) -> None:
         )
         return None if result is None else result[0]
 
-    # 空闲压缩是可选优化：任何异常都转成 notice 后继续回合，只有取消继续向外传。
-    async def reduce_idle(snapshot: tuple[Message, ...], materials: MaterialData, request: ModelRequest,
-                          model: BoundChatModel, projection: ContextModel, *, source: str,
-                          on_status: ReductionStatus | None,
-                          summary_limit: int | None) -> MaterialData | None:
-        attempts = idle_attempts_for(snapshot[0].session_id, model.descriptor.binding_id)
-        attempts.gap = idle_gap_anchor(snapshot)
-        try:
-            if on_status is not None:
-                await on_status(f"正在进行空闲预压缩：模型 {model.descriptor.model_id}；"
-                                f"输入估算 {projection.estimate(request):,} tokens", False)
-            summary = await compact(snapshot, materials, request, model, projection, source=source, force=False,
-                                    hard_limit=False, on_status=on_status, summary_limit=summary_limit)
-        except Exception as error:
-            attempts.failures += 1
-            if attempts.failures >= MAX_SUMMARY_FAILURES and not attempts.paused:
-                attempts.paused = True
-                logger.warning("[paused] 空闲预压缩: session=%s 连续失败 %d 次，暂停该会话的空闲预压缩；"
-                               "压缩成功、更换模型或保存模型设置后恢复", snapshot[0].session_id, attempts.failures)
-            logger.warning("空闲预压缩失败 session=%s failures=%d: %r", snapshot[0].session_id, attempts.failures, error,
-                           exc_info=not isinstance(error, (RuntimeError, TimeoutError, SummaryError)))
-            paused = (f"已连续失败 {MAX_SUMMARY_FAILURES} 次，这个对话暂停空闲预压缩；压缩成功、更换模型或保存模型设置后恢复。"
-                      if attempts.failures >= MAX_SUMMARY_FAILURES else "")
-            if on_status is not None:
-                await on_status(f"空闲预压缩未完成：{type(error).__name__}: {error}。这是可选优化，本轮继续生成。" + paused, True)
-            return None
-        if summary is not None:
-            attempts.failures = 0
-            resume_idle(snapshot[0].session_id, attempts, "压缩成功")
-        return summary
-
     async def _wait_background_for_turn(session_id: str, on_status: ReductionStatus | None) -> None:
         bg_task = active_bg_tasks.get(session_id)
         if bg_task is None or bg_task is asyncio.current_task() or bg_task.done():
@@ -975,12 +909,9 @@ async def apply(ctx: Context) -> None:
         session_id = snapshot[0].session_id
         await _wait_background_for_turn(session_id, on_status)
         async with hold_session_lock(session_id):
-            # 软水位以下只剩空闲路径：硬水位一定高于软水位，走到这里的请求原样也能发。
+            # 前台只在软水位、硬容量或强制时压缩；空闲预压缩只由后台巡检在静默期完成，不挡用户的回合。
             if not summary_due(before, window, force=force):
-                if not idle_due(snapshot, before, model):
-                    return None
-                return await reduce_idle(snapshot, materials, request, model, projection, source=source,
-                                         on_status=on_status, summary_limit=summary_limit)
+                return None
             hard_limit = (force and required) or before + output_reserve(request.max_output_tokens, window) > window
             # An optional shrink must not rewrite a request already within the raw-history target.
             if (force or before < int(window * SUMMARY_SOFT_LIMIT)) and not hard_limit and before <= config.keep_recent_tokens:
@@ -1237,4 +1168,4 @@ async def apply(ctx: Context) -> None:
     _ = await ctx.on(RUNTIME_STOPPING, stop)
 
     _ = await ctx.require(MATERIALS_V4).register(ctx, kind="context", name="compaction", prepare=prepare, reduce=reduce,
-                                                 history_start=history_start, reduce_due=idle_due, priority=500)
+                                                 history_start=history_start, priority=500)

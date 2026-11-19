@@ -48,7 +48,6 @@ class SummaryReducer(Protocol):
 
 
 # 摘要 owner 的可选到期判断：只看内存状态，在换完整读面之前调用。snapshot 必须是过滤后的请求视图。
-ReductionDue = Callable[[tuple[Message, ...], int, BoundChatModel], bool]
 
 
 class ContextBuilder(Protocol):
@@ -117,7 +116,6 @@ class MaterialView(Protocol):
         on_status: ReductionStatus | None = None,
         summary_limit: int | None = None,
     ) -> SummaryData | None: ...
-    def reduce_due(self, snapshot: tuple[Message, ...], estimated: int, model: BoundChatModel) -> bool: ...
 
 
 class ContextMaterialsV4(Protocol):
@@ -134,7 +132,6 @@ class ContextMaterialsV4(Protocol):
         prompt: bool = False,
         reduce: SummaryReducer | None = None,
         history_start: HistoryStart | None = None,
-        reduce_due: ReductionDue | None = None,
     ) -> Effect: ...
     def bind(
         self, *, exclude_kinds: frozenset[MaterialKind] = frozenset()
@@ -154,53 +151,9 @@ def output_reserve(max_output_tokens: int, context_window: int) -> int:
 # 请求估算达到窗口的这一比例（或 provider 已拒绝）时摘要 owner 才会压缩；低于它的缩减是空操作。
 SUMMARY_SOFT_LIMIT = 0.74
 # 参考 Claude Code timeBasedMCConfig (gapThresholdMinutes=60)：闲置达到 1 小时后服务端 KV 缓存已过期，
-# 在新请求发送前对已超过空闲容量阈值的上下文执行压缩，避免重复冷启动重读长前缀。
+# 后台巡检在静默期对已超过空闲容量阈值的上下文先行压缩，下一条消息不必冷读长前缀，也不等摘要。
 IDLE_COMPACT_MINUTES = 60
 IDLE_COMPACT_TOKENS = 200_000
-
-
-# 空闲缺口的两端：上一条非 Input 消息与末尾连续 Input 的第一条。
-# 只在末尾是新 Input（本轮尚未产生 Output 或 ToolResult）且前驱不是未完成 Output(continue) 时存在；
-# 进入工具循环后末尾为 ToolResult，没有缺口，保证不会在热缓存回合中途触发空闲压缩。
-def _idle_gap(snapshot: Sequence[Message]) -> tuple[Message, Message] | None:
-    if len(snapshot) < 2 or not isinstance(snapshot[-1].body, Input):
-        return None
-    index = len(snapshot) - 1
-    while index > 0 and isinstance(snapshot[index - 1].body, Input):
-        index -= 1
-    if index == 0:
-        return None
-    previous = snapshot[index - 1]
-    if isinstance(previous.body, Output) and previous.body.finish == "continue":
-        return None
-    return previous, snapshot[index]
-
-
-def idle_gap_minutes(snapshot: Sequence[Message]) -> float | None:
-    gap = _idle_gap(snapshot)
-    if gap is None:
-        return None
-    minutes = (gap[1].recorded_at - gap[0].recorded_at).total_seconds() / 60.0
-    return minutes if minutes >= 0.0 else 0.0
-
-
-# 缺口的稳定身份：缺口前最后一条消息。同一缺口上再来的 Input 身份不变。
-def idle_gap_anchor(snapshot: Sequence[Message]) -> str | None:
-    gap = _idle_gap(snapshot)
-    return None if gap is None else gap[0].message_id
-
-
-def idle_summary_due(
-    estimated: int,
-    snapshot: Sequence[Message] = (),
-    *,
-    idle_minutes: int = IDLE_COMPACT_MINUTES,
-    idle_tokens: int = IDLE_COMPACT_TOKENS,
-) -> bool:
-    if idle_minutes <= 0 or idle_tokens <= 0 or estimated < idle_tokens:
-        return False
-    gap = idle_gap_minutes(snapshot)
-    return gap is not None and gap >= idle_minutes
 
 
 def background_idle_anchor(
@@ -251,22 +204,11 @@ def background_idle_due(
     return minutes >= idle_minutes
 
 
-def summary_due(
-    estimated: int,
-    context_window: int | None,
-    *,
-    force: bool,
-    snapshot: Sequence[Message] = (),
-    idle_minutes: int = 0,
-    idle_tokens: int = 0,
-) -> bool:
+def summary_due(estimated: int, context_window: int | None, *, force: bool) -> bool:
+    """前台回合的压缩到期：强制或达到软水位；空闲预压缩只由后台巡检判定，不在这里。"""
     if context_window is None:
         return False
-    if force or estimated >= int(context_window * SUMMARY_SOFT_LIMIT):
-        return True
-    return idle_summary_due(
-        estimated, snapshot, idle_minutes=idle_minutes, idle_tokens=idle_tokens,
-    )
+    return force or estimated >= int(context_window * SUMMARY_SOFT_LIMIT)
 
 
 CONTEXT = ServiceKey[ContextBuilder]("context.v2")

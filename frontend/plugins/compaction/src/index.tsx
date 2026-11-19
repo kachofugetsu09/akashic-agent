@@ -217,7 +217,7 @@ function CompactionFields({ values, change, status }: FormProps) {
 
   const strategyText = (() => {
     if (scope === "off" || effectiveMinutes <= 0) {
-      return "当前策略：已关闭空闲预压缩，仅在模型上下文触及 85% 容量软水位时自动压缩。";
+      return "当前策略：已关闭空闲预压缩，仅在模型上下文触及 74% 容量软水位时自动压缩。";
     }
     const base = scope === "all"
       ? `当前策略：对全部对话生效，闲置 ≥ ${effectiveMinutes} 分钟且上下文 ≥ ${effectiveTokens.toLocaleString()} tokens 时在后台自动预压缩。`
