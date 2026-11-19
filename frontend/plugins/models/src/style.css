@@ -456,24 +456,35 @@ dialog.settings-scrim::backdrop { background: transparent; }
 .settings-form-grid .is-wide,
 .settings-login-card.is-wide { grid-column: 1 / -1; }
 .settings-secret-field { position: relative; display: flex; align-items: center; min-width: 0; }
-.settings-secret input { width: 100%; padding-inline-end: 4.5rem; }
+.settings-secret input { width: 100%; padding-inline-end: 2.6rem; }
+.settings-secret:has(.settings-secret-actions) input { padding-inline-end: 4.5rem; }
+/* 兼容仍采用 .settings-secret > button 的插件（如 Gemini / OpenCode Go） */
+.settings-secret > button { position: absolute; inset: auto 0.1rem 0.1rem auto; display: grid; width: 2.55rem; height: 2.55rem; place-items: center; border: 0; border-radius: var(--ak-radius-xs); color: var(--md-sys-color-on-surface-variant); background: transparent; cursor: pointer; }
+.settings-secret > button:hover { color: var(--md-sys-color-on-surface); }
+.settings-secret > button:focus-visible { outline: 2px solid var(--md-sys-color-primary); outline-offset: -2px; }
 .settings-secret-actions { position: absolute; inset-block: 0; inset-inline-end: 4px; display: inline-flex; align-items: center; gap: 2px; }
 .settings-secret-actions button { position: relative; display: inline-grid; width: 28px; height: 28px; place-items: center; padding: 0; border: 0; border-radius: var(--ak-radius-xs); color: var(--ak-ink-secondary); background: transparent; cursor: pointer; transition: color var(--ak-sys-duration-short) var(--ak-sys-motion-standard), background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard); }
-.settings-secret-actions button::after { position: absolute; inset: -8px; content: ""; }
+.settings-secret-actions button::after { position: absolute; inset: -8px -2px; content: ""; }
 .settings-secret-actions button[hidden] { display: none; }
 @media (hover: hover) {
   .settings-secret-actions button:hover { color: var(--ak-ink-primary); background: color-mix(in oklab, var(--ak-ink-primary) 6%, transparent); }
 }
 .settings-secret-actions button:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 1px; }
 .settings-secret-actions button[data-copied="true"] { color: var(--ak-sys-color-success); background: color-mix(in oklab, var(--ak-sys-color-success) 12%, transparent); }
+.settings-secret-actions button[data-copy-error="true"] { color: var(--ak-color-status-error); }
+@media (pointer: coarse) {
+  .settings-secret:has(.settings-secret-actions) input { padding-inline-end: 5.5rem; }
+  .settings-secret-actions { gap: 4px; }
+  .settings-secret-actions button { width: 36px; height: 36px; }
+  .settings-secret-actions button::after { inset: -4px 0; }
+}
 
 .settings-inline-confirm { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; padding: 10px 14px; border-block-start: 1px solid var(--ak-rule-subtle); background: color-mix(in oklab, var(--ak-color-status-warning) 7%, var(--ak-paper-quiet)); font-size: var(--models-type-caption); line-height: 1.45; }
 .settings-inline-confirm__text { flex: 1 1 14rem; min-width: 0; color: var(--ak-ink-primary); }
 .settings-inline-confirm__actions { display: inline-flex; flex: none; align-items: center; gap: 8px; }
 .settings-inline-confirm__actions button { position: relative; min-height: 32px; padding: 0 12px; border-radius: var(--ak-radius-sm); font: inherit; font-weight: 500; cursor: pointer; }
 @media (pointer: coarse) {
-  .settings-inline-confirm__actions button { min-height: 36px; }
-  .settings-inline-confirm__actions button::after { position: absolute; inset: -4px 0; content: ""; }
+  .settings-inline-confirm__actions button { min-width: 44px; min-height: 44px; }
 }
 .settings-inline-confirm__cancel { border: 1px solid var(--ak-rule-default); background: var(--ak-paper-canvas); color: var(--ak-ink-primary); }
 .settings-inline-confirm__danger { border: 1px solid transparent; background: var(--ak-color-status-error); color: var(--ak-paper-canvas); }

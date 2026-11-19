@@ -789,7 +789,6 @@ function mountTools(root, chat, tools, entries) {
       const dot = element("span", "conversation-tools-tab-dot");
       toggleBtn.append(icon, label, count, dot);
       const ungroupBtn = chromeButton("conversation-tools-cluster-ungroup", "解散分组", "close");
-      ungroupBtn.tabIndex = -1;
       rootEl.append(toggleBtn, ungroupBtn);
       pill = { rootEl, toggleBtn, icon, label, count, ungroupBtn };
       clusterNodes.set(cluster.id, pill);
@@ -891,18 +890,29 @@ function mountTools(root, chat, tools, entries) {
         if (!cluster?.collapsed) items.push(record.item);
       }
       if (selectedCount >= 2 && group) {
-        const action = element("button", "conversation-tools-cluster-action");
-        action.type = "button";
+        if (!shell.clusterActionBtn) {
+          const action = element("button", "conversation-tools-cluster-action");
+          action.type = "button";
+          shell.clusterActionBtn = action;
+        }
+        const action = shell.clusterActionBtn;
         action.textContent = `成组 · ${selectedCount}`;
         action.title = `将选中的 ${selectedCount} 个标签合成可折叠组 (${IS_MAC ? "⌘G" : "Ctrl+G"})`;
-        action.addEventListener("click", () => groupSelectedIn(group));
+        action.onclick = () => groupSelectedIn(group);
         items.push(action);
       }
       if (items.length !== shell.tabs.children.length || items.some((item, at) => shell.tabs.children[at] !== item))
         shell.tabs.replaceChildren(...items);
       shell.root.classList.toggle("is-focused", state.groups.length > 1 && index === state.focus);
-      if (group) activeOf(group)?.item.scrollIntoView({ block: "nearest", inline: "nearest" });
+      if (group) {
+        const active = activeOf(group);
+        if (active?.item.isConnected) active.item.scrollIntoView({ block: "nearest", inline: "nearest" });
+      }
     });
+    const liveClusterIds = new Set(state.groups.flatMap((group) => group.clusters.map((cluster) => cluster.id)));
+    for (const id of clusterNodes.keys()) {
+      if (!liveClusterIds.has(id)) clusterNodes.delete(id);
+    }
   }
 
   function paintTab(record, group, title, cluster = null) {
@@ -1097,8 +1107,10 @@ function mountTools(root, chat, tools, entries) {
     const [upper, lower] = state.groups;
     if (lower) {
       const lowerActive = state.focus === 1 ? activeOf(lower) : null;
-      for (const record of lower.tabs) if (!record.entry) records.drop(record);
+      for (const record of lower.tabs) if (!record.entry) { record.clusterId = null; records.drop(record); }
+      upper.clusters.push(...lower.clusters);
       upper.tabs.push(...lower.tabs.filter((record) => record.entry));
+      cleanClusters(upper);
       if (lowerActive?.entry) upper.activeKey = lowerActive.key;
       state.groups = [upper];
     } else {
@@ -1107,6 +1119,8 @@ function mountTools(root, chat, tools, entries) {
       else {
         const index = upper.tabs.indexOf(moving);
         upper.tabs.splice(index, 1);
+        moving.clusterId = null;
+        cleanClusters(upper);
         upper.activeKey = (upper.tabs[index] ?? upper.tabs[index - 1]).key;
       }
       state.groups.push(newGroup([moving]));
@@ -1120,9 +1134,12 @@ function mountTools(root, chat, tools, entries) {
     if (!from || record === before) return;
     const index = from.tabs.indexOf(record);
     from.tabs.splice(index, 1);
+    if (from !== target) record.clusterId = null;
+    cleanClusters(from);
     if (from.activeKey === record.key) from.activeKey = (from.tabs[index] ?? from.tabs[index - 1])?.key ?? null;
     const at = before ? target.tabs.indexOf(before) : -1;
     target.tabs.splice(at < 0 ? target.tabs.length : at, 0, record);
+    cleanClusters(target);
     if (!from.tabs.length) state.groups.splice(state.groups.indexOf(from), 1);
     activate(record.key);
   }
@@ -1264,17 +1281,31 @@ function mountTools(root, chat, tools, entries) {
   }
 
   function onStripKey(event) {
-    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "g" && selectedKeys.size >= 2) {
-      const group = focusedGroup();
-      if (group && groupSelectedIn(group)) { event.preventDefault(); return; }
+    const mod = IS_MAC ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey;
+    if (!event.isComposing && mod && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "g" && selectedKeys.size >= 2) {
+      const stripIndex = chrome.groups.findIndex((shell) => shell.bar.contains(event.target));
+      const targetGroup = state.groups[stripIndex] ?? focusedGroup();
+      if (targetGroup && groupSelectedIn(targetGroup)) { event.preventDefault(); return; }
     }
     const record = allTabs().find((item) => item.button === event.target);
     const group = record ? groupOf(record) : null;
     if (!group) return;
-    const at = group.tabs.indexOf(record);
-    const keys = { ArrowRight: at + 1, ArrowLeft: at - 1, Home: 0, End: group.tabs.length - 1 };
+    if ((event.key === " " || event.key === "Enter") && (event.shiftKey || event.metaKey || event.ctrlKey)) {
+      if (selectedKeys.has(record.key)) selectedKeys.delete(record.key);
+      else selectedKeys.add(record.key);
+      update();
+      event.preventDefault();
+      return;
+    }
+    const visibleTabs = group.tabs.filter((item) => {
+      if (!item.clusterId) return true;
+      const cluster = group.clusters.find((c) => c.id === item.clusterId);
+      return !cluster?.collapsed;
+    });
+    const at = visibleTabs.indexOf(record);
+    const keys = at >= 0 ? { ArrowRight: at + 1, ArrowLeft: at - 1, Home: 0, End: visibleTabs.length - 1 } : {};
     if (event.key === "Delete") closeTab(record);
-    else if (event.key in keys) activate(group.tabs[(keys[event.key] + group.tabs.length) % group.tabs.length].key, true);
+    else if (event.key in keys && visibleTabs.length) activate(visibleTabs[(keys[event.key] + visibleTabs.length) % visibleTabs.length].key, true);
     else return;
     event.preventDefault();
   }

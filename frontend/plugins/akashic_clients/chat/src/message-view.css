@@ -587,8 +587,7 @@
   background: color-mix(in oklab, var(--ak-sys-color-success) 12%, transparent);
 }
 
-:is(.agent-content, .process-markdown, .user-bubble) .code-header-actions .code-action-btn:is([aria-label="已复制"], [aria-label="Copied"])[data-copy-lines]::after,
-.reading-code-copy[data-copied="true"][data-copy-lines]::after {
+:is(.agent-content, .process-markdown, .user-bubble) .code-header-actions .code-action-btn:is([aria-label="已复制"], [aria-label="Copied"])[data-copy-lines]::after {
   content: " · " attr(data-copy-lines);
   font-family: var(--ak-type-ui);
   font-size: 0.6875rem;
@@ -596,23 +595,42 @@
   white-space: nowrap;
 }
 
-/* 复制源头扫光显影（@dev_ya "Copy that shows what it copied"）：短暂亮出被复制的区块范围，切走或过期即干净撤回。 */
-:where(.agent-content, .process-markdown, .user-bubble) .code-block-container {
-  transition:
-    border-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard),
-    box-shadow var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+.reading-code-copy[data-copied="true"][data-copy-lines]::before {
+  position: absolute;
+  inset-inline-end: 42px;
+  inset-block-start: 50%;
+  translate: 0 -50%;
+  padding: 2px 7px;
+  border-radius: var(--ak-radius-xs);
+  background: var(--ak-paper-sheet);
+  color: var(--ak-sys-color-success);
+  font-family: var(--ak-type-ui);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  line-height: 1.3;
+  white-space: nowrap;
+  pointer-events: none;
+  content: attr(data-copy-lines);
 }
 
-:where(.agent-content, .process-markdown, .user-bubble) .code-block-container:is([data-copied-highlight="true"], :has(.code-action-btn:is([aria-label="已复制"], [aria-label="Copied"])), :has(.reading-code-copy[data-copied="true"])) {
+/* 复制源头扫光显影（@dev_ya "Copy that shows what it copied"）：短暂亮出被复制的区块范围，切走或过期即干净撤回。 */
+:where(.agent-content, .process-markdown, .user-bubble) :is(.code-block-container, .reading-plain-text, .static-code-block) {
+  transition:
+    border-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard),
+    box-shadow var(--ak-sys-duration-short) var(--ak-sys-motion-standard),
+    background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+}
+
+:where(.agent-content, .process-markdown, .user-bubble) :is(.code-block-container, .reading-plain-text, .static-code-block)[data-copied-highlight="true"] {
   border-color: color-mix(in oklab, var(--ak-color-action-primary) 42%, var(--ak-rule-subtle)) !important;
   box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--ak-color-action-primary) 20%, transparent);
 }
 
-:where(.agent-content, .process-markdown, .user-bubble) .code-block-container:is([data-copied-highlight="true"], :has(.code-action-btn:is([aria-label="已复制"], [aria-label="Copied"])), :has(.reading-code-copy[data-copied="true"])) :is(.code-editor-container, .reading-code-pre, pre) {
+:where(.agent-content, .process-markdown, .user-bubble) :is(.code-block-container, .reading-plain-text, .static-code-block)[data-copied-highlight="true"] :is(.code-editor-container, .reading-code-pre, pre) {
   background: color-mix(in oklab, var(--ak-color-action-primary) 7%, transparent) !important;
 }
 
-.web-message-anchor:has(.shared-message-actions button.copied) :is(.user-bubble, .agent-content) {
+.web-message-anchor:has(.shared-message-actions button.copied) :is(.user-bubble, .timeline-message > .agent-content, .reply-activity > .agent-content) {
   background: color-mix(in oklab, var(--ak-color-action-primary) 5%, transparent);
   border-radius: var(--ak-radius-md);
   transition: background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
@@ -2651,11 +2669,24 @@ button.tool-step-summary:active {
   opacity: 1;
 }
 
+.compaction-boundary__detail {
+  container-type: inline-size;
+}
+
 @media (pointer: coarse) {
-  .compaction-boundary__anchor::after {
-    position: absolute;
-    inset: -8px 0;
-    content: "";
+  .compaction-boundary__anchors-list {
+    gap: 8px;
+  }
+
+  .compaction-boundary__anchor {
+    min-height: 44px;
+    padding: 6px 12px;
+  }
+}
+
+@container (max-width: 520px) {
+  .compaction-boundary__grid.has-anchors {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 

@@ -535,17 +535,28 @@ function registerModels(ctx, mount, catalogResource) {
         }).catch((reason) => { quotaAt = 0; throw reason; });
       }
 
-      function clearInlineConfirm(host) {
-        host.querySelector(":scope > .settings-inline-confirm")?.remove();
+      let inlineConfirmSeq = 0;
+
+      function clearInlineConfirm(host, restoreFocus = false) {
+        const bar = host?.querySelector?.(":scope > .settings-inline-confirm");
+        if (!bar) return;
+        const opener = restoreFocus ? bar.__inlineConfirmOpener : null;
+        bar.remove();
+        if (opener?.isConnected && typeof opener.focus === "function") opener.focus();
       }
 
       // 两步内联确认替代系统 window.confirm：留在原卡片/底栏内完成决定。
-      function promptInlineConfirm(host, message, confirmLabel, onConfirm, beforeNode = null) {
+      function promptInlineConfirm(host, message, confirmLabel, onConfirm, beforeNode = null, opener = null) {
         clearInlineConfirm(host);
+        inlineConfirmSeq += 1;
+        const textId = `settings-inline-confirm-${inlineConfirmSeq}`;
         const bar = document.createElement("div");
         bar.className = "settings-inline-confirm";
         bar.setAttribute("role", "alertdialog");
+        bar.setAttribute("aria-labelledby", textId);
+        bar.__inlineConfirmOpener = opener ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null);
         const text = document.createElement("span");
+        text.id = textId;
         text.className = "settings-inline-confirm__text";
         text.textContent = message;
         const actions = document.createElement("div");
@@ -558,8 +569,14 @@ function registerModels(ctx, mount, catalogResource) {
         confirm.type = "button";
         confirm.className = "settings-inline-confirm__danger";
         confirm.textContent = confirmLabel;
-        cancel.addEventListener("click", () => bar.remove());
+        cancel.addEventListener("click", () => clearInlineConfirm(host, true));
         confirm.addEventListener("click", () => { bar.remove(); onConfirm(); });
+        bar.addEventListener("keydown", (event) => {
+          if (event.key !== "Escape") return;
+          event.preventDefault();
+          event.stopPropagation();
+          clearInlineConfirm(host, true);
+        });
         actions.append(cancel, confirm);
         bar.append(text, actions);
         if (beforeNode && beforeNode.parentElement === host) host.insertBefore(bar, beforeNode);
@@ -586,6 +603,7 @@ function registerModels(ctx, mount, catalogResource) {
                 void report(setConnectionEnabled(connection, input, card, true));
               },
               card.querySelector(".settings-provider-editor"),
+              input,
             );
           }
           return;
@@ -1793,6 +1811,15 @@ function registerModels(ctx, mount, catalogResource) {
           footer.innerHTML = `<button type="button" class="settings-secondary-button" data-cancel>取消</button><button type="button" class="settings-primary-button" data-save>保存</button>`;
           dialogHost.append(footer);
           syncFooter();
+          const saveButton = footer.querySelector("[data-save]");
+          dialogHost.addEventListener("input", (event) => {
+            if (!(event.target instanceof Element) || event.target.closest(".settings-inline-confirm")) return;
+            clearInlineConfirm(dialogHost);
+          });
+          dialogHost.addEventListener("change", (event) => {
+            if (!(event.target instanceof Element) || event.target.closest(".settings-inline-confirm")) return;
+            clearInlineConfirm(dialogHost);
+          });
           footer.querySelector("[data-cancel]").addEventListener("click", () => {
             clearInlineConfirm(dialogHost);
             closeActiveEditor();
@@ -1804,14 +1831,33 @@ function registerModels(ctx, mount, catalogResource) {
               .then((saved) => finish(saved ? `${connection.name} 的修改已保存` : "没有需要保存的修改"))
               .catch((reason) => modelManager.showError(reason));
           };
-          footer.querySelector("[data-save]").addEventListener("click", () => {
-            const warning = modelManager.removalWarning();
-            if (warning) {
-              promptInlineConfirm(dialogHost, warning, "确认移除并保存", performSave, footer);
-              return;
-            }
-            performSave();
+          const snapshotRemovalState = () => JSON.stringify({
+            warning: modelManager.removalWarning() ?? "",
+            revision: catalog?.revision ?? 0,
+            bindings: catalog?.roleBindings ?? null,
+            embedding: catalog?.defaultEmbeddingModelId ?? null,
           });
+          const requestSave = () => {
+            const warning = modelManager.removalWarning();
+            if (!warning) { performSave(); return; }
+            const snapshot = snapshotRemovalState();
+            promptInlineConfirm(
+              dialogHost,
+              warning,
+              "确认移除并保存",
+              () => {
+                // 若确认期间草稿、默认绑定或目录版本发生变化，拒绝沿用旧提示，要求按最新状态重新确认。
+                if (snapshotRemovalState() !== snapshot) {
+                  requestSave();
+                  return;
+                }
+                performSave();
+              },
+              footer,
+              saveButton,
+            );
+          };
+          saveButton.addEventListener("click", requestSave);
         }
         const leaveDocument = event => { if (!event.persisted) report(auth.close()); };
         window.addEventListener("pagehide", leaveDocument);

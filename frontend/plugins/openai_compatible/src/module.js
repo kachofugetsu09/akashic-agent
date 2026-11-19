@@ -231,11 +231,21 @@ function bindForm(host, props) {
   const showKey = host.querySelector("[data-show-key]");
   const copyKey = host.querySelector("[data-copy-key]");
   let copyTimer = 0;
+  let copySeq = 0;
+  const resetCopyVisual = () => {
+    window.clearTimeout(copyTimer);
+    copyTimer = 0;
+    if (!copyKey) return;
+    delete copyKey.dataset.copied;
+    delete copyKey.dataset.copyError;
+    copyKey.setAttribute("aria-label", "复制 API Key");
+    copyKey.innerHTML = COPY_ICON;
+  };
   const syncCopyButton = () => {
     if (!copyKey) return;
     copyKey.hidden = !apiKeyInput.value.trim();
   };
-  form.addEventListener("input", () => { changed(); syncCopyButton(); });
+  form.addEventListener("input", () => { changed(); syncCopyButton(); resetCopyVisual(); });
   form.addEventListener("change", () => { changed(); syncCopyButton(); });
   syncCopyButton();
   showKey.addEventListener("click", () => {
@@ -247,7 +257,10 @@ function bindForm(host, props) {
   copyKey?.addEventListener("click", () => {
     const value = apiKeyInput.value;
     if (!value.trim() || !navigator.clipboard?.writeText) return;
+    const seq = ++copySeq;
     void navigator.clipboard.writeText(value).then(() => {
+      if (!copyKey.isConnected || seq !== copySeq || apiKeyInput.value !== value) return;
+      delete copyKey.dataset.copyError;
       copyKey.dataset.copied = "true";
       copyKey.setAttribute("aria-label", "已复制 API Key");
       copyKey.innerHTML = CHECK_ICON;
@@ -259,13 +272,26 @@ function bindForm(host, props) {
       }
       window.clearTimeout(copyTimer);
       copyTimer = window.setTimeout(() => {
-        delete copyKey.dataset.copied;
-        copyKey.setAttribute("aria-label", "复制 API Key");
-        copyKey.innerHTML = COPY_ICON;
+        if (!copyKey.isConnected || seq !== copySeq) return;
+        resetCopyVisual();
       }, 1500);
-    }).catch(() => {});
+    }).catch(() => {
+      if (!copyKey.isConnected || seq !== copySeq) return;
+      delete copyKey.dataset.copied;
+      copyKey.dataset.copyError = "true";
+      copyKey.setAttribute("aria-label", "复制失败，请手动复制");
+      window.clearTimeout(copyTimer);
+      copyTimer = window.setTimeout(() => {
+        if (!copyKey.isConnected || seq !== copySeq) return;
+        resetCopyVisual();
+      }, 2000);
+    });
   });
-  host.querySelector("[data-close]").addEventListener("click", props.close);
+  host.querySelector("[data-close]").addEventListener("click", () => {
+    copySeq += 1;
+    window.clearTimeout(copyTimer);
+    props.close();
+  });
   return form;
 }
 

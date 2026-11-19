@@ -387,6 +387,7 @@ const COMPACTION_TRIGGER_LABELS: Record<CompactionBoundaryValue["trigger"], stri
 };
 
 interface CompactionAnchor {
+  id: string;
   label: string;
   lineIndex: number;
 }
@@ -395,17 +396,21 @@ function extractCompactionAnchors(lines: readonly string[]): CompactionAnchor[] 
   const anchors: CompactionAnchor[] = [];
   const seen = new Set<string>();
   const add = (raw: string, lineIndex: number) => {
+    if (anchors.length >= 6) return;
     const label = raw.trim().replace(/^`|`$/g, "");
     if (!label || label.length < 3 || label.length > 36 || seen.has(label)) return;
     seen.add(label);
-    anchors.push({ label, lineIndex });
+    anchors.push({ id: `${lineIndex}-${label}`, label, lineIndex });
   };
-  lines.forEach((line, lineIndex) => {
+  for (let lineIndex = 0; lineIndex < lines.length && anchors.length < 6; lineIndex += 1) {
+    const line = lines[lineIndex];
+    const withoutUrls = line.replace(/https?:\/\/\S+/gu, " ");
     for (const match of line.matchAll(/`([^`\n]{3,36})`/gu)) add(match[1], lineIndex);
-    for (const match of line.matchAll(/(?:\/[\w.-]+){2,}/gu)) add(match[0], lineIndex);
-    for (const match of line.matchAll(/\b\d+(?:\.\d+)?\s*(?:GiB|MiB|GB|MB|ms|s|px|tokens?|k|K|%|次|个|行)\b/gu)) add(match[0], lineIndex);
-  });
-  return anchors.slice(0, 6);
+    for (const match of withoutUrls.matchAll(/(?:^|[\s(（【"'`])((?:\/[\w.-]+){2,})/gu)) add(match[1], lineIndex);
+    for (const match of withoutUrls.matchAll(/(?:^|[^\w.])(\d+(?:\.\d+)?\s*(?:GiB|MiB|GB|MB|ms|s|px|tokens?|k|K|%))(?![\w.])/gu)) add(match[1], lineIndex);
+    for (const match of withoutUrls.matchAll(/(\d+(?:\.\d+)?\s*(?:次|个|行))/gu)) add(match[1], lineIndex);
+  }
+  return anchors;
 }
 
 /** 压缩边界：对齐 Claude Desktop 的低调发丝线分隔条，默认收起一行，点开可看节省体积、摘要正文与边缘锚点。 */
@@ -414,7 +419,8 @@ function CompactionBoundaryRow({ boundary, standalone = false }: {
   standalone?: boolean;
 }) {
   const [open, setOpen] = useState(false);
-  const [activeLine, setActiveLine] = useState<number | null>(null);
+  const [activeAnchorId, setActiveAnchorId] = useState<string | null>(null);
+  const previewRef = useRef<HTMLDivElement | null>(null);
   const lineRefs = useRef<(HTMLParagraphElement | null)[]>([]);
   const saved = Math.max(0, boundary.tokens_before - boundary.tokens_after);
   const ratio = boundary.tokens_before > 0 ? Math.round((saved / boundary.tokens_before) * 100) : 0;
@@ -432,12 +438,18 @@ function CompactionBoundaryRow({ boundary, standalone = false }: {
     [boundary.summary_preview],
   );
   const anchors = useMemo(() => extractCompactionAnchors(lines), [lines]);
-  const jumpToLine = (lineIndex: number) => {
-    setActiveLine((current) => {
-      const next = current === lineIndex ? null : lineIndex;
-      if (next !== null) lineRefs.current[next]?.scrollIntoView({ block: "nearest", behavior: "smooth" });
-      return next;
-    });
+  const activeAnchor = anchors.find((anchor) => anchor.id === activeAnchorId) ?? null;
+  const activeLine = activeAnchor?.lineIndex ?? null;
+  const jumpToAnchor = (anchor: CompactionAnchor) => {
+    setActiveAnchorId((current) => (current === anchor.id ? null : anchor.id));
+    if (activeAnchorId !== anchor.id) {
+      const preview = previewRef.current;
+      const lineEl = lineRefs.current[anchor.lineIndex];
+      if (preview && lineEl) {
+        const targetTop = Math.max(0, lineEl.offsetTop - preview.offsetTop - Math.max(0, (preview.clientHeight - lineEl.offsetHeight) / 2));
+        preview.scrollTo({ top: targetTop, behavior: "smooth" });
+      }
+    }
   };
   return <div className={`compaction-boundary${standalone ? " is-standalone" : ""}`} data-disclosure-root="" data-open={open || undefined}>
     <button type="button" className="compaction-boundary__trigger" data-disclosure-trigger="" aria-expanded={open}
@@ -458,7 +470,7 @@ function CompactionBoundaryRow({ boundary, standalone = false }: {
         </div>
         {lines.length ? (
           <div className={`compaction-boundary__grid${anchors.length ? " has-anchors" : ""}`}>
-            <div className="compaction-boundary__preview">
+            <div ref={previewRef} className="compaction-boundary__preview">
               {lines.map((line, index) => (
                 <p
                   key={index}
@@ -475,11 +487,11 @@ function CompactionBoundaryRow({ boundary, standalone = false }: {
                 <div className="compaction-boundary__anchors-list">
                   {anchors.map((anchor) => (
                     <button
-                      key={`${anchor.lineIndex}-${anchor.label}`}
+                      key={anchor.id}
                       type="button"
-                      className={`compaction-boundary__anchor${activeLine === anchor.lineIndex ? " is-active" : ""}`}
-                      aria-pressed={activeLine === anchor.lineIndex}
-                      onClick={() => jumpToLine(anchor.lineIndex)}
+                      className={`compaction-boundary__anchor${activeAnchorId === anchor.id ? " is-active" : ""}`}
+                      aria-pressed={activeAnchorId === anchor.id}
+                      onClick={() => jumpToAnchor(anchor)}
                     >
                       <span className="compaction-boundary__anchor-dot" aria-hidden="true" />
                       <span>{anchor.label}</span>
@@ -1309,24 +1321,6 @@ export function MediaGalleryViewer() {
       }
     };
     const onClick = (event: MouseEvent) => {
-      const target = event.target instanceof Element ? event.target : null;
-      const copyBtn = target?.closest<HTMLElement>(".code-action-btn, .reading-code-copy");
-      if (copyBtn) {
-        const container = copyBtn.closest<HTMLElement>(".code-block-container");
-        if (container) {
-          const codeEl = container.querySelector("pre, code");
-          const rawText = (codeEl?.textContent ?? "").replace(/\n$/, "");
-          const lineCount = rawText ? rawText.split("\n").length : 0;
-          if (lineCount > 0) copyBtn.dataset.copyLines = `${lineCount} 行`;
-          for (const prev of document.querySelectorAll<HTMLElement>("[data-copied-highlight='true']")) {
-            if (prev !== container) delete prev.dataset.copiedHighlight;
-          }
-          container.dataset.copiedHighlight = "true";
-          window.setTimeout(() => {
-            if (container.dataset.copiedHighlight === "true") delete container.dataset.copiedHighlight;
-          }, 1500);
-        }
-      }
       const item = triggerOf(event.target);
       if (!item) return;
       event.preventDefault();

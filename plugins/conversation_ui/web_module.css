@@ -614,17 +614,15 @@
     min-width: 112px;
   }
 
-  .conversation-tools-cluster-ungroup {
-    position: relative;
-    width: 34px;
-    height: 34px;
-    margin-inline-end: 4px;
+  .conversation-tools-cluster-pill {
+    min-width: 44px;
+    height: 100%;
   }
 
-  .conversation-tools-cluster-ungroup::after {
-    position: absolute;
-    inset: -5px;
-    content: "";
+  .conversation-tools-cluster-ungroup {
+    width: 42px;
+    height: 42px;
+    margin-inline-end: 0;
   }
 
   .conversation-tools-button {
