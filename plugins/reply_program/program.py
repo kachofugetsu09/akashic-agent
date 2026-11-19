@@ -234,11 +234,9 @@ async def run_reply(
             on_status: ReductionStatus | None = None, summary_limit: int | None = None,
         ) -> SummaryData | None:
             # 压缩要在完整历史上选择覆盖范围；窗口只在确实会压缩时换成同一上界的完整读面。
-            # 空闲到期由摘要 owner 判断，看的是和压缩相同的过滤后视图；不到期不做全量读。
             if window is not None and projection.context_window is not None:
                 estimated = projection.estimate(request)
-                if (summary_due(estimated, projection.context_window, force=force)
-                        or material_view.reduce_due(tuple(visible_messages(snapshot, source)), estimated, model)):
+                if summary_due(estimated, projection.context_window, force=force):
                     full = tuple(await reader.committed_snapshot_async(through_seq=snapshot[-1].seq))
                     if summary_limit is not None:
                         summary_limit += len(full) - len(snapshot)
