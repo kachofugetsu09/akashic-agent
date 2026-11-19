@@ -21,7 +21,7 @@ from plugins.ledger.contract import (
     ToolResult,
 )
 from core.common.frozen_json import freeze_json
-from plugins.ledger.contract import json_value
+from plugins.ledger.contract import is_process_call_output, json_value
 from plugins.tools.contract import CallSource, CommitAfter
 from core.common.file_io import run_file_io
 from core.common.diagnostic_log import log_timing
@@ -31,7 +31,7 @@ from .api import (
     Authorize, Denied, MessageReply, OpenTool, Outcome, Result,
     coerce_result, durable_call_key, result_message_id,
 )
-from plugins.tools.contract import PROCESS_STARTED_AT, invoked_unrecorded
+from plugins.tools.contract import invoked_unrecorded
 
 
 # 工具结果已产生：等提交门并落盘后才响应取消，回执不丢、下一步不重跑。
@@ -380,8 +380,8 @@ class ToolExecution:
             refusal = self._check_batch(source)
             if refusal is not None:
                 return await commit(Result("denied", (ContentPart("text", refusal),)))
-        # 上个进程发出的，或本进程已发出但回执没落盘（提交失败、清理被取消、前驱中止）：都不重跑。
-        if call.recorded_at < PROCESS_STARTED_AT or key in invoked_unrecorded:
+        # 上个进程发出的（不是本进程写入的调用消息），或本进程已发出但回执没落盘：都不重跑。
+        if not is_process_call_output(call.message_id) or key in invoked_unrecorded:
             return await commit(Result("error", (ContentPart("text", _UNKNOWN_OUTCOME),)))
         try:
             result = await self._invoke_message(task, key, binding_id, arguments, reply, source, mark)

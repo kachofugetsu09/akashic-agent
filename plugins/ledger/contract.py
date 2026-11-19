@@ -1201,3 +1201,16 @@ def _legacy_actor(message: Message) -> Actor:
     if value.get("schema") != "sessions.messages.v0" or not isinstance(role, str) or role not in _LEGACY_ROLES:
         raise ValueError("历史 provenance 格式未知")
     return _LEGACY_ROLES[role]
+
+
+# 本进程内由 Ledger 实际 INSERT 过、包含 ToolCall 的 Output 消息 ID；公共合同模块不随插件实现热更新。
+# 工具恢复凭此区分“本进程新发调用”与“上个进程遗留调用”，避免依赖可能回拨的墙钟（ADR-0100 / #2112）。
+PROCESS_CALL_OUTPUTS: set[str] = set()
+
+
+def mark_process_call_output(message_id: str) -> None:
+    PROCESS_CALL_OUTPUTS.add(message_id)
+
+
+def is_process_call_output(message_id: str) -> bool:
+    return message_id in PROCESS_CALL_OUTPUTS

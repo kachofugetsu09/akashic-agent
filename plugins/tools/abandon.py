@@ -12,8 +12,8 @@ from core.common.file_io import run_file_io
 from .api import Denied, MessageReply, Result, durable_call_key
 from .execution import STOPPED_NOT_STARTED, _fingerprint, commit_message, finish
 from plugins.ledger.contract import MessageCatalog, MessageReader, OwnerRecord, OwnerStore, OwnerTransaction
-from plugins.ledger.contract import CallRef, ContentPart, Control, Message, Output, ToolCall, ToolResult
-from plugins.tools.contract import PROCESS_STARTED_AT, invoked_unrecorded
+from plugins.ledger.contract import CallRef, ContentPart, Control, Message, Output, ToolCall, ToolResult, is_process_call_output
+from plugins.tools.contract import invoked_unrecorded
 
 logger = logging.getLogger(__name__)
 
@@ -127,10 +127,10 @@ def _not_started(stopped: bool) -> str:
     return STOPPED_NOT_STARTED if stopped else "用户已放弃此工作，工具未启动。"
 
 
-# 调用消息早于本进程：内存里没有它的执行记录，不能证明未开始。
+# 调用消息不是本进程写入的：内存里没有它的执行记录，不能证明未开始。
 def _before_process(reply: MessageReply) -> bool:
     call = reply.reader.get(reply.call_ref.message_id)
-    return call is None or call.recorded_at < PROCESS_STARTED_AT
+    return call is None or not is_process_call_output(call.message_id)
 
 
 # 原 Task 的取消或失败由它自己的回执表达；只有等待者自身被取消才向上传播。

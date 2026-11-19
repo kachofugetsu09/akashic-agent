@@ -260,6 +260,17 @@ class MarkdownProfileStore:
                         workspace.texts[doc] = text
                     else:
                         workspace.texts.pop(doc, None)
+                    parts = doc.split("/")
+                    if len(parts) == 3 and parts[0] == TOPICS and parts[2] == SCOPE_FILE:
+                        folder_name = parts[1]
+                        if text:
+                            restored_scope = split_frontmatter(text)[0].get("scope")
+                            if restored_scope:
+                                workspace.folders[folder_name] = restored_scope
+                            else:
+                                workspace.folders.pop(folder_name, None)
+                        else:
+                            workspace.folders.pop(folder_name, None)
             before = dict(workspace.texts)
             workspace.apply(ops, strict=False)
             changed = {doc: text for doc, text in workspace.texts.items() if before.get(doc) != text}

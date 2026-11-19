@@ -522,6 +522,8 @@ class GoalStore:
                 raise MessageConflict("目标已被替换")
             if not goal.active:
                 raise MessageConflict("目标不是 active")
+            if goal.token_budget is not None and goal.tokens_used >= goal.token_budget:
+                raise MessageConflict("目标 token 预算已耗尽")
             if transaction.source_changed(reader, "conversation", expected_head):
                 raise MessageConflict("对话来源在续跑前已有新消息")
             updated = mark_continuation(goal, message_id)

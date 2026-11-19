@@ -54,7 +54,7 @@ from plugins.ledger.contract import (
     freeze_json,
     freeze_metadata,
 )
-from plugins.ledger.contract import decode_body, encode_body, json_value
+from plugins.ledger.contract import decode_body, encode_body, json_value, mark_process_call_output
 
 _T = TypeVar("_T")
 _logger = logging.getLogger(__name__)
@@ -2264,6 +2264,8 @@ class MessageWriter:
                     "UPDATE sessions SET metadata=? WHERE key=?", (payload, self._session_id),
                 )
 
+        if isinstance(body, Output) and any(isinstance(part, ToolCall) for part in body.parts):
+            mark_process_call_output(message_id)
         self._log._changed(type(body), message)
         return message
 
