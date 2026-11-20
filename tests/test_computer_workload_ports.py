@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 
 from agent.plugin_composition import Context
@@ -14,7 +16,7 @@ class _FakeWorkloads:
     async def register(self, ctx: Context, workload: Workload) -> WorkloadHandle:
         _ = ctx
         self.registered.append(workload)
-        return object()  # type: ignore[return-value]
+        return cast(WorkloadHandle, object())
 
 
 class _FakeCtx:
@@ -29,7 +31,7 @@ class _FakeCtx:
 @pytest.mark.asyncio
 async def test_computer_workload_exposes_background_spaces_port() -> None:
     fake_workloads = _FakeWorkloads()
-    _ = await computer_plugin._register_workload(_FakeCtx(fake_workloads))  # pyright: ignore[reportPrivateUsage]
+    _ = await computer_plugin._register_workload(cast(Context, _FakeCtx(fake_workloads)))  # pyright: ignore[reportPrivateUsage]
     assert len(fake_workloads.registered) == 1
     workload = fake_workloads.registered[0]
     assert WorkloadPort("opencli", 19826, loopback=19825) in workload.ports
