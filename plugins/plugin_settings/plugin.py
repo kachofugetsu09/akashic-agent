@@ -6,7 +6,7 @@ from importlib import import_module
 from agent.plugin_composition import Context, Effect, FiberState
 from plugins.ui.contract import UI, Configuration, SETTINGS_SLOT
 
-from .contract import SETTINGS_FORMS, SettingsEntry, SettingsForm
+from .contract import SETTINGS_FORMS, Authorize, SettingsEntry, SettingsForm
 
 api_version = 3
 name = "plugin_settings"
@@ -23,12 +23,13 @@ class Forms:
         self._entries: dict[str, SettingsEntry] = {}
 
     # 1. 只接受同一 Root 的贡献方；2. 键就是完整插件 ID（无损，不同插件不会撞键）；3. Effect 撤销即移除。
-    async def register(self, ctx: Context, form: SettingsForm, settings: Configuration) -> Effect:
+    async def register(self, ctx: Context, form: SettingsForm, settings: Configuration,
+                       authorize: Authorize | None = None) -> Effect:
         if ctx.root_instance_token is not self._ctx.root_instance_token or ctx.require(SETTINGS_FORMS) is not self:
             raise ValueError("设置表单注册不能跨 composition Root")
         owner = ctx.runtime.plugin_id
         key = owner
-        entry = SettingsEntry(key, owner, form, settings, ctx)
+        entry = SettingsEntry(key, owner, form, settings, ctx, authorize)
 
         def setup() -> Callable[[], None]:
             if key in self._entries:
