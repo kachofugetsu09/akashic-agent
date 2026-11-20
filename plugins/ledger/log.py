@@ -443,9 +443,10 @@ class MessageLog:
         # 备忘查询结果，每轮材料准备只读取新增消息，由 _decode_lock 保护。键含 Session：
         # 命中缓存也不能绕过 reader 的会话授权。
         self._attachment_memo: dict[tuple[str, str], tuple[AttachmentRef, ...]] = {}
-        self._text_indexes = TextIndexes()
         self._reads = _ReadLocal()
         self._path = Path(path).resolve()
+        # 查找索引是派生数据，放在库旁边的独立目录，删掉只会让下次首查重建。
+        self._text_indexes = TextIndexes(self._path.parent / f"{self._path.name}.text-index")
         self._closed = False
         self._notify_pending: set[type[Body]] | None = set()
         self._notify_owed: set[type[Body]] | None = set()

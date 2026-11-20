@@ -1,14 +1,25 @@
-"""会话内正文查找：每个会话一份只含可见正文的内存索引，按 seq 增量追加。"""
+"""会话内正文查找：每个会话一份只含可见正文的内存索引，按 seq 增量追加。
+
+首建要解析整段消息体（生产主会话 2 万条约 5 秒），所以建好后存一份到库旁的索引目录：
+重启后直接加载再追加新消息。它是可随时删除的派生数据，前缀版本不符时整份重建。
+"""
 
 from __future__ import annotations
 
+import hashlib
+import json
+import logging
+import os
 import sqlite3
 import threading
 from bisect import bisect_right
 from collections import OrderedDict
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from plugins.ledger.contract import TextHit, TextSearch
+
+_logger = logging.getLogger(__name__)
 
 # 最近查找过的会话常驻；最大的生产会话（1.1 万条消息）正文约 155 万字，索引连原文约 6MB。
 _CACHED_SESSIONS = 4
@@ -17,6 +28,9 @@ _OCCURRENCE_LIMIT = 20_000
 _SNIPPET_BEFORE = 32
 _SNIPPET_AFTER = 80
 _SEPARATOR = "\x00"
+_FILE_VERSION = 1
+# 增量追加积累到这么多条才重写索引文件；没写进去的部分下次加载后再追加，代价很小。
+_SAVE_AFTER_ENTRIES = 50
 
 # 只取输入与回复里的 text 段：消息体里其余部分（上下文材料、历史记录、工具结果）不在聊天正文里显示。
 _TEXT_ROWS = (
@@ -46,6 +60,8 @@ class _SessionText:
     starts: list[int] = field(default_factory=list)
     haystack: str = ""
     lock: threading.Lock = field(default_factory=threading.Lock)
+    loaded: bool = False
+    saved_entries: int = -1
 
     # 追加 (through, head] 区间里的正文；消息只追加，前缀改写由 revision 失效整份索引。
     def extend(self, connection: sqlite3.Connection, session_id: str, head: int) -> None:
@@ -59,6 +75,10 @@ class _SessionText:
                 pending[-1].text += "\n" + text
             else:
                 pending.append(_Entry(seq, message_id, kind, ts, text))
+        self._append(pending)
+        self.through = head
+
+    def _append(self, pending: list[_Entry]) -> None:
         chunks = [self.haystack] if self.haystack else []
         offset = len(self.haystack)
         for entry in pending:
@@ -74,7 +94,45 @@ class _SessionText:
             chunks.append(lowered)
             offset += len(lowered)
         self.haystack = "".join(chunks)
-        self.through = head
+
+    # 读回上次存下的索引；版本、会话或前缀版本不符、文件损坏时当作没有，从头建。
+    def load(self, path: Path, session_id: str) -> None:
+        self.loaded = True
+        try:
+            data = json.loads(path.read_bytes())
+            if data["version"] != _FILE_VERSION or data["session"] != session_id or data["revision"] != self.revision:
+                return
+            entries = [_Entry(int(seq), str(message_id), str(kind), str(ts), str(text))
+                       for seq, message_id, kind, ts, text in data["entries"]]
+            through = int(data["through"])
+        except FileNotFoundError:
+            return
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            _logger.warning("会话正文索引无法读取，将重建: %s (%s)", path.name, error)
+            return
+        self._append(entries)
+        self.through = through
+        self.saved_entries = len(self.entries)
+
+    # 首建完成或新增够多时原子替换索引文件；写失败只影响下次重启的首查速度。
+    def save(self, path: Path, session_id: str) -> None:
+        if self.saved_entries >= 0 and len(self.entries) - self.saved_entries < _SAVE_AFTER_ENTRIES:
+            return
+        payload = json.dumps({
+            "version": _FILE_VERSION, "session": session_id, "revision": self.revision, "through": self.through,
+            "entries": [[entry.seq, entry.message_id, entry.kind, entry.timestamp, entry.text] for entry in self.entries],
+        }, ensure_ascii=False, separators=(",", ":")).encode()
+        temporary = path.with_suffix(".tmp")
+        try:
+            path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(payload)
+            os.replace(temporary, path)
+        except OSError as error:
+            _logger.warning("会话正文索引无法保存: %s (%s)", path.name, error)
+            return
+        self.saved_entries = len(self.entries)
 
     # 1. 在整份小写正文里逐个找命中，按起点二分归到消息
     # 2. 每条命中消息记命中数与第一处位置，返回最新的 limit 条
@@ -109,9 +167,13 @@ class _SessionText:
 class TextIndexes:
     """MessageLog 持有的会话正文索引；调用者在同一只读快照内传入连接、上界与前缀版本。"""
 
-    def __init__(self) -> None:
+    def __init__(self, directory: Path) -> None:
+        self._directory = directory
         self._lock = threading.Lock()
         self._sessions: OrderedDict[str, _SessionText] = OrderedDict()
+
+    def _path(self, session_id: str) -> Path:
+        return self._directory / f"{hashlib.sha256(session_id.encode()).hexdigest()[:32]}.json"
 
     def _session(self, session_id: str, revision: int | None) -> _SessionText:
         with self._lock:
@@ -130,9 +192,13 @@ class TextIndexes:
     ) -> TextSearch:
         needle = query.strip().lower()
         session = self._session(session_id, revision)
-        # 同一会话的首建只做一次：并发的第二个查询等它建完后直接查。
+        # 同一会话的首建（或读回）只做一次：并发的第二个查询等它完成后直接查。
         with session.lock:
+            path = self._path(session_id)
+            if not session.loaded:
+                session.load(path, session_id)
             session.extend(connection, session_id, head)
+            session.save(path, session_id)
             through = session.through
             if not needle:
                 return TextSearch(hits=(), total=0, capped=False, through_seq=through)
