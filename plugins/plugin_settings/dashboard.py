@@ -21,12 +21,14 @@ class FinishRequest(BaseModel):
 
 # 表单目录与每张表单的读、存、回执；HTTP 边界只校验信封，字段由贡献插件的 Configuration 解释。
 def register(app, context):
+    # 保存配置会让贡献插件换 generation，新表单登记前有短暂空档；用 503 让前端继续核对回执，
+    # 404 会被当成"操作记录不存在"而停止，表单停在旧状态。
     def entry(key: str) -> SettingsEntry:
         forms = context.require(SETTINGS_FORMS)
         try:
             return forms.entry(key)
         except KeyError as error:
-            raise HTTPException(404, "这个插件没有声明设置表单") from error
+            raise HTTPException(503, "这个插件的设置暂不可用，可能正在应用新配置，请稍后重试") from error
 
     @app.get(PREFIX + "/forms")
     async def forms():
