@@ -598,17 +598,6 @@ class ModelsStore:
         with self._connect(read_only=True) as connection:
             return set(require_model_calls_schema(connection))
 
-    def read_calls(self, after_id: str, limit: int) -> tuple[Mapping[str, Any], ...]:
-        """按身份分页读取调用快照；每轮从头扫描，started 记录仍可能结算。"""
-        if not isinstance(after_id, str) or type(limit) is not int or not 1 <= limit <= 1000:
-            raise ValueError("Model 调用分页参数无效")
-        with self._connect(read_only=True) as connection:
-            require_model_calls_schema(connection)
-            rows = connection.execute(
-                "SELECT * FROM model_calls WHERE id>? ORDER BY id LIMIT ?", (after_id, limit)
-            ).fetchall()
-        return tuple(_decode_call(row) for row in rows)
-
     def read_call_usages(self, call_ids: list[str]) -> dict[str, CallUsage]:
         """批量读取调用用量与绑定的模型；未成功结算的调用 usage 为 None，未知身份不出现在结果中。"""
         result: dict[str, CallUsage] = {}

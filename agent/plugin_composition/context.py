@@ -1756,21 +1756,6 @@ class CompositionRoot:
             if degraded:
                 raise RuntimeError(f"目标依赖 required health 失败: {candidate.path}:{','.join(degraded)}")
 
-    def plugin_runtime(self, plugin_id: str) -> PluginRuntime:
-        """返回顶层插件 Fiber 使用的 Core-owned runtime。"""
-
-        matches = tuple(
-            runtime
-            for fiber in self.root_fiber.children
-            if (runtime := fiber.runtime) is not None and runtime.plugin_id == plugin_id
-        )
-        if len(matches) != 1:
-            raise CompositionError(
-                "PLUGIN_RUNTIME_UNAVAILABLE",
-                f"Root 中没有唯一插件 runtime: {plugin_id}",
-            )
-        return matches[0]
-
     def service_value(
         self,
         key: ServiceKey[T],
@@ -1850,14 +1835,6 @@ class CompositionRoot:
             if not provider.revoking
             if (runtime := provider.owner.runtime) is not None
         }
-
-    def plugin_dependencies(self) -> Mapping[str, frozenset[ServiceKey[Any]]]:
-        """收集各插件及子 Fiber 声明的服务依赖。"""
-        dependencies: dict[str, set[ServiceKey[Any]]] = {}
-        for fiber in self._fibers.values():
-            if fiber.runtime is not None:
-                dependencies.setdefault(fiber.runtime.plugin_id, set()).update(fiber.dependencies)
-        return {owner: frozenset(keys) for owner, keys in dependencies.items()}
 
     async def _mount(
         self,

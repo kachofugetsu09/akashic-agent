@@ -17,7 +17,7 @@ from scripts.proactive_island.handoff import (
     receipt_digest,
 )
 from scripts.proactive_island.inventory import LegacyFact, LegacyFactKind
-from agent.plugins.manifest import builtin_plugin_data_dir
+from agent.plugins.manifest import workspace_plugin_data_dir
 RULES_DIRECTORY = "legacy-rules"
 RULES_ARCHIVE = "PROACTIVE_CONTEXT.md"
 RULES_RECEIPT = "receipt.json"
@@ -26,7 +26,7 @@ class WakeRulesArchiveAdapter(HandoffAdapter):
     """Archive exact rules bytes under Wake data and issue a verifiable receipt."""
 
     def __init__(self, workspace: Path) -> None:
-        root = builtin_plugin_data_dir("wake", workspace)
+        root = workspace_plugin_data_dir(workspace, "wake", "builtin")
         self._archive = root / RULES_DIRECTORY / RULES_ARCHIVE
         self._receipt = root / RULES_DIRECTORY / RULES_RECEIPT
 
