@@ -540,10 +540,20 @@ def create_chat_app(
         page_size: int = Query(50, ge=1, le=200),
         before_seq: int | None = Query(default=None, ge=0),
         through_seq: int | None = Query(default=None, ge=-1),
+        after_seq: int | None = Query(default=None, ge=-1),
     ) -> dict[str, object]:
+        # after_seq 往新的方向读（查找跳到较早位置后向下补齐）；不带时照旧从尾部往前翻。
+        if after_seq is not None and before_seq is not None:
+            raise HTTPException(status_code=422, detail="after_seq 与 before_seq 不能同时使用")
         async with open_message_catalog() as catalog:
             try:
                 reader = catalog.reader(session_key)
+                if after_seq is not None:
+                    newer = await reader.read_async(lambda current: current.read_page(
+                        after_seq=after_seq, through_seq=through_seq, limit=page_size))
+                    rows = await read_message_rows(cast(Any, newer), display_only=True, reader=channel.message_display)
+                    return {"version": 2, "items": rows, "through_seq": newer.through_seq,
+                            "has_more": newer.has_more, "after_seq": after_seq}
                 page = await reader.read_tail_async(
                     before_seq=before_seq, through_seq=through_seq, limit=page_size)
                 items = await read_message_rows(
@@ -560,6 +570,25 @@ def create_chat_app(
         return {"version": 2, "items": items, "through_seq": page.through_seq,
                 "has_more": page.has_more, "deleted": deleted,
                 "before_seq": page.messages[0].seq if page.has_more else None}
+
+    # 会话内查找：服务端按完整历史匹配正文，返回命中消息的位置与摘要，前端据此预览并跳转。
+    # 空查询只建好索引（打开查找框时预热，长会话首建约半秒，输入完成前就绪）。
+    @app.get("/api/chat/sessions/{session_key:path}/search")
+    async def search_messages(
+        session_key: str,
+        q: str = Query(default="", max_length=200),
+        limit: int = Query(200, ge=1, le=500),
+    ) -> dict[str, object]:
+        async with open_message_catalog() as catalog:
+            try:
+                found = await catalog.reader(session_key).find_text_async(q, limit=limit)
+            except KeyError as error:
+                raise HTTPException(status_code=404, detail="会话不存在") from error
+        return {"version": 1, "query": q, "total": found.total, "capped": found.capped,
+                "through_seq": found.through_seq,
+                "items": [{"message_id": hit.message_id, "seq": hit.seq, "kind": hit.kind,
+                           "timestamp": hit.timestamp, "count": hit.count,
+                           "before": hit.before, "match": hit.match, "after": hit.after} for hit in found.hits]}
 
     @app.websocket("/ws")
     async def chat_ws(websocket: WebSocket, watch_sessions: bool = False) -> None:

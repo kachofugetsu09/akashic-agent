@@ -36,10 +36,12 @@ from plugins.ledger.contract import (
     SessionEntry,
     SessionPage,
     SourceHeadConflict,
+    TextSearch,
     WriterExpired,
 )
 from plugins.ledger.contract import AttachmentKind, AttachmentRef
 from .artifact_store import ARTIFACT_SCHEMA
+from .text_search import TextIndexes
 from plugins.ledger.contract import (
     Body,
     CallRef,
@@ -441,6 +443,7 @@ class MessageLog:
         # 备忘查询结果，每轮材料准备只读取新增消息，由 _decode_lock 保护。键含 Session：
         # 命中缓存也不能绕过 reader 的会话授权。
         self._attachment_memo: dict[tuple[str, str], tuple[AttachmentRef, ...]] = {}
+        self._text_indexes = TextIndexes()
         self._reads = _ReadLocal()
         self._path = Path(path).resolve()
         self._closed = False
@@ -1689,6 +1692,27 @@ class MessageReader:
         return await run_file_io(
             lambda: self.read_tail(before_seq=before_seq, through_seq=through_seq, limit=limit)
         )
+
+    async def find_text_async(self, query: str, *, limit: int = 200) -> TextSearch:
+        """会话内正文查找：首次建该会话的正文索引，之后只追加新消息；读取与匹配都在 worker 内。"""
+        if not 1 <= limit <= 500:
+            raise InvalidPage("查找结果 limit 无效")
+        self._check_async_snapshot()
+
+        def find() -> TextSearch:
+            log = self._log
+            with log._read() as connection:
+                revision = None if not log._has_prefix_revision else connection.execute(
+                    "SELECT revision FROM message_prefix_revision WHERE singleton=1"
+                ).fetchone()[0]
+                head = connection.execute(
+                    "SELECT COALESCE(MAX(seq),-1) FROM messages WHERE session_key=?", (self._session_id,),
+                ).fetchone()[0]
+                return log._text_indexes.search(
+                    connection, self._session_id, query=query, head=head, revision=revision, limit=limit,
+                )
+
+        return await run_file_io(find)
 
     async def deleted_async(self) -> bool:
         """deleted 属性的异步孪生：软删标记的点查询在 worker 内完成。"""
