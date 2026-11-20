@@ -192,7 +192,7 @@ class Runtime:
 
     async def _judge(self, now: datetime, orders: list[watch_orders.Order], timed: list[watch_orders.Order], pending: list[Event]) -> None:
         text, wake_orders = watch_orders.render(orders)
-        context = await self._context(now, text)
+        standing, live = await self._context(now, text)
         checks = [Event(f"t{index}", "到点查看", now.isoformat(timespec="seconds"), order.text, "", "") for index, order in enumerate(timed, 1)]
         by_check = {event.id: order for event, order in zip(checks, timed)}
         batch = checks + pending
@@ -202,7 +202,7 @@ class Runtime:
         for start in range(0, len(batch), CHUNK):
             chunk = batch[start:start + CHUNK]
             lookup = {event.id: event for event in chunk}
-            outcome = await judge(self._complete, chain, context, chunk, self.files,
+            outcome = await judge(self._complete, chain, standing, live, chunk, self.files,
                                   lambda event_id: lookup.get(event_id) or self.log.get(event_id, now))
             await self._record(now, outcome)
             if outcome.model is None:
@@ -227,20 +227,24 @@ class Runtime:
         if wakes:
             await self._wake(now, wakes)
 
-    # 值班员每次看到的现场：时间、用户状态、嘱托、判例、最近对话和长期记忆。
-    async def _context(self, now: datetime, order_text: str) -> str:
+    # 值班员每次看到的现场，分成两段各占一条消息：前一段是很少变的（长期记忆、嘱托、判例），后一段每次都变（最近对话、用户状态、时间）。
+    # 有的模型只在"最后一条消息之前的内容和上次完全一样"时才命中缓存，会变的东西混进前一段，整段就白算了。
+    async def _context(self, now: datetime, order_text: str) -> tuple[str, str]:
         turns = await self._turns(now)
         memory = self.files.text(self.config.memory_file) or ""
         cases = _tail(self.root / "cases.md", 20)
-        return "\n\n".join(part for part in (
-            f"现在：{now:%Y-%m-%d %H:%M}（周{'一二三四五六日'[now.weekday()]}）",
-            "用户当前状态：\n" + await self._user_state(now),
+        standing = "\n\n".join(part for part in (
+            "用户的长期记忆：\n" + memory if memory else "",
             "嘱托（主 Agent 写给你的）。\n" + order_text,
             "主 Agent 对你过去判断的纠正：\n" + cases if cases else "",
+        ) if part)
+        live = "\n\n".join((
             "主 Agent 和用户最近的对话（从旧到新）：\n" + recent.render(turns, now),
             recent.stats(turns, now),
-            "用户的长期记忆：\n" + memory if memory else "",
-        ) if part)
+            "用户当前状态：\n" + await self._user_state(now),
+            f"现在：{now:%Y-%m-%d %H:%M}（周{'一二三四五六日'[now.weekday()]}）",
+        ))
+        return standing, live
 
     async def _turns(self, now: datetime) -> list[recent.Turn]:
         if not self.config.target:
