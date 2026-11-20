@@ -293,6 +293,19 @@ class FindSession {
     await this.go(at < 0 ? this.local.length - 1 : at);
   }
 
+  // 页面重新渲染（窗口两端补读、流式输出、展开收起）后，旧的文字区间会失效：
+  // 在当前消息里重新收集并重画当前这一处，不滚动；消息元素被替换时按 ID 重新找。
+  repaint(): void {
+    const hit = this.snapshot.hits[this.snapshot.active];
+    if (!hit || !this.root || (!this.scope && !this.local.length)) return;
+    if (!this.scope?.isConnected) this.scope = messageElement(this.root, hit.messageId);
+    if (!this.scope) return;
+    this.collect();
+    const local = Math.min(this.snapshot.local, Math.max(0, this.local.length - 1));
+    if (local !== this.snapshot.local) this.emit({ local });
+    paint(this.local, this.local[local]);
+  }
+
   private collect(): void {
     const needle = this.snapshot.query.trim().toLowerCase();
     this.local = this.scope && needle ? collectHits(this.scope, needle).hits : [];
@@ -419,10 +432,23 @@ export function ThreadFind({ session, snapshot, openFind, host, revision }: Thre
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 只随会话内容变化重查，查询变化由第 2 步负责
   }, [revision]);
 
-  // 4. 换会话或关闭时收起
+  // 4. 正文变化后重画当前消息里的高亮（区间随 DOM 失效），不移动位置
+  useEffect(() => {
+    const root = contentRef.current;
+    if (!snapshot.open || !root) return;
+    let timer = 0;
+    const observer = new MutationObserver(() => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => session.repaint(), 150);
+    });
+    observer.observe(root, { childList: true, subtree: true, characterData: true });
+    return () => { observer.disconnect(); window.clearTimeout(timer); };
+  }, [contentRef, session, snapshot.open]);
+
+  // 5. 换会话或关闭时收起
   useEffect(() => () => session.setOpen(false), [session, host.sessionId]);
 
-  // 5. 当前项保持在列表可见范围内
+  // 6. 当前项保持在列表可见范围内
   useEffect(() => {
     listRef.current?.querySelector<HTMLElement>("[aria-selected=\"true\"]")?.scrollIntoView({ block: "nearest" });
   }, [snapshot.active]);
