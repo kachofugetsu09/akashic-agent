@@ -107,14 +107,14 @@
 .agent-content :where(h1, h2, h3, h4) {
   margin-block: 1.4em 0.45em;
   color: var(--ak-ink-primary);
-  font-weight: 650;
+  font-weight: 700;
   line-height: 1.36;
   text-wrap: balance;
 }
 
 .agent-content h1 { font-size: 1.4em; }
 .agent-content h2 { font-size: 1.22em; }
-.agent-content h3 { font-size: 1.1333em; }
+.agent-content h3 { font-size: 1.1333em; color: var(--ak-color-action-primary); }
 .agent-content h4 { font-size: 1.04em; }
 
 .agent-content p,
@@ -123,7 +123,7 @@
 }
 
 .agent-content :where(p, li) :where(strong, b) {
-  font-weight: 540;
+  font-weight: 600;
   color: var(--ak-ink-primary);
 }
 
@@ -250,11 +250,11 @@
 .agent-content :not(pre) > code,
 .static-message-response :not(pre) > code,
 .process-markdown :not(pre) > code {
-  border: 1px solid color-mix(in oklab, var(--ak-ink-primary) 9%, transparent);
+  border: 0;
   border-radius: var(--ak-radius-xs);
-  padding: 0.0625rem 0.25rem;
-  color: var(--md-sys-color-on-surface);
-  background: color-mix(in oklab, var(--md-sys-color-on-surface) 3.5%, transparent);
+  padding: 0.0625rem 0.3rem;
+  color: var(--ak-ink-primary);
+  background: color-mix(in oklab, var(--ak-ink-primary) 5.5%, transparent);
   font-family: var(--ak-type-technical, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
   font-size: 0.85em;
   font-weight: 460;
@@ -262,14 +262,14 @@
 }
 
 /* Markstream 的行内代码自带 (0,2,0) 工具类且在懒加载后插入：用三级作用域显式压过，
-   底色取墨色的 3.5% 透明叠加配 9% 细描边，深浅主题都不出现冷蓝底或厚重膏药块；字体回到技术字体。 */
+   去掉小方框描边降噪，底色取墨色的 5.5% 透明叠加；字体回到技术字体。 */
 .agent-content .markstream-react .inline-code,
 .process-markdown .markstream-react .inline-code {
-  border: 1px solid color-mix(in oklab, var(--ak-ink-primary) 9%, transparent);
+  border: 0;
   border-radius: var(--ak-radius-xs);
-  padding: 0.0625rem 0.25rem;
+  padding: 0.0625rem 0.3rem;
   color: inherit;
-  background: color-mix(in oklab, var(--ak-ink-primary) 3.5%, transparent);
+  background: color-mix(in oklab, var(--ak-ink-primary) 5.5%, transparent);
   font-family: var(--ak-type-technical);
   font-size: 0.85em;
   font-weight: 460;
@@ -283,7 +283,7 @@
   box-decoration-break: clone;
 }
 
-/* 回复里的文件路径：行内代码外包一层按钮，点开在工作台“改动”里定位；只加虚下划线提示可点。 */
+/* 回复里的文件路径：行内代码外包一层按钮，点开在工作台“改动”里定位；强调色 + 虚下划线提示可点。 */
 .reading-file-link {
   display: inline;
   padding: 0;
@@ -297,7 +297,8 @@
 
 .reading-file-link > code,
 .reading-file-link .inline-code {
-  text-decoration: underline dotted color-mix(in oklab, currentColor 45%, transparent);
+  color: var(--ak-color-action-primary);
+  text-decoration: underline dotted color-mix(in oklab, var(--ak-color-action-primary) 55%, transparent);
   text-underline-offset: 0.2em;
 }
 
@@ -454,11 +455,11 @@
 /* 引用块与分割线：纸面细线，不留卡片感。 */
 .agent-content blockquote,
 .process-markdown blockquote {
-  margin-block: 0.5rem;
-  padding-block: 0.125rem;
-  padding-inline: 0.875rem 0;
-  border-inline-start: 2px solid color-mix(in oklab, var(--md-sys-color-on-surface) 18%, transparent);
-  color: var(--md-sys-color-on-surface-variant);
+  margin-block: 0.75rem;
+  padding-block: 0.15rem;
+  padding-inline: 0.95rem 0;
+  border-inline-start: 2px solid var(--ak-rule-default);
+  color: var(--ak-ink-secondary);
 }
 
 .agent-content blockquote > :first-child,
@@ -547,6 +548,7 @@
   padding: 0 0.25rem 0 1rem !important;
   background: transparent !important;
   border-block-end: 0 !important;
+  box-shadow: inset 0 -1px 0 var(--ak-rule-subtle);
 }
 
 :where(.agent-content, .process-markdown, .user-bubble) .code-header-actions .code-action-btn {
@@ -755,13 +757,15 @@
 }
 
 :is(.agent-content, .process-markdown, .user-bubble) .markdown-reading .reading-topic:not(li p) > strong {
-  font-weight: 650;
+  font-weight: 700;
 }
 
 :is(.agent-content, .process-markdown, .user-bubble) .markdown-reading .reading-concepts {
   margin-block: 0.85rem;
   padding: 0;
   border: 1px solid var(--ak-rule-subtle);
+  border-radius: var(--ak-radius-sm);
+  overflow: hidden;
   list-style: none;
 }
 
@@ -785,6 +789,12 @@
 .reading-concept-description {
   min-width: 0;
   overflow-wrap: anywhere;
+}
+
+.reading-concept-label,
+.reading-concept-label > strong {
+  color: var(--ak-color-action-primary);
+  font-weight: 600;
 }
 
 :is(.agent-content, .process-markdown, .user-bubble) .markdown-reading .reading-concept-description > p {
@@ -836,7 +846,7 @@
 }
 
 :is(.agent-content, .process-markdown, .user-bubble) .markdown-reading li :where(ul, ol) {
-  border-inline-start: 1px solid var(--ak-rule-default);
+  border-inline-start: 1px solid var(--ak-rule-subtle);
 }
 
 :is(.agent-content, .process-markdown, .user-bubble) .markdown-reading li:has(> input[type="checkbox"]) {
@@ -848,10 +858,10 @@
 }
 
 :is(.agent-content, .process-markdown, .user-bubble) .markdown-reading blockquote {
-  padding: 0.7rem 1rem;
-  margin-block: 1rem;
+  padding: 0.15rem 0 0.15rem 0.95rem;
+  margin-block: 0.85rem;
   border-inline-start: 2px solid var(--ak-rule-default);
-  background: var(--ak-paper-quiet);
+  background: transparent;
   color: var(--ak-ink-secondary);
 }
 
@@ -915,6 +925,7 @@
 
 :is(.agent-content, .process-markdown, .user-bubble) .markdown-reading th {
   color: var(--ak-ink-secondary);
+  font-weight: 600;
   white-space: nowrap;
 }
 
@@ -1037,6 +1048,8 @@
   max-width: 100%;
   margin-block: 0.85rem;
   border: 1px solid var(--ak-rule-subtle);
+  border-radius: var(--ak-radius-sm);
+  overflow: clip;
   background: var(--ak-paper-quiet);
 }
 
@@ -1067,6 +1080,11 @@
   align-items: center;
   block-size: 44px;
   padding-inline: 16px 52px;
+  box-shadow: inset 0 -1px 0 var(--ak-rule-subtle);
+}
+.reading-plain-text.is-diff .reading-code-copy {
+  /* token-exempt: 保留纸面渐隐遮罩并延续块头 44px 底部分割线 */
+  box-shadow: -16px 0 12px -4px var(--ak-paper-quiet), inset 0 -1px 0 var(--ak-rule-subtle);
 }
 .reading-plain-text.is-diff > pre {
   padding: 4px 0 12px;
