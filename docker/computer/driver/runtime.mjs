@@ -4,18 +4,21 @@ import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EventEmitter } from "node:events";
-import { BrowserBackend } from "./cdp.mjs";
+import { BrowserBackend, SPACE_SENTINEL_URL } from "./cdp.mjs";
 import { AnonymousBrowsers } from "./anonymous.mjs";
+import { BackgroundSpaces } from "./spaces.mjs";
 
 // Core 的硬超时是 170s，调用本身最多 110s，等人的时间要留在余量里。
 const HUMAN_WAIT_MS = 40_000;
 
 /** 一个容器只有一个带个人 profile 的浏览器；各 Session 隔离 JS 绑定并各自串行，Session 之间并行。 */
 export class ComputerDriver extends EventEmitter {
-  constructor({ anonymousIdleMs = 600000 } = {}) {
+  constructor({ anonymousIdleMs = 600000, maxSpaceConcurrency = 4, shouldAllowExternalFocus = null } = {}) {
     super();
     this.anonymous = new AnonymousBrowsers(anonymousIdleMs);
     this.browser = new BrowserBackend(undefined, undefined, null, this.anonymous.contexts);
+    this.spaces = new BackgroundSpaces({ browser: this.browser, maxConcurrency: maxSpaceConcurrency });
+    this.shouldAllowExternalFocus = shouldAllowExternalFocus;
     this.anonymous.on("targets", () => this.emit("targets"));
     this.anonymous.on("closed", ({ browserId, reason, context }) => {
       this.emit("targets");
@@ -246,7 +249,13 @@ export class ComputerDriver extends EventEmitter {
   /** 人工新开标签：个人浏览器里开一个窗口并提到最前，返回它的观看 id。 */
   async openPage(url = "about:blank") {
     const connection = this.browser.browser;
-    const { targetId } = await connection.send("Target.createTarget", { url, newWindow: true });
+    this.browser.creatingInternalTargets++;
+    let targetId;
+    try {
+      ({ targetId } = await connection.send("Target.createTarget", { url, newWindow: true }));
+    } finally {
+      this.browser.creatingInternalTargets--;
+    }
     await this.browser.screen.place(connection, targetId);
     await this.browser.screen.show(connection, targetId);
     const tab = (await this.browser.listTabs()).find(item => this.browser.tab(item.id).targetId === targetId);
@@ -269,8 +278,17 @@ export class ComputerDriver extends EventEmitter {
     try {
       const connection = this.browser.browser;
       const [first] = await this.browser.listTabs();
-      const next = first ? this.browser.tab(first.id).targetId
-        : (await connection.send("Target.createTarget", { url: "about:blank", newWindow: true })).targetId;
+      let next;
+      if (first) {
+        next = this.browser.tab(first.id).targetId;
+      } else {
+        this.browser.creatingInternalTargets++;
+        try {
+          ({ targetId: next } = await connection.send("Target.createTarget", { url: "about:blank", newWindow: true }));
+        } finally {
+          this.browser.creatingInternalTargets--;
+        }
+      }
       if (!first) await screen.place(connection, next);
       await screen.show(connection, next);
     } catch (error) {
@@ -286,9 +304,60 @@ export class ComputerDriver extends EventEmitter {
     // 1. 页面增删、换标题都要刷新目录；最前的页面关闭时补一个。
     this.browser.browser.on("event", ({ method, params }) => {
       if (!method?.startsWith("Target.target")) return;
-      if (method === "Target.targetDestroyed") void this.recoverFront(params.targetId);
-      if (method === "Target.targetCreated" && params.targetInfo.type === "page" && params.targetInfo.openerId)
-        this.browser.screen.front = params.targetInfo.targetId;
+      const info = params.targetInfo;
+      const targetId = info?.targetId ?? params.targetId;
+      if (method === "Target.targetDestroyed") {
+        this.browser.hiddenTargetRoots.delete(targetId);
+        if (this.browser.hiddenTargets.delete(targetId)) return;
+        void this.recoverFront(targetId);
+        this.emit("targets");
+        return;
+      }
+      const isHiddenSubtree =
+        this.browser.hiddenTargets.has(targetId) ||
+        info?.url === SPACE_SENTINEL_URL ||
+        (Boolean(info?.openerId) && this.browser.hiddenTargets.has(info.openerId));
+      if (isHiddenSubtree) {
+        this.browser.hiddenTargets.add(targetId);
+        if (info?.openerId) {
+          const root = this.browser.hiddenTargetRoots.get(info.openerId) ?? info.openerId;
+          this.browser.hiddenTargetRoots.set(targetId, root);
+          if (
+            info.type === "page" &&
+            !this.shouldAllowExternalFocus?.() &&
+            this.browser.screen.front &&
+            this.browser.screen.front !== targetId
+          ) {
+            void this.browser.screen.restoreFront(this.browser.browser);
+            const timer = setTimeout(() => {
+              if (!this.closed && !this.shouldAllowExternalFocus?.()) {
+                void this.browser.screen.restoreFront(this.browser.browser);
+              }
+            }, 150);
+            timer.unref?.();
+          }
+        }
+        return;
+      }
+      if (method === "Target.targetCreated" && info?.type === "page") {
+        if (info.openerId) {
+          this.browser.screen.front = targetId;
+        } else if (
+          !this.anonymous.contexts.has(info.browserContextId) &&
+          !this.browser.creatingInternalTargets &&
+          !this.shouldAllowExternalFocus?.() &&
+          this.browser.screen.front &&
+          this.browser.screen.front !== targetId
+        ) {
+          void this.browser.screen.restoreFront(this.browser.browser);
+          const timer = setTimeout(() => {
+            if (!this.closed && !this.shouldAllowExternalFocus?.()) {
+              void this.browser.screen.restoreFront(this.browser.browser);
+            }
+          }, 150);
+          timer.unref?.();
+        }
+      }
       this.emit("targets");
     });
     await this.browser.browser.send("Target.setDiscoverTargets", { discover: true });

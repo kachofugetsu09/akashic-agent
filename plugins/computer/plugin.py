@@ -388,6 +388,7 @@ async def _register_workload(ctx: Context):
                 WorkloadPort("gateway", 8080),
                 WorkloadPort("stream", 6081),
                 WorkloadPort("opencli", 19826, loopback=19825),
+                WorkloadPort("spaces", 19827, loopback=19827),
             ),
             data=(WorkloadData("state", "/data"),),
             health=WorkloadHealth("gateway", "/health", 90.0),

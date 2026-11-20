@@ -61,7 +61,7 @@ RUN chmod 0755 /opt/computer/start.sh
 
 USER 1000:1000
 WORKDIR /data
-EXPOSE 6081 8080 19826
+EXPOSE 6081 8080 19826 19827
 # Only the supervisor receives stop; it closes Chromium before D-Bus and X11.
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["/opt/computer/start.sh"]
