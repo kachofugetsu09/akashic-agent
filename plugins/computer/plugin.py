@@ -167,7 +167,7 @@ workspace_files = ()
 
 _IMAGE = (
     "ghcr.io/kachofugetsu09/akashic-computer@"
-    "sha256:7aec4bd8595742b7599f7801c3f311b0618c0746d818ef1474f063b7406536f3"
+    "sha256:dd107c74c91d5778ebdc130f1c26828638f8c53e142c69771f4feb858b67f054"
 )
 
 
@@ -388,6 +388,7 @@ async def _register_workload(ctx: Context):
                 WorkloadPort("gateway", 8080),
                 WorkloadPort("stream", 6081),
                 WorkloadPort("opencli", 19826, loopback=19825),
+                WorkloadPort("spaces", 19827, loopback=19827),
             ),
             data=(WorkloadData("state", "/data"),),
             health=WorkloadHealth("gateway", "/health", 90.0),

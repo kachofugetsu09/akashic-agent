@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { setTimeout as sleep } from "node:timers/promises";
 import { ComputerDriver } from "./driver/runtime.mjs";
+import { SpaceInputError } from "./driver/spaces.mjs";
 import { ComputerLifecycle, duration } from "./lifecycle.mjs";
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -62,7 +63,11 @@ const computer = new ComputerLifecycle({
     }
     if (failure) throw failure;
     // 重启后旧一代可能还有迟到的事件；只转发当前这一代的。
-    const owner = new ComputerDriver({ anonymousIdleMs: duration("COMPUTER_ANONYMOUS_IDLE_MS", 600000) });
+    const owner = new ComputerDriver({
+      anonymousIdleMs: duration("COMPUTER_ANONYMOUS_IDLE_MS", 600000),
+      maxSpaceConcurrency: Number(process.env.COMPUTER_SPACE_CONCURRENCY) || 4,
+      shouldAllowExternalFocus: () => foregroundOpenCliCount > 0,
+    });
     driver = owner;
     owner.on("cursor", (state) => { if (driver === owner) publishCursor(state); });
     owner.on("control", () => { if (driver === owner) scheduleState(); });
@@ -564,6 +569,20 @@ async function screenshot(response, quiet) {
   response.end(bytes);
 }
 
+const openCliMaxBodyBytes = 4 * 1024 * 1024;
+let foregroundOpenCliCount = 0;
+
+async function readRawBody(request, limitBytes) {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of request) {
+    size += chunk.length;
+    if (size > limitBytes) throw new InputError("request body is too large");
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
+}
+
 async function proxyOpenCli(request, response) {
   const url = new URL(request.url ?? "/", "http://opencli.local");
   if (request.headers["x-opencli"] !== "1" || request.headers.upgrade) {
@@ -581,48 +600,141 @@ async function proxyOpenCli(request, response) {
     if (!response.writableFinished) controller.abort(new Error("OpenCLI caller disconnected"));
   });
   try {
+    let rawBody = null;
+    let isBackground = request.method === "GET" || request.method === "HEAD";
+    if (!isBackground) {
+      rawBody = await readRawBody(request, openCliMaxBodyBytes);
+      if (url.pathname === "/command" && rawBody.length > 0) {
+        try {
+          const parsed = JSON.parse(rawBody.toString("utf8"));
+          if (parsed?.windowMode === "background") isBackground = true;
+        } catch {
+          // Malformed JSON is forwarded to OpenCLI daemon as-is.
+        }
+      }
+    }
+
+    const forward = () => new Promise((resolve, reject) => {
+      if (response.destroyed) {
+        resolve();
+        return;
+      }
+      let settled = false;
+      const done = (err) => {
+        if (settled) return;
+        settled = true;
+        if (err) reject(err);
+        else resolve();
+      };
+      response.once("finish", () => done());
+      response.once("close", () => done());
+      const headers = { ...request.headers, host: "127.0.0.1:19825" };
+      if (rawBody !== null) {
+        delete headers["transfer-encoding"];
+        headers["content-length"] = String(rawBody.length);
+      }
+      const upstream = httpRequest(
+        {
+          hostname: "127.0.0.1",
+          port: 19825,
+          method: request.method,
+          path: request.url,
+          headers,
+        },
+        (upstreamResponse) => {
+          response.writeHead(
+            upstreamResponse.statusCode ?? 502,
+            upstreamResponse.headers,
+          );
+          const failStream = (err) => {
+            const error = err ?? new Error("OpenCLI upstream response aborted");
+            if (!response.destroyed) response.destroy(error);
+            done(error);
+          };
+          upstreamResponse.on("error", failStream);
+          upstreamResponse.on("aborted", () => failStream(new Error("OpenCLI upstream response aborted")));
+          upstreamResponse.on("close", () => {
+            if (!upstreamResponse.complete) failStream(new Error("OpenCLI upstream response closed prematurely"));
+          });
+          upstreamResponse.pipe(response);
+        },
+      );
+      upstream.setTimeout(125_000, () =>
+        upstream.destroy(new Error("OpenCLI daemon timed out")),
+      );
+      upstream.on("error", (error) => {
+        if (!response.headersSent)
+          json(response, 502, { error: error.message });
+        else if (!response.destroyed) response.destroy(error);
+        done(error);
+      });
+      response.once("close", () => upstream.destroy());
+      upstream.end(rawBody ?? undefined);
+    });
+
     await computer.use(async () => {
       await readyDriver();
-      return driver.agentOperation(() => new Promise((resolve, reject) => {
-          if (response.destroyed) {
-            resolve();
-            return;
-          }
-          response.once("finish", resolve);
-          response.once("close", resolve);
-          const upstream = httpRequest(
-            {
-              hostname: "127.0.0.1",
-              port: 19825,
-              method: request.method,
-              path: request.url,
-              headers: { ...request.headers, host: "127.0.0.1:19825" },
-            },
-            (upstreamResponse) => {
-              response.writeHead(
-                upstreamResponse.statusCode ?? 502,
-                upstreamResponse.headers,
-              );
-              upstreamResponse.pipe(response);
-            },
-          );
-          upstream.setTimeout(125_000, () =>
-            upstream.destroy(new Error("OpenCLI daemon timed out")),
-          );
-          upstream.on("error", (error) => {
-            if (!response.headersSent)
-              json(response, 502, { error: error.message });
-            else response.destroy(error);
-            reject(error);
-          });
-          response.once("close", () => upstream.destroy());
-          request.pipe(upstream);
-        }), controller.signal);
+      if (isBackground) return await forward();
+      foregroundOpenCliCount++;
+      try {
+        return await driver.agentOperation(forward, controller.signal);
+      } finally {
+        foregroundOpenCliCount--;
+      }
     });
   } catch (error) {
+    if (error instanceof InputError) {
+      if (!response.headersSent && !response.destroyed) json(response, 400, { error: error.message });
+      return;
+    }
     if (!response.headersSent && !response.destroyed)
       json(response, 502, { error: error.message });
     else console.error("OpenCLI proxy:", error.message);
+  }
+}
+
+async function handleSpacesRequest(request, response) {
+  if (stopping) {
+    json(response, 503, { ok: false, error: "Computer is stopping" });
+    return;
+  }
+  const url = new URL(request.url ?? "/", "http://spaces.local");
+  const controller = new AbortController();
+  response.once("close", () => {
+    if (!response.writableFinished) controller.abort(new Error("Space caller disconnected"));
+  });
+  try {
+    if (request.method === "GET" && url.pathname === "/spaces/health") {
+      json(response, 200, {
+        ok: true,
+        state: computer.state,
+        active: driver?.spaces?.activeCount ?? 0,
+        queued: driver?.spaces?.queuedCount ?? 0,
+        maxConcurrency: driver?.spaces?.maxConcurrency ?? (Number(process.env.COMPUTER_SPACE_CONCURRENCY) || 4),
+      });
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/spaces/run") {
+      const payload = await body(request);
+      const output = await computer.use(async () => {
+        await readyDriver();
+        return await driver.spaces.run(payload, controller.signal);
+      });
+      json(response, 200, { ok: true, ...output });
+      return;
+    }
+    json(response, 404, { ok: false, error: "not found" });
+  } catch (error) {
+    if (driver?.closed && computer.state === "ready") {
+      computer.fail(error);
+    }
+    const status = error instanceof InputError || error instanceof SpaceInputError || error instanceof SyntaxError ? 400 : 500;
+    if (!response.headersSent && !response.destroyed) {
+      json(response, status, {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 }
 
@@ -836,6 +948,7 @@ const server = createServer(async (request, response) => {
 }).listen(8080, "0.0.0.0");
 
 const openCliServer = createServer(proxyOpenCli).listen(19826, "0.0.0.0");
+const spacesServer = createServer(handleSpacesRequest).listen(19827, "0.0.0.0");
 // 宿主出口：Controller 挂入 Host Bridge 的 SOCKS5 socket 时转成容器本机端口给 Chromium（它不能直接用 unix socket 代理）。
 const HOST_EGRESS = "/run/akashic/host-egress";
 if (existsSync(HOST_EGRESS)) {
@@ -930,6 +1043,7 @@ async function stop() {
   server.close();
   for (const client of eventClients.keys()) client.end();
   openCliServer.close();
+  spacesServer.close();
   const timer = setTimeout(() => {
     console.error("Computer shutdown timed out");
     process.exit(1);

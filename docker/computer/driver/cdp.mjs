@@ -85,6 +85,8 @@ class CdpConnection extends EventEmitter {
   }
 }
 
+export const SPACE_SENTINEL_URL = "about:blank#akashic-space";
+
 /** 每个标签都是同一块屏幕上的窗口：新窗口铺满屏幕，观看者正在看的窗口始终留在最前。 */
 export class Screen {
   front = null;
@@ -98,6 +100,10 @@ export class Screen {
   async show(connection, targetId) {
     await connection.send("Target.activateTarget", { targetId });
     this.front = targetId;
+  }
+  async restoreFront(connection) {
+    if (!this.front) return;
+    await connection.send("Target.activateTarget", { targetId: this.front }).catch(() => {});
   }
 }
 
@@ -126,6 +132,9 @@ export class BrowserBackend extends EventEmitter {
   sessionNames = new Map();
   interceptions = new Map();
   intercepting = true;
+  hiddenTargets = new Set();
+  hiddenTargetRoots = new Map();
+  creatingInternalTargets = 0;
   async start() {
     const response = await fetch(`${this.url}/json/version`, {
       signal: AbortSignal.timeout(5000),
@@ -143,6 +152,8 @@ export class BrowserBackend extends EventEmitter {
     for (const target of targetInfos.filter(
       (item) =>
         item.type === "page" &&
+        !this.hiddenTargets.has(item.targetId) &&
+        item.url !== SPACE_SENTINEL_URL &&
         (this.browserContextId
           ? item.browserContextId === this.browserContextId
           : !this.excluded.has(item.browserContextId)),
@@ -421,14 +432,20 @@ export class BrowserBackend extends EventEmitter {
       }
       case "createTab": {
         // 每个 Agent 标签是独立窗口：互不遮挡渲染，也不切走用户正在看的标签。
-        const { targetId } = await this.browser.send("Target.createTarget", {
-          url: "about:blank",
-          newWindow: true,
-          background: true,
-          ...(this.browserContextId
-            ? { browserContextId: this.browserContextId }
-            : {}),
-        });
+        this.creatingInternalTargets++;
+        let targetId;
+        try {
+          ({ targetId } = await this.browser.send("Target.createTarget", {
+            url: "about:blank",
+            newWindow: true,
+            background: true,
+            ...(this.browserContextId
+              ? { browserContextId: this.browserContextId }
+              : {}),
+          }));
+        } finally {
+          this.creatingInternalTargets--;
+        }
         await this.screen.place(this.browser, targetId);
         await this.listTabs();
         const tab = this.tabs.get(targetId);
