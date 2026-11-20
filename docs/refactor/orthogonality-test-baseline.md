@@ -119,7 +119,8 @@ MEM-009（同图学习按固定输入顺序发布）。用户明确要求证明 
 - `tests/support/delivery_sources.py`：从已删除的 `test_delivery_bindings.py` 抽出 `sources`（第 31、33 条与 `application` 使用）
 - `tests/support/message_react.py`：从已删除的 `test_message_react.py` 抽出 `runtime`（第 35、44 条使用；第 44 条加入 `parallel_ids` 与 `max_parallel_calls` 参数）
 - 第 35 条用到的 `assert_rows_unchanged`、`assert_no_forbidden_writes` 已内联进 `tests/test_context_history_contract.py`；`tests_scenarios/contracts/` 已删除
-- `docker/debug/plugin_external_acceptance.py`（第 17、18 条要用）
+- `tests/support/external_acceptance.py`（第 17、18 条使用；从已退役的
+  `docker/debug/plugin_external_acceptance.py` 抽提）
 
 `test_python_environment.py`、`test_message_delivery.py` 的 helper 在裁剪后不再被保留节点 import，已删除。清理后 `pytest --collect-only -q tests` 收集 42 个节点（`test_default_reply` 与第 43 条各带 2 组参数，合计 44 个用例；第 42、43 条随 0073 加入）。第 44、45 条随 0079 加入；第 44 条随后按 §1"同一不变量只留一到两个最直接的测试"收敛为 2 个节点，收集数变为 45 个节点、47 个用例。
 

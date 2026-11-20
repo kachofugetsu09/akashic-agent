@@ -12,8 +12,9 @@
 ## P1 · 边界②③场景的持续回归
 
 本轮接受评审指出的覆盖缺口：整栈合入后，先将
-`scripts/ledger_runtime_scenario.py` 与 `scripts/bundle_modes_scenario.py`
-接入 nightly / 手动工作流。组合场景须构建当前提交的发行制品，保留日志与
+账本运行时与组合模式的真实场景接入 nightly / 手动工作流。原
+`scripts/ledger_runtime_scenario.py` 与 `scripts/bundle_modes_scenario.py` 已退役，
+可从 `dc5be63d2` 回溯；接入前须按当前合同恢复场景。组合场景须构建当前提交的发行制品，保留日志与
 状态证据；不能用源码直载替代发行安装。再纳入派生库、旧版本迁移和未知发送
 恢复场景。本轮仅新增、重跑相关场景，尚未修改 CI 调度。
 
@@ -28,8 +29,9 @@ systemd unit 与 release 路径耦合需要独立复核；当前是评审风险�
 通道退役。待完成：
 
 - 用插件自有 migration bundle 登记的一次性重放完成线上切换，并按
-  `docker/debug/akasha_replay_compare.py` 核对历史前缀（本机副本实测：legacy 复现
-  5549/5581、相对顺序无逆序、交集身份与时间瞬间零差异）。
+  `dc5be63d2` 中的历史 `docker/debug/akasha_replay_compare.py` 核对历史前缀（本机副本实测：legacy 复现
+  5549/5581、相对顺序无逆序、交集身份与时间瞬间零差异）。脚本已退役，
+  当前重放前须按现行合同准备隔离核对入口。
 - 重放会丢掉旧图里 26 条早期 `remember` 事件。维护者已确认它们不是 Akasha 现行反馈
   通道的产物（属于很早期的 tool result），接受该偏差，不另立 carry-over 迁移。
 - `memory/akasha-v2-index.db`（约 511MB）退役后的物理删除单独授权。
