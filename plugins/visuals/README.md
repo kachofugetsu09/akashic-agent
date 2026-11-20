@@ -68,18 +68,3 @@ Workload Controller 仍用 Docker 默认策略。上游 Apache-2.0 许可保存�
 
 入选模型上下文的工具调用仍携带原 HTML 参数；不另建历史裁剪机制。
 模型收到标题、摘要、附件引用和预检截图（模型不接收图片时宿主只给说明）；预检耗时不代表完整模型生成耗时。
-
-## 验收
-
-在安装依赖和构建资产后，使用一次性目录：
-
-```sh
-.venv/bin/python scripts/visuals_scenario.py --output /tmp/visuals-acceptance
-node scripts/visuals/browser-server.mjs /tmp/visuals-acceptance
-# 自动检查窄屏/桌面交互、沙箱与 HTTP 403 失败展示；可用 CHROMIUM_PATH 指定浏览器。
-node scripts/visuals/browser-server.mjs /tmp/visuals-acceptance 4330 --check
-```
-
-浏览器打开 `http://127.0.0.1:4330`。该页用实际聊天组件回放上一命令导出的真实消息、附件与安装资产。
-调节参数后追加文字、完成回复、切换主题，确认参数保留；禁用确认摘要和文件仍在；重新启用确认初始参数。
-在 320px 窄屏和深色主题核对图形、控件与下载链接。此页不是正式 runtime，也不证明部署完成。
