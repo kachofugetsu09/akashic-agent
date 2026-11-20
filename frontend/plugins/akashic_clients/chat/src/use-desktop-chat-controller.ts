@@ -1,3 +1,4 @@
+import { useHistoryWindow } from "./history-window";
 import { mergeTimelineMessages, readMessageLogFrame, type ReplyActivity, type TimelineMessage, type TimelineReply } from "./message-timeline";
 import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from "react";
 import { createUuid, createUuidV7 } from "./browser-uuid.ts";
@@ -534,6 +535,20 @@ export function useDesktopChatController() {
       }
     }
   }, [cacheSessionTail, historyBeforeSeq, historyThroughSeq, historyLoadingOlder, setTimelineMessages]);
+
+  // 查找跳转补齐的更早消息（近处一次读齐、窗口读到与尾部相接）并进时间线，换上新的「更早」游标。
+  const adoptHistory = useCallback((items: TimelineMessage[], beforeSeq: number | null) => {
+    const sessionId = activeSessionRef.current;
+    if (!sessionId || items.some((row) => row.session_id !== sessionId)) return;
+    const merged = mergeTimelineMessages(timelineRef.current, items);
+    setTimelineMessages(merged);
+    setHistoryBeforeSeq(beforeSeq);
+    setHistoryHasMore(beforeSeq !== null);
+    const cached = tailCacheRef.current.get(sessionId);
+    if (cached) cacheSessionTail(sessionId, { ...cached, items: merged, beforeSeq, hasMore: beforeSeq !== null });
+  }, [cacheSessionTail, setTimelineMessages]);
+  const historyWindow = useHistoryWindow({ sessionId: activeSessionId, throughSeq: historyThroughSeq,
+    beforeSeq: historyBeforeSeq, timelineRef, adopt: adoptHistory });
 
   useEffect(() => {
     streamStore.reconcileBaseline(messages);
@@ -1423,7 +1438,7 @@ export function useDesktopChatController() {
     surface, sidebarSessions, activeSessionId, pendingSessionId, chatReady, messages, timelineMessages, timelineRefresh, replyActivities, replyAvailable, status,
     streamStore, messageElementsRef, copiedMessageId, shellState, stopPending,
     canSend, sendProblem, draftKey: activeSessionId || `new:${newChatGroup ? groupKey(newChatGroup) : ""}`,
-    historyHasMore, historyLoading, historyLoadingOlder, loadOlderMessages, sessionRequested: requestedSessionId !== "",
+    historyHasMore, historyLoading, historyLoadingOlder, loadOlderMessages, historyWindow, sessionRequested: requestedSessionId !== "",
     historyFailure: activeSessionId !== "" && historyFailure?.sessionId === activeSessionId ? historyFailure.reason : null, retryHistory,
     activeSessionDeleted, deletedNotice, restoringSessionIds, deleteSession, restoreSession, dismissDeletedNotice, renameSession,
     // 自动重连是会自己恢复的临时状态，单独给视图一个安静的状态行；重连失败等才走错误行。

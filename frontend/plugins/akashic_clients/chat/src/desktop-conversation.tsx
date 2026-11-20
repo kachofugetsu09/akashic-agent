@@ -1,4 +1,5 @@
 import { focusMessagePart } from "./message-actions";
+import { registerFindNavigation } from "./thread-find";
 import { copyText } from "./copy-text";
 import { timelineVisibleMessages, timelineFailureRetries, timelineToolResults, timelineReplyGroups, timelineAnchorIndexes, timelineInputStarts, timelineSourceKey, timelineSourceRefreshTokens, needsBeforeReasoningFallback, isCompactionBoundaryMessage, type ReplyActivity } from "./message-timeline";
 import { userInput, timelineReply, timelineReplyText, timelineText, type TimelineMessage, type TimelineReply } from "./message-timeline";
@@ -399,6 +400,11 @@ export const DesktopTimelineMessages = React.memo(function DesktopTimelineMessag
       ?? (activity ? document.querySelector<HTMLElement>(`[data-reply-handle="${CSS.escape(activity.handle)}"]`) : null);
     if (row) focusMessagePart(row, id, partIndex);
   }, [activities, anchorIndexes, groups.completed, groups.inline.leading, messageElementsRef, stopScroll, visibleMessages]);
+  // 查找跳到收在别的轮次过程里的消息时，借这里的定位展开持有它的那一轮。
+  useEffect(() => {
+    registerFindNavigation(onNavigate);
+    return () => registerFindNavigation(null);
+  }, [onNavigate]);
   // 末尾一段不跳过渲染：新插入或刚切到 content-visibility:auto 的元素首帧按 160px 占位布局，
   // 一轮落定时正式回复会先塌成占位高度、滚动被夹紧，下一帧再弹回，形成整屏闪跳。
   // 窗口取得足够宽，切换只发生在远离视口的上方，由原生滚动锚定吸收。
