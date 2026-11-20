@@ -1,15 +1,18 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from pathlib import Path
+import shutil
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
 from agent.plugin_composition import CompositionRoot, PluginRuntime
 from agent.plugin_composition.tasks import TASKS, PluginTasks
-from plugins.content.contract import CONTENT
+from plugins.content.contract import CONTENT, Content
 from plugins.ledger.contract import (
     BINDINGS,
     MESSAGE_CATALOG,
@@ -17,12 +20,22 @@ from plugins.ledger.contract import (
     OWNER_STATE,
     Bindings,
     Message,
+    MessageCatalog,
     MessagePage,
+    MessageWriters,
     Output,
+    OwnerState,
     ToolCall,
 )
 from plugins.subagent.contract import AGENT_RUNNERS, AgentResult, AgentRunner
-from plugins.tools.contract import ALL_TOOLS, TOOL_DISPLAY, TOOLS, ToolDisplay, normalize_tool_icon
+from plugins.tools.contract import (
+    ALL_TOOLS,
+    TOOL_DISPLAY,
+    TOOLS,
+    ToolDisplay,
+    ToolRef,
+    normalize_tool_icon,
+)
 from plugins.tools.plugin import apply as tools_apply
 from plugins.ui.contract import (
     PLUGIN_UI,
@@ -39,16 +52,17 @@ class _MemoryBindings:
     def __init__(self) -> None:
         self._records: dict[str, dict[str, object]] = {}
 
-    def bind(self, _service, metadata, *, contributors=()):
+    def bind(self, _service: object, metadata: Mapping[str, object], *, contributors: object = ()) -> str:
+        _ = contributors
         key = f"b-{len(self._records) + 1}"
         self._records[key] = dict(metadata)
         return key
 
-    def describe(self, identity: str, _service):
+    def describe(self, identity: str, _service: object) -> Mapping[str, object]:
         return self._records[identity]
 
 
-def _runtime(tmp_path, plugin_id: str) -> PluginRuntime:
+def _runtime(tmp_path: Path, plugin_id: str) -> PluginRuntime:
     return PluginRuntime(
         plugin_id,
         plugin_id + ":1",
@@ -59,7 +73,32 @@ def _runtime(tmp_path, plugin_id: str) -> PluginRuntime:
     )
 
 
-def test_normalize_tool_icon_accepts_lucide_and_safe_svg():
+async def _empty_follow(**_kw: object):
+    if False:
+        yield {}
+
+
+def _catalog_stub() -> MessageCatalog:
+    return cast(MessageCatalog, cast(object, SimpleNamespace(follow=_empty_follow)))
+
+
+def _content_stub() -> Content:
+    return cast(Content, cast(object, SimpleNamespace()))
+
+
+def _writers_stub() -> MessageWriters:
+    return cast(MessageWriters, cast(object, SimpleNamespace()))
+
+
+def _owner_state_stub() -> OwnerState:
+    store = SimpleNamespace(scan=lambda **_kw: [], read=lambda _k: None)
+    return cast(
+        OwnerState,
+        cast(object, SimpleNamespace(open=lambda _ctx: store, open_scoped=lambda _ctx, _name: store)),
+    )
+
+
+def test_normalize_tool_icon_accepts_lucide_and_safe_svg() -> None:
     assert normalize_tool_icon(None) is None
     assert dict(normalize_tool_icon("terminal") or {}) == {"kind": "lucide", "name": "terminal"}
 
@@ -68,9 +107,10 @@ def test_normalize_tool_icon_accepts_lucide_and_safe_svg():
     assert normalized is not None
     assert normalized["kind"] == "svg"
     assert normalized["viewBox"] == "0 0 24 24"
-    assert len(normalized["nodes"]) == 2
-    assert normalized["nodes"][0]["tag"] == "path"
-    assert normalized["nodes"][1]["attrs"]["fill"] == "currentColor"
+    nodes = cast(tuple[Mapping[str, Any], ...], normalized["nodes"])
+    assert len(nodes) == 2
+    assert nodes[0]["tag"] == "path"
+    assert nodes[1]["attrs"]["fill"] == "currentColor"
 
 
 @pytest.mark.parametrize(
@@ -88,39 +128,25 @@ def test_normalize_tool_icon_accepts_lucide_and_safe_svg():
         {"kind": "unknown"},
     ],
 )
-def test_normalize_tool_icon_rejects_unsafe_or_invalid(bad_icon):
+def test_normalize_tool_icon_rejects_unsafe_or_invalid(bad_icon: Any) -> None:
     with pytest.raises((ValueError, TypeError)):
-        normalize_tool_icon(bad_icon)
-
-
-async def _empty_follow(**_kw):
-    if False:
-        yield {}
-
-
-def _catalog_stub():
-    return SimpleNamespace(follow=_empty_follow)
-
-
-def _owner_state_stub():
-    store = SimpleNamespace(scan=lambda **_kw: [], read=lambda _k: None)
-    return SimpleNamespace(open=lambda _ctx: store, open_scoped=lambda _ctx, _name: store)
+        _ = normalize_tool_icon(bad_icon)
 
 
 @pytest.mark.asyncio
-async def test_tool_catalog_icon_resolution_and_binding_compatibility(tmp_path):
+async def test_tool_catalog_icon_resolution_and_binding_compatibility(tmp_path: Path) -> None:
     """组级图标、单工具覆写、不污染 ToolRef.description，且归档 ToolCall 可投影到前端。"""
     root = CompositionRoot("tool-icons")
     plugin_tasks = PluginTasks()
-    await root.context.provide(TASKS, plugin_tasks)
+    _ = await root.context.provide(TASKS, plugin_tasks)
     bindings = _MemoryBindings()
-    await root.context.provide(BINDINGS, cast(Bindings, bindings))
-    await root.context.provide(CONTENT, SimpleNamespace())
-    await root.context.provide(MESSAGE_CATALOG, _catalog_stub())
-    await root.context.provide(MESSAGE_WRITERS, SimpleNamespace())
-    await root.context.provide(OWNER_STATE, _owner_state_stub())
+    _ = await root.context.provide(BINDINGS, cast(Bindings, bindings))
+    _ = await root.context.provide(CONTENT, _content_stub())
+    _ = await root.context.provide(MESSAGE_CATALOG, _catalog_stub())
+    _ = await root.context.provide(MESSAGE_WRITERS, _writers_stub())
+    _ = await root.context.provide(OWNER_STATE, _owner_state_stub())
 
-    await root.mount(
+    _ = await root.mount(
         tools_apply,
         name="tools",
         inject=(CONTENT, BINDINGS, MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, TASKS),
@@ -130,14 +156,14 @@ async def test_tool_catalog_icon_resolution_and_binding_compatibility(tmp_path):
     read_display = root.context.require(TOOL_DISPLAY)
 
     @asynccontextmanager
-    async def open_target(_state):
-        yield SimpleNamespace(idempotent=True)
+    async def open_target(_state: Mapping[str, object]):
+        yield cast(Any, SimpleNamespace(idempotent=True))
 
-    refs = {}
+    refs: dict[str, ToolRef] = {}
 
-    async def sample_plugin(ctx):
+    async def sample_plugin(ctx: Any) -> None:
         tools = ctx.require(TOOLS)
-        await tools.declare_group(ctx, description="示例插件", icon="pen-tool")
+        _ = await tools.declare_group(ctx, description="示例插件", icon="pen-tool")
         refs["group_default"] = await tools.register(
             ctx,
             name="draw_rect",
@@ -193,7 +219,8 @@ async def test_tool_catalog_icon_resolution_and_binding_compatibility(tmp_path):
             has_more=False,
         )
         rows = message_rows(page, providers=MessageDisplayProviders(tool_display=read_display))
-        part = rows[0]["body"]["parts"][0]
+        body = cast(Mapping[str, Any], rows[0]["body"])
+        part = cast(Mapping[str, Any], cast(list[Any], body["parts"])[0])
         assert part["kind"] == "tool_call"
         assert part["owner"] == "sample_plugin"
         assert part["icon"] == {"kind": "lucide", "name": "layout-template"}
@@ -208,21 +235,21 @@ async def test_tool_catalog_icon_resolution_and_binding_compatibility(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_subagent_runner_forwards_icon_to_delegate_tools(tmp_path):
+async def test_subagent_runner_forwards_icon_to_delegate_tools(tmp_path: Path) -> None:
     """AgentRunner 携带的 SVG icon 经 subagent 注册链透传给 delegate_* 工具。"""
     from plugins.subagent.runners import Runners
 
     root = CompositionRoot("subagent-runner-icon")
     plugin_tasks = PluginTasks()
-    await root.context.provide(TASKS, plugin_tasks)
+    _ = await root.context.provide(TASKS, plugin_tasks)
     bindings = _MemoryBindings()
-    await root.context.provide(BINDINGS, cast(Bindings, bindings))
-    await root.context.provide(CONTENT, SimpleNamespace())
-    await root.context.provide(MESSAGE_CATALOG, _catalog_stub())
-    await root.context.provide(MESSAGE_WRITERS, SimpleNamespace())
-    await root.context.provide(OWNER_STATE, _owner_state_stub())
+    _ = await root.context.provide(BINDINGS, cast(Bindings, bindings))
+    _ = await root.context.provide(CONTENT, _content_stub())
+    _ = await root.context.provide(MESSAGE_CATALOG, _catalog_stub())
+    _ = await root.context.provide(MESSAGE_WRITERS, _writers_stub())
+    _ = await root.context.provide(OWNER_STATE, _owner_state_stub())
 
-    await root.mount(
+    _ = await root.mount(
         tools_apply,
         name="tools",
         inject=(CONTENT, BINDINGS, MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, TASKS),
@@ -232,20 +259,20 @@ async def test_subagent_runner_forwards_icon_to_delegate_tools(tmp_path):
     read_display = root.context.require(TOOL_DISPLAY)
 
     runners = Runners(root.context, max_active=2, result_chars=4000)
-    await root.context.provide(AGENT_RUNNERS, runners)
+    _ = await root.context.provide(AGENT_RUNNERS, runners)
 
     codex_svg = '<svg viewBox="0 0 24 24"><path d="M12 2.5 20 7v10l-8 4.5L4 17V7Z"/></svg>'
 
-    async def runner_plugin(ctx):
-        async def run(_task, _emit):
+    async def runner_plugin(ctx: Any) -> None:
+        async def run(_task: object, _emit: object) -> AgentResult:
             return AgentResult("completed", "ok")
 
-        await ctx.require(AGENT_RUNNERS).register(
+        _ = await ctx.require(AGENT_RUNNERS).register(
             ctx,
             AgentRunner("codex", "Codex 代理", True, "read-only", run, icon=codex_svg),
         )
 
-    await root.mount(
+    _ = await root.mount(
         runner_plugin,
         name="subagent_codex",
         inject=(AGENT_RUNNERS, TOOLS),
@@ -259,49 +286,47 @@ async def test_subagent_runner_forwards_icon_to_delegate_tools(tmp_path):
         assert display.owner == "subagent_codex"
         assert display.icon is not None
         assert display.icon["kind"] == "svg"
-        assert display.icon["nodes"][0]["tag"] == "path"
+        nodes = cast(tuple[Mapping[str, Any], ...], display.icon["nodes"])
+        assert nodes[0]["tag"] == "path"
     finally:
         await plugin_tasks.close()
         await root.dispose()
 
 
 @pytest.mark.asyncio
-async def test_userinformation_registers_static_group_icon_and_tool_icon_slot(tmp_path):
+async def test_userinformation_registers_static_group_icon_and_tool_icon_slot(tmp_path: Path) -> None:
     """userinformation 同时声明后端组级图标与前端 tool.icon 动态槽位。"""
-    from pathlib import Path
-    import shutil
-
     root = CompositionRoot("userinfo-icon")
     plugin_tasks = PluginTasks()
-    await root.context.provide(TASKS, plugin_tasks)
+    _ = await root.context.provide(TASKS, plugin_tasks)
     bindings = _MemoryBindings()
-    await root.context.provide(BINDINGS, cast(Bindings, bindings))
-    await root.context.provide(CONTENT, SimpleNamespace())
-    await root.context.provide(MESSAGE_CATALOG, _catalog_stub())
-    await root.context.provide(MESSAGE_WRITERS, SimpleNamespace())
-    await root.context.provide(OWNER_STATE, _owner_state_stub())
+    _ = await root.context.provide(BINDINGS, cast(Bindings, bindings))
+    _ = await root.context.provide(CONTENT, _content_stub())
+    _ = await root.context.provide(MESSAGE_CATALOG, _catalog_stub())
+    _ = await root.context.provide(MESSAGE_WRITERS, _writers_stub())
+    _ = await root.context.provide(OWNER_STATE, _owner_state_stub())
 
-    await root.mount(
+    _ = await root.mount(
         tools_apply,
         name="tools",
         inject=(CONTENT, BINDINGS, MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, TASKS),
         runtime=_runtime(tmp_path, "tools"),
     )
 
-    async def ui_apply(ctx):
+    async def ui_apply(ctx: Any) -> None:
         slots = PluginUiSlots(ctx)
-        await ctx.provide(UI_SLOTS, slots)
-        await ctx.provide(PLUGIN_UI, LivePluginUiProvider(ctx, slots))
+        _ = await ctx.provide(UI_SLOTS, slots)
+        _ = await ctx.provide(PLUGIN_UI, LivePluginUiProvider(ctx, slots))
 
-    await root.mount(ui_apply, name="ui", runtime=_runtime(tmp_path, "ui"))
+    _ = await root.mount(ui_apply, name="ui", runtime=_runtime(tmp_path, "ui"))
 
     plugin_dir = Path(__file__).resolve().parents[1] / "plugins" / "userinformation"
     ui_dir = tmp_path / "userinformation"
     ui_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(plugin_dir / "plugin_ui.js", ui_dir / "plugin_ui.js")
+    _ = shutil.copy2(plugin_dir / "plugin_ui.js", ui_dir / "plugin_ui.js")
     rt = PluginRuntime("userinformation", "userinformation:1", ui_dir, tmp_path / "data", tmp_path / "ws", {})
 
-    await root.mount(userinfo_apply, name="userinformation", inject=(TOOLS,), runtime=rt)
+    _ = await root.mount(userinfo_apply, name="userinformation", inject=(TOOLS,), runtime=rt)
     try:
         catalog = root.context.require(TOOLS)
         all_tools = root.context.require(ALL_TOOLS)()
@@ -311,7 +336,8 @@ async def test_userinformation_registers_static_group_icon_and_tool_icon_slot(tm
         assert display.icon == {"kind": "lucide", "name": "user-round-search"}
 
         ui_catalog = await cast(LivePluginUiProvider, root.context.require(PLUGIN_UI)).catalog()
-        items = {item["id"]: item for item in ui_catalog["items"]}
+        raw_items = cast(list[Mapping[str, Any]], ui_catalog["items"])
+        items = {str(item["id"]): item for item in raw_items}
         assert items["userinformation"]["slots"] == ["tool.icon"]
     finally:
         await cast(LivePluginUiProvider, root.context.require(PLUGIN_UI)).aclose()
