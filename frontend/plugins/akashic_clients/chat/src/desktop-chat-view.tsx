@@ -1,4 +1,4 @@
-import { userInput, type TimelineMessage, type TimelineReply, timelineReplyGroups, timelineText, timelineToolResults, timelineInputStarts, timelineSourceKey, timelineSourceRefreshTokens } from "./message-timeline";
+import { userInput, type ReplyActivity, type TimelineMessage, type TimelineReply, timelineReplyGroups, timelineText, timelineToolResults, timelineInputStarts, timelineSourceKey, timelineSourceRefreshTokens } from "./message-timeline";
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useStickToBottomContext } from "use-stick-to-bottom";
 import { MaterialButton } from "../../../../../packages/akashic-theme/src/material-react";
@@ -61,10 +61,14 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
     if (session !== controller.activeSessionId) return;
     composerApi.current?.insertDraft(`> ${source.replace(/\s+/g, " ")}\n\n${text}`, { append: true });
   }), [controller.activeSessionId]);
-  const replyGroups = useMemo(() => timelineReplyGroups(controller.timelineMessages, controller.replyActivities), [controller.timelineMessages, controller.replyActivities]);
-  const inputStarts = useMemo(() => timelineInputStarts(controller.timelineMessages), [controller.timelineMessages]);
-  const refreshTokens = timelineSourceRefreshTokens(controller.timelineMessages, controller.replyActivities, controller.timelineRefresh);
-  const toolResults = useMemo(() => timelineToolResults(controller.timelineMessages), [controller.timelineMessages]);
+  // 查找跳到很早的位置时显示那一段窗口：实时尾部（进行中的回复、本地消息）留在时间线里，回到最新时再出现。
+  const historyWindow = controller.historyWindow.window;
+  const shownTimeline = historyWindow?.items ?? controller.timelineMessages;
+  const shownActivities = historyWindow ? NO_ACTIVITIES : controller.replyActivities;
+  const replyGroups = useMemo(() => timelineReplyGroups(shownTimeline, shownActivities), [shownTimeline, shownActivities]);
+  const inputStarts = useMemo(() => timelineInputStarts(shownTimeline), [shownTimeline]);
+  const refreshTokens = timelineSourceRefreshTokens(shownTimeline, shownActivities, controller.timelineRefresh);
+  const toolResults = useMemo(() => timelineToolResults(shownTimeline), [shownTimeline]);
   const liveToolToken = useLiveToolResultToken(controller.activeSessionId, toolResults, controller.historyLoading);
   const {
     surface, sidebarSessions, activeSessionId, pendingSessionId, chatReady, messages, timelineMessages, replyActivities, replyAvailable, status,
@@ -102,8 +106,9 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
     const timer = window.setTimeout(returnSteers, STEER_SETTLE_MS);
     return () => window.clearTimeout(timer);
   }, [generating, steers.length, returnSteers]);
-  const pagedTimeline = useMemo(() => withoutLeadingOrphanResults(timelineMessages, historyHasMore),
-    [historyHasMore, timelineMessages]);
+  const shownHasMore = historyWindow ? historyWindow.olderSeq !== null : historyHasMore;
+  const pagedTimeline = useMemo(() => withoutLeadingOrphanResults(shownTimeline, shownHasMore),
+    [shownHasMore, shownTimeline]);
   // 已落定的回复原文，按时间顺序：时间线在前，本地仍在补齐的消息在后（与渲染顺序一致）。
   const replyTexts = useMemo(() => [
     ...timelineMessages.filter((message) => message.body.kind === "output").map(timelineText),
@@ -125,6 +130,8 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
   const composerWrapRef = useRef<HTMLDivElement>(null);
   useComposerClearance(composerWrapRef);
   const find = useThreadFind();
+  const findHost = useMemo(() => ({ sessionId: activeSessionId, reveal: controller.historyWindow.reveal }),
+    [activeSessionId, controller.historyWindow.reveal]);
   const committed = new Set(timelineMessages.map((message) => message.id));
   const hasMessages = messages.length + timelineMessages.length + replyActivities.length > 0;
   // 读取已有会话期间就按会话版式摆放：输入区停在底部，消息到达时不从屏幕中央跳下来。
@@ -193,14 +200,17 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
               : !hasMessages ? <DesktopEmptyState shellStatus={shellStatus} sendProblem={sendProblem} /> : (
               <MessageRendererErrorBoundary>
                 <DesktopHistoryLoader
-                  firstMessageId={timelineMessages[0]?.id ?? messages[0]?.id}
-                  hasMore={historyHasMore}
-                  loading={historyLoadingOlder}
-                  onLoadOlder={() => loadOlderMessages().catch(reportError)}
+                  firstMessageId={shownTimeline[0]?.id ?? messages[0]?.id}
+                  hasMore={shownHasMore}
+                  loading={historyWindow ? historyWindow.loadingOlder : historyLoadingOlder}
+                  onLoadOlder={() => (historyWindow ? controller.historyWindow.loadOlder() : loadOlderMessages()).catch(reportError)}
                 />
-                <DesktopTimelineMessages messages={pagedTimeline} activities={replyActivities} replySynced={replyAvailable !== null} refresh={controller.timelineRefresh} status={status}
+                <DesktopTimelineMessages messages={pagedTimeline} activities={shownActivities} replySynced={replyAvailable !== null} refresh={controller.timelineRefresh} status={status}
                   messageElementsRef={messageElementsRef} copiedMessageId={copiedMessageId}
                   onReply={replyTo} onEditInput={editInput} onRetry={retryTurn} onAbandon={abandonTurn} onCopied={handleCopiedMessage} onError={reportError} />
+                {historyWindow ? <HistoryWindowEnd loading={historyWindow.loadingNewer}
+                  onLoadNewer={() => controller.historyWindow.loadNewer().catch(reportError)}
+                  onLatest={controller.historyWindow.close} /> : <>
                 <DesktopConversationMessages
                   messages={messages} status={status}
                   carryDayKey={timelineMessages.length
@@ -211,23 +221,23 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
                   onCopied={handleCopiedMessage} onError={reportError}
                 />
                 {replyActivities.map((activity) => <ReplyActivityView key={activity.handle}
-                  activity={activity} committed={committed} inputStarts={inputStarts} refreshToken={refreshTokens.get(timelineSourceKey(activity))} processMessages={replyGroups.active.get(activity.handle)} toolResults={toolResults} onError={reportError} onStop={stopTurn} />)}
+                  activity={activity} committed={committed} inputStarts={inputStarts} refreshToken={refreshTokens.get(timelineSourceKey(activity))} processMessages={replyGroups.active.get(activity.handle)} toolResults={toolResults} onError={reportError} onStop={stopTurn} />)}</>}
               </MessageRendererErrorBoundary>
             )}
-            {status === "submitted" && !replyActivities.some((activity) => activity.active) ? <ThinkingPlaceholder /> : null}
+            {!historyWindow && status === "submitted" && !replyActivities.some((activity) => activity.active) ? <ThinkingPlaceholder /> : null}
           </ConversationContent>
           <DesktopAutoScroll sessionId={activeSessionId} messages={messages} status={status} streamStore={streamStore}
             timelineMessages={timelineMessages} replyActivities={replyActivities} />
-          {hasMessages ? <ThreadFind {...find} /> : null}
+          {hasMessages ? <ThreadFind {...find} host={findHost} revision={`${timelineMessages.length}:${timelineMessages.at(-1)?.id ?? ""}`} /> : null}
           {hasMessages ? <MessageSelectionLayer sessionId={activeSessionId} /> : null}
           <NarrowReadingChrome />
           <ComposerPageKeys />
           <ToggleKeepsPlace />
-          <ReadingReturnButton generating={isGeneratingChatStatus(status)} />
+          {historyWindow ? null : <ReadingReturnButton generating={isGeneratingChatStatus(status)} />}
           {hasMessages ? <SelectionQuote onQuote={editInput} /> : null}
           {hasMessages ? <MediaGalleryViewer /> : null}
           <SessionReadingMemory sessionId={activeSessionId}
-            ready={!historyLoading && timelineMessages.at(-1)?.session_id === activeSessionId
+            ready={!historyLoading && !historyWindow && timelineMessages.at(-1)?.session_id === activeSessionId
               ? `${timelineMessages.length}:${timelineMessages[0]?.id ?? ""}` : ""} />
           <TurnRail revision={`${activeSessionId}:${timelineMessages.length}:${messages.length}:${timelineMessages[0]?.id ?? ""}`} />
         </Conversation>
@@ -371,6 +381,39 @@ function DesktopHistoryLoader({
     {loading
       ? <span role="status"><i className="desktop-history-loader__spinner" aria-hidden="true" />正在加载更早消息</span>
       : <button type="button" onClick={() => void load()}>↑ 更早的消息</button>}
+  </div>;
+}
+
+const NO_ACTIVITIES: ReplyActivity[] = [];
+
+// 查找窗口的下沿：滚到附近自动往新的方向读，读到与最新消息相接时窗口并回时间线；也可以直接回到最新。
+function HistoryWindowEnd({ loading, onLoadNewer, onLatest }: {
+  loading: boolean;
+  onLoadNewer: () => Promise<void>;
+  onLatest: () => void;
+}) {
+  const { scrollRef, scrollToBottom } = useStickToBottomContext();
+  const rowRef = useRef<HTMLDivElement>(null);
+  const latest = useRef(onLoadNewer);
+  latest.current = onLoadNewer;
+  useEffect(() => {
+    const row = rowRef.current;
+    const root = scrollRef.current;
+    if (!row || !root || typeof IntersectionObserver === "undefined") return;
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) void latest.current();
+    }, { root, rootMargin: "0px 0px 240px 0px" });
+    observer.observe(row);
+    return () => observer.disconnect();
+  }, [scrollRef]);
+  return <div ref={rowRef} className="desktop-history-loader history-window-end" data-loading={loading || undefined}>
+    {loading
+      ? <span role="status"><i className="desktop-history-loader__spinner" aria-hidden="true" />正在加载之后的消息</span>
+      : <button type="button" onClick={() => void latest.current()}>↓ 之后的消息</button>}
+    <button type="button" className="history-window-end__latest" onClick={() => {
+      onLatest();
+      requestAnimationFrame(() => void scrollToBottom("instant"));
+    }}>回到最新</button>
   </div>;
 }
 

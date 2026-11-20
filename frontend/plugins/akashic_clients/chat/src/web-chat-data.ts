@@ -244,6 +244,48 @@ export function chatHistoryPage(payload: unknown, endpoint: string): ChatHistory
     beforeSeq: body.before_seq as number | null, deleted: body.deleted === true };
 }
 
+/** 往新的方向读的一页（查找跳到较早位置后向下补齐）：行在 (after_seq, through_seq] 内严格递增。 */
+export function chatNewerPage(payload: unknown, endpoint: string): { items: TimelineMessage[]; hasMore: boolean } {
+  const body = recordValue(payload);
+  if (!body || body.version !== 2 || typeof body.has_more !== "boolean" || !Number.isSafeInteger(body.after_seq)
+    || !Number.isSafeInteger(body.through_seq)) throw new Error(`${endpoint} 返回了无效历史页`);
+  const items = responseItems(payload, endpoint).map(readTimelineMessage);
+  if (items.some((item, index) => item.seq <= (index ? items[index - 1].seq : Number(body.after_seq))
+    || item.seq > Number(body.through_seq)) || (body.has_more && !items.length)) {
+    throw new Error(`${endpoint} 返回了不一致的历史游标`);
+  }
+  return { items, hasMore: body.has_more };
+}
+
+export interface ChatSearchHit {
+  messageId: string;
+  seq: number;
+  kind: string;
+  timestamp: string;
+  count: number;
+  before: string;
+  match: string;
+  after: string;
+}
+
+export interface ChatSearchResult { hits: ChatSearchHit[]; total: number; capped: boolean }
+
+/** 会话内查找结果：按 seq 升序的命中消息与第一处摘要。 */
+export function chatSearchResult(payload: unknown, endpoint: string): ChatSearchResult {
+  const body = recordValue(payload);
+  if (!body || body.version !== 1 || !Number.isSafeInteger(body.total) || typeof body.capped !== "boolean") {
+    throw new Error(`${endpoint} 返回了无效查找结果`);
+  }
+  const hits = responseItems(payload, endpoint).map((item): ChatSearchHit => {
+    if (typeof item.message_id !== "string" || !Number.isSafeInteger(item.seq) || typeof item.kind !== "string"
+      || typeof item.timestamp !== "string" || !Number.isSafeInteger(item.count) || typeof item.before !== "string"
+      || typeof item.match !== "string" || typeof item.after !== "string") throw new Error(`${endpoint} 返回了无效查找结果`);
+    return { messageId: item.message_id, seq: Number(item.seq), kind: item.kind, timestamp: item.timestamp,
+      count: Number(item.count), before: item.before, match: item.match, after: item.after };
+  });
+  return { hits, total: Number(body.total), capped: body.capped };
+}
+
 export function webShellState(payload: unknown): WebShellState {
   const body = recordValue(payload);
   if (!body
