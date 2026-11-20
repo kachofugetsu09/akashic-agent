@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from agent.plugin_composition import Context
 from plugins.ledger.contract import ContentPart, json_value
 from plugins.tools.contract import TOOLS, CallSource, Result
+from plugins.ui.contract import UI_SLOTS, PluginUiDefinition, PluginUiRpcInvalidRequest
 from .contract import USER_INFORMATION, USER_INFORMATION_READ, InformationProvider
 
 logger = logging.getLogger(__name__)
@@ -116,7 +117,7 @@ async def apply(ctx: Context) -> None:
     await ctx.provide(USER_INFORMATION, providers)
     await ctx.provide(USER_INFORMATION_READ, providers)
     catalog = ctx.require(TOOLS)
-    await catalog.declare_group(ctx, description=desc)
+    await catalog.declare_group(ctx, description=desc, icon="user-round-search")
     for tool_name, listing, description in (
         ("user_information_list", True, "发现当前用户信息来源、可用查询及参数 schema；不读取完整隐私数据"),
         ("user_information_query", False, "按 list 返回的 provider、query 查询用户信息，该 query 的参数放在 params。结果是带时间的观测，不保证实时；缺失不能解释为清醒或离线"),
@@ -126,3 +127,15 @@ async def apply(ctx: Context) -> None:
             yield InformationTool(providers, listing)
         await catalog.register(ctx, name=tool_name, description=description,
             parameters=(Empty if listing else Query).model_json_schema(), open=open_tool, parallel=True)
+
+    async def plugin_ui(child: Context) -> None:
+        async def query(method: str, payload: dict[str, object], *,
+                        session_id: str | None, turn_id: str | None) -> dict[str, object]:
+            raise PluginUiRpcInvalidRequest("用户信息图标扩展不提供查询")
+
+        _ = await child.require(UI_SLOTS).register_plugin_ui(
+            child, PluginUiDefinition(module="plugin_ui.js", slots=("tool.icon",)),
+            query=query,
+        )
+
+    _ = await ctx.inject((UI_SLOTS,), plugin_ui, name="plugin-ui")

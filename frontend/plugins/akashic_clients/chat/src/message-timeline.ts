@@ -1,3 +1,4 @@
+import type { ToolIconSpec } from "@akashic/chat-ui-v1";
 import { toolDataText } from "./message-rendering-policy";
 import { markdownPlainText } from "./static-markdown";
 
@@ -25,7 +26,7 @@ export interface CompactionBoundaryValue {
 export type TimelinePart =
   | { kind: "text" | "artifact_ref" | "reply_ref"; value: string }
   | { kind: "session.reference"; value: { sessions: TimelineSessionReference[] } }
-  | { kind: "tool_call"; binding_id: string; name: string; owner?: string; arguments: Record<string, unknown> }
+  | { kind: "tool_call"; binding_id: string; name: string; owner?: string; icon?: ToolIconSpec; arguments: Record<string, unknown> }
   | { kind: "context.notice"; value: { text: string } }
   | { kind: "compaction.boundary"; value: CompactionBoundaryValue }
   | { kind: "history.provenance" | "history.transcript" | "history.record" | "history.turn_input"; archive: unknown }
@@ -322,6 +323,62 @@ function validAttachment(value: unknown): boolean {
   return item !== null && nonempty(item.artifact_id) && (item.kind === "file" || item.kind === "image")
     && nullableText(item.filename) && nullableText(item.media_type) && integer(item.size_bytes)
     && typeof item.sha256 === "string" && /^[0-9a-f]{64}$/u.test(item.sha256);
+}
+const ICON_NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
+const ALLOWED_SVG_TAGS = new Set(["path", "circle", "rect", "line", "polyline", "polygon", "ellipse"]);
+const ALLOWED_SVG_ATTRS = new Set([
+  "d", "cx", "cy", "r", "rx", "ry", "x", "y", "x1", "y1", "x2", "y2",
+  "width", "height", "points", "fill", "stroke",
+  "fillRule", "clipRule", "strokeLinecap", "strokeLinejoin", "strokeWidth",
+]);
+
+/** 宽容解析工具图标：无效或未来未知字段返回 undefined，绝不阻断历史消息或工具流渲染。 */
+export function readToolIcon(value: unknown): ToolIconSpec | undefined {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed && trimmed.length <= 64 && ICON_NAME_RE.test(trimmed)
+      ? { kind: "lucide", name: trimmed }
+      : undefined;
+  }
+  const icon = object(value);
+  if (!icon) return undefined;
+  if (icon.kind === "lucide") {
+    return nonempty(icon.name) && icon.name.length <= 64 && ICON_NAME_RE.test(icon.name)
+      ? { kind: "lucide", name: icon.name }
+      : undefined;
+  }
+  if (icon.kind === "svg") {
+    if (!nonempty(icon.viewBox)) return undefined;
+    const vb = icon.viewBox.replace(/,/gu, " ").trim().split(/\s+/u).map(Number);
+    if (vb.length !== 4 || vb.some((n) => !Number.isFinite(n)) || vb[2] <= 0 || vb[3] <= 0) return undefined;
+    if (!Array.isArray(icon.nodes) || icon.nodes.length === 0 || icon.nodes.length > 32) return undefined;
+    const nodes: { tag: string; attrs: Record<string, string> }[] = [];
+    for (const item of icon.nodes) {
+      const node = object(item);
+      const rawAttrs = object(node?.attrs);
+      if (!node || !nonempty(node.tag) || !ALLOWED_SVG_TAGS.has(node.tag) || !rawAttrs) return undefined;
+      const attrs: Record<string, string> = {};
+      for (const [key, rawVal] of Object.entries(rawAttrs)) {
+        if (!ALLOWED_SVG_ATTRS.has(key) || typeof rawVal !== "string") return undefined;
+        const cleaned = rawVal.trim();
+        if (!cleaned || cleaned.length > 2048) return undefined;
+        if (key === "fill" || key === "stroke") {
+          const lower = cleaned.toLowerCase();
+          if (lower !== "none" && lower !== "currentcolor") return undefined;
+          attrs[key] = lower === "none" ? "none" : "currentColor";
+        } else if (key === "strokeWidth") {
+          const w = Number(cleaned);
+          if (!Number.isFinite(w) || w < 0.25 || w > 4) return undefined;
+          attrs[key] = cleaned;
+        } else {
+          attrs[key] = cleaned;
+        }
+      }
+      nodes.push({ tag: node.tag, attrs });
+    }
+    return { kind: "svg", viewBox: icon.viewBox, nodes };
+  }
+  return undefined;
 }
 function object(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : null;

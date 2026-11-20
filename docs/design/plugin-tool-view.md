@@ -21,9 +21,11 @@ epoch 或 compaction 撤权状态。知道已获授工具的名称和 schema 时
 
 ## 2. 引用、view 与持久 binding
 
-- `ToolRef` 直接指向一次真实注册，只携带名称和冻结的公开描述。工具池保存实际 open、capture
-  以及 exact ref 对应的 prepare/authorize，在 view、binding 和贡献注册边界核对引用仍属于当前
-  Root 的同一个注册。工具卸载后，同名新注册不会继承旧贡献。
+- `ToolRef` 直接指向一次真实注册，只携带名称和冻结的公开描述。工具池保存实际 open、capture、
+  图标展示元数据以及 exact ref 对应的 prepare/authorize，在 view、binding 和贡献注册边界核对引用仍属于当前
+  Root 的同一个注册。工具卸载后，同名新注册不会继承旧贡献。`icon` 仅保存在注册展示元数据上
+  （支持 `declare_group(icon=...)` 组级默认与 `register(icon=...)` 单工具覆写），不写入
+  `ToolRef.description` 或 `Bindings` 归档比较字段，以保证历史消息与模型 schema 的向后兼容。
 - `ToolView` 只是一组引用。工具池用引用描述中的实际 provider plugin ID 分组，并保存 provider
   声明的组级 `always_on` 与用途。内置 provider 复用模块声明的 `desc`；未声明用途时明确显示
   “未声明用途”，不从工具名称猜测插件用途。

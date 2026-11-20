@@ -310,4 +310,5 @@ async def apply(ctx: Context) -> None:
         open=open_tool,
         idempotent=False,
         parallel=False,
+        icon="code-2",
     )

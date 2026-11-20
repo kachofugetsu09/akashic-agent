@@ -96,7 +96,7 @@ async def apply(ctx: Context) -> None:
     store = GoalStore(ctx)
     _ = await ctx.provide(GOAL_STATUS, store)
 
-    _ = await ctx.require(TOOLS).declare_group(ctx, description=desc)
+    _ = await ctx.require(TOOLS).declare_group(ctx, description=desc, icon="target")
 
     @asynccontextmanager
     async def open_get(_state: Mapping[str, object]) -> AsyncGenerator[ProviderBoundTool, None]:

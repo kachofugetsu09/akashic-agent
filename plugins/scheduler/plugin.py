@@ -98,7 +98,7 @@ async def apply(ctx: Context) -> None:
     _ = await ctx.provide(SCHEDULER_INSPECTION, SchedulerInspectionProvider(store))
     watcher: asyncio.Task[None] | None = None
     catalog = ctx.require(TOOLS)
-    _ = await catalog.declare_group(ctx, description=desc)
+    _ = await catalog.declare_group(ctx, description=desc, icon="clock")
 
     async def target(source: CallSource | None) -> tuple[str, str, str] | None:
         """任务属于发起调用的会话；投递渠道沿用该会话最近一条输入的来源，定时任务里沿用本次触发的目标。"""

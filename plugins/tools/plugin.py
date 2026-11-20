@@ -40,10 +40,12 @@ from plugins.tools.contract import (
     TOOL_CLEANUP as TOOL_CLEANUP,
     TOOL_DISPLAY as TOOL_DISPLAY,
     ToolDisplay,
+    ToolIcon,
     TOOLS as TOOLS,
     ToolRef as ToolRef,
     ToolRelease,
     ToolView as ToolView,
+    normalize_tool_icon,
     tool_key,
 )
 
@@ -120,6 +122,7 @@ class _Registration:
     authorization: _Authorization | None = None
     parallel: bool = False
     release: ToolRelease | None = None
+    icon: Mapping[str, object] | None = None
 
 
 # 旧 binding 可能带已退役的 "authorize" 字段；限制改为执行时读取当前注册，这里只忽略它。
@@ -201,15 +204,23 @@ class ToolCatalog:
         self._ctx = ctx
         self._task_admission = task_admission
         self._tools: dict[str, _Registration] = {}
-        self._groups: dict[str, tuple[bool, str]] = {}
+        self._groups: dict[str, tuple[bool, str, Mapping[str, object] | None]] = {}
 
-    async def declare_group(self, ctx: Context, *, always_on: bool = False, description: str = "未声明用途") -> Effect:
+    async def declare_group(
+        self,
+        ctx: Context,
+        *,
+        always_on: bool = False,
+        description: str = "未声明用途",
+        icon: ToolIcon | None = None,
+    ) -> Effect:
         """由真实插件 owner 在注册工具前声明唯一组级展示事实。"""
         self._check_context(ctx)
         if type(always_on) is not bool:
             raise TypeError("工具组 always_on 必须是 bool")
         if not isinstance(description, str) or not description.strip():
             raise ValueError("工具组用途不能为空")
+        normalized_icon = normalize_tool_icon(icon)
         owner = ctx.runtime.plugin_id
         if any(item.context.runtime.plugin_id == owner for item in self._tools.values()):
             raise ValueError("工具组必须在工具注册前声明")
@@ -217,7 +228,7 @@ class ToolCatalog:
         def setup() -> Callable[[], None]:
             if owner in self._groups:
                 raise ValueError(f"工具组重复声明: {owner}")
-            self._groups[owner] = (always_on, description)
+            self._groups[owner] = (always_on, description, normalized_icon)
 
             def cleanup() -> None:
                 _ = self._groups.pop(owner)
@@ -240,6 +251,7 @@ class ToolCatalog:
         parallel: bool = False,
         exclusive_batch: bool = False,
         release: ToolRelease | None = None,
+        icon: ToolIcon | None = None,
     ) -> ToolRef:
         """目标自行校验参数 schema；注册表固定发现描述与真实资源入口。"""
         self._check_context(ctx)
@@ -256,6 +268,7 @@ class ToolCatalog:
             raise TypeError("工具 capture 必须是可调用对象")
         if release is not None and not callable(release):
             raise TypeError("工具 release 必须是可调用对象")
+        normalized_icon = normalize_tool_icon(icon)
         descriptor = cast(
             Mapping[str, object],
             freeze_json(
@@ -272,7 +285,15 @@ class ToolCatalog:
         )
 
         reference = ToolRef(name, descriptor)
-        registration = _Registration(reference, ctx, open, capture, parallel=parallel, release=release)
+        registration = _Registration(
+            reference,
+            ctx,
+            open,
+            capture,
+            parallel=parallel,
+            release=release,
+            icon=normalized_icon,
+        )
 
         def setup() -> Callable[[], None]:
             if name in self._tools:
@@ -404,11 +425,27 @@ class ToolCatalog:
 
     def group_always_on(self, ref: ToolRef) -> bool:
         registration = self._registration(ref)
-        return self._groups.get(registration.context.runtime.plugin_id, (False, "未声明用途"))[0]
+        return self._groups.get(registration.context.runtime.plugin_id, (False, "未声明用途", None))[0]
 
     def group_description(self, ref: ToolRef) -> str:
         registration = self._registration(ref)
-        return self._groups.get(registration.context.runtime.plugin_id, (False, "未声明用途"))[1]
+        return self._groups.get(registration.context.runtime.plugin_id, (False, "未声明用途", None))[1]
+
+    def display_icon(self, name: str, owner: str | None) -> Mapping[str, object] | None:
+        """只读当前活跃工具或分组声明的图标；不打开工具，不改写归档描述。"""
+        registration = self._tools.get(name)
+        if registration is not None and _owners_active(registration):
+            reg_owner = registration.context.runtime.plugin_id
+            if owner is None or reg_owner == owner:
+                if registration.icon is not None:
+                    return registration.icon
+                group = self._groups.get(reg_owner)
+                return None if group is None else group[2]
+        if owner is not None:
+            group = self._groups.get(owner)
+            if group is not None:
+                return group[2]
+        return None
 
     async def drain_calls(self, calls: tuple[CallRef, ...]) -> None:
         """清理 owner 等待原效果退出；终态结果不等于资源已经释放。"""
@@ -601,8 +638,9 @@ async def apply(ctx: Context) -> None:
     _ = await ctx.provide(ALL_TOOLS, catalog._all_view)
 
     def read_display(binding_id: str) -> ToolDisplay:
-        """只读原 binding 的名称与 owner；展示消费者不能打开或执行工具。"""
-        return display_tool(ctx.require(BINDINGS).describe(binding_id, TOOLS))
+        """只读原 binding 的名称与 owner，并附带当前注册的展示图标；展示消费者不能打开或执行工具。"""
+        base = display_tool(ctx.require(BINDINGS).describe(binding_id, TOOLS))
+        return ToolDisplay(base.name, base.owner, catalog.display_icon(base.name, base.owner))
 
     _ = await ctx.provide(TOOL_DISPLAY, read_display)
     watcher: asyncio.Task[None] | None = None

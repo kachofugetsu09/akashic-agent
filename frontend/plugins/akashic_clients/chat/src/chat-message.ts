@@ -1,3 +1,4 @@
+import type { ToolIconSpec } from "@akashic/chat-ui-v1";
 import type { FileUIPart } from "ai";
 import type { SentAttachmentItem } from "./attachment-card";
 
@@ -14,6 +15,8 @@ export interface ToolBlock {
   name: string;
   /** 注册该工具的插件；只有它能接手结果展示，归档里的调用没有。 */
   owner?: string;
+  /** 后端注册声明的展示图标（语义名或受限单色矢量）。 */
+  icon?: ToolIconSpec;
   status: "input-available" | "output-available" | "output-error" | "output-unknown";
   input: unknown;
   output: unknown;

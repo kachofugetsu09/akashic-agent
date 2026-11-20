@@ -7,6 +7,7 @@ export type PluginUiSlotName =
   | "message.actions"
   | "message.meta"
   | "drawer.panel"
+  | "tool.icon"
   | "tool.result"
   | "tool.summary"
   | "message.attachment"
@@ -22,9 +23,9 @@ export type PluginUiSlotName =
   | "navigation.destinations"
   | "sidebar.panels";
 
-/** 宿主挂载插件元素的插槽；composer.suggest、tool.summary、navigation.groups、navigation.destinations 与 sidebar.panels 是数据源，由宿主外框挂载。 */
+/** 宿主挂载插件元素的插槽；composer.suggest、tool.icon、tool.summary、navigation.groups、navigation.destinations 与 sidebar.panels 是数据源，由宿主外框挂载。 */
 export type PluginUiMountSlotName = Exclude<PluginUiSlotName,
-  "composer.suggest" | "tool.summary" | "navigation.groups" | "navigation.destinations" | "sidebar.panels">;
+  "composer.suggest" | "tool.icon" | "tool.summary" | "navigation.groups" | "navigation.destinations" | "sidebar.panels">;
 
 export type WorkbenchIntentStatus = "handled" | "unhandled" | "invalid" | "failed";
 
@@ -421,6 +422,21 @@ export interface ToolSummaryProvider {
   describe(block: ToolSummaryFacts): ToolTaskSummary | null;
 }
 
+/** 规范化的工具图标声明：Lucide 语义名或受限单色矢量几何。 */
+export type ToolIconSpec =
+  | { kind: "lucide"; name: string }
+  | { kind: "svg"; viewBox: string; nodes: readonly { tag: string; attrs: Record<string, string> }[] };
+
+export interface ToolIconFacts {
+  name: string;
+  arguments: unknown;
+}
+
+/** 工具图标数据源：按调用参数同步返回图标名或矢量描述；返回 null/undefined 时退回后端静态声明。须是同步纯函数。 */
+export interface ToolIconProvider {
+  resolve(block: ToolIconFacts): string | ToolIconSpec | null | undefined;
+}
+
 /** message.attachment 插槽的 block：附件的不可变描述，以及它所在消息的出处。 */
 export interface MessageAttachmentFacts {
   artifact_id: string;
@@ -476,6 +492,7 @@ export interface ComposerSuggestProvider {
 export interface PluginUiDefinition {
   slots: { [S in PluginUiMountSlotName]?: PluginUiRenderer<S> } & {
     "composer.suggest"?: ComposerSuggestProvider;
+    "tool.icon"?: ToolIconProvider;
     "tool.summary"?: ToolSummaryProvider;
     "navigation.groups"?: NavigationGroupsProvider;
     "navigation.destinations"?: NavigationDestinationsProvider;

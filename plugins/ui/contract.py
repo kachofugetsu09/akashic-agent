@@ -131,6 +131,7 @@ PluginUiSlot = Literal[
     "message.actions",
     "message.meta",
     "drawer.panel",
+    "tool.icon",
     "tool.result",
     "tool.summary",
     "message.attachment",
@@ -154,6 +155,7 @@ PLUGIN_UI_SLOTS = frozenset(
         "message.actions",
         "message.meta",
         "drawer.panel",
+        "tool.icon",
         "tool.result",
         "tool.summary",
         "message.attachment",
@@ -478,7 +480,7 @@ def _message_row(
 
 
 def _tool_call(part: ToolCall, *, providers: MessageDisplayProviders) -> dict[str, object]:
-    """只通过 tools 的展示回调读取名称与 owner，不解析或重开工具；owner 决定谁能渲染结果。"""
+    """只通过 tools 的展示回调读取名称、owner 与图标，不解析或重开工具；owner 决定谁能渲染结果。"""
     reader = providers.tool_display
     if reader is None:
         return {
@@ -492,6 +494,7 @@ def _tool_call(part: ToolCall, *, providers: MessageDisplayProviders) -> dict[st
         "binding_id": part.binding_id,
         "name": display.name,
         **({"owner": display.owner} if display.owner is not None else {}),
+        **({"icon": json_value(display.icon)} if display.icon is not None else {}),
         "arguments": json_value(part.arguments),
     }
 

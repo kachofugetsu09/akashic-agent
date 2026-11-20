@@ -231,4 +231,11 @@ async def apply(ctx: Context) -> None:
         else "isolated-write" if config.permission_mode == "approve-for-me"
         else "full-access"
     )
-    await service.register(ctx, AgentRunner("codex", desc, True, policy, run))
+    CODEX_ICON = (
+        '<svg viewBox="0 0 24 24">'
+        '<path d="M12 2.5 20 7v10l-8 4.5L4 17V7Z"/>'
+        '<path d="m8.5 9.5 3 2.5-3 2.5"/>'
+        '<path d="M13 14.5h3"/>'
+        "</svg>"
+    )
+    await service.register(ctx, AgentRunner("codex", desc, True, policy, run, icon=CODEX_ICON))

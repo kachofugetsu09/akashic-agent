@@ -512,6 +512,7 @@ async def run(ctx: Context, interest: Interest) -> None:
             parameters=FeedbackArguments.model_json_schema(),
             open=open_feedback,
             idempotent=True,
+            icon="bookmark-plus" if action == "remember" else "bookmark-x",
         )
 
     def capture_recall(options: Mapping[str, object]) -> Mapping[str, object]:
@@ -577,6 +578,7 @@ async def run(ctx: Context, interest: Interest) -> None:
         capture=capture_recall,
         idempotent=True,
         parallel=True,
+        icon="network",
     )
 
     @asynccontextmanager
@@ -592,6 +594,7 @@ async def run(ctx: Context, interest: Interest) -> None:
         open=open_fetch,
         idempotent=True,
         parallel=True,
+        icon="history",
     )
     # 只读账本按声明的 workspace root 解析学习图；不暴露 writer 或任意路径。
 

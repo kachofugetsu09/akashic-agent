@@ -446,6 +446,13 @@ async def register_shell(ctx: Context, config: Config | None = None) -> tuple[To
     return tuple(refs)
 
 
+_SHELL_ICONS = {
+    "shell": "terminal",
+    "write_stdin": "corner-down-left",
+    "task_stop": "square",
+}
+
+
 async def _register(
     ctx: Context,
     name: Literal["shell", "write_stdin", "task_stop"],
@@ -475,4 +482,5 @@ async def _register(
         open=open_tool,
         capture=capture,
         release=owners.release_call,
+        icon=_SHELL_ICONS[name],
     ))

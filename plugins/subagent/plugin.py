@@ -152,7 +152,7 @@ async def apply(ctx: Context) -> None:
     from .runner_ui import register_ui
     await ctx.inject((UI_SLOTS,), lambda child: register_ui(child, runners, jobs), name="runner-ui")
     catalog = ctx.require(TOOLS)
-    _ = await catalog.declare_group(ctx, description=desc)
+    _ = await catalog.declare_group(ctx, description=desc, icon="git-fork")
 
     # 子任务模型：调用参数显式指定 model/connection 时直接核对目录并固定；否则按设置（跟随对话取父调用选择）解析。
     async def child_model(messages: tuple[Message, ...], args: SpawnInput) -> ChatModelSelection | str:
@@ -245,6 +245,7 @@ async def apply(ctx: Context) -> None:
         parameters=SendInput.model_json_schema(),
         open=open_send,
         idempotent=False,
+        icon="send",
     )
     _ = await catalog.register(
         ctx,
@@ -254,6 +255,7 @@ async def apply(ctx: Context) -> None:
         open=open_read,
         idempotent=True,
         parallel=True,
+        icon="eye",
     )
 
     # 子任务沿用 prepare 时冻结的 binding；有分组加载展示时只追加 load_tools 入口，避免全量 schema 超出模型上限。

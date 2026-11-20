@@ -182,7 +182,7 @@ async def register_tools(ctx: Context) -> None:
     worker = DesignWorker(store, ctx.require(DESIGN_LIVE), HeadlessPages(), ctx.runtime.plugin_dir, ctx.runtime.data_dir)
     _ = await ctx.effect(lambda: worker.aclose, label="design-worker")
     catalog = ctx.require(TOOLS)
-    _ = await catalog.declare_group(ctx, description=GROUP)
+    _ = await catalog.declare_group(ctx, description=GROUP, icon="pen-tool")
     specs = (ToolSpec("document", "Open, create or list the design documents of this conversation. "
                       "Every other design tool works on the document you last opened or created here (by default the most recently edited one; "
                       "the first call creates one when the conversation has none).",
@@ -203,4 +203,5 @@ async def register_tools(ctx: Context) -> None:
         yield html
 
     _ = await catalog.register(ctx, name="design_show_html", description=HTML_DESCRIPTION,
-                               parameters=ShowHtml.model_json_schema(), open=open_html, parallel=True)
+                               parameters=ShowHtml.model_json_schema(), open=open_html, parallel=True,
+                               icon="layout-template")

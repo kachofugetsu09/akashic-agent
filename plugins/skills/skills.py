@@ -262,6 +262,6 @@ async def register_skills(ctx: Context) -> SkillInspectionProvider:
     _ = cast(ToolRef, await ctx.require(TOOLS).register(
         ctx, name="load_skill", description="按技能名称热读取当前指令和实际资源目录；先读取再执行，相对资源以返回的 base_directory 为根。未知、不可用或空技能返回错误。",
         parameters=SkillQuery.model_json_schema(), open=open_tool, capture=capture,
-        idempotent=True, parallel=True,
+        idempotent=True, parallel=True, icon="book-open",
     ))
     return inspection

@@ -79,5 +79,5 @@ async def register_directory(ctx: Context, directories: WorkingDirectories) -> N
         ctx, name="set_working_directory",
         description="切换当前 Session 的工作目录。必须独占本次工具批次；先用 Shell 创建 worktree，再单独切换。不会改变 Project、记忆或其他 Session。",
         parameters=DirectoryInput.model_json_schema(), open=open_tool,
-        idempotent=True, exclusive_batch=True,
+        idempotent=True, exclusive_batch=True, icon="folder-symlink",
     )

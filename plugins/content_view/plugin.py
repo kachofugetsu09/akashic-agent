@@ -173,6 +173,7 @@ async def apply(ctx: Context) -> None:
                      "结构内容按 JSON 读取。结果过大时请缩小字符范围；模型视图仍受统一容量上限约束。"
                      "超出范围明确拒绝，不静默截断。不要重新执行原工具来找回结果。"),
         parameters=ReadInput.model_json_schema(), open=open_tool, idempotent=True, parallel=True,
+        icon="file-search",
     )
     await ctx.require(CONTENT_VIEWS).register(
         ctx, name="tool_results", prepare=prepare_view,
