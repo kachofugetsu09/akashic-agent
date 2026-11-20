@@ -4,6 +4,9 @@ import asyncio
 import gzip
 import hashlib
 import json
+import re
+import secrets
+import time
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import aclosing, asynccontextmanager
 from pathlib import Path
@@ -95,6 +98,28 @@ class ReadMarkUpdate(BaseModel):
     seq: int = Field(ge=-1)
 
 
+_EPHEMERAL_DOWNLOAD_TTL_S = 120.0
+_EPHEMERAL_DOWNLOAD_MAX_ITEMS = 16
+_EPHEMERAL_DOWNLOAD_MAX_ITEM_BYTES = 20 * 1024 * 1024
+_EPHEMERAL_DOWNLOAD_MAX_TOTAL_BYTES = 64 * 1024 * 1024
+_EPHEMERAL_DOWNLOAD_TYPES = frozenset({"image/png", "image/jpeg", "image/webp"})
+_EPHEMERAL_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{16,64}$")
+
+
+def _safe_download_filename(filename: str) -> str:
+    clean = Path(filename).name.replace('"', "").replace("\r", "").replace("\n", "").strip()
+    return clean or "download.png"
+
+
+def _attachment_disposition(filename: str) -> str:
+    safe = _safe_download_filename(filename)
+    encoded = quote(safe, safe="")
+    if encoded != safe:
+        ascii_fallback = safe.encode("ascii", "ignore").decode("ascii").strip() or "download.png"
+        return f'attachment; filename="{ascii_fallback}"; filename*=utf-8\'\'{encoded}'
+    return f'attachment; filename="{safe}"'
+
+
 def create_chat_app(
     *,
     workspace: Path,
@@ -131,6 +156,13 @@ def create_chat_app(
     app = FastAPI(title="Akashic Chat API", lifespan=lifespan)
     app.state.workspace = workspace
     app.state.channel = channel
+    ephemeral_downloads: dict[str, tuple[bytes, str, str, float]] = {}
+
+    def _prune_ephemeral_downloads(now: float) -> int:
+        expired = [key for key, item in ephemeral_downloads.items() if now >= item[3]]
+        for key in expired:
+            del ephemeral_downloads[key]
+        return sum(len(item[0]) for item in ephemeral_downloads.values())
 
     @asynccontextmanager
     async def open_message_catalog() -> AsyncGenerator[MessageCatalog, None]:
@@ -590,6 +622,70 @@ def create_chat_app(
             content=data,
             media_type=media_type or "application/octet-stream",
             headers=headers,
+        )
+
+    @app.post("/api/chat/downloads")
+    async def create_ephemeral_download(
+        request: Request,
+        filename: str = Query(default="download.png"),
+    ) -> dict[str, str]:
+        media_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        if media_type not in _EPHEMERAL_DOWNLOAD_TYPES:
+            raise HTTPException(status_code=415, detail="不支持的下载文件类型")
+        declared_length = request.headers.get("content-length")
+        if declared_length is not None:
+            try:
+                declared = int(declared_length)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail="Content-Length 非法") from exc
+            if declared < 0:
+                raise HTTPException(status_code=400, detail="Content-Length 非法")
+            if declared > _EPHEMERAL_DOWNLOAD_MAX_ITEM_BYTES:
+                raise HTTPException(status_code=413, detail="下载文件超过 20MB 限制")
+        chunks: list[bytes] = []
+        total = 0
+        async for chunk in request.stream():
+            if not chunk:
+                continue
+            total += len(chunk)
+            if total > _EPHEMERAL_DOWNLOAD_MAX_ITEM_BYTES:
+                raise HTTPException(status_code=413, detail="下载文件超过 20MB 限制")
+            chunks.append(chunk)
+        if total == 0:
+            raise HTTPException(status_code=400, detail="下载内容为空")
+        data = b"".join(chunks)
+        now = time.monotonic()
+        pool_bytes = _prune_ephemeral_downloads(now)
+        while ephemeral_downloads and (
+            len(ephemeral_downloads) >= _EPHEMERAL_DOWNLOAD_MAX_ITEMS
+            or pool_bytes + len(data) > _EPHEMERAL_DOWNLOAD_MAX_TOTAL_BYTES
+        ):
+            oldest_key = next(iter(ephemeral_downloads))
+            pool_bytes -= len(ephemeral_downloads[oldest_key][0])
+            del ephemeral_downloads[oldest_key]
+        token = secrets.token_urlsafe(24)
+        safe_name = _safe_download_filename(filename)
+        ephemeral_downloads[token] = (data, media_type, safe_name, now + _EPHEMERAL_DOWNLOAD_TTL_S)
+        return {"url": f"/api/chat/downloads/{token}", "filename": safe_name}
+
+    @app.get("/api/chat/downloads/{token}")
+    async def read_ephemeral_download(token: str) -> Response:
+        if _EPHEMERAL_TOKEN_RE.fullmatch(token) is None:
+            raise HTTPException(status_code=404, detail="下载链接不存在或已过期")
+        _ = _prune_ephemeral_downloads(time.monotonic())
+        item = ephemeral_downloads.get(token)
+        if item is None:
+            raise HTTPException(status_code=404, detail="下载链接不存在或已过期")
+        data, media_type, safe_name, _expires_at = item
+        return Response(
+            content=data,
+            media_type=media_type,
+            headers={
+                "Content-Disposition": _attachment_disposition(safe_name),
+                "Content-Security-Policy": "sandbox",
+                "X-Content-Type-Options": "nosniff",
+                "Cache-Control": "private, no-store",
+            },
         )
 
     return app

@@ -51,6 +51,7 @@ function ShotPreview({ selection, screenMasked, onClose, onReselect }: {
   const [result, setResult] = useState<ShotResult | null>(null);
   const [urls, setUrls] = useState<string[]>([]);
   const [busy, setBusy] = useState(true);
+  const [saving, setSaving] = useState(false);
   const [failure, setFailure] = useState("");
   const [sheet, setSheet] = useState(false);
   const [toast, setToast] = useState("");
@@ -94,7 +95,7 @@ function ShotPreview({ selection, screenMasked, onClose, onReselect }: {
   const images = result?.images ?? [];
   // 生成中或失败时旧图和当前选项对不上，导出入口一律停用。
   const ready = images.length > 0 && !busy && !failure;
-  const act = shotActions(images, urls, setToast);
+  const act = shotActions(images, urls, setToast, setSaving);
   return <div ref={root} className="privacy-shot-preview" role="dialog" aria-modal="true" aria-label="截图预览" tabIndex={-1}>
     <header className="privacy-shot-preview__top">
       <button type="button" onClick={onReselect}><ChevronLeft size={18} aria-hidden="true" />范围</button>
@@ -116,7 +117,7 @@ function ShotPreview({ selection, screenMasked, onClose, onReselect }: {
     <footer className="privacy-shot-preview__actions">
       <button type="button" onClick={() => setSheet(true)}><SlidersHorizontal size={16} aria-hidden="true" />调整</button>
       <span />
-      <button type="button" disabled={!ready} onClick={act.save}><Download size={16} aria-hidden="true" />保存</button>
+      <button type="button" disabled={!ready || saving} onClick={act.save}><Download size={16} aria-hidden="true" />{saving ? "准备中…" : "保存"}</button>
       {"share" in navigator ? <button type="button" disabled={!ready} className={touch() ? "is-primary" : ""} onClick={act.share}><Share size={16} aria-hidden="true" />分享</button> : null}
       {touch() ? null : <button type="button" disabled={!ready} className="is-primary" onClick={act.copy}>复制图片</button>}
     </footer>
@@ -143,16 +144,63 @@ function metaText(images: ShotResult["images"]): string {
     : `${images[0].width} × ${images[0].height.toLocaleString()} px · ${size}`;
 }
 
+// 0.5.5 及更早版本的 Android Shell 仅支持 http(s) 下载，遇到 blob: 会提示“暂不支持保存这种文件”。
+function needsHttpDownload(): boolean {
+  const match = /\bAkashicShell\/(\d+)\.(\d+)\.(\d+)/.exec(navigator.userAgent);
+  if (!match) return false;
+  const major = Number(match[1]);
+  const minor = Number(match[2]);
+  const patch = Number(match[3]);
+  return major === 0 && (minor < 5 || (minor === 5 && patch <= 5));
+}
+
+function triggerDownload(url: string, name: string): void {
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = name;
+  link.click();
+}
+
 // 保存逐张下载；分享走系统面板（iOS 可存进相册）；剪贴板一次只放得下一张。
-function shotActions(images: ShotResult["images"], urls: string[], toast: (text: string) => void) {
+function shotActions(
+  images: ShotResult["images"],
+  urls: string[],
+  toast: (text: string) => void,
+  setSaving: (saving: boolean) => void,
+) {
   const save = () => {
-    urls.forEach((url, index) => {
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = fileName(index, urls.length);
-      link.click();
-    });
-    toast(urls.length > 1 ? `已保存 ${urls.length} 张` : "已保存");
+    if (!needsHttpDownload()) {
+      urls.forEach((url, index) => triggerDownload(url, fileName(index, urls.length)));
+      toast(urls.length > 1 ? `已保存 ${urls.length} 张` : "已保存");
+      return;
+    }
+    setSaving(true);
+    void (async () => {
+      try {
+        const prepared: Array<{ url: string; name: string }> = [];
+        for (let index = 0; index < images.length; index += 1) {
+          const image = images[index];
+          const name = fileName(index, images.length);
+          const response = await fetch(`/api/chat/downloads?filename=${encodeURIComponent(name)}`, {
+            method: "POST",
+            headers: { "Content-Type": image.blob.type || "image/png" },
+            body: image.blob,
+          });
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const payload = await response.json() as { url?: unknown };
+          if (typeof payload.url !== "string" || !payload.url.startsWith("/api/chat/downloads/")) {
+            throw new Error("下载链接无效");
+          }
+          prepared.push({ url: payload.url, name });
+        }
+        prepared.forEach(({ url, name }) => triggerDownload(url, name));
+        toast(prepared.length > 1 ? `已开始下载 ${prepared.length} 张` : "已开始下载");
+      } catch (error: unknown) {
+        toast(`保存失败：${error instanceof Error ? error.message : String(error)}`);
+      } finally {
+        setSaving(false);
+      }
+    })();
   };
   return {
     save,
