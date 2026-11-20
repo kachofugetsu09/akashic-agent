@@ -45,3 +45,7 @@
 .declared-form+.declared-form{margin-top:28px}
 .declared-form>h2{margin:0;font-size:17px;font-weight:600}
 .declared-form>p{margin:2px 0 12px;font-size:14px;color:var(--ak-ink-muted,#6b6a64)}
+/* 授权块：表单下方一张同样的字段卡，链接与按钮占控件列。 */
+.declared-authorize{margin-top:16px}
+.declared-authorize-link{display:inline-flex;align-items:center;justify-content:center;min-height:36px;padding:6px 16px;border-radius:var(--ak-radius-sm);background:var(--ak-color-action-primary,#1b365d);color:var(--ak-color-on-action-primary,#fafaf9);font-size:14px;text-decoration:none}
+.declared-authorize-actions{display:flex;justify-content:flex-end;padding:12px 16px}

@@ -4,7 +4,9 @@ import type { WebHostContextV1, WebResource } from "@akashic/web-ui-v1";
 import { Configuration, request, Field, Check, ModelField, type EmbedProps, type FormProps, type Status } from "../../../../packages/akashic-plugin-kit/src/configuration";
 
 interface DeclaredField { name: string; label: string; kind: "text" | "lines" | "number" | "toggle" | "model" | "secret"; hint: string; }
-interface DeclaredForm { id: string; title: string; description: string; fields: DeclaredField[]; }
+interface DeclaredForm { id: string; title: string; description: string; fields: DeclaredField[]; authorize: {label: string; hint: string} | null; }
+// 引导按 route「plugin-settings/<插件 ID>」内嵌单张表单，Shell 把斜杠后的部分作为 subroute 传入。
+type DeclaredProps = EmbedProps & {subroute?: string};
 
 const ENDPOINT = "/api/dashboard/plugin_settings";
 
@@ -44,15 +46,52 @@ function renderField(field: DeclaredField, props: FormProps) {
   }
 }
 
+// 粘贴回调网址式授权：先取授权页地址，用户同意后把浏览器停下的完整网址交回插件换取令牌。
+// 授权页用链接打开，不在请求返回后 window.open，免得被弹窗拦截。
+function Authorization({ctx, form, done}: {ctx: WebHostContextV1; form: DeclaredForm; done: () => void}) {
+  const [url, setUrl] = useState("");
+  const [callback, setCallback] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const path = `${ENDPOINT}/${encodeURIComponent(form.id)}/authorize`;
+  const run = async (step: () => Promise<void>) => {
+    setBusy(true); setError(""); setNotice("");
+    try { await step(); } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); } finally { setBusy(false); }
+  };
+  const start = () => run(async () => { setUrl((await request<{url: string}>(ctx, `${path}/start`, {method: "POST"})).url); });
+  const finish = () => run(async () => {
+    await request(ctx, `${path}/finish`, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({callback})});
+    setUrl(""); setCallback(""); setNotice("授权完成"); done();
+  });
+  const label = form.authorize!.label;
+  return <div className="config-form is-embedded declared-authorize">
+    {error && <div className="config-error" role="alert"><p>{error}</p></div>}
+    <div className="config-fields">
+      <div className="config-field"><span>{label}</span>{form.authorize!.hint && <small>{form.authorize!.hint}</small>}
+        <div className="config-model-control">{url
+          ? <a className="declared-authorize-link" href={url} target="_blank" rel="noreferrer">打开授权页</a>
+          : <button type="button" disabled={busy} onClick={() => void start()}>{busy ? "正在准备…" : "获取授权链接"}</button>}</div>
+      </div>
+      {url && <label className="config-field"><span>授权完成后的网址</span>
+        <small>同意后浏览器会停在一个打不开的页面，复制地址栏里的完整网址粘贴到这里</small>
+        <input name="authorize-callback" value={callback} placeholder="http://localhost…" onChange={event => setCallback(event.target.value)} /></label>}
+      {url && <div className="declared-authorize-actions"><button className="config-primary" type="button" disabled={busy || !callback.trim()} onClick={() => void finish()}>{busy ? "正在授权…" : "完成授权"}</button></div>}
+    </div>
+    {notice && <p className="config-hint" role="status">{notice}</p>}
+  </div>;
+}
+
 // 宿主只接受激活时同步登记：登记一张固定卡片，打开时再读各插件声明的表单，每张表单各自保存。
-function DeclaredForms({ctx, embed, declared, configs}: {ctx: WebHostContextV1; embed: EmbedProps; declared: WebResource<DeclaredForm[]>; configs: ReadonlyMap<string, WebResource<Status>>}) {
-  const forms = useSyncExternalStore(declared.subscribe, () => declared.current ?? null);
+function DeclaredForms({ctx, embed, declared, configs}: {ctx: WebHostContextV1; embed: DeclaredProps; declared: WebResource<DeclaredForm[]>; configs: ReadonlyMap<string, WebResource<Status>>}) {
+  const all = useSyncExternalStore(declared.subscribe, () => declared.current ?? null);
+  const forms = embed.subroute ? all?.filter(form => form.id === embed.subroute) ?? null : all;
   const failure = useSyncExternalStore(declared.subscribe, () => declared.error);
   const error = forms ? "" : failure ? failure.message || "读取插件设置失败" : "";
   const dirty = useRef(new Set<string>());
   useEffect(() => { void declared.refresh().catch(() => undefined); }, [declared]);
   if (!forms) return <p className="config-hint">{error || "正在读取…"}</p>;
-  if (!forms.length) return <p className="config-hint">目前没有插件声明设置。</p>;
+  if (!forms.length) return <p className="config-hint">{embed.subroute ? "这个插件的设置暂不可用，请刷新后重试。" : "目前没有插件声明设置。"}</p>;
   if (embed.mode === "summary") return <span>{forms.map(form => form.title).join("、")}</span>;
   return <>{forms.map(form => <section key={form.id} className="declared-form">
     <h2>{form.title}</h2><p>{form.description}</p>
@@ -61,6 +100,7 @@ function DeclaredForms({ctx, embed, declared, configs}: {ctx: WebHostContextV1; 
       embed.dirty?.(dirty.current.size > 0);
     }}} definition={{id: form.id, title: form.title, description: form.description, switchable: false,
       endpoint: `${ENDPOINT}/${encodeURIComponent(form.id)}/config`, fields: props => <>{form.fields.map(field => renderField(field, props))}</>}} />
+    {form.authorize && <Authorization ctx={ctx} form={form} done={() => { void configs.get(form.id)!.refresh().catch(() => undefined); embed.changed?.(); }} />}
   </section>)}</>;
 }
 
@@ -81,7 +121,7 @@ export function activate(ctx: WebHostContextV1) {
     description: "没有自带界面的插件在这里调整设置，比如 GitHub Watch。",
     render(host, _view, props) {
       const root = createRoot(host);
-      root.render(<DeclaredForms ctx={ctx} embed={(props ?? {}) as EmbedProps} declared={declared} configs={configs} />);
+      root.render(<DeclaredForms ctx={ctx} embed={(props ?? {}) as DeclaredProps} declared={declared} configs={configs} />);
       return () => root.unmount();
     },
   }));

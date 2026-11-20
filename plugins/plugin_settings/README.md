@@ -33,5 +33,30 @@ A `model` field's `use` only decides which options the picker offers. Config can
 also be written elsewhere, so the plugin's config model must validate the field
 itself, e.g. `field_validator("model")` calling `REVIEW_MODEL.check(value)`.
 
-Each plugin may register one form. The host Web contract only accepts registrations made synchronously during activation, so all declared forms share one settings card that loads the list when opened; a plugin that needs its own card or family still ships a Web module. Plugins that need richer interaction (OAuth,
-previews, custom validation flows) still ship their own Web module.
+A plugin can report its own readiness with `status=`: a callable returning keys
+such as `ready` and `reason` that override the form's default "ready". Use it for
+required inputs and external state ("还需要填写 Steam ID", "还没有授权").
+
+### Onboarding
+
+Give the form `setup=Setup(group, title, ability)` and call `declare_setup` from a
+second optional child that also injects `ONBOARDING`. The onboarding step embeds
+exactly this form through the route `plugin-settings/<plugin id>`; it is done when
+the plugin's `status` reports `ready`.
+
+```python
+_ = await ctx.inject((SETTINGS_FORMS, PLUGIN_CONFIG), settings, name="settings")
+_ = await ctx.inject((SETTINGS_FORMS, PLUGIN_CONFIG, ONBOARDING), setup, name="onboarding")
+```
+
+### Authorization
+
+`declare_settings(..., authorize=Authorize(label, hint, start, finish))` adds a
+paste-back OAuth block under the form: `start()` returns the provider's
+authorization URL, the user consents, the browser stops on an unreachable
+callback page, and the full URL from the address bar is passed to `finish()`.
+Raise `ValueError` for errors the user can fix. This fits self-hosted plugins whose
+callback port is not reachable from the user's browser.
+
+Each plugin may register one form. The host Web contract only accepts registrations made synchronously during activation, so all declared forms share one settings card that loads the list when opened; a plugin that needs its own card or family still ships a Web module. Plugins that need richer interaction (previews, custom validation flows) still
+ship their own Web module.

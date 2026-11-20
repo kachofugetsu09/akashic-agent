@@ -95,7 +95,9 @@ function settingsTargetForRoute(
   if (member) return { kind: "plugins", memberId: member.id };
   if (route === SETTINGS_PLUGINS_ROUTE) return { kind: "plugins", memberId: null };
   if (route === SETTINGS_VERSION_ROUTE) return { kind: "version" };
-  return undefined;
+  // 带子路径的深链（#plugin-settings/<插件 ID>）落到所属的插件配置分节。
+  const slash = route.indexOf("/");
+  return slash > 0 ? settingsTargetForRoute(sections, plugins, route.slice(0, slash)) : undefined;
 }
 
 /** 对话框留在 Shell 组件内；底栏动作与快捷键经这个模块级入口打开它。 */
@@ -407,12 +409,16 @@ function Shell({ pages, railActions, settings, settingsPlugins, http, inventory 
   }, [settingsOpen]);
 
   // 设置工作区内的跨目录渲染：初始配置按 route 内嵌任意分节的表单，不关心它属于哪个目录。
+  // route 可带「/后缀」：后缀作为 subroute 交给分节自己解释，比如声明式设置卡只渲染某个插件的表单。
   const renderSettingsRoute = useCallback<RenderSettingsRoute>((route, host, props) => {
     const section = settings.entries.find((entry) => entry.route === route);
     if (section) return settings.render(section.id, host, props);
     const member = settingsPlugins.entries.find((entry) => entry.route === route);
     if (member) return settingsPlugins.render(member.id, host, props);
-    return null;
+    const slash = route.indexOf("/");
+    if (slash <= 0) return null;
+    const base = settingsPlugins.entries.find((entry) => entry.route === route.slice(0, slash));
+    return base ? settingsPlugins.render(base.id, host, { ...(props as object | undefined), subroute: route.slice(slash + 1) }) : null;
   }, [settings, settingsPlugins]);
 
   // 分节内容就地渲染进对话框；关闭或换节即销毁，同一分节不会同时挂载在两处。
