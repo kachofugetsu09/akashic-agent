@@ -3504,9 +3504,9 @@ form.composer:focus-within [data-slot="input-group"] {
 .thread-find__count { margin-inline-start: auto; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .find-region-count { margin-inline-start: 6px; color: var(--chat-muted); white-space: nowrap; }
 /* 命中消息的预览：每条一行身份与时间、两行摘要；列表在卡片里滚动，当前项用底色标出。 */
-.thread-find__results { grid-column: 1 / 3; max-height: min(50vh, 420px); margin: 0; padding: 4px; overflow-y: auto; overscroll-behavior: contain; border-block-start: 1px solid var(--chat-line); list-style: none; }
+.thread-find__results { grid-column: 1 / 3; max-height: min(40vh, 420px); margin: 0; padding: 4px; overflow-y: auto; overscroll-behavior: contain; border-block-start: 1px solid var(--chat-line); list-style: none; }
 .thread-find__results li { margin: 0; }
-.thread-find .thread-find__results button { display: grid; gap: 2px; width: 100%; height: auto; padding: 6px 10px; text-align: start; color: var(--chat-ink); }
+.thread-find .thread-find__results button { display: grid; place-items: stretch; justify-items: start; gap: 2px; width: 100%; height: auto; padding: 6px 10px; text-align: start; color: var(--chat-ink); }
 .thread-find__results [aria-selected="true"] button { background: color-mix(in oklab, var(--md-sys-color-on-surface) 8%, transparent); }
 .thread-find__who { display: flex; gap: 8px; color: var(--chat-muted); font-size: var(--chat-type-control); line-height: 18px; }
 .thread-find__who time, .thread-find__who span { font-variant-numeric: tabular-nums; }

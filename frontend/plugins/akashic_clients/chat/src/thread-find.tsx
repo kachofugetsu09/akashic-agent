@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type RefObject } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type RefObject } from "react";
 import { ChevronDown, ChevronUp, Search, X } from "lucide-react";
 import { useStickToBottomContext } from "use-stick-to-bottom";
 import { keyForChat } from "./chat-host";
@@ -365,6 +365,20 @@ function hitTime(value: string): string {
   return date.getFullYear() === now.getFullYear() ? `${day} ${time}` : `${date.getFullYear()}年${day}`;
 }
 
+// 摘要里其余几处同样标出（不区分大小写，与服务端匹配一致）。
+function marked(text: string, query: string): React.ReactNode[] {
+  const needle = query.trim().toLowerCase();
+  const lower = text.toLowerCase();
+  const nodes: React.ReactNode[] = [];
+  let from = 0;
+  for (let at = needle && lower.length === text.length ? lower.indexOf(needle) : -1; at >= 0; at = lower.indexOf(needle, from)) {
+    nodes.push(text.slice(from, at), <mark key={at}>{text.slice(at, at + needle.length)}</mark>);
+    from = at + needle.length;
+  }
+  nodes.push(text.slice(from));
+  return nodes;
+}
+
 type ThreadFindProps = ReturnType<typeof useThreadFind> & { host: FindHost; revision: string };
 
 export function ThreadFind({ session, snapshot, openFind, host, revision }: ThreadFindProps) {
@@ -453,7 +467,7 @@ export function ThreadFind({ session, snapshot, openFind, host, revision }: Thre
           <button type="button" onClick={() => void session.select(index)}>
             <span className="thread-find__who">{hit.kind === "input" ? "你" : "回复"}<time dateTime={hit.timestamp}>{hitTime(hit.timestamp)}</time>
               {hit.count > 1 ? <span>{hit.count} 处</span> : null}</span>
-            <span className="thread-find__snippet">{hit.before}<mark>{hit.match}</mark>{hit.after}</span>
+            <span className="thread-find__snippet">{marked(hit.before, query)}<mark>{hit.match}</mark>{marked(hit.after, query)}</span>
           </button>
         </li>)}
       </ol> : null}
