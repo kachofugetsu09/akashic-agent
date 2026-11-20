@@ -81,6 +81,11 @@ Issue 1179 的当前实现与重大决定见 [边界②③审查入口](design/p
 兼容读取退役前先看 [hua-home 数据盘点与截止方案](design/compatibility-cutoff-inventory.md)，
 按实际状态区分结构转换、不可变历史读取与当前恢复协议。
 
+临时验收脚本清理后，历史设计和决策中的 `docker/debug/`、一次性 scenario /
+E2E 路径仅作证据定位，可用 `git show dc5be63d2:<路径>` 回溯，不能作为当前
+checkout 的可执行入口。当前 CI 入口以 WORKFLOW 和工作流源码为准；
+历史验收通过不代表当前版本或正式部署已验证。
+
 ## 4. 数据任务的额外入口
 
 涉及消息、记忆、附件、配置、凭据、调度、plugin-data，或裁切、压缩、重建、同步、迁移、覆盖、卸载、删除时，先读 [持久化状态地图](design/persistence-state-map.md) 的相关对象及其勘误，再按 STA-003 核对本次增、改、减与恢复方式。地图中的推断和未知不能充当删除依据。

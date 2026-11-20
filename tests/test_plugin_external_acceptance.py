@@ -7,7 +7,7 @@ import shutil
 import subprocess
 from pathlib import Path
 import pytest
-from docker.debug.plugin_external_acceptance import _exercise_business_composition as _run_business_composition
+from tests.support.external_acceptance import _exercise_business_composition as _run_business_composition
 
 
 def _business_composition(arguments):

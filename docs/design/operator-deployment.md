@@ -302,7 +302,11 @@ Docker init 负责回收子进程，systemd 负责服务生命周期。原生直
 旧容器退出状态和 systemd 停止结果。任何证据缺失都阻止发布。等待失败恢复旧实例准入；
 停止后失败沿既有发布器保留维护现场与发布回执，由部署者审计恢复。
 
-本地停止协议 E2E：
+以下两条 E2E 命令记录历史验收入口，脚本已在临时脚本清理中退役；
+可用 `git show dc5be63d2:<路径>` 回溯。当前 checkout 无法直接执行，
+部署前须在隔离环境按现行合同准备验收，不能将历史通过视为当前验证。
+
+历史本地停止协议 E2E：
 
 ```sh
 PYTHONPATH=sdk/python/src:. .venv/bin/python scripts/verify_self_deploy_runtime.py

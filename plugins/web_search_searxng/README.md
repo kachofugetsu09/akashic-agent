@@ -20,10 +20,3 @@ Settings are `endpoint` (unset by default) and `timeout_seconds` (25 seconds,
 range 1–120). This provider supports instances that do not require authentication.
 Use an address reachable from the Akashic process; its localhost refers to its
 own host or container.
-
-Run the installed-plugin HTTP scenarios:
-
-```sh
-.venv/bin/python scripts/searxng_search_scenario.py
-.venv/bin/python scripts/searxng_search_scenario.py --endpoint http://localhost:8888
-```
