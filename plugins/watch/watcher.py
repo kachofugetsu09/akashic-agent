@@ -201,13 +201,15 @@ class Files:
 
 
 # 一批事件跑一轮小循环；任何失败都换链上的下一个模型从头再来，整条链失败时返回空判决。
-async def judge(complete: Complete, chain: Sequence[str | None], context: str, batch: Sequence[Event], files: Files,
+# standing 是很少变的那段现场，单独占一条消息，前后两次请求之间才缓存得住；live 是每次都变的那段，和本批事件放在一起。
+async def judge(complete: Complete, chain: Sequence[str | None], standing: str, live: str, batch: Sequence[Event], files: Files,
                 lookup: Callable[[str], Event | None], max_steps: int = 6) -> Outcome:
     outcome = Outcome()
     by_id = {event.id: event for event in batch}
-    user = context + f"\n\n本批（{len(batch)} 条）：\n" + "\n".join(line(event) for event in batch)
+    user = live + f"\n\n本批（{len(batch)} 条）：\n" + "\n".join(line(event) for event in batch)
     for index, model_id in enumerate(chain):
-        messages: list[Mapping[str, object]] = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": user}]
+        messages: list[Mapping[str, object]] = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": standing},
+                                                 {"role": "user", "content": user}]
         try:
             for _ in range(max_steps):
                 reply = await complete(model_id, messages, TOOLS)
