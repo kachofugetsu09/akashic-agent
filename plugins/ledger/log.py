@@ -564,12 +564,6 @@ class MessageLog:
             with closing(sqlite3.connect(destination)) as snapshot:
                 self._connection.backup(snapshot)
 
-    def read_bindings(self) -> tuple[Mapping[str, object], ...]:
-        """列出不可变绑定，供宿主保存数据库副本所需的归档闭包。"""
-        with self._read():
-            identities = self._connection.execute("SELECT binding_id FROM bindings ORDER BY binding_id").fetchall()
-            return tuple(self.read_binding(row[0]) for row in identities)
-
     def owner(self, name: str) -> OwnerStore:
         """组合只向 owner 授予自身的记录空间，不授予 SQL 或其他空间。"""
         if not isinstance(name, str) or not name:

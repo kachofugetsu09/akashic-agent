@@ -30,16 +30,6 @@ class _SourceFingerprint:
     signature_head: bytes
 
 
-@dataclass(frozen=True)
-class AttachmentFilesystemIntegrityReport:
-    """汇总 artifact filesystem 与 SessionDB authority 的只读证据。"""
-
-    ready_count: int
-    verified_bytes: int
-    orphan_artifact_ids: tuple[str, ...]
-    incomplete_import_ids: tuple[str, ...]
-
-
 async def _complete_critical(awaitable: Awaitable[T]) -> tuple[T, bool]:
     """完成不可中断的文件发布操作，并报告调用方是否取消。"""
 
@@ -236,57 +226,6 @@ class ChannelAttachmentArtifactStore:
                 raise ValueError(f"attachment 尚未发布: {artifact_id}")
             refs.append(record.ref)
         return tuple(refs)
-
-    def audit_orphan_artifact_ids(self) -> tuple[str, ...]:
-        """报告物理已发布但没有 ready row 的 artifact，不执行删除或恢复。"""
-
-        root = self._resolve_artifact_root(create=False)
-        if root is None:
-            return ()
-        orphans: list[str] = []
-        for path in sorted(root.iterdir(), key=lambda item: item.name):
-            if path.name.startswith(".") or path.suffix != ".bin":
-                continue
-            artifact_id = path.stem
-            if self._metadata_store.get_attachment(artifact_id) is None:
-                orphans.append(artifact_id)
-        return tuple(orphans)
-
-    async def validate_filesystem_integrity(
-        self,
-    ) -> AttachmentFilesystemIntegrityReport:
-        """逐个 nofollow/read/hash 所有 ready artifact，并报告非终态 owner。"""
-
-        database_report = self._metadata_store.validate_attachment_metadata_integrity()
-        records = self._metadata_store.list_attachments()
-        verified_bytes = 0
-        for record in records:
-            fd, cancelled = await _complete_critical(
-                asyncio.to_thread(self._open_verified, record)
-            )
-            try:
-                verified_bytes += record.ref.size_bytes
-            finally:
-                os.close(fd)
-            if cancelled:
-                raise asyncio.CancelledError
-        root = self._resolve_artifact_root(create=False)
-        if root is not None:
-            staging = tuple(
-                path.name
-                for path in root.iterdir()
-                if path.name.startswith(".") and path.suffix == ".part"
-            )
-            if staging:
-                raise ValueError(
-                    "attachment staging 未收束: " + ", ".join(sorted(staging))
-                )
-        return AttachmentFilesystemIntegrityReport(
-            ready_count=len(records),
-            verified_bytes=verified_bytes,
-            orphan_artifact_ids=self.audit_orphan_artifact_ids(),
-            incomplete_import_ids=database_report.incomplete_import_ids,
-        )
 
     def _publish_bytes(self, data: bytes, ref: AttachmentRef) -> AttachmentRef:
         """在一个同步临界段发布 immutable bytes。"""
@@ -675,6 +614,5 @@ class ChannelAttachmentArtifactStore:
 
 
 __all__ = [
-    "AttachmentFilesystemIntegrityReport",
     "ChannelAttachmentArtifactStore",
 ]

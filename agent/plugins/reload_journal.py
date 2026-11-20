@@ -147,16 +147,6 @@ class JournalPreflight:
         return any(state == "accepted" or input_ref in components for state, input_ref in
                    self._copy.execute("SELECT state,input_ref FROM config_updates WHERE state != 'active'"))
 
-    def backup_to(self, path: Path) -> None:
-        """Save the checked snapshot without opening the live journal in SQLite."""
-        saved = sqlite3.connect(path)
-        try:
-            self._copy.backup(saved)
-            if saved.execute("PRAGMA integrity_check").fetchall() != [("ok",)]:
-                raise RuntimeError("reload journal 备份完整性检查失败")
-        finally:
-            saved.close()
-
 
 def _journal_bytes(path: Path) -> tuple[bytes, tuple[int, int, int]]:
     """Read an existing regular file without following a replacement link."""

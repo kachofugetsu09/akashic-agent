@@ -111,17 +111,6 @@ def decode_reference(value: object) -> Reference:
     return Reference(ref, resolved_ref=resolved, retrieval_ref=retrieval)
 
 
-def reference_data(reference: Reference) -> Mapping[str, object]:
-    """把已校验的 Reference 投影为 provider 可交换的普通映射。"""
-    if not isinstance(reference, Reference):
-        raise TypeError("reference 必须是已校验的 Reference")
-    return {
-        "ref": reference.ref,
-        "resolved_ref": reference.resolved_ref,
-        "retrieval_ref": reference.retrieval_ref,
-    }
-
-
 @dataclass(frozen=True, slots=True)
 class Span:
     """替换原文的一个精确区间；零长度区间用于附加引用等非文本事实。"""

@@ -18,15 +18,6 @@ def plugins_root(plugins_home: Path | None = None) -> Path:
     return Path.home() / ".akashic-plugin"
 
 
-def builtin_plugin_data_dir(
-    plugin_name: str,
-    workspace: Path,
-) -> Path:
-    """返回当前 workspace 内的内置插件数据目录。"""
-
-    return workspace_plugin_data_dir(workspace, plugin_name, "builtin")
-
-
 def workspace_plugin_data_dir(
     workspace: Path,
     plugin_name: str,

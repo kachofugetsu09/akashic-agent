@@ -84,14 +84,6 @@ class AttachmentImportRecord:
             raise ValueError("attachment import error 必须是非空字符串或 None")
 
 
-@dataclass(frozen=True)
-class AttachmentIntegrityReport:
-    """汇总附件 metadata 与导入记录的只读完整性证据。"""
-
-    artifact_count: int
-    incomplete_import_ids: tuple[str, ...]
-
-
 def _attachment_storage_key(artifact_id: str, storage_key: str) -> PurePosixPath:
     """校验 Core artifact 的唯一 workspace-relative storage identity。"""
 
@@ -286,82 +278,6 @@ class ArtifactStore:
             return None
         return _import_record(row)
 
-    def incomplete_attachment_imports(self) -> tuple[AttachmentImportRecord, ...]:
-        """同一查询读取所有非终态导入，不静默丢失中途变化的记录。"""
-        with self._lock:
-            rows = self._conn.execute(
-                "SELECT * FROM attachment_imports WHERE phase != 'artifact_committed' "
-                "ORDER BY created_at, artifact_id"
-            ).fetchall()
-        return tuple(_import_record(row) for row in rows)
-
-    def validate_attachment_metadata_integrity(self) -> AttachmentIntegrityReport:
-        """验证附件 metadata 与 import 终态，不解释消息正文或绑定。"""
-
-        with self._lock, self._conn:
-            # 1. 同一读快照核对两个 owner 表中的真实记录。
-            _ = self._conn.execute("BEGIN")
-            artifacts = self._conn.execute(
-                """
-                SELECT *
-                FROM attachments
-                ORDER BY artifact_id
-                """
-            ).fetchall()
-            for artifact in artifacts:
-                _ = _artifact_record(artifact)
-            import_rows = self._conn.execute(
-                """
-                SELECT *
-                FROM attachment_imports
-                ORDER BY artifact_id
-                """
-            ).fetchall()
-            for row in import_rows:
-                _ = _import_record(row)
-            imports = {str(row["artifact_id"]): row for row in import_rows}
-            artifact_ids = {str(row["artifact_id"]) for row in artifacts}
-            for artifact in artifacts:
-                artifact_id = str(artifact["artifact_id"])
-                intent = imports.get(artifact_id)
-                if (
-                    intent is None
-                    or str(intent["phase"]) != "artifact_committed"
-                    or str(intent["storage_key"]) != str(artifact["storage_key"])
-                    or int(intent["expected_size_bytes"])
-                    != int(artifact["size_bytes"])
-                    or str(intent["expected_sha256"]) != str(artifact["sha256"])
-                ):
-                    raise ValueError(
-                        f"attachment committed intent 已漂移: {artifact_id}"
-                    )
-            terminal_without_artifact = sorted(
-                artifact_id
-                for artifact_id, intent in imports.items()
-                if str(intent["phase"]) == "artifact_committed"
-                and artifact_id not in artifact_ids
-            )
-            if terminal_without_artifact:
-                raise ValueError(
-                    "attachment committed intent 缺少 artifact: "
-                    + ", ".join(terminal_without_artifact)
-                )
-
-            incomplete_rows = self._conn.execute(
-                """
-                SELECT artifact_id
-                FROM attachment_imports
-                WHERE phase != 'artifact_committed'
-                ORDER BY created_at, artifact_id
-                """
-            ).fetchall()
-        return AttachmentIntegrityReport(
-            artifact_count=len(artifacts),
-            incomplete_import_ids=tuple(
-                str(row["artifact_id"]) for row in incomplete_rows
-            ),
-        )
-
     def register_ready_attachment(
         self, *, ref: AttachmentRef, storage_key: str, created_at: str,
     ) -> AttachmentArtifactRecord:
@@ -450,20 +366,6 @@ class ArtifactStore:
         if row is None:
             return None
         return _artifact_record(row)
-
-    def list_attachments(self) -> tuple[AttachmentArtifactRecord, ...]:
-        """按 identity 列出 ready artifact metadata，不暴露任意 SQL。"""
-
-        with self._lock:
-            rows = self._conn.execute(
-                """
-                SELECT artifact_id, storage_key, kind, filename, media_type,
-                       size_bytes, sha256, state, created_at
-                FROM attachments
-                ORDER BY artifact_id
-                """
-            ).fetchall()
-        return tuple(_artifact_record(row) for row in rows)
 
 
 def _artifact_record(row: sqlite3.Row) -> AttachmentArtifactRecord:
