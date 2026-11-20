@@ -73,6 +73,7 @@ async def apply(ctx: Context) -> None:
         open=open_tool,
         idempotent=True,
         capture=capture,
+        icon="send",
     )
 
     async def restart(child: Context) -> None:

@@ -26,7 +26,10 @@ from plugins.ledger.contract import (
     ToolCall,
 )
 
+from plugins.tools.icon import normalize_tool_icon as normalize_tool_icon
+
 Outcome = Literal["success", "denied", "error", "interrupted"]
+ToolIcon = str | Mapping[str, object]
 
 
 def durable_call_key(call_ref: CallRef) -> str:
@@ -160,7 +163,12 @@ class ToolCatalog(Protocol):
     """注册表拥有真实引用；消费者只选择本次允许的目录。"""
 
     async def declare_group(
-        self, ctx: Context, *, always_on: bool = False, description: str = "未声明用途"
+        self,
+        ctx: Context,
+        *,
+        always_on: bool = False,
+        description: str = "未声明用途",
+        icon: ToolIcon | None = None,
     ) -> Effect: ...
     async def register(
         self,
@@ -178,6 +186,7 @@ class ToolCatalog(Protocol):
         parallel: bool = False,
         exclusive_batch: bool = False,
         release: ToolRelease | None = None,
+        icon: ToolIcon | None = None,
     ) -> ToolRef: ...
     async def register_prepare(
         self,
@@ -235,10 +244,11 @@ TOOLS = ServiceKey[ToolCatalog]("tools.v1")
 ALL_TOOLS = ServiceKey[Callable[[], ToolView]]("tools.all.v1")
 @dataclass(frozen=True, slots=True)
 class ToolDisplay:
-    """聊天展示一次调用所需的身份：工具名与注册它的插件；没有记录 owner 的旧 binding 为 None。"""
+    """聊天展示一次调用所需的身份与可选图标：工具名、注册它的插件；没有记录 owner 的旧 binding 为 None。"""
 
     name: str
     owner: str | None
+    icon: Mapping[str, object] | None = None
 
 
 TOOL_DISPLAY = ServiceKey[Callable[[str], ToolDisplay]]("tools.display.v2")

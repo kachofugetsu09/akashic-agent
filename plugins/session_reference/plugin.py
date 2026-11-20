@@ -288,4 +288,5 @@ async def apply(ctx: Context) -> None:
         open=open_tool,
         idempotent=True,
         parallel=True,
+        icon="messages-square",
     )

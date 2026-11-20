@@ -172,6 +172,12 @@ Web Chat 读取同一活动 Root 的目录。
 插件只给任务名、标签、说明、工作目录、预览与可选状态，宿主据此画任务卡、把连续的任务收成一组，
 并负责展开、悬停浮卡、键盘与读屏；返回 null 或插件尚未加载时仍是通用工具行。宿主不按参数形状猜测委派。
 
+工具图标默认来自插件后端注册时的声明（`ToolCatalog.declare_group(..., icon=...)` 设组级默认，
+`ToolCatalog.register(..., icon=...)` 设单工具覆写），支持 Lucide 语义名或经安全校验的单色线框 SVG
+（`currentColor`、`viewBox="0 0 24 24"`、白名单几何节点），由 `TOOL_DISPLAY` 投影到 `tool_call.icon`；
+多态工具如需按调用参数动态切换图标（如 `user_information_query` 按 `provider` 切图），owner 可额外通过
+`tool.icon`（同步数据源插槽）覆写，返回 null 或未声明时按“单工具 → 组级 → 默认 Wrench”逐级回退。
+
 本路径不增加、更新或减少持久消息、配置或工具效果。引用 owner 的 generation lease
 覆盖读取与投影；缺少专用回调时仍保留通用数据。恢复使用原源码版本，无 schema 或数据迁移。
 

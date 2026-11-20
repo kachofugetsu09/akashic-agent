@@ -9,7 +9,7 @@ import type { ScopeFields } from "./scope-fields";
 import { openInWorkbench, subscribeWorkbenchIntents, workbenchAccepts } from "./shell-workbench";
 import { selectMessages } from "./message-selection";
 
-import type { ComposerControls, ComposerSuggestProvider, DestinationControls, DestinationForm, HeaderMetaControls, NavigationControls, NavigationDestinationsProvider, NavigationForm, NavigationFormControls, NavigationGroupsProvider, NavigationNotice, PluginUiDefinition, PluginUiHostContext, PluginUiMountSlotName, PluginUiQueryOptions, PluginUiSlotFacts, PluginUiSlotName, ScopeFieldControls, SidebarPanelControls, SidebarPanelProvider, ToolSummaryFacts, ToolSummaryProvider, ToolTaskSummary } from "@akashic/chat-ui-v1";
+import type { ComposerControls, ComposerSuggestProvider, DestinationControls, DestinationForm, HeaderMetaControls, NavigationControls, NavigationDestinationsProvider, NavigationForm, NavigationFormControls, NavigationGroupsProvider, NavigationNotice, PluginUiDefinition, PluginUiHostContext, PluginUiMountSlotName, PluginUiQueryOptions, PluginUiSlotFacts, PluginUiSlotName, ScopeFieldControls, SidebarPanelControls, SidebarPanelProvider, ToolIconFacts, ToolIconProvider, ToolIconSpec, ToolSummaryFacts, ToolSummaryProvider, ToolTaskSummary } from "@akashic/chat-ui-v1";
 
 // 插槽合同由 @akashic/chat-ui-v1 发布，宿主与插件共用同一份类型。
 export type { ComposerSuggestProvider, ComposerSuggestion, PluginUiContext, PluginUiDefinition, PluginUiQueryOptions, PluginUiRenderer, PluginUiSlotName } from "@akashic/chat-ui-v1";
@@ -90,6 +90,7 @@ const SLOT_NAMES = new Set<PluginUiSlotName>([
   "message.actions",
   "message.meta",
   "drawer.panel",
+  "tool.icon",
   "tool.result",
   "tool.summary",
   "message.attachment",
@@ -402,6 +403,7 @@ function parseDefinition(value: unknown, plugin: PluginUiCatalogItem): PluginUiD
       throw new Error(`插件界面 slot 无效: ${plugin.id}.${name}`);
     }
     const valid = name === "composer.suggest" ? isSuggestProvider(renderer)
+      : name === "tool.icon" ? isToolIconProvider(renderer)
       : name === "tool.summary" ? isSummaryProvider(renderer)
       : name === "navigation.groups" ? isGroupsProvider(renderer)
       : name === "navigation.destinations" ? isDestinationsProvider(renderer)
@@ -432,6 +434,10 @@ function isSuggestProvider(value: unknown): value is ComposerSuggestProvider {
     && (provider.keepOpenOnMatch === undefined || typeof provider.keepOpenOnMatch === "boolean")
     && (provider.prefix === "/" || provider.prefix === "@") && Array.isArray(provider.sigils)
     && provider.sigils.every((sigil) => sigil === "/" || sigil === "@");
+}
+
+function isToolIconProvider(value: unknown): value is ToolIconProvider {
+  return typeof value === "object" && value !== null && typeof (value as { resolve?: unknown }).resolve === "function";
 }
 
 function isSummaryProvider(value: unknown): value is ToolSummaryProvider {
@@ -470,6 +476,23 @@ function isPanelProvider(value: unknown): value is SidebarPanelProvider {
   const provider = value as Partial<Record<keyof SidebarPanelProvider, unknown>>;
   return typeof provider.label === "string" && typeof provider.iconSvg === "string" && typeof provider.mount === "function"
     && (provider.status === undefined || typeof provider.status === "function");
+}
+
+// 工具图标只问工具 owner；插件未加载、返回无效值或抛错时退回后端静态声明或默认图标。调用方需随目录版本重新渲染。
+export function pluginToolIcon(facts: ToolIconFacts, owner: string | undefined): string | ToolIconSpec | null {
+  if (!owner) return null;
+  const plugin = catalog.plugins.find((item) => item.id === owner);
+  const loaded = plugin ? definitions.get(plugin.id) : undefined;
+  const provider = plugin && loaded?.revision === plugin.revision ? loaded.definition.slots["tool.icon"] : undefined;
+  if (!provider) return null;
+  try {
+    const resolved = provider.resolve(facts);
+    if (typeof resolved === "string" && resolved.trim()) return resolved.trim();
+    if (resolved && typeof resolved === "object" && (resolved.kind === "lucide" || resolved.kind === "svg")) return resolved;
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 // 工具调用的时间线摘要只问工具 owner；插件未加载、返回无效值或抛错时退回通用工具行。调用方需随目录版本重新渲染。

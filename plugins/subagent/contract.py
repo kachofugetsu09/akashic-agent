@@ -15,6 +15,7 @@ from agent.plugin_composition.effect import Effect
 from agent.plugin_composition import ServiceKey
 from agent.plugin_composition.tasks import Task
 from plugins.ledger.contract import Message, MessageReader
+from plugins.tools.contract import ToolIcon
 
 if TYPE_CHECKING:
     from .request import Request
@@ -55,6 +56,7 @@ class AgentRunner:
     progress: bool
     policy: Literal["read-only", "isolated-write", "full-access"]
     run: Callable[[AgentTask, Callable[[AgentActivity], Awaitable[None]]], Awaitable[AgentResult]]
+    icon: ToolIcon | None = None
 
 
 class AgentWire(Protocol):

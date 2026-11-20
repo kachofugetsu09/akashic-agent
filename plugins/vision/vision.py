@@ -106,5 +106,5 @@ async def register_vision(ctx: Context, config: Config) -> None:
     await ctx.require(TOOLS).register(
         ctx, name="read_image_vision",
         description="主模型无法直接看图（结果提示未提供图片内容）时，通过看图模型读取图片并返回文本。提供图片 path 和具体 prompt；没有可用视觉模型会明确失败。",
-        parameters=VisionInput.model_json_schema(), open=open_tool,
+        parameters=VisionInput.model_json_schema(), open=open_tool, icon="eye",
     )

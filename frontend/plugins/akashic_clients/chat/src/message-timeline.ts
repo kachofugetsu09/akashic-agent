@@ -1,3 +1,4 @@
+import type { ToolIconSpec } from "@akashic/chat-ui-v1";
 import { toolDataText } from "./message-rendering-policy";
 import { markdownPlainText } from "./static-markdown";
 
@@ -25,7 +26,7 @@ export interface CompactionBoundaryValue {
 export type TimelinePart =
   | { kind: "text" | "artifact_ref" | "reply_ref"; value: string }
   | { kind: "session.reference"; value: { sessions: TimelineSessionReference[] } }
-  | { kind: "tool_call"; binding_id: string; name: string; owner?: string; arguments: Record<string, unknown> }
+  | { kind: "tool_call"; binding_id: string; name: string; owner?: string; icon?: ToolIconSpec; arguments: Record<string, unknown> }
   | { kind: "context.notice"; value: { text: string } }
   | { kind: "compaction.boundary"; value: CompactionBoundaryValue }
   | { kind: "history.provenance" | "history.transcript" | "history.record" | "history.turn_input"; archive: unknown }
@@ -302,7 +303,8 @@ function validPart(value: unknown): boolean {
       });
     }
     case "tool_call": return nonempty(part.binding_id) && nonempty(part.name) && object(part.arguments) !== null
-      && (part.owner === undefined || nonempty(part.owner));
+      && (part.owner === undefined || nonempty(part.owner))
+      && (part.icon === undefined || validToolIcon(part.icon));
     case "context.notice": return nonempty(object(part.value)?.text);
     case "compaction.boundary": {
       const value = object(part.value);
@@ -322,6 +324,20 @@ function validAttachment(value: unknown): boolean {
   return item !== null && nonempty(item.artifact_id) && (item.kind === "file" || item.kind === "image")
     && nullableText(item.filename) && nullableText(item.media_type) && integer(item.size_bytes)
     && typeof item.sha256 === "string" && /^[0-9a-f]{64}$/u.test(item.sha256);
+}
+function validToolIcon(value: unknown): boolean {
+  const icon = object(value);
+  if (!icon) return false;
+  if (icon.kind === "lucide") return nonempty(icon.name) && /^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(icon.name);
+  if (icon.kind === "svg") {
+    return nonempty(icon.viewBox) && Array.isArray(icon.nodes) && icon.nodes.length > 0 && icon.nodes.every((item) => {
+      const node = object(item);
+      const attrs = object(node?.attrs);
+      return node !== null && nonempty(node.tag) && attrs !== null
+        && Object.values(attrs).every((v) => typeof v === "string");
+    });
+  }
+  return false;
 }
 function object(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : null;

@@ -128,6 +128,14 @@ class FileTool:
         return None
 
 
+_FILE_ICONS: dict[type[FileBackend], str] = {
+    ReadFileTool: "file-text",
+    WriteFileTool: "file-plus",
+    EditFileTool: "pencil",
+    ListDirTool: "folder-open",
+}
+
+
 async def register_file(
     ctx: Context, backend_type: type[FileBackend], *, allowed_dir: Path | None,
 ) -> ToolRef:
@@ -161,4 +169,5 @@ async def register_file(
         open=open_tool,
         capture=capture,
         parallel=backend_type in (ReadFileTool, ListDirTool),
+        icon=_FILE_ICONS[backend_type],
     ))

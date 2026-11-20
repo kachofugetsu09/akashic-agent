@@ -112,6 +112,8 @@ await chatSlotModule("frontend/plugins/jobs/src/plugin-ui.tsx", "jobs/plugin_ui.
 await chatSlotModule("frontend/plugins/subagent/src/runner-ui.tsx", "subagent/runner_ui.js");
 // 命令执行结果的命令块，只渲染本插件注册的工具结果。
 await chatSlotModule("frontend/plugins/shell/src/plugin-ui.tsx", "shell/plugin_ui.js");
+// 用户信息查询按 provider 动态切换工具图标。
+await chatSlotModule("frontend/plugins/userinformation/src/plugin-ui.ts", "userinformation/plugin_ui.js");
 // Models 的回答尾注与输入框模型胶囊经插件界面插槽挂载，与设置页 Web 模块分开打包。
 await chatSlotModule("frontend/plugins/models/src/plugin-ui.tsx", "models/plugin_ui.js");
 // 项目的侧栏分组、新建表单与目录选择。

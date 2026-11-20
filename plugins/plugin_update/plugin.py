@@ -71,6 +71,7 @@ async def apply(ctx: Context) -> None:
         open=open_tool,
         capture=capture,
         idempotent=False,
+        icon="package-plus",
     )
     async def report(identity: str, request: Request, status: UpdateStatus) -> None:
         """Send one durable result without overwriting historical result messages."""

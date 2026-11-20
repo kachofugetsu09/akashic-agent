@@ -125,4 +125,12 @@ async def apply(ctx: Context) -> None:
         else "isolated-write" if config.permission_mode in {"acceptEdits", "auto"}
         else "full-access"
     )
-    await service.register(ctx, AgentRunner("claude_code", desc, True, policy, run))
+    CLAUDE_ICON = (
+        '<svg viewBox="0 0 24 24">'
+        '<path d="M12 3v18"/>'
+        '<path d="M3 12h18"/>'
+        '<path d="m5.6 5.6 12.8 12.8"/>'
+        '<path d="M5.6 18.4 18.4 5.6"/>'
+        "</svg>"
+    )
+    await service.register(ctx, AgentRunner("claude_code", desc, True, policy, run, icon=CLAUDE_ICON))

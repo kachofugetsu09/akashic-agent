@@ -387,6 +387,7 @@ async def register_restart(ctx: Context) -> ToolRef | None:
             "additionalProperties": False,
         },
         open=open_tool,
+        icon="rotate-cw",
     )
     _ = await ctx.on(RUNTIME_STARTING, watcher.prepare)
     _ = await ctx.on(RUNTIME_STARTED, watcher.start)

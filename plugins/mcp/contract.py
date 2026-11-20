@@ -8,6 +8,7 @@ from plugins.managed_processes.contract import ManagedProcessHandle
 from typing import Any, Literal, Protocol
 from agent.plugin_composition.context import Context
 from agent.plugin_composition.model import ServiceKey
+from plugins.tools.contract import ToolIcon
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,6 +35,7 @@ class McpServerDefinition:
     endpoint_env: tuple[EndpointEnv, ...] = ()
     workload_env: tuple[WorkloadEnv, ...] = ()
     candidate_env: Mapping[str, str] = field(default_factory=dict)
+    icon: ToolIcon | None = None
 
 
 @dataclass(frozen=True, slots=True)
