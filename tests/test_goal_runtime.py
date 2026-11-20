@@ -13,7 +13,6 @@ from plugins.ledger.contract import (
     ContentPart,
     ContentReferences,
     Control,
-    Input,
     Output,
 )
 from plugins.models.contract import ModelCallStats, ModelUsage
@@ -29,7 +28,6 @@ class _RuntimeCatalog:
 
     async def follow(self, **kwargs):
         yield {}
-        import asyncio
         await asyncio.Event().wait()
 
 
