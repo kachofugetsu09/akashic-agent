@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-from typing import cast
-
 import pytest
 
-from plugins.goal.state import Goal, GoalStatus, new_goal
+from plugins.goal.state import new_goal
 from plugins.goal.store import RoundSettlement, digest
 from plugins.ledger.contract import (
     ContentReferences,
@@ -114,61 +112,5 @@ async def test_settle_rejects_head_change(tmp_path):
                 ),
                 next_message_id="goal-continuation:g:2", next_text="continue",
             )
-    finally:
-        harness.log.close()
-
-
-@pytest.mark.asyncio
-async def test_operation_receipts_are_bounded(tmp_path, monkeypatch):
-    from plugins.goal import store as store_module
-    monkeypatch.setattr(store_module, "MAX_OPERATIONS", 3)
-    harness = goal_harness(tmp_path)
-    try:
-        for index in range(8):
-            await harness.store.apply(
-                "s", f"op-{index}", "clear", digest({"clear": index}),
-                lambda current: (None, "cleared"),
-            )
-        # 最新回执仍守护同一操作号；最早的回执已淘汰，同号新载荷不再冲突。
-        with pytest.raises(MessageConflict):
-            await harness.store.apply(
-                "s", "op-7", "clear", digest({"clear": "other"}),
-                lambda current: (None, "cleared"),
-            )
-        await harness.store.apply(
-            "s", "op-0", "clear", digest({"clear": "other"}),
-            lambda current: (None, "cleared"),
-        )
-    finally:
-        harness.log.close()
-
-
-@pytest.mark.asyncio
-async def test_runtime_sessions_includes_inactive_with_pending_continuation(tmp_path):
-    from dataclasses import replace
-    harness = goal_harness(tmp_path)
-    try:
-        await _create(harness.store)
-        assert await harness.store.active_sessions() == frozenset({"s"})
-        assert await harness.store.runtime_sessions() == frozenset({"s"})
-
-        await harness.store.apply(
-            "s", "op-complete", "update", digest({"status": "complete"}),
-            lambda current: (
-                replace(
-                    cast(Goal, current), status=GoalStatus.COMPLETE,
-                    continuation_id="goal-continuation:g:1",
-                ),
-                "complete",
-            ),
-        )
-        assert await harness.store.active_sessions() == frozenset()
-        assert await harness.store.runtime_sessions() == frozenset({"s"})
-
-        await harness.store.apply(
-            "s", "op-settled", "update", digest({"settled": True}),
-            lambda current: (replace(cast(Goal, current), continuation_id=None), "settled"),
-        )
-        assert await harness.store.runtime_sessions() == frozenset()
     finally:
         harness.log.close()

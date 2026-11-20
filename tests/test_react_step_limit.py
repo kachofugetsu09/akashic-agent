@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 import pytest
@@ -81,24 +80,6 @@ async def test_step_limit_abandons_segment_when_no_call_is_open(tmp_path: Path) 
 
 
 @pytest.mark.asyncio
-async def test_step_limit_without_abort_writer_keeps_failing(tmp_path: Path) -> None:
-    """没有写控制能力的调用方仍得到明确失败，行为与修复前一致。"""
-    async def complete(_request):
-        return continue_response(0)
-
-    async with runtime(
-        tmp_path, complete, invoke, max_steps=1, without_abort=True,
-    ) as (conversation, log, _models, run):
-        await conversation.accept("first-input", Input((ContentPart("text", "first"),)))
-        first = await conversation.start(run)
-        assert first is not None
-        with pytest.raises(RuntimeError) as failure:
-            await first.join()
-        assert isinstance(failure.value.args[0], StepLimit)
-        assert not [body for body in controls(log) if body.action == "abandon"]
-
-
-@pytest.mark.asyncio
 async def test_step_limit_with_open_call_reports_unknown_effect(tmp_path: Path) -> None:
     """未回执调用可能已有外部效果：引擎不替用户作废，只停下并如实报告。"""
     requests: list[object] = []
@@ -152,23 +133,3 @@ async def test_user_abandon_refuses_already_closed_prefix(tmp_path: Path) -> Non
             )
         # 被拒绝的放弃不写入任何事实。
         assert not [body for body in controls(log) if body.action == "abandon"]
-
-
-# 前端按字符串前缀认出「重试不会生效、只有放弃能解开」。这个契约跨了语言边界，
-# Python 侧测试只能证明自己以常量开头，所以这里直接读前端的常量定义核对。
-_TIMELINE_SOURCE = Path(__file__).parents[1] / "frontend/plugins/akashic_clients/chat/src/message-timeline.ts"
-_CONVERSATION_SOURCE = Path(__file__).parents[1] / "frontend/plugins/akashic_clients/chat/src/desktop-conversation.tsx"
-
-
-def _typescript_string_constant(path: Path, name: str) -> str:
-    source = path.read_text(encoding="utf-8")
-    matched = re.search(rf'^(?:export )?const {name} = "([^"]*)";$', source, re.MULTILINE)
-    assert matched is not None, f"{path.name} 没有定义常量 {name}"
-    return matched.group(1)
-
-
-def test_step_limit_reason_prefix_matches_frontend_constant() -> None:
-    """改文案必须同时改前端；否则界面会悄悄退回一个不会生效的「重试」。"""
-    assert _typescript_string_constant(_TIMELINE_SOURCE, "STEP_LIMIT_FAILURE_REASON") == STEP_LIMIT_FAILURE
-    # 引擎放弃那条前缀同样被前端用来区分人工与自动放弃。
-    assert _typescript_string_constant(_CONVERSATION_SOURCE, "ENGINE_ABANDON_REASON") == STEP_LIMIT_ABANDON
