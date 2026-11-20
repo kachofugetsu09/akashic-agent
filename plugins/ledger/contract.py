@@ -626,6 +626,30 @@ class MessagePage:
     has_more: bool
 
 
+@dataclass(frozen=True, slots=True)
+class TextHit:
+    """一条正文含查询词的消息：命中数与第一处前后的摘要。"""
+
+    message_id: str
+    seq: int
+    kind: str
+    timestamp: str
+    count: int
+    before: str
+    match: str
+    after: str
+
+
+@dataclass(frozen=True, slots=True)
+class TextSearch:
+    """会话内正文查找结果：按 seq 升序的最新若干条命中消息，total 是命中消息总数。"""
+
+    hits: tuple[TextHit, ...]
+    total: int
+    capped: bool
+    through_seq: int
+
+
 class InvalidPage(ValueError):
     """调用者的分页范围或游标无效；与持久记录损坏区分。"""
 
@@ -841,6 +865,8 @@ class MessageReader(Protocol):
     ) -> MessagePage: ...
 
     def get(self, message_id: str) -> Message | None: ...
+
+    async def find_text_async(self, query: str, *, limit: int = 200) -> TextSearch: ...
 
     def attachments(self, message_id: str) -> tuple[AttachmentRef, ...]: ...
 
