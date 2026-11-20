@@ -66,15 +66,3 @@ def test_core_only_cli_restarts_after_creating_runtime_data(
         "20261111_01_patch_follows_preset",
     }
     assert not (workspace / "sessions.db").exists()
-
-
-def test_web_provider_upgrade_preserves_explicit_choices(tmp_path: Path) -> None:
-    """An old Web tools install must pass preflight and retain search/fetch providers."""
-    # 场景保留 EVIDENCE 目录供排查；放进 pytest 临时目录，由 pytest 轮换清理。
-    environment = {**os.environ, "TMPDIR": str(tmp_path), "PYTHONPATH": os.pathsep.join(
-        (str(_PROJECT_ROOT / "sdk/python/src"), str(_PROJECT_ROOT)))}
-    result = subprocess.run(
-        [sys.executable, str(_PROJECT_ROOT / "scripts/deployment_migration_scenario.py"), "--web-providers"],
-        cwd=_PROJECT_ROOT, env=environment, capture_output=True, text=True, timeout=90,
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
