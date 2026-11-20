@@ -1,4 +1,4 @@
-import { createElement } from "react";
+import { createElement, type ReactElement } from "react";
 import type { ToolIconSpec } from "@akashic/chat-ui-v1";
 import {
   Activity,
@@ -48,6 +48,7 @@ import {
   Wrench,
 } from "lucide-react";
 import type { ToolBlock } from "./chat-message";
+import { readToolIcon } from "./message-timeline";
 import { pluginToolIcon, usePluginUiCatalogVersion } from "./plugin-ui-runtime";
 
 const LUCIDE_TOOL_ICONS: Record<string, LucideIcon> = {
@@ -97,32 +98,30 @@ const LUCIDE_TOOL_ICONS: Record<string, LucideIcon> = {
   "wrench": Wrench,
 };
 
-const ALLOWED_SVG_TAGS = new Set(["path", "circle", "rect", "line", "polyline", "polygon", "ellipse"]);
-const ALLOWED_SVG_ATTRS = new Set([
-  "d", "cx", "cy", "r", "rx", "ry", "x", "y", "x1", "y1", "x2", "y2",
-  "width", "height", "points", "fill", "stroke",
-  "fillRule", "clipRule", "strokeLinecap", "strokeLinejoin", "strokeWidth",
-]);
-
-function normalizeSpec(raw: string | ToolIconSpec | null | undefined): ToolIconSpec | null {
-  if (!raw) return null;
-  if (typeof raw === "string") return { kind: "lucide", name: raw };
-  return raw;
-}
-
-function safeSvgAttrs(attrs: Record<string, string>): Record<string, string> {
-  const safe: Record<string, string> = {};
-  for (const [key, value] of Object.entries(attrs)) {
-    if (!ALLOWED_SVG_ATTRS.has(key) || typeof value !== "string") continue;
-    if (key === "fill" || key === "stroke") {
-      const lower = value.trim().toLowerCase();
-      if (lower !== "none" && lower !== "currentcolor") continue;
-      safe[key] = lower === "none" ? "none" : "currentColor";
-    } else {
-      safe[key] = value;
-    }
+function renderSpec(spec: ToolIconSpec | undefined, className: string, size: number): ReactElement | null {
+  if (!spec) return null;
+  if (spec.kind === "svg") {
+    if (!spec.nodes.length) return null;
+    return (
+      <svg
+        className={className}
+        width={size}
+        height={size}
+        viewBox={spec.viewBox}
+        fill="none"
+        stroke="currentColor"
+        strokeWidth={1.75}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden="true"
+      >
+        {spec.nodes.map((node, index) => createElement(node.tag, { key: index, ...node.attrs }))}
+      </svg>
+    );
   }
-  return safe;
+  if (!Object.hasOwn(LUCIDE_TOOL_ICONS, spec.name)) return null;
+  const Icon = LUCIDE_TOOL_ICONS[spec.name];
+  return <Icon className={className} size={size} aria-hidden="true" />;
 }
 
 export function ToolStepIcon({
@@ -136,32 +135,9 @@ export function ToolStepIcon({
 }) {
   usePluginUiCatalogVersion();
   const dynamic = pluginToolIcon({ name: block.name, arguments: block.input }, block.owner);
-  const spec = normalizeSpec(dynamic) ?? block.icon ?? null;
-
-  if (spec?.kind === "svg" && spec.nodes.length > 0) {
-    const validNodes = spec.nodes.filter((node) => ALLOWED_SVG_TAGS.has(node.tag));
-    if (validNodes.length > 0) {
-      return (
-        <svg
-          className={className}
-          width={size}
-          height={size}
-          viewBox={spec.viewBox}
-          fill="none"
-          stroke="currentColor"
-          strokeWidth={1.75}
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          aria-hidden="true"
-        >
-          {validNodes.map((node, index) =>
-            createElement(node.tag, { key: index, ...safeSvgAttrs(node.attrs) }),
-          )}
-        </svg>
-      );
-    }
-  }
-
-  const Icon = spec?.kind === "lucide" ? (LUCIDE_TOOL_ICONS[spec.name] ?? Wrench) : Wrench;
-  return <Icon className={className} size={size} aria-hidden="true" />;
+  const resolvedDynamic = dynamic ? renderSpec(dynamic, className, size) : null;
+  if (resolvedDynamic) return resolvedDynamic;
+  const resolvedStatic = renderSpec(readToolIcon(block.icon), className, size);
+  if (resolvedStatic) return resolvedStatic;
+  return <Wrench className={className} size={size} aria-hidden="true" />;
 }

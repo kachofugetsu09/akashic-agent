@@ -8,6 +8,7 @@ import { composerControls } from "./composer-contributions";
 import type { ScopeFields } from "./scope-fields";
 import { openInWorkbench, subscribeWorkbenchIntents, workbenchAccepts } from "./shell-workbench";
 import { selectMessages } from "./message-selection";
+import { readToolIcon } from "./message-timeline";
 
 import type { ComposerControls, ComposerSuggestProvider, DestinationControls, DestinationForm, HeaderMetaControls, NavigationControls, NavigationDestinationsProvider, NavigationForm, NavigationFormControls, NavigationGroupsProvider, NavigationNotice, PluginUiDefinition, PluginUiHostContext, PluginUiMountSlotName, PluginUiQueryOptions, PluginUiSlotFacts, PluginUiSlotName, ScopeFieldControls, SidebarPanelControls, SidebarPanelProvider, ToolIconFacts, ToolIconProvider, ToolIconSpec, ToolSummaryFacts, ToolSummaryProvider, ToolTaskSummary } from "@akashic/chat-ui-v1";
 
@@ -479,17 +480,14 @@ function isPanelProvider(value: unknown): value is SidebarPanelProvider {
 }
 
 // 工具图标只问工具 owner；插件未加载、返回无效值或抛错时退回后端静态声明或默认图标。调用方需随目录版本重新渲染。
-export function pluginToolIcon(facts: ToolIconFacts, owner: string | undefined): string | ToolIconSpec | null {
+export function pluginToolIcon(facts: ToolIconFacts, owner: string | undefined): ToolIconSpec | null {
   if (!owner) return null;
   const plugin = catalog.plugins.find((item) => item.id === owner);
   const loaded = plugin ? definitions.get(plugin.id) : undefined;
   const provider = plugin && loaded?.revision === plugin.revision ? loaded.definition.slots["tool.icon"] : undefined;
   if (!provider) return null;
   try {
-    const resolved = provider.resolve(facts);
-    if (typeof resolved === "string" && resolved.trim()) return resolved.trim();
-    if (resolved && typeof resolved === "object" && (resolved.kind === "lucide" || resolved.kind === "svg")) return resolved;
-    return null;
+    return readToolIcon(provider.resolve(facts)) ?? null;
   } catch {
     return null;
   }

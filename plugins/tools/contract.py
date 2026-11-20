@@ -573,6 +573,7 @@ _SVG_ATTR_ALIASES = {
 }
 _SVG_MAX_BYTES = 8192
 _SVG_MAX_NODES = 32
+_SVG_MAX_DEPTH = 8
 
 
 def _freeze_icon_value(value: object) -> object:
@@ -632,6 +633,13 @@ def _normalize_svg_attrs(raw_attrs: Mapping[object, object]) -> dict[str, str]:
             raise ValueError(f"工具图标 SVG 属性值无效: {key}")
         if canonical in {"fill", "stroke"}:
             cleaned = _normalize_svg_paint(canonical, cleaned)
+        elif canonical == "strokeWidth":
+            try:
+                width = float(cleaned)
+            except ValueError as error:
+                raise ValueError(f"工具图标 SVG strokeWidth 数值无效: {cleaned}") from error
+            if not math.isfinite(width) or not (0.25 <= width <= 4.0):
+                raise ValueError(f"工具图标 SVG strokeWidth 超出范围 (0.25~4): {cleaned}")
         attrs[canonical] = cleaned
     return attrs
 
@@ -640,12 +648,16 @@ def _collect_svg_nodes(
     element: ET.Element,
     inherited: Mapping[str, str],
     nodes: list[dict[str, object]],
+    *,
+    depth: int = 0,
 ) -> None:
+    if depth > _SVG_MAX_DEPTH:
+        raise ValueError(f"工具图标 SVG 嵌套深度超过上限 ({_SVG_MAX_DEPTH})")
     for child in element:
         tag = _svg_local_tag(child.tag)
         if tag == "g":
             group_attrs = {**inherited, **_normalize_svg_attrs(cast(Mapping[object, object], child.attrib))}
-            _collect_svg_nodes(child, group_attrs, nodes)
+            _collect_svg_nodes(child, group_attrs, nodes, depth=depth + 1)
             continue
         if tag not in _ALLOWED_SVG_TAGS:
             raise ValueError(f"工具图标 SVG 不允许的元素: <{tag}>")
@@ -670,14 +682,12 @@ def _parse_svg_string(raw: str) -> Mapping[str, object]:
     if _svg_local_tag(root.tag) != "svg":
         raise ValueError("工具图标 SVG 根元素必须是 <svg>")
     view_box = _validate_svg_view_box(root.attrib.get("viewBox", "0 0 24 24"))
-    inherited: dict[str, str] = {}
-    for key, value in root.attrib.items():
-        canonical = _SVG_ATTR_ALIASES.get(key, key)
-        if canonical in _ALLOWED_SVG_ATTRS:
-            if canonical in {"fill", "stroke"}:
-                inherited[canonical] = _normalize_svg_paint(canonical, value)
-            else:
-                inherited[canonical] = value.strip()
+    raw_inherited = {
+        key: value
+        for key, value in root.attrib.items()
+        if _SVG_ATTR_ALIASES.get(key, key) in _ALLOWED_SVG_ATTRS
+    }
+    inherited = _normalize_svg_attrs(cast(Mapping[object, object], raw_inherited))
     nodes: list[dict[str, object]] = []
     _collect_svg_nodes(root, inherited, nodes)
     if not nodes:
@@ -728,6 +738,9 @@ def normalize_tool_icon(icon: str | Mapping[str, object] | None) -> Mapping[str,
                 if not isinstance(attrs, Mapping):
                     raise ValueError("工具图标 SVG node.attrs 必须是映射")
                 nodes.append({"tag": tag, "attrs": _normalize_svg_attrs(cast(Mapping[object, object], attrs))})
+            encoded_size = len(json.dumps({"viewBox": view_box, "nodes": nodes}, ensure_ascii=False).encode("utf-8"))
+            if encoded_size > _SVG_MAX_BYTES:
+                raise ValueError("工具图标 SVG 超过大小上限")
             return cast(
                 Mapping[str, object],
                 _freeze_icon_value({"kind": "svg", "viewBox": view_box, "nodes": nodes}),

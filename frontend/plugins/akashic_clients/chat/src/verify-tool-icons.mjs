@@ -58,12 +58,13 @@ const STEPS = [
   { name: 'edit_file', owner: 'files', icon: { kind: 'lucide', name: 'pencil' }, args: { path: 'plugins/tools/plugin.py' }, result: 'updated' },
   { name: 'web_search', owner: 'standard_web', icon: { kind: 'lucide', name: 'search' }, args: { query: 'lucide-react tree shaking' }, result: '8 results' },
   { name: 'design_render', owner: 'design', icon: { kind: 'lucide', name: 'pen-tool' }, args: { jsx: '<Frame ... />' }, result: 'rendered' },
+  { name: 'codemode', owner: 'codemode', icon: { kind: 'lucide', name: 'code-2' }, args: { code: 'return await tools.read_file(...)' }, result: 'ok' },
   { name: 'delegate_codex', owner: 'subagent_codex', icon: CODEX_SVG, args: { task: '审查插件契约与兼容性' }, result: 'accepted' },
   { name: 'delegate_claude_code', owner: 'subagent_claude_code', icon: CLAUDE_SVG, args: { task: '只读核对 UI 边界' }, result: 'accepted' },
   { name: 'user_information_list', owner: 'userinformation', icon: { kind: 'lucide', name: 'user-round-search' }, args: {}, result: '{"providers": ["fitbit@github", "steam@github"]}' },
   { name: 'user_information_query', owner: 'userinformation', icon: { kind: 'lucide', name: 'user-round-search' }, args: { provider: 'fitbit@github', query: 'sleep_report' }, result: '{"hours": 7.4}' },
   { name: 'user_information_query', owner: 'userinformation', icon: { kind: 'lucide', name: 'user-round-search' }, args: { provider: 'steam@github', query: 'recent_games' }, result: '{"games": []}' },
-  { name: 'legacy_unregistered_tool', args: { description: '旧归档未声明图标，兜底显示 Wrench' }, result: 'ok' },
+  { name: 'legacy_unregistered_tool', icon: { kind: 'future-kind' }, args: { description: '旧归档或未知图标类型，宽容兜底显示 Wrench' }, result: 'ok' },
 ];
 
 const base = Date.UTC(2026, 10, 20, 7, 0, 0);
@@ -102,6 +103,19 @@ const ITEMS = [
   }, 20),
 ];
 
+const LIVE_ITEMS = [
+  { id: 'live-u', seq: 0, session_id: 'tool-icons-live', timestamp: at(0), author: 'user', actor: 'user', source: 'akashic', attachments: [], metadata: {}, body: { kind: 'input', parts: [{ kind: 'text', value: '运行态着色测试' }] } },
+  { id: 'live-a', seq: 1, session_id: 'tool-icons-live', timestamp: at(1), author: 'assistant', actor: 'model', source: 'akashic', attachments: [], metadata: {}, body: {
+    kind: 'output', finish: 'continue', parts: [
+      { kind: 'tool_call', binding_id: 'b-live-0', name: 'shell', owner: 'shell', icon: { kind: 'lucide', name: 'terminal' }, arguments: { command: 'npm test' } },
+      { kind: 'tool_call', binding_id: 'b-live-1', name: 'edit_file', owner: 'files', icon: { kind: 'lucide', name: 'pencil' }, arguments: { path: 'app.ts' } },
+    ],
+  } },
+  { id: 'live-r0', seq: 2, session_id: 'tool-icons-live', timestamp: at(2), author: 'tool', actor: 'tool', source: 'akashic', attachments: [], metadata: {}, body: {
+    kind: 'tool_result', call_ref: { message_id: 'live-a', part_index: 0 }, outcome: 'success', parts: [{ kind: 'text', value: 'ok' }],
+  } },
+];
+
 const catalogPayload = {
   catalog_revision: 'a'.repeat(64),
   items: [
@@ -127,12 +141,18 @@ const server = createServer((req, res) => {
   if (path === '/api/chat/navigation/pins') return json(res, { pins: [], sessions: [] });
   if (path === '/api/chat/sessions') {
     return json(res, {
-      items: [{ key: 'tool-icons-demo', first_message_content: '展示一下各个插件工具图标改造后的实际效果', updated_at: ITEMS.at(-1).timestamp, message_count: ITEMS.length }],
+      items: [
+        { key: 'tool-icons-demo', first_message_content: '展示一下各个插件工具图标改造后的实际效果', updated_at: ITEMS.at(-1).timestamp, message_count: ITEMS.length },
+        { key: 'tool-icons-live', first_message_content: '运行态着色测试', updated_at: LIVE_ITEMS.at(-1).timestamp, message_count: LIVE_ITEMS.length },
+      ],
       next_cursor: null,
     });
   }
   if (path === '/api/chat/sessions/tool-icons-demo/messages') {
     return json(res, { version: 2, items: ITEMS, through_seq: ITEMS.at(-1).seq, has_more: false, before_seq: null });
+  }
+  if (path === '/api/chat/sessions/tool-icons-live/messages') {
+    return json(res, { version: 2, items: LIVE_ITEMS, through_seq: LIVE_ITEMS.at(-1).seq, has_more: false, before_seq: null });
   }
   if (path === '/api/chat/plugin-ui/catalog') return json(res, catalogPayload);
   if (path === '/api/chat/plugin-ui/asset') {
@@ -156,11 +176,16 @@ wss.on('connection', (socket) => {
     if (frame.type === 'session.follow') {
       socket.send(JSON.stringify({
         type: 'session.following', version: 2, session_id: frame.session_id,
-        request_id: frame.request_id, through_seq: ITEMS.at(-1).seq,
+        request_id: frame.request_id,
+        through_seq: frame.session_id === 'tool-icons-live' ? LIVE_ITEMS.at(-1).seq : ITEMS.at(-1).seq,
       }));
       socket.send(JSON.stringify({
         type: 'reply.status', version: 2, session_id: frame.session_id,
-        snapshot_id: 'settled-snap', available: true, items: [],
+        snapshot_id: frame.session_id === 'tool-icons-live' ? 'live-snap' : 'settled-snap',
+        available: true,
+        items: frame.session_id === 'tool-icons-live'
+          ? [{ session_id: frame.session_id, source: 'akashic', handle: 'h1', active: true, preview: null }]
+          : [],
       }));
     }
   });
@@ -188,11 +213,11 @@ try {
 
   await page.goto(origin + '/?session=tool-icons-demo');
   await page.locator('.turn-process-summary').waitFor();
-  // 展开整轮过程，查看所有 12 个工具行
+  // 展开整轮过程，查看所有 13 个工具行
   await page.locator('.turn-process-summary').click();
   await page.waitForFunction(() => {
     const svgs = [...document.querySelectorAll('.tool-step .tool-step-icon')];
-    return svgs.length === 12 && new Set(svgs.map((s) => s.innerHTML)).size === 12;
+    return svgs.length === 13 && new Set(svgs.map((s) => s.innerHTML)).size === 13;
   });
   await page.waitForTimeout(200);
 
@@ -214,16 +239,16 @@ try {
     });
   });
 
-  assert.equal(rows.length, 12, '应渲染 12 个工具步骤，实际：' + rows.length);
+  assert.equal(rows.length, 13, '应渲染 13 个工具步骤，实际：' + rows.length);
   for (const r of rows) {
     assert.equal(r.width, 14, `${r.title} 图标宽度应为 14px，实际 ${r.width}`);
     assert.equal(r.height, 14, `${r.title} 图标高度应为 14px，实际 ${r.height}`);
     assert.ok(r.inner.length > 0, `${r.title} SVG 内容不得为空`);
   }
 
-  // 验证彼此区分度：12 个工具分别对应 12 个不同的图标！
+  // 验证彼此区分度：13 个工具分别对应 13 个不同的图标！
   const distinctSvgs = new Set(rows.map((r) => r.inner));
-  assert.equal(distinctSvgs.size, 12, '12 个工具图标应各不相同，实际去重后仅 ' + distinctSvgs.size + ' 个');
+  assert.equal(distinctSvgs.size, 13, '13 个工具图标应各不相同，实际去重后仅 ' + distinctSvgs.size + ' 个');
 
   // 验证自定义 SVG（delegate_codex 与 delegate_claude_code）
   const codexRow = rows.find((r) => r.title === 'delegate_codex');
@@ -240,6 +265,21 @@ try {
   await page.evaluate(() => { document.documentElement.dataset.theme = 'dark'; });
   await page.waitForTimeout(150);
   await page.screenshot({ path: root + '/tool-icons-dark.png', fullPage: true });
+
+  // 验证运行态着色（.tool-step.active .tool-step-icon 颜色区别于已完成图标）
+  await page.evaluate(() => { document.documentElement.dataset.theme = 'light'; });
+  await page.goto(origin + '/?session=tool-icons-live');
+  await page.locator('.tool-step.active .tool-step-icon').waitFor();
+  const colors = await page.evaluate(() => {
+    const done = document.querySelector('.tool-step:not(.active) .tool-step-icon');
+    const active = document.querySelector('.tool-step.active .tool-step-icon');
+    return {
+      done: done ? getComputedStyle(done).color : '',
+      active: active ? getComputedStyle(active).color : '',
+    };
+  });
+  assert.ok(colors.done && colors.active && colors.done !== colors.active,
+    `运行中工具图标应使用 trace 状态色（done=${colors.done}, active=${colors.active}）`);
 
   assert.deepEqual(errors, [], '页面出现未捕获错误: ' + JSON.stringify(errors));
   writeFileSync(root + '/results.json', JSON.stringify({ passed: true, rows: rows.map((r) => ({ title: r.title, width: r.width, height: r.height })) }, null, 2));

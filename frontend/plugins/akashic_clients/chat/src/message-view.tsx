@@ -1,4 +1,5 @@
 import { chatPortalRoot } from "./chat-layout";
+import { readToolIcon } from "./message-timeline";
 import { PluginUiSlot, pluginSlotAccepts, pluginToolSummary, usePluginUiCatalogVersion } from "./plugin-ui-runtime";
 import { ToolStepIcon } from "./tool-icon";
 import type { ToolSummaryFacts, ToolTaskSummary } from "@akashic/chat-ui-v1";
@@ -345,7 +346,7 @@ function timelineFlow(messages: TimelineMessage[], finalId: string | undefined, 
         const result = toolResults.get(key);
         const outcome = result?.body.kind === "tool_result" ? result.body.outcome : null;
         return [{ kind: "tool", key, origin, index, part, block: {
-          kind: "tool", callId: key, name: part.name, owner: part.owner, icon: part.icon, input: part.arguments,
+          kind: "tool", callId: key, name: part.name, owner: part.owner, icon: readToolIcon(part.icon), input: part.arguments,
           output: result ? timelineToolOutput(result) : undefined,
           attachments: toolImages(result),
           status: outcome === null ? active ? "input-available" : "output-unknown" : outcome === "success" ? "output-available" : "output-error",

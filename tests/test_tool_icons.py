@@ -4,7 +4,6 @@ from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-import shutil
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -125,6 +124,8 @@ def test_normalize_tool_icon_accepts_lucide_and_safe_svg() -> None:
         '<svg viewBox="0 0 24 24"><path d="M0 0" fill="red"/></svg>',
         '<!DOCTYPE svg><svg viewBox="0 0 24 24"><path d="M0 0"/></svg>',
         "<svg viewBox='0 0 24 24'></svg>",
+        '<svg viewBox="0 0 24 24"><path d="M0 0" stroke-width="12"/></svg>',
+        "<svg viewBox='0 0 24 24'>" + "<g>" * 10 + '<path d="M0 0"/>' + "</g>" * 10 + "</svg>",
         {"kind": "unknown"},
     ],
 )
@@ -320,10 +321,12 @@ async def test_userinformation_registers_static_group_icon_and_tool_icon_slot(tm
 
     _ = await root.mount(ui_apply, name="ui", runtime=_runtime(tmp_path, "ui"))
 
-    plugin_dir = Path(__file__).resolve().parents[1] / "plugins" / "userinformation"
     ui_dir = tmp_path / "userinformation"
     ui_dir.mkdir(parents=True, exist_ok=True)
-    _ = shutil.copy2(plugin_dir / "plugin_ui.js", ui_dir / "plugin_ui.js")
+    _ = (ui_dir / "plugin_ui.js").write_text(
+        'export default { slots: { "tool.icon": { resolve: () => "heart-pulse" } } };\n',
+        encoding="utf-8",
+    )
     rt = PluginRuntime("userinformation", "userinformation:1", ui_dir, tmp_path / "data", tmp_path / "ws", {})
 
     _ = await root.mount(userinfo_apply, name="userinformation", inject=(TOOLS,), runtime=rt)

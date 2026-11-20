@@ -303,8 +303,7 @@ function validPart(value: unknown): boolean {
       });
     }
     case "tool_call": return nonempty(part.binding_id) && nonempty(part.name) && object(part.arguments) !== null
-      && (part.owner === undefined || nonempty(part.owner))
-      && (part.icon === undefined || validToolIcon(part.icon));
+      && (part.owner === undefined || nonempty(part.owner));
     case "context.notice": return nonempty(object(part.value)?.text);
     case "compaction.boundary": {
       const value = object(part.value);
@@ -325,19 +324,61 @@ function validAttachment(value: unknown): boolean {
     && nullableText(item.filename) && nullableText(item.media_type) && integer(item.size_bytes)
     && typeof item.sha256 === "string" && /^[0-9a-f]{64}$/u.test(item.sha256);
 }
-function validToolIcon(value: unknown): boolean {
-  const icon = object(value);
-  if (!icon) return false;
-  if (icon.kind === "lucide") return nonempty(icon.name) && /^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(icon.name);
-  if (icon.kind === "svg") {
-    return nonempty(icon.viewBox) && Array.isArray(icon.nodes) && icon.nodes.length > 0 && icon.nodes.every((item) => {
-      const node = object(item);
-      const attrs = object(node?.attrs);
-      return node !== null && nonempty(node.tag) && attrs !== null
-        && Object.values(attrs).every((v) => typeof v === "string");
-    });
+const ICON_NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
+const ALLOWED_SVG_TAGS = new Set(["path", "circle", "rect", "line", "polyline", "polygon", "ellipse"]);
+const ALLOWED_SVG_ATTRS = new Set([
+  "d", "cx", "cy", "r", "rx", "ry", "x", "y", "x1", "y1", "x2", "y2",
+  "width", "height", "points", "fill", "stroke",
+  "fillRule", "clipRule", "strokeLinecap", "strokeLinejoin", "strokeWidth",
+]);
+
+/** 宽容解析工具图标：无效或未来未知字段返回 undefined，绝不阻断历史消息或工具流渲染。 */
+export function readToolIcon(value: unknown): ToolIconSpec | undefined {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed && trimmed.length <= 64 && ICON_NAME_RE.test(trimmed)
+      ? { kind: "lucide", name: trimmed }
+      : undefined;
   }
-  return false;
+  const icon = object(value);
+  if (!icon) return undefined;
+  if (icon.kind === "lucide") {
+    return nonempty(icon.name) && icon.name.length <= 64 && ICON_NAME_RE.test(icon.name)
+      ? { kind: "lucide", name: icon.name }
+      : undefined;
+  }
+  if (icon.kind === "svg") {
+    if (!nonempty(icon.viewBox)) return undefined;
+    const vb = icon.viewBox.replace(/,/gu, " ").trim().split(/\s+/u).map(Number);
+    if (vb.length !== 4 || vb.some((n) => !Number.isFinite(n)) || vb[2] <= 0 || vb[3] <= 0) return undefined;
+    if (!Array.isArray(icon.nodes) || icon.nodes.length === 0 || icon.nodes.length > 32) return undefined;
+    const nodes: { tag: string; attrs: Record<string, string> }[] = [];
+    for (const item of icon.nodes) {
+      const node = object(item);
+      const rawAttrs = object(node?.attrs);
+      if (!node || !nonempty(node.tag) || !ALLOWED_SVG_TAGS.has(node.tag) || !rawAttrs) return undefined;
+      const attrs: Record<string, string> = {};
+      for (const [key, rawVal] of Object.entries(rawAttrs)) {
+        if (!ALLOWED_SVG_ATTRS.has(key) || typeof rawVal !== "string") return undefined;
+        const cleaned = rawVal.trim();
+        if (!cleaned || cleaned.length > 2048) return undefined;
+        if (key === "fill" || key === "stroke") {
+          const lower = cleaned.toLowerCase();
+          if (lower !== "none" && lower !== "currentcolor") return undefined;
+          attrs[key] = lower === "none" ? "none" : "currentColor";
+        } else if (key === "strokeWidth") {
+          const w = Number(cleaned);
+          if (!Number.isFinite(w) || w < 0.25 || w > 4) return undefined;
+          attrs[key] = cleaned;
+        } else {
+          attrs[key] = cleaned;
+        }
+      }
+      nodes.push({ tag: node.tag, attrs });
+    }
+    return { kind: "svg", viewBox: icon.viewBox, nodes };
+  }
+  return undefined;
 }
 function object(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : null;

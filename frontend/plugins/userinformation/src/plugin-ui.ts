@@ -12,10 +12,10 @@ function resolveToolIcon(block: ToolIconFacts): string | null {
   if (!block.arguments || typeof block.arguments !== "object" || Array.isArray(block.arguments)) return null;
   const args = block.arguments as { provider?: unknown; query?: unknown };
   if (typeof args.provider !== "string") return null;
-  if (args.provider.startsWith("fitbit") && typeof args.query === "string" && args.query.includes("sleep")) {
+  const key = args.provider.split("@")[0];
+  if (key === "fitbit" && typeof args.query === "string" && args.query.includes("sleep")) {
     return "moon";
   }
-  const key = args.provider.split("@")[0];
   return PROVIDER_ICONS[key] ?? null;
 }
 
