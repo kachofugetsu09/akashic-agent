@@ -74,15 +74,14 @@
   font-size: var(--chat-type-control);
   interpolate-size: allow-keywords;
   transform-origin: top left;
+  /* 不叠 blur：120ms 内与淡出同时发生，肉眼几乎看不出，代价却是整块面板逐帧重新栅格化。 */
   opacity: 0;
   transform: translateY(-6px) scale(0.96, 0.92);
-  filter: blur(3px);
   pointer-events: none;
   /* motion-exempt: 桌面面板展开时的几何形变（top/left/width/height）只在桌面端发生，合成写法需要内容反向缩放，ADR 0166 已知限制 */
   transition:
     opacity var(--ak-sys-duration-snap, 120ms) var(--ak-sys-motion-standard),
     transform var(--ak-sys-duration-snap, 120ms) var(--ak-sys-motion-standard),
-    filter var(--ak-sys-duration-snap, 120ms) var(--ak-sys-motion-standard),
     top var(--ak-sys-duration-expand, 200ms) var(--ak-sys-motion-emphasized),
     left var(--ak-sys-duration-expand, 200ms) var(--ak-sys-motion-emphasized),
     width var(--ak-sys-duration-expand, 200ms) var(--ak-sys-motion-emphasized),
@@ -93,10 +92,8 @@
 .sidebar-panels[data-state="open"] {
   opacity: 1;
   transform: none;
-  filter: blur(0);
   pointer-events: auto;
   transition-duration:
-    var(--ak-sys-duration-short, 150ms),
     var(--ak-sys-duration-short, 150ms),
     var(--ak-sys-duration-short, 150ms),
     var(--ak-sys-duration-expand, 200ms),
@@ -107,7 +104,6 @@
   @starting-style {
     opacity: 0;
     transform: translateY(-6px) scale(0.96, 0.92);
-    filter: blur(0);
   }
 }
 
@@ -131,18 +127,15 @@
   box-shadow: 0 -1px 0 var(--ak-rule-subtle), var(--ak-elevation-float);
   padding-block-end: env(safe-area-inset-bottom, 0px);
   transform: translateY(16px);
-  filter: none;
-  /* motion-exempt: 待迁移到合成线程写法，见 ADR 0166 */
+  /* 拉高/降低时高度一步到位，上沿由 sidebar-panels.tsx 用 transform 从旧位置滑过去（FLIP），不逐帧改高度。 */
   transition:
     opacity var(--ak-sys-duration-snap, 120ms) var(--ak-sys-motion-standard),
-    transform var(--ak-sys-duration-snap, 120ms) var(--ak-sys-motion-emphasized),
-    height var(--ak-sys-duration-expand, 200ms) var(--ak-sys-motion-emphasized);
+    transform var(--ak-sys-duration-snap, 120ms) var(--ak-sys-motion-emphasized);
 }
 
 .sidebar-panels[data-sheet][data-state="open"] {
   transform: translateY(0);
   transition-duration:
-    var(--ak-sys-duration-expand, 200ms),
     var(--ak-sys-duration-expand, 200ms),
     var(--ak-sys-duration-expand, 200ms);
   @starting-style {

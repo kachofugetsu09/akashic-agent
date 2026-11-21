@@ -33,14 +33,20 @@
   font: inherit;
   text-align: start;
   cursor: pointer;
-  /* motion-exempt: 待迁移到合成线程写法，见 ADR 0166 */
-  transition: box-shadow var(--ak-sys-duration-short) var(--ak-sys-motion-standard), scale 60ms;
+  transition: scale 60ms;
 }
 .ak-attachment__surface:active:not(:disabled) { scale: 0.98; }
 .ak-attachment__surface:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 2px; }
 .ak-attachment__surface:disabled { cursor: default; }
+/* 悬停加深的描边画死在卡片外层的伪元素上（卡面 overflow 会裁掉外扩描边），只过渡 opacity；按下时随卡面一起缩。 */
+.ak-attachment::before {
+  content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+  box-shadow: 0 0 0 1px var(--ak-rule-default); opacity: 0;
+  transition: opacity var(--ak-sys-duration-short) var(--ak-sys-motion-standard), scale 60ms;
+}
+.ak-attachment:has(> .ak-attachment__surface:active:not(:disabled))::before { scale: 0.98; }
 @media (hover: hover) {
-  .ak-attachment__surface:hover:not(:disabled) { box-shadow: 0 0 0 1px var(--ak-rule-default), var(--ak-elevation-raised); }
+  .ak-attachment:has(> .ak-attachment__surface:hover:not(:disabled))::before { opacity: 1; }
 }
 /* 没有预览可开的文件（PDF、压缩包）只是一张信息卡。 */
 .ak-attachment__surface[data-static] { cursor: default; }
@@ -173,13 +179,14 @@ video.ak-attachment__image { opacity: 1; }
 
 /* 上传中：整卡骨架闪烁（Desktop 不显示百分比），文字与图片隐去一半。 */
 .ak-attachment[aria-busy="true"] .ak-attachment__surface > * { opacity: 0.45; }
-.ak-attachment__skeleton {
-  position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+/* 闪光是一条两倍宽的渐变条在骨架里平移：与原来 background-position 150% → -50% 几何等价，transform 在合成线程播放。 */
+.ak-attachment__skeleton { position: absolute; inset: 0; overflow: hidden; border-radius: inherit; pointer-events: none; }
+.ak-attachment__skeleton::before {
+  content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 200%;
   background: linear-gradient(100deg, transparent 30%, color-mix(in oklab, var(--ak-ink-primary) 7%, transparent) 50%, transparent 70%);
-  background-size: 200% 100%; animation: ak-attachment-shimmer 1.2s linear infinite;
+  animation: ak-attachment-shimmer 1.2s linear infinite;
 }
-/* motion-exempt: 待迁移到合成线程写法，见 ADR 0166 */
-@keyframes ak-attachment-shimmer { from { background-position: 150% 0; } to { background-position: -50% 0; } }
+@keyframes ak-attachment-shimmer { from { transform: translateX(-75%); } to { transform: translateX(25%); } }
 
 /* —— 已发送附件条：用户消息在气泡上方右对齐，回复里左对齐；媒体保持原比例，之后另起一行排文件卡 —— */
 .ak-attachment-strip {
@@ -373,5 +380,5 @@ video.ak-attachment__image { opacity: 1; }
 
 @media (prefers-reduced-motion: reduce) {
   .ak-attachment, .ak-attachment__image { transition-duration: 1ms; }
-  .ak-attachment__skeleton, .composer-drop-scrim, .composer-drop-scrim__ring, .composer-drop-scrim__icons svg { animation: none; }
+  .ak-attachment__skeleton::before, .composer-drop-scrim, .composer-drop-scrim__ring, .composer-drop-scrim__icons svg { animation: none; }
 }
