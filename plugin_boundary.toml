@@ -60,3 +60,25 @@ infrastructure = ["ui", "ledger", "channels", "gateway", "content", "tools", "wo
 frontend = ["frontend/plugins/akashic_clients/chat/src"]
 host_routes = ["/api/chat/sessions", "/api/chat/artifacts", "/api/chat/uploads", "/api/chat/plugin-ui",
                "/api/chat/navigation", "/api/shell/state"]
+
+# R14：插件分层。core 层不得 import extra 层的任何模块（含 contract）；
+# extra 层可按计划迁到外部仓库。新增插件必须在此二选一。
+[tiers]
+core = [
+    "ledger", "ledger_invariants", "content", "content_view", "context", "turn_projection",
+    "sources", "conversation", "reply", "reply_program", "react", "prompt", "compaction",
+    "programmatic", "tools", "tool_search", "host_execution", "workloads", "managed_processes",
+    "working_directory", "shell", "files", "jobs", "models", "openai_compatible", "ui",
+    "akashic_clients", "shell_ui", "conversation_ui", "web_auth", "onboarding", "plugin_settings",
+    "assets", "gateway", "channels", "delivery", "delivery_policy", "akashic_sender",
+    "plugin_update", "skills", "commands", "mcp", "codemode", "runtime_inspection",
+    "runtime_diagnostics",
+]
+extra = [
+    "akasha", "codex", "computer", "design", "gemini", "goal", "main_session", "markdown_memory",
+    "markdown_reader", "message_push", "opencode_go", "privacy_mask", "projects", "scheduler",
+    "session_reference", "session_title", "stable_view", "standard_web", "subagent",
+    "subagent_claude_code", "subagent_codex", "telegram_channel", "telegram_sender", "terminal",
+    "timer", "userinformation", "vision", "visuals", "watch", "web_fetch_http", "web_search_exa",
+    "web_search_searxng", "workspace_changes",
+]

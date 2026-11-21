@@ -17,11 +17,13 @@ R9  Core 装配/宿主没有领域标识符或运行时字面量。
 R10 Core 固定为九个中立 key，均由 Core 独占。
 R11 SQLite 只由中立宿主/迁移函数打开；Web 框架只在 web_shell。
 R12 UI 宿主不点名插件：宿主插件只导入基础设施合同，聊天前端与宿主不按插件 ID 取用功能。
+R14 分层：每个插件在 `plugin_boundary.toml` 的 [tiers] 声明 core 或 extra；
+    core 层插件不得 import extra 层插件的任何模块（含 contract）。
 
 比较 Git 基线时，公开模块清单与 Core 字面 key 声明只允许减少；
 不能通过扩大允许清单或登记新角色来绕过已有边界。
 
-R1～R3、R9、R12 的既有欠账记在 `plugin_boundary_baseline.toml` 中，只允许减少。
+R1～R3、R9、R12、R14 的既有欠账记在 `plugin_boundary_baseline.toml` 中，只允许减少。
 R4、R5 没有基线；本门不证明角色归属、原子性或运行时隔离。
 
 用法
@@ -297,6 +299,45 @@ def check_core_imports_plugin(imports: list[Import]) -> list[Import]:
     ]
 
 
+# 读取 [tiers]：返回 (core 集合, extra 集合)，值为插件目录名。
+def load_tiers(policy: dict[str, object] | None = None) -> tuple[set[str], set[str]]:
+    table = (policy if policy is not None else load_policy()).get("tiers")
+    tiers = table if isinstance(table, dict) else {}
+    core = tiers.get("core")
+    extra = tiers.get("extra")
+    return (
+        {str(name) for name in core} if isinstance(core, list) else set(),
+        {str(name) for name in extra} if isinstance(extra, list) else set(),
+    )
+
+
+# R14：core 层插件 import extra 层插件（含 contract），物理迁出 extra 后会 ImportError。
+def check_core_tier_imports_extra(imports: list[Import]) -> list[Import]:
+    core, extra = load_tiers()
+    violations: list[Import] = []
+    for item in imports:
+        own = plugin_package(item.importer)
+        target = module_plugin_package(item.module)
+        if own is None or target is None or own == target:
+            continue
+        if own.split(".")[1] in core and target.split(".")[1] in extra:
+            violations.append(item)
+    return violations
+
+
+# R14：每个插件目录必须且只能声明一个层级，声明的插件必须真实存在。
+def check_tier_table(policy: dict[str, object]) -> list[str]:
+    core, extra = load_tiers(policy)
+    present = {
+        path.name for path in (REPO_ROOT / PLUGIN_ROOT).iterdir()
+        if path.is_dir() and not path.name.startswith(("_", "."))
+    }
+    errors = [f"R14: 插件 {name} 同时声明 core 与 extra" for name in sorted(core & extra)]
+    errors.extend(f"R14: 插件 {name} 未声明层级（plugin_boundary.toml [tiers]）" for name in sorted(present - core - extra))
+    errors.extend(f"R14: [tiers] 声明了不存在的插件: {name}" for name in sorted((core | extra) - present))
+    return errors
+
+
 def check_plugin_deep_core(imports: list[Import]) -> list[Import]:
     """R2：插件 import core 内部深路径。"""
 
@@ -502,6 +543,7 @@ def import_findings(imports: list[Import]) -> dict[str, list[Import]]:
         "R1": check_core_imports_plugin(imports),
         "R2": check_plugin_deep_core(imports),
         "R3": check_cross_plugin(imports),
+        "R14": check_core_tier_imports_extra(imports),
     }
 
 
@@ -860,6 +902,7 @@ def run_check(base: str | None = None) -> int:
             )
 
     errors.extend(check_capability_table(policy))
+    errors.extend(check_tier_table(policy))
     errors.extend(check_shared_contracts())
     errors.extend(check_phantom_names(policy))
     current_sources = {rel: (REPO_ROOT / rel).read_text(encoding="utf-8") for rel in source_python_files()}
@@ -882,7 +925,8 @@ def run_check(base: str | None = None) -> int:
         f"R2={counts['R2']}/{len(baseline.get('R2', []))} "
         f"R3={counts['R3']}/{len(baseline.get('R3', []))} "
         f"R7=0 R8=0 R9={len(core_domain_findings(current_sources))}/{len(baseline.get('R9', []))} "
-        f"R10=9 R11=0 R12={ui_count}/{len(ui_known)} R13=0（静态约束；不替代运行验收）"
+        f"R10=9 R11=0 R12={ui_count}/{len(ui_known)} R13=0 "
+        f"R14={counts['R14']}/{len(baseline.get('R14', []))}（静态约束；不替代运行验收）"
     )
     return 0
 
@@ -898,7 +942,7 @@ def print_baseline() -> int:
         "",
         "[baseline]",
     ]
-    for rule in ("R1", "R2", "R3"):
+    for rule in ("R1", "R2", "R3", "R14"):
         keys = sorted({item.key for item in findings[rule]})
         lines.append(f"{rule} = [")
         lines.extend(f"    {json.dumps(key, ensure_ascii=False)}," for key in keys)
