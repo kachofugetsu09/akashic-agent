@@ -114,6 +114,7 @@ def _run_lightweight_command() -> bool:
     args = sys.argv[1:]
     if not args or args[0] not in {
         "plugin-install-trusted-batch",
+        "pkg",
     }:
         return False
     command = args[0]
@@ -131,6 +132,16 @@ def _run_lightweight_command() -> bool:
         )
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
+
+    if command == "pkg":
+        from agent.plugins.packages import pkg_main
+
+        pkg_args = list(args[1:])
+        for flag in ("--config", "--workspace"):
+            while flag in pkg_args:
+                index = pkg_args.index(flag)
+                del pkg_args[index:index + 2]
+        raise SystemExit(pkg_main(pkg_args, workspace=workspace))
 
     if command == "plugin-install-trusted-batch":
         from agent.plugins.trusted_install import install_trusted_plugin_batch
