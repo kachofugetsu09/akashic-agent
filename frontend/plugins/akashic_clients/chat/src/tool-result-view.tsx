@@ -198,6 +198,15 @@ export function PreviewText({ text, tail, className }: { text: string; tail: boo
     pre.style.maxHeight = `${targetHeight}px`;
   }, [full, closing, tail, tall]);
 
+  // 看末尾的预览在阅读列变宽变窄后重新折行，要跟着贴回末尾；只改滚动位置，不会再触发尺寸变化。
+  useEffect(() => {
+    const pre = preRef.current;
+    if (!pre || !tail || full || closing) return;
+    const observer = new ResizeObserver(() => { pre.scrollTop = pre.scrollHeight; });
+    observer.observe(pre);
+    return () => observer.disconnect();
+  }, [tail, full, closing]);
+
   useEffect(() => {
     if (!closing) return;
     const pre = preRef.current;

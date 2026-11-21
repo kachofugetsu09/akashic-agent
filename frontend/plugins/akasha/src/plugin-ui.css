@@ -9,7 +9,7 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  min-height: 32px;
+  min-height: var(--chat-control-height, 32px);
   color: color-mix(in oklab, var(--ak-ink-secondary) 85%, transparent);
   font-size: var(--chat-type-control, 0.875rem);
 }

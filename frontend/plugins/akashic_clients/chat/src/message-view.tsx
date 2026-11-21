@@ -1752,6 +1752,13 @@ function toolHasDetails(block: ToolBlock): boolean {
 }
 
 // 展开后的参数与结果：工具行与任务卡共用；收起时不计算参数与结果文字。
+// 标题行写过的参数只在它够短、且省掉后参数区还在时省略：长值要有处看全文，唯一参数也要留住复制入口。
+function omitRepeated(parameters: [string, string][], omit: string | undefined): [string, string][] {
+  const repeated = parameters.find(([name]) => name === omit);
+  if (!repeated || parameters.length < 2 || repeated[1].length > 80) return parameters;
+  return parameters.filter(([name]) => name !== omit);
+}
+
 function ToolDetailSurface({ block, open, onCopyDetail, className = "", omit, named = false }: {
   block: ToolBlock;
   open: boolean;
@@ -1764,7 +1771,7 @@ function ToolDetailSurface({ block, open, onCopyDetail, className = "", omit, na
 }) {
   const resultValue = block.output === undefined ? block.errorText : block.output;
   const hasResult = toolHasValue(resultValue) || Boolean(block.attachments?.length);
-  const parameters = useMemo(() => open ? toolParameters(block.input).filter(([name]) => name !== omit) : [], [block.input, open, omit]);
+  const parameters = useMemo(() => open ? omitRepeated(toolParameters(block.input), omit) : [], [block.input, open, omit]);
   const errorMessage = useMemo(() => open && block.status === "output-error" ? toolErrorMessage(resultValue) : null, [block.status, open, resultValue]);
   const toolName = named ? block.name : undefined;
   const result = useMemo(() => open ? toolDataText(resultValue) : "", [open, resultValue]);

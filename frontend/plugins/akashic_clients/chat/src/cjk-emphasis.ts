@@ -20,11 +20,14 @@ const CJK = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hang
 const WHITESPACE = /\s/u;
 const PUNCTUATION = /[\p{P}\p{S}]/u;
 
+// 异体选择符（如 葛 + U+E0100）跟着前一个字算，和静态渲染用的 cjk-friendly 扩展一致。
+const VARIATION_SELECTOR = /[\ufe00-\ufe0f\u{e0100}-\u{e01ef}]/u;
 const charBefore = (src: string, pos: number): string => {
   if (pos <= 0) return " ";
   const low = src.charCodeAt(pos - 1);
   const start = low >= 0xdc00 && low <= 0xdfff && pos >= 2 ? pos - 2 : pos - 1;
-  return String.fromCodePoint(src.codePointAt(start) ?? 32);
+  const char = String.fromCodePoint(src.codePointAt(start) ?? 32);
+  return VARIATION_SELECTOR.test(char) && start > 0 ? charBefore(src, start) : char;
 };
 const charAt = (src: string, pos: number, max: number): string => pos < max ? String.fromCodePoint(src.codePointAt(pos) ?? 32) : " ";
 

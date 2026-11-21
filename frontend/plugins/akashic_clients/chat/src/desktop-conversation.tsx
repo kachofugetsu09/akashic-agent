@@ -389,21 +389,23 @@ export const DesktopTimelineMessages = React.memo(function DesktopTimelineMessag
     }
     return starts;
   }, [messages]);
-  // 落定轮次的回想交给该轮首个收尾输出：有过程摘要时与摘要同一行。进行中、未同步与图文回复的轮次仍挂在输入下方。
+  // 落定轮次的回想交给该轮首个会渲染正文的收尾输出：有过程摘要时与摘要同一行。
+  // 只在可见消息里找宿主，找不到（进行中、未同步、图文回复、空收尾）就留在输入下方。
   const recallHosts = useMemo(() => {
     const hosts = new Map<string, TimelineMessage>();
     const waiting = new Map<string, TimelineMessage>();
-    for (const message of messages) {
+    for (const message of visibleMessages) {
       const key = timelineSourceKey(message);
       if (userInput(message)) { waiting.set(key, message); continue; }
       const input = waiting.get(key);
       if (!input || message.body.kind !== "output" || message.body.finish === "continue") continue;
-      if (groups.moved.has(message.id) || groups.unsettled.has(message.id) || groups.inline.outputs.has(message.id)) continue;
+      if (groups.moved.has(message.id) || groups.unsettled.has(message.id) || groups.inline.outputs.has(message.id)
+        || groups.hiddenBodies.has(message.id) || isCompactionBoundaryMessage(message)) continue;
       hosts.set(message.id, input);
       waiting.delete(key);
     }
     return hosts;
-  }, [messages, groups]);
+  }, [visibleMessages, groups]);
   const hostedInputs = useMemo(() => new Set([...recallHosts.values()].map((input) => input.id)), [recallHosts]);
   const recallSlot = (origin: TimelineMessage) => <PluginUiSlot name="turn.before_reasoning"
     sessionId={origin.session_id} messageId={origin.id} block={{ source: origin.source }}
