@@ -53,6 +53,8 @@ R9 的领域词表与扫描范围都偏窄。
 - **只许减少**：带 `--base` 时用同一规则扫描 base 快照，新增点名即使写进账本也失败；放宽 `infrastructure`、`host_routes`，或缩小 `plugins`、`frontend` 的扫描范围也失败。
 - 不覆盖：动态拼出的插件 ID 或路由、`RpcMethod.key(...)` 字符串在宿主里重复声明（`capabilities.py:45-49`，随第 8 步由 runtime_inspection 各 owner 发布合同时收掉）。
 
+**R14（插件分层）**：`plugin_boundary.toml [tiers]` 给每个插件声明 `core` 或 `extra`（新增插件必须二选一）；`core` 层插件不得 import `extra` 层插件的任何模块（含 contract），否则 extra 物理迁出后 core 会 ImportError。违规沿用基线机制，只许减少。依赖方向的修法是“接口归使用方”：由 core 插件的 contract 定义端口，extra 插件实现并提供（例：`SCHEDULER_INSPECTION` 现由 `plugins.runtime_inspection.contract` 定义，scheduler 提供）。
+
 ## 目标扩展点
 
 聊天前端补一组通用槽位，与现有 `turn.before_reasoning`、`turn.after_answer`、`message.attachment` 同一套目录、资产与查询协议（没有使用者的 `turn.before_tool` 已删除；`drawer.panel` 仍由受支持的外部 status_commands 插件使用）：
