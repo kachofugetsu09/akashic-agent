@@ -63,6 +63,8 @@ fi
     --receipt "$WORKSPACE/runtime/distribution-install.json"
 
 command="${1:-gateway}"
+# 演练专用：强制启动失败，用来验证自动回退。
+if [[ "$command" == "gateway" ]]; then echo "rehearsal: forced startup failure" >&2; exit 1; fi
 export AKASHIC_DOCKER_RUNTIME=1
 shift || true
 exec /opt/venv/bin/python /opt/akashic/source/main.py \
