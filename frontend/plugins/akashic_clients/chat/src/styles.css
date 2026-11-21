@@ -1297,6 +1297,11 @@ input {
 
 /* 项目子树开合由 navigation-groups.tsx 用 transform/opacity 驱动（motion.ts）：展开区直接按内容高度排版，
    收起时下方项目带着侧栏底色盖上来，结束后卸载。 */
+.navigation-group__disclosure {
+  /* 子列表的上下外边距留在展开区里，量到的高度就是下方项目要让出的距离。 */
+  display: flow-root;
+}
+
 .navigation-group__disclosure-inner {
   min-width: 0;
 }

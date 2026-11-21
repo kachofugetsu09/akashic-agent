@@ -323,15 +323,17 @@ export function GroupNavigationRow({
   useLayoutEffect(() => {
     const before = previousOpen.current;
     previousOpen.current = open;
-    if (before === open || instant) return;
+    if (before === open) return;
+    // 在途动画先结算：收起途中进入搜索（instant）时，停在终点的遮盖与透明度也要撤掉。
     settle(motionRef.current);
     motionRef.current = [];
+    if (instant) return;
     const host = hostRef.current;
     const disclosure = disclosureRef.current;
     const content = disclosure?.firstElementChild;
     if (!host || !disclosure || !(content instanceof HTMLElement)) return;
     const height = disclosure.getBoundingClientRect().height;
-    const followers = followingInView(host, host.closest(".chat-sidebar__navigation") ?? document.body);
+    const followers = followingInView(host, host.closest(".chat-sidebar__navigation") ?? document.body, height);
     if (open) {
       motionRef.current = slideOpen(host, followers, content, height, motionTiming(host, "open"));
       return;

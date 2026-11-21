@@ -14,8 +14,9 @@ export function motionTiming(element: Element, phase: MotionPhase): { duration: 
   return { duration: Number.isFinite(duration) ? duration : 0, easing: easing || "ease" };
 }
 
-// host 之后、boundary 之内的元素：沿祖先链逐层收集后继兄弟，只留与 boundary 可见区相交的（视口外的直接落位，看不见）。
-export function followingInView(host: Element, boundary: Element): HTMLElement[] {
+// host 之后、boundary 之内的元素：沿祖先链逐层收集后继兄弟，只留滑动途中会进入 boundary 可见区的（其余直接落位，看不见）。
+// travel 是滑动距离：展开后被推到可见区下方、收起时将从下方滑进来的元素都还在这段范围里。
+export function followingInView(host: Element, boundary: Element, travel = 0): HTMLElement[] {
   const view = boundary.getBoundingClientRect();
   const out: HTMLElement[] = [];
   for (let node: Element | null = host; node && node !== boundary; node = node.parentElement) {
@@ -23,7 +24,7 @@ export function followingInView(host: Element, boundary: Element): HTMLElement[]
       if (!(next instanceof HTMLElement)) continue;
       const rect = next.getBoundingClientRect();
       if (rect.height === 0 && rect.width === 0) continue;
-      if (rect.bottom < view.top || rect.top > view.bottom) continue;
+      if (rect.bottom < view.top || rect.top - travel > view.bottom) continue;
       out.push(next);
     }
   }
