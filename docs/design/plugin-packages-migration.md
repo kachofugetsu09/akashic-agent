@@ -91,6 +91,18 @@ core 的判定标准：裸核能独立跑完长程循环（账本、上下文、
 3. 迁 `privacy_mask`（无数据、无第三方依赖）。
 4. 迁 `watch`（有数据、面板、技能）。
 
+### 单个插件迁出清单（以 `privacy_mask` 为模板）
+
+Core 侧一个 PR，extra 侧先行或同时：
+
+1. extra 仓库：把 `plugins/<name>/`、`frontend/plugins/<name>/` 原样放进去；测试插件自身行为的 `tests/` 文件搬到 `tests/<name>/`。本地 `extra_ci.py compose/build` 后 `release/<name>` 的提交 SHA 必须与迁出前在 Core 上 `pkg_fixture_repo.py <name>` 得到的相同。
+2. Core：删除 `plugins/<name>/` 与 `frontend/plugins/<name>/`；`plugin_boundary.toml` 把名字从 `[tiers].extra` 移到 `[tiers].external`。
+3. **保留** `bundles/*.toml` 里的行：默认组合不变靠 preset 行。
+4. 全仓库搜该名字（含连字符、驼峰变体与中文名）：测试里测 Core 行为只是拿它当例子的改写；脚本、`docker/`、`package.json`、`tsconfig.json` 的显式路径；文档与技能里的说明。历史 ADR 不改。
+5. 门禁：`plugin_boundary.py check --base origin/main`、pyright、ruff、`pytest tests`、`npm run typecheck`、三项样式/动效合同、完整 `npm run build`。
+6. 其余插件的 release 提交 SHA 迁出前后逐个相同。
+7. 发行版不再含该插件，但 preset 行还在：`install_plugin_distribution.py --ensure-bundle` 的 `_require_preset_rows` 会以"preset 启用的插件没有进入选择，停止发布"终止，除非同名外置插件已经选中。所以合并前，部署流程必须能在 `--ensure-bundle` 之前从 extra 仓库装上它（`pkg sync` 应装集合会把它报成 `available`）。
+
 ### Phase 3：批量迁纯 Python 插件
 
 每批一个 PR，顺序以门禁结果为准：
