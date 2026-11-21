@@ -32,6 +32,7 @@ from agent.plugins.manifest import (
     workspace_plugin_data_dir,
 )
 from agent.plugins.bundles import patch_rows, set_plugin_choice
+from agent.plugins.selection import PluginSelection
 from agent.plugins.static_manifest import (
     StaticPluginManifest,
     load_static_plugin_manifest,
@@ -194,6 +195,7 @@ def install_git_plugin(
             marketplace=marketplace,
             reserved_ids=reserved_ids,
             takeover=takeover,
+            source=source,
         )
         plugin_version = _validate_path_segment(
             static_manifest.version,
@@ -226,7 +228,8 @@ def install_git_plugin(
     return activation.result
 
 
-# 默认 preset 的身份不能被外置安装接管；只有 takeover 显式列出的 plugin_id 放行。
+# 默认 preset 的身份不能被外置安装接管；只有 takeover 显式列出的 plugin_id，
+# 或已是已安装来源的同源升级放行。
 def _reject_takeover(
     *,
     workspace: Path,
@@ -234,27 +237,54 @@ def _reject_takeover(
     marketplace: str,
     reserved_ids: frozenset[str],
     takeover: frozenset[str],
+    source: str,
 ) -> None:
-    # 1. 显式接管的 plugin_id 跳过全部检查，其他 plugin_id 不受影响。
-    if plugin_id in takeover:
-        return
-    # 2. 汇总调用方保留的身份和历史归属凭证里的身份。
+    # 1. 汇总调用方保留的身份、历史归属凭证里的身份和发行版当前自带的身份。
     reserved = set(reserved_ids)
     adoption = read_distribution_adoption(workspace)
+    adopted: set[str] = set()
     if adoption is not None:
-        reserved.update(row["plugin_id"] for row in cast(tuple[Mapping[str, str], ...], adoption["entries"]))
-    # 3. 发行版回执：同 marketplace 拒绝，并并入发行版自带的身份。
+        adopted.update(row["plugin_id"] for row in cast(tuple[Mapping[str, str], ...], adoption["entries"]))
+    reserved.update(adopted)
     receipt_path = workspace / "runtime/distribution-install.json"
-    if receipt_path.exists():
-        receipt = json.loads(receipt_path.read_text())
-        if marketplace == receipt["marketplace"]:
-            raise ValueError(f"外置插件不能接管内置数据身份: {plugin_id}; 请使用独立 marketplace")
-        configured = os.environ.get("AKASHIC_PLUGIN_DISTRIBUTION")
-        if configured:
-            reserved.update(f"{item.plugin_name}@{item.marketplace}" for item in
-                            distribution_plugin_sources(Path(configured)))
+    receipt = json.loads(receipt_path.read_text()) if receipt_path.exists() else None
+    configured = os.environ.get("AKASHIC_PLUGIN_DISTRIBUTION")
+    if receipt is not None and configured:
+        reserved.update(f"{item.plugin_name}@{item.marketplace}" for item in
+                        distribution_plugin_sources(Path(configured)))
+    # 2. 显式接管，或同源升级一个已是已安装来源的身份，跳过其余检查。
+    if plugin_id in takeover or (plugin_id not in reserved and _is_same_source_upgrade(workspace, plugin_id, source)):
+        return
+    # 3. 发行版回执：同 marketplace 拒绝；发行版自带或历史归属的身份拒绝。
+    if receipt is not None and marketplace == receipt["marketplace"]:
+        raise ValueError(f"外置插件不能接管内置数据身份: {plugin_id}; 请使用独立 marketplace")
     if plugin_id in reserved:
         raise ValueError(f"外置插件不能接管内置数据身份: {plugin_id}; 请使用独立身份并显式停用原实现")
+
+
+# 同源升级：当前选择里该身份已是 installed 输入，且已装 artifact 的 origin 与本次来源相同。
+# 调用方已确认该身份不在发行版自带与历史归属里。
+def _is_same_source_upgrade(workspace: Path, plugin_id: str, source: str) -> bool:
+    selection = PluginSelection(workspace)
+    if not selection.path.exists():
+        return False
+    reference = selection.read()
+    if reference is None:
+        return False
+    for identity in selection.components(reference):
+        record = selection.read_input(identity)
+        if record["plugin_id"] == plugin_id and record["source_type"] == "installed":
+            code = Path(cast(str, record["code"]))
+            try:
+                origin = _run_git(["config", "--get", "remote.origin.url"], cwd=code)
+            except (RuntimeError, OSError):
+                return False
+            return _normalize_origin(origin) == _normalize_origin(source)
+    return False
+
+
+def _normalize_origin(url: str) -> str:
+    return url.strip().rstrip("/").removesuffix(".git")
 
 
 def _clone_git_source(

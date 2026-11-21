@@ -140,11 +140,14 @@ class PackageState:
     marketplaces: frozenset[str]
     root: Path | None = None
 
-    # 发行版命名空间里的身份、历史归属身份、旧选择里的内置输入，都只能经换来源操作处理。
+    # 发行版自带、历史归属、旧选择里的内置输入，以及发行版命名空间里尚未成为已安装输入的身份，
+    # 只能经换来源操作处理；已是已安装输入的同命名空间身份可以正常升级。
     def requires_switch(self, plugin_id: str) -> bool:
         builtin = {item.plugin_id for item in self.packages if item.source == "core"}
-        return (plugin_id in self.adopted or plugin_id in builtin or plugin_id in self.provided
-                or plugin_id.partition("@")[2] in self.marketplaces)
+        if plugin_id in self.adopted or plugin_id in builtin or plugin_id in self.provided:
+            return True
+        installed_input = any(item.plugin_id == plugin_id and item.selected for item in self.packages)
+        return plugin_id.partition("@")[2] in self.marketplaces and not installed_input
 
 
 # 已装包 = 当前选择里的输入，加上 cache 里尚未被选择引用的 artifact；
