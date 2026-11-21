@@ -134,6 +134,7 @@ def install_git_plugin(
     update_id: str | None = None,
     offline_wheels: OfflineWheels | None = None,
     reserved_ids: frozenset[str] = frozenset(),
+    takeover: frozenset[str] = frozenset(),
 ) -> PluginInstallResult:
     home = (plugins_home or plugins_root()).resolve(strict=False)
     journal = ReloadJournal(workspace)
@@ -187,22 +188,13 @@ def install_git_plugin(
         check_plugin_source(clone_root)
         _ = read_initial_config(clone_root)
         plugin_name = _validate_path_segment(static_manifest.name, "插件 name")
-        # 默认 preset 的身份不能被外置安装接管；克隆校验后、cache/data 写入前拒绝。
-        reserved = set(reserved_ids)
-        adoption = read_distribution_adoption(workspace)
-        if adoption is not None:
-            reserved.update(row["plugin_id"] for row in cast(tuple[Mapping[str, str], ...], adoption["entries"]))
-        receipt_path = workspace / "runtime/distribution-install.json"
-        if receipt_path.exists():
-            receipt = json.loads(receipt_path.read_text())
-            if marketplace == receipt["marketplace"]:
-                raise ValueError(f"外置插件不能接管内置数据身份: {plugin_name}@{marketplace}; 请使用独立 marketplace")
-            configured = os.environ.get("AKASHIC_PLUGIN_DISTRIBUTION")
-            if configured:
-                reserved.update(f"{item.plugin_name}@{item.marketplace}" for item in
-                                distribution_plugin_sources(Path(configured)))
-        if f"{plugin_name}@{marketplace}" in reserved:
-            raise ValueError(f"外置插件不能接管内置数据身份: {plugin_name}@{marketplace}; 请使用独立身份并显式停用原实现")
+        _reject_takeover(
+            workspace=workspace,
+            plugin_id=f"{plugin_name}@{marketplace}",
+            marketplace=marketplace,
+            reserved_ids=reserved_ids,
+            takeover=takeover,
+        )
         plugin_version = _validate_path_segment(
             static_manifest.version,
             "插件 version",
@@ -234,6 +226,37 @@ def install_git_plugin(
     return activation.result
 
 
+# 默认 preset 的身份不能被外置安装接管；只有 takeover 显式列出的 plugin_id 放行。
+def _reject_takeover(
+    *,
+    workspace: Path,
+    plugin_id: str,
+    marketplace: str,
+    reserved_ids: frozenset[str],
+    takeover: frozenset[str],
+) -> None:
+    # 1. 显式接管的 plugin_id 跳过全部检查，其他 plugin_id 不受影响。
+    if plugin_id in takeover:
+        return
+    # 2. 汇总调用方保留的身份和历史归属凭证里的身份。
+    reserved = set(reserved_ids)
+    adoption = read_distribution_adoption(workspace)
+    if adoption is not None:
+        reserved.update(row["plugin_id"] for row in cast(tuple[Mapping[str, str], ...], adoption["entries"]))
+    # 3. 发行版回执：同 marketplace 拒绝，并并入发行版自带的身份。
+    receipt_path = workspace / "runtime/distribution-install.json"
+    if receipt_path.exists():
+        receipt = json.loads(receipt_path.read_text())
+        if marketplace == receipt["marketplace"]:
+            raise ValueError(f"外置插件不能接管内置数据身份: {plugin_id}; 请使用独立 marketplace")
+        configured = os.environ.get("AKASHIC_PLUGIN_DISTRIBUTION")
+        if configured:
+            reserved.update(f"{item.plugin_name}@{item.marketplace}" for item in
+                            distribution_plugin_sources(Path(configured)))
+    if plugin_id in reserved:
+        raise ValueError(f"外置插件不能接管内置数据身份: {plugin_id}; 请使用独立身份并显式停用原实现")
+
+
 def _clone_git_source(
     *,
     source: str,
@@ -262,10 +285,29 @@ def _clone_git_source(
             cwd=destination,
         )
         return
+    if re.fullmatch(r"[0-9a-f]{40}", ref_name) and _fetch_sha_shallow(source, destination, ref_name):
+        return
     _ = _run_git(["clone", "--", source, str(destination)])
     if ref_name:
         checkout_ref = _resolve_git_ref(ref_name, destination)
         _ = _run_git(["checkout", "--detach", checkout_ref], cwd=destination)
+
+
+# 按 40 位 SHA 浅取单个提交；服务器不允许按 SHA 取时返回 False，由调用方回退到完整克隆。
+def _fetch_sha_shallow(source: str, destination: Path, sha: str) -> bool:
+    # 1. 空仓库加 origin，让 origin.url 与完整克隆一致。
+    _ = _run_git(["init", "--quiet"], cwd=destination)
+    _ = _run_git(["remote", "add", "origin", "--", source], cwd=destination)
+    try:
+        # 2. 只取这一个提交，深度 1。
+        _ = _run_git(["fetch", "--quiet", "--depth", "1", "origin", sha], cwd=destination)
+    except RuntimeError:
+        # 3. 服务器拒绝按 SHA 取：清空目录交给完整克隆路径。
+        for child in destination.iterdir():
+            _remove_path(child)
+        return False
+    _ = _run_git(["checkout", "--quiet", "--detach", sha], cwd=destination)
+    return True
 
 
 def _resolve_git_ref(ref_name: str, repository: Path) -> str:
