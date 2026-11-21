@@ -499,7 +499,7 @@ function Shell({ pages, railActions, settings, settingsPlugins, http, inventory 
     const target = activeId ? pageHosts.current.get(activeId) : undefined;
     if (!target) return;
     const styles = getComputedStyle(target);
-    const duration = Number.parseFloat(styles.getPropertyValue("--ak-sys-duration-short"));
+    const duration = cssDurationMs(styles.getPropertyValue("--ak-sys-duration-short"));
     const easing = styles.getPropertyValue("--ak-sys-motion-standard").trim();
     if (!Number.isFinite(duration) || duration <= 0) return;
     const animation = target.animate(
@@ -757,6 +757,14 @@ function PluginCardList({ cards, view, railActions, open }: {
       </button>
     </li>)}
   </ul>;
+}
+
+// 时长 token 读成毫秒：构建会把 150ms 压成 .15s，直接 parseFloat 会得到 0.15ms。
+function cssDurationMs(value: string): number {
+  const text = value.trim();
+  const amount = Number.parseFloat(text);
+  if (text.endsWith("ms")) return amount;
+  return text.endsWith("s") ? amount * 1000 : amount;
 }
 
 function checkPages(entries: readonly WebEntry[]): ShellPage[] {
