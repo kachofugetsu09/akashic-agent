@@ -18,7 +18,8 @@ _PLUGIN_REF = re.compile(r"^([A-Za-z0-9_.-]+)@[A-Za-z0-9_.-]+$")
 # 迁移时会合法变化的来源字段；--ignore-source 时整体丢弃。
 _SOURCE_KEYS = frozenset({"marketplace", "builtin", "source", "source_id"})
 # 前端构建产物的哈希；构建方式变化（内置构建改为外置仓库构建）时会变，--ignore-build 时丢弃。
-_BUILD_KEYS = frozenset({"module_sha256", "stylesheet_sha256", "contract_digests"})
+# contract_digests 是公开的前端合同摘要，不是构建哈希，始终参与比较。
+_BUILD_KEYS = frozenset({"module_sha256", "stylesheet_sha256"})
 _REF_KEYS = frozenset({"id", "owner"})
 # 每个列表段落及其条目身份字段。
 _SECTIONS: tuple[tuple[str, str], ...] = (
@@ -111,7 +112,11 @@ def _plugins(status: JsonObject) -> list[JsonObject]:
 
 
 # 技能：内置目录的绝对路径随部署变化，只保留来源类别与插件来源。
+# skills 插件缺席是合法组合，记为空列表；其他不认识的返回形态照常失败。
 def _skills(result: JsonObject) -> list[JsonObject]:
+    unavailable = result.get("unavailable")
+    if isinstance(unavailable, dict) and cast(JsonObject, unavailable).get("code") == "skills_unavailable":
+        return []
     rows: list[JsonObject] = []
     for item in cast(list[JsonObject], result["items"]):
         source_id = item["source_id"] if item["source"] == "plugin" else None
@@ -246,7 +251,7 @@ def main() -> int:
     _ = compare.add_argument("old")
     _ = compare.add_argument("new")
     _ = compare.add_argument("--ignore-source", action="store_true", help="忽略来源（市场、内置/外置、技能来源）的变化")
-    _ = compare.add_argument("--ignore-build", action="store_true", help="忽略前端构建产物哈希的变化，只比较模块是否存在及其合同")
+    _ = compare.add_argument("--ignore-build", action="store_true", help="忽略前端模块与样式的构建哈希；合同摘要仍然比较")
     args = parser.parse_args()
     return run_export(args) if args.command == "export" else run_diff(args)
 
