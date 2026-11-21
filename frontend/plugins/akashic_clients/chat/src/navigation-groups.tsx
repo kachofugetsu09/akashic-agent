@@ -344,7 +344,7 @@ export function GroupNavigationRow({
       return;
     }
     // 2. 滚到底时收起，卸载后 scrollTop 会被钳制、整列下移，固定上移 height 的终点对不上：这种情况直接落位。
-    const clamped = boundary.scrollTop + boundary.clientHeight > boundary.scrollHeight - height + 1;
+    const clamped = boundary.scrollTop > Math.max(0, boundary.scrollHeight - height - boundary.clientHeight) + 1;
     const animations = clamped ? [] : slideClose(host, followers, content, height, motionTiming(host, "close"));
     motionRef.current = animations;
     if (!animations.length) setClosing(false);
