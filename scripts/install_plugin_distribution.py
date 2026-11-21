@@ -782,8 +782,13 @@ def _distribution_candidate(
         # preserved inputs: their old interpreter/code may be what is replaced.
         if descriptor["source_type"] == "installed" and plugin_id not in replacement_ids:
             current_artifact, _, _ = _current_artifact(workspace=workspace, plugins_home=plugins_home, plugin_id=plugin_id)
-            if current_artifact != Path(cast(str, descriptor["code"])):
-                raise SelectionConflictError(f"external selection/cache drift: {plugin_id}")
+            if current_artifact != code:
+                # The installer may have committed the new pointer before live activation failed.
+                base = plugins_home / "cache" / marketplace / name
+                with ReloadJournal.inspect_existing(workspace) as journal:
+                    if not journal.owns_installed_artifact(plugin_id, base, current_artifact):
+                        raise SelectionConflictError(f"external selection/cache drift: {plugin_id}")
+                code = current_artifact
         if (plugin_id not in replacement_ids and
             descriptor["runtime"] != {"python_tag": sys.implementation.cache_tag, "binding_api": PLUGIN_INPUT_API}):
             raise RuntimeError(f"preserved plugin runtime is incompatible with this Core: {plugin_id}; explicit reinstall required")
@@ -834,7 +839,7 @@ def _prepare_distribution_inputs(
     prepared: dict[str, str] = {}
     for plugin_id, source in candidate.items():
         old = selected.get(plugin_id)
-        if not source.distribution_source and old is not None:
+        if not source.distribution_source and old is not None and old[2] == source.plugin_root:
             prepared[plugin_id] = old[0]
             continue
         data_dir = workspace_plugin_data_dir(workspace, source.plugin_name, source.marketplace)
@@ -1127,6 +1132,8 @@ def ensure_bundle(
             with measure("inputs.migrations.core"):
                 pending = runner.check()
                 runner.run_under_maintenance(maintenance, core_only=True)
+            # Both installation locks are held. Finish interrupted pointer writes before comparing inputs.
+            _ = ReloadJournal(workspace).settle_orphaned_installs(plugins_home)
             with measure("inputs.candidate"):
                 available, candidate = _distribution_candidate(
                     distribution=distribution, workspace=workspace, plugins_home=plugins_home, selected=selected,

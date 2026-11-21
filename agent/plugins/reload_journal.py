@@ -142,6 +142,14 @@ class JournalPreflight:
         """Read one exact row from the checked, read-only journal snapshot."""
         return update_rollback.read(self._copy, update_id)
 
+    # Only the most recent committed installation can explain the current stable pointer.
+    def owns_installed_artifact(self, plugin_id: str, base: Path, code: Path) -> bool:
+        row = self._copy.execute(
+            "SELECT plugin_base,candidate_pointer FROM plugin_updates "
+            "WHERE plugin_id=? AND phase='committed' ORDER BY rowid DESC LIMIT 1", (plugin_id,),
+        ).fetchone()
+        return row is not None and Path(row[0]) == base and base / row[1] == code
+
     def has_pending_config_updates(self, components: tuple[str, ...]) -> bool:
         """A selected config must be recovered before an offline code publication."""
         return any(state == "accepted" or input_ref in components for state, input_ref in
