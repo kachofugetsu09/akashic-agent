@@ -174,6 +174,7 @@ const DesktopMessageRow = React.memo(function DesktopMessageRow({
       <div
         className={`web-message-anchor ${message.role} ${message.streaming === true ? "streaming" : "history-isolated"}`}
         data-message-id={message.id}
+        data-copied={copied || undefined}
         ref={(element) => {
           anchorRef.current = element;
           if (element) messageElementsRef.current.set(message.id, element);
@@ -439,6 +440,7 @@ export const DesktopTimelineMessages = React.memo(function DesktopTimelineMessag
     <div
     className={`web-message-anchor${index < settledFrom ? " history-isolated" : ""} timeline-${message.body.kind}${compactionBoundary ? " is-compaction-boundary" : ""}`}
     tabIndex={-1} data-message-id={message.id} data-message-kind={message.body.kind} data-message-seq={message.seq}
+    data-copied={copiedMessageId === message.id || undefined}
     ref={(element) => {
       if (element) messageElementsRef.current.set(message.id, element);
       else messageElementsRef.current.delete(message.id);

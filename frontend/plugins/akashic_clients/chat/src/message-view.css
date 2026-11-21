@@ -648,7 +648,9 @@
   background: color-mix(in oklab, var(--ak-color-action-primary) 7%, transparent) !important;
 }
 
-.web-message-anchor:has(.shared-message-actions button.copied) :is(.user-bubble, .timeline-message > .agent-content, .reply-activity > .agent-content) {
+/* 复制成功时正文淡淡一亮。用锚点上的 data-copied，不用 :has()：主体是整条消息的 :has() 带后代参数，
+   消息里任何节点增删（展开工具步骤挂载详情）都会让整条消息的子树重算样式（实测约 1000 个元素、4x 降速下每次 40–56ms）。 */
+.web-message-anchor[data-copied] :is(.user-bubble, .timeline-message > .agent-content, .reply-activity > .agent-content) {
   background: color-mix(in oklab, var(--ak-color-action-primary) 5%, transparent);
   border-radius: var(--ak-radius-md);
   transition: background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
@@ -1240,8 +1242,8 @@
   flex: none;
   width: 13px;
   color: var(--ak-color-text-secondary);
-  /* motion-exempt: 待迁移到合成线程写法，见 ADR 0166 */
-  transition: translate var(--ak-sys-duration-short) var(--ak-sys-motion-standard), transform var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+  /* lucide 箭头是 SVG：只过渡 transform（独立 translate/rotate 上不了合成线程）。 */
+  transition: transform var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
 }
 
 .tool-group-caret.open {
@@ -1406,17 +1408,17 @@
 }
 
 /* 展开时长内容滚动期间 trigger 吸附在视口顶，随时可收起；纸面上只留底色与一根发丝线。
-   行高在收起与展开态保持一致，吸顶边框平滑淡入淡出。 */
+   行高在收起与展开态保持一致，吸顶发丝线直接切换。 */
 .process-trigger-sticky {
   display: flex;
   min-height: var(--tool-sticky-h, 28px);
   align-items: center;
   box-shadow: inset 0 -1px 0 transparent;
-  /* motion-exempt: 待迁移到合成线程写法，见 ADR 0166 */
+  /* 发丝线（box-shadow）直接切换，只有底色过渡。 */
+  /* motion-exempt: 窄屏阅读时顶栏收起，吸顶偏移跟着过渡；合成写法要逐个吸顶元素做 FLIP，ADR 0166 已知限制 */
   transition:
     top var(--ak-sys-duration-short) var(--ak-sys-motion-standard),
-    background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard),
-    box-shadow var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+    background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
 }
 
 .thinking-row:is([data-state="open"], [data-sticky="true"]) .process-trigger-sticky {
@@ -1441,8 +1443,8 @@
 }
 
 .process-chevron {
-  /* motion-exempt: 待迁移到合成线程写法，见 ADR 0166 */
-  transition: translate var(--ak-sys-duration-short) var(--ak-sys-motion-standard), transform var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+  /* lucide 箭头是 SVG：只过渡 transform（独立 translate/rotate 上不了合成线程）。 */
+  transition: transform var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
 }
 
 .process-chevron.open {
@@ -1456,15 +1458,14 @@
   .process-trigger:not(.inline-reply-notice > .process-trigger) .process-chevron:not(.open),
   .tool-step-summary:not(.turn-process-summary, .tool-group-summary) .tool-step-chevron:not(.open) {
     opacity: 0;
-    /* motion-exempt: 待迁移到合成线程写法，见 ADR 0166 */
-    transition: opacity var(--ak-sys-duration-short) var(--ak-sys-motion-standard), translate var(--ak-sys-duration-short) var(--ak-sys-motion-standard), transform var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+    transition: opacity var(--ak-sys-duration-short) var(--ak-sys-motion-standard), transform var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
   }
   .context-notice[data-open="true"] > .process-trigger .process-chevron,
   .process-trigger:is(:hover, :focus-visible) .process-chevron:not(.open),
   .tool-step-summary:is(:hover, :focus-visible) .tool-step-chevron:not(.open) {
     opacity: 1;
     /* 箭头先朝「将要打开」的方向挪 2px：点击之前，行就说清按下会发生什么。 */
-    translate: 0 2px;
+    transform: translateY(2px);
   }
 }
 
@@ -1629,8 +1630,8 @@ button.tool-step-summary:active {
 }
 
 .tool-step-chevron {
-  /* motion-exempt: 待迁移到合成线程写法，见 ADR 0166 */
-  transition: translate var(--ak-sys-duration-short) var(--ak-sys-motion-standard), transform var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+  /* lucide 箭头是 SVG：只过渡 transform（独立 translate/rotate 上不了合成线程）。 */
+  transition: transform var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
 }
 
 .tool-step-chevron.open {
@@ -1663,21 +1664,16 @@ button.tool-step-summary:active {
   }
 }
 
-/* 展开区：grid 行过渡高度，内层淡入并下移 4px。容器常驻 DOM，开合只切 class，首次点开也有过渡；
-   不加 @starting-style：它只会让“挂载即展开”的行（如历史里出错的工具步骤）在切会话时多播一次展开。
-   展开比收起慢：展开是「我要读」，用 --ak-sys-duration-expand（200ms）走完全程；
-   收起是「读完了」，用 --ak-sys-duration-snap（120ms）迅速让位，与桌面端同一不对称口径。
+/* 展开区：对标 Claude Desktop，不做高度动画，grid 行 0fr / 1fr 点下去当帧到位，展开时内层只淡入（合成线程）。
+   高度动画每帧都要重排整段对话并重画下方全部内容，长对话里点下去要等、展开中途掉帧。
    内层只能用 overflow: clip，hidden 会建立滚动容器，让嵌套行的 sticky 失效。 */
 .tool-step-disclosure {
   display: grid;
   grid-template-rows: 0fr;
-  /* motion-exempt: 待迁移到合成线程写法，见 ADR 0166 */
-  transition: grid-template-rows var(--ak-sys-duration-snap) var(--ak-sys-motion-standard);
 }
 
 .tool-step-disclosure.open {
   grid-template-rows: 1fr;
-  transition-duration: var(--ak-sys-duration-expand);
 }
 
 /* grid 子项默认 min-width:auto 会被不折行的 diff 撑开（实测一行 1500 字撑到 1 万多像素）；归零后横滚留在结果区内。 */
@@ -1690,20 +1686,15 @@ button.tool-step-summary:active {
   min-height: 0;
   overflow: clip;
   opacity: 0;
-  translate: 0 -4px;
-  transition-property: opacity, translate;
-  transition-duration: var(--ak-sys-duration-snap), var(--ak-sys-duration-snap);
-  transition-timing-function: ease-out, var(--ak-sys-motion-standard);
 }
 
 .tool-step-disclosure.open > .tool-step-disclosure-inner {
   opacity: 1;
-  translate: 0 0;
-  transition-duration: var(--ak-sys-duration-expand), var(--ak-sys-duration-expand);
+  transition: opacity var(--ak-sys-duration-snap) ease-out;
 }
 
 /* 展开的工具行吸在消息列表顶部，读到哪都能收起；嵌在工具组里的行让出一行组标题的高度。
-   行高在收起与展开态保持固定，开关过程不跳行、发丝线平滑淡入淡出。 */
+   行高在收起与展开态保持固定，开关过程不跳行。 */
 .process-trace,
 .turn-process {
   --tool-sticky-h: 28px;
@@ -1714,11 +1705,11 @@ button.tool-step-summary:active {
   min-height: var(--tool-sticky-h);
   align-items: center;
   box-shadow: inset 0 -1px 0 transparent;
-  /* motion-exempt: 待迁移到合成线程写法，见 ADR 0166 */
+  /* 发丝线（box-shadow）直接切换，只有底色过渡。 */
+  /* motion-exempt: 窄屏阅读时顶栏收起，吸顶偏移跟着过渡；合成写法要逐个吸顶元素做 FLIP，ADR 0166 已知限制 */
   transition:
     top var(--ak-sys-duration-short) var(--ak-sys-motion-standard),
-    background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard),
-    box-shadow var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+    background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
 }
 
 /* --heading-cover：窄屏浮在滚动区上方的标题栏在场时的遮挡高度，吸顶行让到它下面。 */
@@ -2269,7 +2260,6 @@ button.tool-step-summary:active {
   .tool-step-summary,
   .tool-step-sticky,
   .tool-step-chevron,
-  .tool-step-disclosure,
   .tool-step-disclosure-inner,
   .tool-result-nested__chevron,
   .timeline-details__chevron,

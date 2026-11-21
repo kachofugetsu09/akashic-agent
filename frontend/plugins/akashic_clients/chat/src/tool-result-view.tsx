@@ -39,32 +39,23 @@ export interface StickyDisclosure {
   open: boolean;
   sticky: boolean;
   rowRef: RefObject<HTMLDivElement | null>;
-  disclosureRef: RefObject<HTMLDivElement | null>;
   toggle: () => void;
   setOpen: (open: boolean) => void;
-  onTransitionEnd: (event: TransitionEvent<HTMLDivElement>) => void;
 }
 
-// 展开项的标题行吸顶，读到哪里都能收起；收起期间继续走平滑高度过渡，同时在每帧布局后、绘制前
-// 经 ResizeObserver 把吸顶行留在原位，等过渡收完再卸掉吸顶定位，不会在吸顶时瞬间跳关或带走标题行。
+// 展开项的标题行吸顶，读到哪里都能收起。开合不做高度动画（对标 Claude Desktop：点下去当帧就到位）：
+// 收起时若标题行正吸在顶上，收起后把它留在原来的屏幕位置，读者的视线不被带走。
 export function useStickyDisclosure(initial = false): StickyDisclosure {
   const [open, setOpenState] = useState(initial);
-  const [closing, setClosing] = useState(false);
   const openRef = useRef(initial);
   const rowRef = useRef<HTMLDivElement>(null);
-  const disclosureRef = useRef<HTMLDivElement>(null);
   const collapseAnchorRef = useRef<number | null>(null);
-
-  useLayoutEffect(() => {
-    openRef.current = open;
-  }, [open]);
 
   const setOpen = useCallback((next: boolean) => {
     if (openRef.current === next) return;
     openRef.current = next;
     if (next) {
       collapseAnchorRef.current = null;
-      setClosing(false);
       setOpenState(true);
       return;
     }
@@ -72,7 +63,6 @@ export function useStickyDisclosure(initial = false): StickyDisclosure {
     const stuck = row !== null && row.parentElement !== null
       && row.getBoundingClientRect().top - row.parentElement.getBoundingClientRect().top > 1;
     collapseAnchorRef.current = stuck ? row.getBoundingClientRect().top : null;
-    setClosing(!prefersReducedMotion());
     setOpenState(false);
   }, []);
 
@@ -80,58 +70,22 @@ export function useStickyDisclosure(initial = false): StickyDisclosure {
     setOpen(!openRef.current);
   }, [setOpen]);
 
-  // 必要 effect：收起过渡期间用 rAF（紧接动画采样）与 ResizeObserver（绘制前兜底）锚住吸顶行。
+  // 必要 effect：收起的同一次提交里、绘制前把吸顶行留在原位。
   useLayoutEffect(() => {
-    if (!closing) {
-      const anchor = collapseAnchorRef.current;
-      collapseAnchorRef.current = null;
-      if (anchor !== null) keepAt(rowRef.current, anchor);
-      return;
-    }
-    const anchor = () => {
-      if (collapseAnchorRef.current !== null) keepAt(rowRef.current, collapseAnchorRef.current);
-    };
-    let frame = 0;
-    const tick = () => {
-      anchor();
-      frame = window.requestAnimationFrame(tick);
-    };
-    frame = window.requestAnimationFrame(tick);
-    const target = disclosureRef.current;
-    const observer = target ? new ResizeObserver(anchor) : null;
-    if (target && observer) observer.observe(target);
-    const timer = window.setTimeout(() => setClosing(false), COLLAPSE_FALLBACK_MS);
-    return () => {
-      window.cancelAnimationFrame(frame);
-      observer?.disconnect();
-      window.clearTimeout(timer);
-    };
-  }, [closing]);
-
-  const onTransitionEnd = useCallback((event: TransitionEvent<HTMLDivElement>) => {
-    if (event.target === event.currentTarget && event.propertyName === "grid-template-rows" && !open) {
-      setClosing(false);
-    }
+    if (open) return;
+    const anchor = collapseAnchorRef.current;
+    collapseAnchorRef.current = null;
+    if (anchor !== null) keepAt(rowRef.current, anchor);
   }, [open]);
 
-  return { open, sticky: open || closing, rowRef, disclosureRef, toggle, setOpen, onTransitionEnd };
+  return { open, sticky: open, rowRef, toggle, setOpen };
 }
 
-// 展开区：grid 行 0fr ↔ 1fr 过渡高度，内层淡入并轻微位移；内层只用 overflow: clip，嵌套行的 sticky 仍对滚动容器生效。
-export function Disclosure({ open, children, disclosureRef, onTransitionEnd }: {
-  open: boolean;
-  children: ReactNode;
-  disclosureRef?: RefObject<HTMLDivElement | null>;
-  onTransitionEnd?: (event: TransitionEvent<HTMLDivElement>) => void;
-}) {
+// 展开区：grid 行 0fr ↔ 1fr 直接切换，不过渡高度；展开时内层只淡入（合成线程）。
+// 内层只用 overflow: clip，嵌套行的 sticky 仍对滚动容器生效。
+export function Disclosure({ open, children }: { open: boolean; children: ReactNode }) {
   return (
-    <div
-      ref={disclosureRef}
-      className={`tool-step-disclosure${open ? " open" : ""}`}
-      aria-hidden={!open}
-      inert={!open ? true : undefined}
-      onTransitionEnd={onTransitionEnd}
-    >
+    <div className={`tool-step-disclosure${open ? " open" : ""}`} aria-hidden={!open} inert={!open ? true : undefined}>
       <div className="tool-step-disclosure-inner">{children}</div>
     </div>
   );
