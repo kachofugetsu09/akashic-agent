@@ -900,7 +900,10 @@ class PluginManager:
                     generation.config_projection, generation.config_revision = defaults
                 if generation.config_projection:
                     save_config(generation.data_dir, generation.config_projection)
-            await self._load_selected_generation(generation)
+            try:
+                await self._load_selected_generation(generation)
+            except SystemExit as error:
+                raise RuntimeError(f"插件导入请求退出: {generation.plugin_id} (SystemExit {error.code})") from error
             # Validate this plugin's path declarations before handing it to the live Root.
             plugin = cast(ComposablePlugin, generation.instance)
             for name in plugin.workspace_roots:

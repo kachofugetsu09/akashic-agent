@@ -69,9 +69,12 @@ class ComposablePlugin:
         )
 
     async def apply(self, ctx: Context) -> None:
-        result = self._apply(ctx)
-        if inspect.isawaitable(result):
-            await result
+        try:
+            result = self._apply(ctx)
+            if inspect.isawaitable(result):
+                await result
+        except SystemExit as error:
+            raise RuntimeError(f"插件 apply 请求退出: {self.name} (SystemExit {error.code})") from error
 
 def _string_tuple_export(module: ModuleType, name: str) -> tuple[str, ...]:
     raw = cast(object, getattr(module, name, ()))
