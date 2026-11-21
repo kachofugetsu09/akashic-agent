@@ -1,6 +1,7 @@
 import { ChevronLeft, LayoutGrid, Maximize2, Minimize2, X } from "lucide-react";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type RefObject } from "react";
 import { createPortal } from "react-dom";
+import { cssDurationMs } from "./motion";
 import type { SidebarPanelControls, SidebarPanelStatus } from "@akashic/chat-ui-v1";
 
 import { chatPortalRoot } from "./chat-layout";
@@ -149,6 +150,7 @@ function PanelSurface({ open, current, sources, statuses: shown, sessionId, onTr
   const rootRef = useRef<HTMLDivElement>(null);
   const source = sources.find((item) => item.key === current.key) ?? null;
   const expanded = current.size === "expanded";
+  useSheetHeightFlip(rootRef, current.sheet, open, `${current.key ?? ""}|${current.size}`);
   // 关闭时立刻把焦点还给启动器（退场期间面板会标 inert）。
   useLayoutEffect(() => {
     if (open) return;
@@ -202,6 +204,71 @@ function PanelSurface({ open, current, sources, statuses: shown, sessionId, onTr
         : <PanelMenu sources={sources} statuses={shown} onPick={(key) => publish({ ...current, key })} />}
     </div>
   </>;
+}
+
+// 手机抽屉换高（拉高/降低、菜单与面板互切）：高度一步到位，上沿用 transform 从旧位置滑到新位置（FLIP）。
+// 途中再切换时从当前的视觉位置接着滑，不跳回起点。
+function useSheetHeightFlip(rootRef: RefObject<HTMLDivElement | null>, sheet: boolean, open: boolean, shape: string): void {
+  const last = useRef<{ height: number; animation: Animation | null } | null>(null);
+  useLayoutEffect(() => {
+    const root = rootRef.current;
+    const previous = last.current;
+    const running = previous?.animation?.playState === "running" ? previous.animation : null;
+    if (!root || !sheet) {
+      running?.cancel();
+      last.current = null;
+      return;
+    }
+    // 1. 布局高度不含 transform；关闭时让进行中的滑动走完，交给退场过渡。
+    const height = root.offsetHeight;
+    if (!open) {
+      last.current = { height, animation: running };
+      return;
+    }
+    // 2. 进行中的滑动按当前位移折进起点。
+    const carried = running ? new DOMMatrixReadOnly(getComputedStyle(root).transform).m42 : 0;
+    // 3. cancel 事件异步才到：垫层在这里同步撤掉，新一轮读到的是 CSS 本来的阴影。
+    running?.cancel();
+    root.style.boxShadow = "";
+    const offset = previous ? height - previous.height + carried : 0;
+    last.current = { height, animation: Math.abs(offset) >= 1 ? slideSheetEdge(root, offset) : null };
+  }, [rootRef, sheet, open, shape]);
+  // 地址栏伸缩、窗口改高时 60dvh 直接重排：持续写回布局高度（不含 transform），下一次 FLIP 的起点不陈旧。
+  // ResizeObserver 回调晚于提交时的 layout effect，不会抢先覆盖本次要读的旧值。
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root || !sheet) return;
+    const observer = new ResizeObserver(() => { if (last.current) last.current.height = root.offsetHeight; });
+    observer.observe(root);
+    return () => observer.disconnect();
+  }, [rootRef, sheet]);
+  useEffect(() => () => { last.current?.animation?.cancel(); }, []);
+}
+
+const backingOwner = new WeakMap<HTMLElement, Animation>();
+
+// 抽屉贴着视口底：变高时从下压 offset 处升上来，变矮时从上提处落下；
+// 变矮那段抽屉底下会露出一截，用一层画死的纸色投影垫住（静态，不参与动画），结束即撤。
+// 垫层 = 外框按 gap/2 外扩再下移 gap/2 + 24：上沿落在圆角以下，下沿盖到原来的视口底；抽屉横向铺满视口，外扩的两侧在屏外。
+function slideSheetEdge(root: HTMLElement, offset: number): Animation | null {
+  const styles = getComputedStyle(root);
+  const phase = offset > 0 ? "open" : "close";
+  const duration = cssDurationMs(styles.getPropertyValue(`--ak-sys-duration-${phase}`));
+  if (!(duration > 0)) return null;
+  const gap = -offset;
+  if (gap > 0) root.style.boxShadow = `0 ${gap / 2 + 24}px 0 ${gap / 2}px ${styles.backgroundColor}, ${styles.boxShadow}`;
+  const animation = root.animate([{ transform: `translateY(${offset}px)` }, { transform: "translateY(0)" }],
+    { duration, easing: styles.getPropertyValue(`--ak-sys-motion-${phase}`).trim() || "ease" });
+  if (gap > 0) backingOwner.set(root, animation);
+  // 被打断的旧动画晚到的 cancel 不能撤掉新一轮的垫层：只有垫层的主人能撤。
+  const release = () => {
+    if (backingOwner.get(root) !== animation) return;
+    backingOwner.delete(root);
+    root.style.boxShadow = "";
+  };
+  animation.addEventListener("finish", release);
+  animation.addEventListener("cancel", release);
+  return animation;
 }
 
 // 带遮罩的形态是模态的：Tab 在面板里循环，不落到遮罩后面的会话与输入框。

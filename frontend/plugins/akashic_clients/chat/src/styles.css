@@ -101,15 +101,9 @@ input {
 :where(.chat-shell, [role="dialog"]) :where(button, a[href], summary, [role="button"], [tabindex]:not([tabindex="-1"])):focus-visible {
   outline: 2px solid var(--ak-rule-focus);
   outline-offset: 2px;
-  /* 实线保底对比度，外面再补一圈柔光：焦点在控件之间转移时是「长出来」而不是硬切。
+  /* 实线保底对比度，外面再补一圈柔光，与实线同帧出现：box-shadow 过渡每帧重绘，焦点移动又最频繁。
      --ak-rule-focus-soft 之前只有一处消费者，这里让它成为键盘焦点的一般表达。 */
   box-shadow: 0 0 0 3px var(--ak-rule-focus-soft);
-}
-
-/* 只声明过渡本身，特异性为 0：自己写了过渡的组件照旧优先，这里不会替它们做决定。 */
-:where(.chat-shell, [role="dialog"]) :where(button, a[href], summary, [role="button"], [tabindex]:not([tabindex="-1"])) {
-  /* motion-exempt: 待迁移到合成线程写法，见 ADR 0166 */
-  transition: box-shadow var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
 }
 
 :where(.chat-shell, .chat-sidebar) {
@@ -208,10 +202,9 @@ input {
   translate: -0.5px 0;
   background: var(--ak-rule-strong);
   opacity: 0;
-  /* motion-exempt: 待迁移到合成线程写法，见 ADR 0166 */
   transition:
     opacity var(--ak-sys-duration-short) var(--ak-sys-motion-standard),
-    width var(--ak-sys-duration-short) var(--ak-sys-motion-standard),
+    scale var(--ak-sys-duration-short) var(--ak-sys-motion-standard),
     background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
 }
 
@@ -221,8 +214,8 @@ input {
 }
 
 .chat-sidebar__resizer[data-snapped]::after {
-  width: 2px;
-  translate: -1px 0;
+  /* 吸附时加粗到 2px：绕中线横向放大，不改宽度，免得每帧重排。 */
+  scale: 2 1;
   background: var(--ak-rule-focus);
   opacity: 1;
 }
@@ -2044,6 +2037,7 @@ input {
 }
 
 .model-connection-state a {
+  position: relative;
   display: inline-flex;
   min-height: 40px;
   align-items: center;
@@ -2055,13 +2049,23 @@ input {
   font-size: var(--md-sys-typescale-label-large-size);
   font-weight: var(--md-sys-typescale-label-large-weight);
   text-decoration: none;
-  /* motion-exempt: 待迁移到合成线程写法，见 ADR 0166 */
-  transition: box-shadow var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+}
+
+/* 悬停的投影画死在伪元素上，只过渡 opacity。 */
+.model-connection-state a::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow: var(--ak-elevation-raised);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
 }
 
 @media (hover: hover) {
-  .model-connection-state a:hover {
-    box-shadow: var(--ak-elevation-raised);
+  .model-connection-state a:hover::after {
+    opacity: 1;
   }
 }
 
@@ -2722,7 +2726,6 @@ form.composer:focus-within [data-slot="input-group"] {
     translate: none;
     transform: translateX(-85%);
     opacity: 0;
-    filter: blur(3px);
     pointer-events: none;
     gap: 0;
     overflow: hidden;
@@ -2741,23 +2744,21 @@ form.composer:focus-within [data-slot="input-group"] {
     background: var(--ak-paper-canvas);
     box-shadow: none;
     animation: none;
-    /* motion-exempt: 待迁移到合成线程写法，见 ADR 0166 */
+    /* 只动 transform 与 opacity：不叠 blur，它与淡出同时发生、肉眼几乎看不出，却要整块抽屉逐帧重新栅格化。 */
     transition:
-      transform 220ms var(--ak-sys-motion-emphasized, cubic-bezier(0.05, 0.7, 0.1, 1)),
-      opacity 180ms var(--ak-sys-motion-standard),
-      filter 180ms var(--ak-sys-motion-standard);
+      transform var(--ak-sys-duration-close) var(--ak-sys-motion-close),
+      opacity var(--ak-sys-duration-close) var(--ak-sys-motion-close);
   }
 
   .compact-navigation-dialog[data-state="open"] {
     transform: translateX(0);
     opacity: 1;
-    filter: blur(0);
     pointer-events: auto;
-    transition-duration: 320ms, 220ms, 220ms;
+    transition-duration: var(--ak-sys-duration-open);
+    transition-timing-function: var(--ak-sys-motion-open);
     @starting-style {
       transform: translateX(-100%);
       opacity: 0.75;
-      filter: blur(0);
     }
   }
 
@@ -2780,8 +2781,8 @@ form.composer:focus-within [data-slot="input-group"] {
 
 }
 
-/* —— 图标换挡：两枚图形叠在同一个格子，切到哪一枚另一枚就缩小、模糊着让位 ——
-   不改变控件尺寸与热区，也不参与布局；触碰不到 --chat-* 几何，只动 transform / opacity / filter。 */
+/* —— 图标换挡：两枚图形叠在同一个格子，切到哪一枚另一枚就缩小、淡出让位 ——
+   不改变控件尺寸与热区，也不参与布局；触碰不到 --chat-* 几何，只动 scale / opacity。 */
 .icon-swap {
   display: grid;
   flex: none;
@@ -2792,18 +2793,16 @@ form.composer:focus-within [data-slot="input-group"] {
   display: grid;
   grid-area: 1 / 1;
   place-items: center;
-  /* motion-exempt: 待迁移到合成线程写法，见 ADR 0166 */
+  /* motion-exempt: 误报：.icon-swap__slot 是 HTML span（display: grid），独立 scale 能合成，只是类名带 icon */
   transition:
     opacity var(--ak-sys-duration-short) var(--ak-sys-motion-standard),
-    scale var(--ak-sys-duration-short) var(--ak-sys-motion-standard),
-    filter var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+    scale var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
 }
 
 .icon-swap[data-state="a"] > .icon-swap__slot:last-child,
 .icon-swap[data-state="b"] > .icon-swap__slot:first-child {
   opacity: 0;
   scale: 0.82;
-  filter: blur(3px);
 }
 
 /* 勾一次画完；动画重放由 React 重挂载触发，不额外加状态。 */
@@ -2826,7 +2825,7 @@ form.composer:focus-within [data-slot="input-group"] {
   /* 换挡与描线都只是「完成了」的说法，不是位移：保留结果，去掉过程。 */
   .icon-swap__slot { transition: opacity var(--ak-sys-duration-short) linear; }
   .icon-swap[data-state="a"] > .icon-swap__slot:last-child,
-  .icon-swap[data-state="b"] > .icon-swap__slot:first-child { scale: 1; filter: none; }
+  .icon-swap[data-state="b"] > .icon-swap__slot:first-child { scale: 1; }
   .icon-swap__tick > path { animation: none; stroke-dashoffset: 0; }
 }
 
@@ -2885,35 +2884,30 @@ form.composer:focus-within [data-slot="input-group"] {
    全链路走纯 CSS transition，连续变化可打断；reduced-motion 下只留淡入淡出。 */
 .swap-text {
   display: inline-block;
-  /* motion-exempt: 待迁移到合成线程写法，见 ADR 0166 */
   transition:
     opacity var(--ak-sys-duration-instant) var(--ak-sys-motion-standard),
-    translate var(--ak-sys-duration-instant) var(--ak-sys-motion-standard),
-    filter var(--ak-sys-duration-instant) linear;
+    translate var(--ak-sys-duration-instant) var(--ak-sys-motion-standard);
 }
 
 .swap-text[data-swap="out"] {
   opacity: 0;
   translate: 0 -4px;
-  filter: blur(3px);
 }
 
 .swap-text[data-swap="in"] {
   opacity: 0;
   translate: 0 4px;
-  filter: blur(3px);
   transition: none;
 }
 
 .swap-text[data-swap="idle"] {
   opacity: 1;
   translate: 0 0;
-  filter: blur(0);
-  transition-duration: var(--ak-sys-duration-short), var(--ak-sys-duration-short), var(--ak-sys-duration-short);
+  transition-duration: var(--ak-sys-duration-short), var(--ak-sys-duration-short);
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .swap-text { translate: none; filter: none; transition: none; }
+  .swap-text { translate: none; transition: none; }
 }
 
 /* —— 桌面 WebUI：非对称 Lucide 光学对齐 —— */
@@ -2938,7 +2932,6 @@ form.composer:focus-within [data-slot="input-group"] {
   .compact-navigation-dialog,
   .compact-navigation-overlay {
     transition: none;
-    filter: none;
   }
 }
 
