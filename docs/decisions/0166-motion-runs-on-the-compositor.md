@@ -17,7 +17,7 @@ Chrome trace 还显示两件静态读代码看不出的事：
 
 这两件事放在 CPU 降速 4 倍、主线程有负载的条件下尤其明显：高度类动画掉帧，同样的展开收起改用 transform 后一帧不掉。
 
-全仓库扫下来，不能合成的动画有 74 处。现成的 stylelint 插件（stylelint-high-performance-animation）走黑名单，漏掉了 `grid-template-rows`，也查不到脚本里写的 `style.transition`。
+全仓库扫下来，静态检查报出 85 处不能合成的动画属性，分布在 66 条声明里。现成的 stylelint 插件（stylelint-high-performance-animation）走黑名单，漏掉了 `grid-template-rows`，也查不到脚本里写的 `style.transition`。
 
 ## 决定
 
@@ -25,8 +25,14 @@ Chrome trace 还显示两件静态读代码看不出的事：
    - 只许对 `transform`、`translate`、`scale`、`rotate`、`opacity` 做动画。
    - 颜色类属性只重绘、面积小，允许保留；`display`、`visibility` 的离散切换允许保留。
    - 其余属性一律不许过渡，包括布局类、`box-shadow`、`filter`、`stroke-dash*`、`background-position`、自定义属性和 `all`。
-2. `scripts/check_motion.mjs` 走白名单，检查入库的 CSS 过渡、关键帧，以及脚本里的 `style.transition` 和 `element.animate()`。对选择器末段像图标的独立变换属性给出提示。接入 CI 的 frontend job。
-3. 例外要在声明前写 `motion-exempt: 理由`。本次把现存的 74 处全部标上：要迁移的写"待迁移"，后续 PR 改写后删掉注释；这一轮不改的写明原因，列在下面的已知限制里。
+2. `scripts/check_motion.mjs` 走白名单，接入 CI 的 frontend job。检查范围：
+   - 入库的 CSS 过渡、关键帧；
+   - 脚本里的 `style.transition` 和 `element.animate()`；
+   - motion 组件的 `initial`、`animate`、`exit`；
+   - Tailwind 的 `transition-all` 和 `transition-[…]`。
+
+   对选择器末段像图标的独立变换属性给出提示。
+3. 例外要在声明前写 `motion-exempt: 理由`。本次给现存的 66 条声明全部写上注释：要迁移的写"待迁移"，后续 PR 改写后删掉注释；这一轮不改的写明原因，列在下面的已知限制里。
 4. 新增 `--ak-sys-duration-open/close`（240/200ms）和 `--ak-sys-motion-open/close` 两条曲线，供会移动的展开、收起使用。120Hz 下每帧推进不超过约 12%；收起曲线慢起步，让主线程最忙的头几帧走得最少。减少动态效果时两个时长都归零。
 5. `scripts/motion-probe.mjs` 用于验收，不进 CI：在真实页面上跑交互剧本，从 trace 读 `compositeFailed` 与 `FrameSequenceTrackerV3`，补静态检查认不出的元素类型、同批拖累。它不是 required check（TST-008），真实设备上的流畅度另用 Perfetto FrameTimeline 核对。
 
@@ -39,7 +45,7 @@ Chrome trace 还显示两件静态读代码看不出的事：
 - 长文本折叠（用户消息、工具结果预览）的高度过渡：FLIP 需要盖板，下方消息也要有不透明底色。
 - 窄屏阅读时顶栏收起，吸顶元素的 `top` 跟着过渡：合成写法要逐个吸顶元素做 FLIP。
 - 低频或面积很小的几处：
-  - 会话内查找条、选中框、插件降级时的插图高度；
+  - 会话内查找条、选中框、插件降级时的插图高度、阅读器筛选栏与大纲面板（motion 库逐帧驱动高度）；
   - 设置页插件清单展开、首跑引导进度条、Computer 光标标签；
   - 删除提示的倒计时描边、复制成功的打勾描线；
   - 侧栏标题跑马灯：只在桌面悬停时出现；
@@ -50,3 +56,5 @@ Chrome trace 还显示两件静态读代码看不出的事：
 - 静态检查只看本仓库。外置插件、内联 style 属性、运行时拼出来的样式串不在范围内。
 - 图标判断靠命名约定，可能漏报或误报。
 - 静态检查和探针都看不见滚动驱动的动画（scroll-timeline）。
+- Tailwind 的 `transition`、`transition-colors` 这类固定组合不检查。
+- motion 组件的 `x`、`y`、`scale` 由库在主线程逐帧拼成 transform，按变换放行；它们其实不受主线程卡顿保护，新代码优先用 CSS 或 `element.animate()`。

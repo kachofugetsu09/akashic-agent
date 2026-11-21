@@ -1227,6 +1227,7 @@
   flex: none;
   width: 13px;
   color: var(--ak-color-text-secondary);
+  /* motion-exempt: 待迁移到合成线程写法，见 ADR 0166 */
   transition: translate var(--ak-sys-duration-short) var(--ak-sys-motion-standard), transform var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
 }
 

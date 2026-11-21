@@ -30,7 +30,8 @@ function args() {
   return out;
 }
 
-const decode = (mask) => Object.entries(REASONS).filter(([bit]) => mask & (1 << Number(bit))).map(([, name]) => name);
+// 表外的位保留成 bit:N，不吞掉。
+const decode = (mask) => Array.from({ length: 31 }, (_, bit) => bit).filter((bit) => mask & (1 << bit)).map((bit) => REASONS[bit] ?? `bit:${bit}`);
 
 function analyze(events) {
   const names = new Map();
@@ -52,8 +53,8 @@ function analyze(events) {
     const data = event.args?.args?.data;
     if (event.name !== "FrameSequenceTrackerV3" || event.ph !== "b" || !data) continue;
     const slot = (frames[event.args.name] ??= { expected: 0, dropped: 0 });
-    slot.expected += data.expected;
-    slot.dropped += data.dropped_v4;
+    slot.expected += data.expected ?? 0;
+    slot.dropped += data.dropped_v4 ?? data.dropped ?? 0;
   }
   return { failures, frames };
 }
