@@ -379,3 +379,16 @@ PR 数量：C1、A1、A2、B1、B2、B3、B4、C2a、C2b，共九个，外加 P1
 **Q7 · 离线首装怎么办。** 推荐沿用 `--inputs` 目录：用有网的机器跑 `install --no-activate --extra` 生成清单和 bundle 目录，拷过去再装。不新增"离线仓库"概念。
 
 **Q8 · P1-X（extra 插件的迁移）的信任模型。** 这是 Phase 3 的阻塞项，但会影响 Phase 1 的包格式（迁移目录要不要随 release 分支走）。推荐 Phase 1 先不动，等 `scheduler`/`akasha` 之前再单独设计。需要你确认顺序。
+
+## 7. 决定（2026-11-22）
+
+- Q1：迁出的插件保持 `@release` 身份；只在 extra 里新建的插件用 `@extra`。marketplace 是身份命名空间，不代表代码来源。
+- Q2：每个插件一个 `release/<name>` 分支。
+- Q3：内置到 extra 的衔接走宿主侧联网、清单进发布。
+- Q4：在线 `pkg install` 不显式预拉镜像。
+- Q5：兼容声明只用 `api_version`。
+- Q6：Phase 1 不做自动补依赖。
+- Q7：离线首装沿用 `--inputs` 目录。
+- Q8：extra 插件的迁移（P1-X）在迁 `scheduler`、`akasha` 之前单独设计。
+
+身份不变带来的结论：迁出插件的数据目录、ledger owner、Message metadata、preset 行都不需要变。因此数据目录归一化（#2165）不是迁移的前置条件，已搁置；B4 需要的"清除 adoption 条目"语义由 B4 自己实现，换来源沿用旧记录里的 `data_dir`。
