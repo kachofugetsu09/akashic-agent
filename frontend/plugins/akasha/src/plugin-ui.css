@@ -18,7 +18,9 @@
   border: 0;
   padding: 0;
   background: none;
-  font: inherit;
+  /* 只继承字族与行高：font 简写会连字号一起重置，上面按 --chat-type-control 给的字号就失效了。 */
+  font-family: inherit;
+  line-height: inherit;
   cursor: help;
   transition: color var(--ak-sys-duration-short, 150ms) var(--ak-sys-motion-standard, ease);
 }
