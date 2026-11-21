@@ -624,7 +624,7 @@ function CollapsedToolGroup({ count, durationMs, findText, children }: {
   findText: () => string;
   children: ReactNode;
 }) {
-  const { open, sticky, rowRef, toggle, setOpen, motion } = useStickyDisclosure();
+  const { open, sticky, rowRef, disclosureRef, toggle, setOpen, onTransitionEnd } = useStickyDisclosure();
   // 成员先进 DOM 或由 @starting-style 提供起始帧；悬停/聚焦提前挂载可省去点击当帧创建子树的开销。
   const [mounted, setMounted] = useState(false);
   const prefetch = () => setMounted(true);
@@ -653,7 +653,7 @@ function CollapsedToolGroup({ count, durationMs, findText, children }: {
           </span>
         </button>
       </div>
-      <Disclosure open={open} motion={motion}>
+      <Disclosure open={open} disclosureRef={disclosureRef} onTransitionEnd={onTransitionEnd}>
         {mounted ? <div className="tool-group-items">{children}</div> : null}
       </Disclosure>
     </div>
@@ -829,7 +829,7 @@ function TurnProcessSummary({ items, durationMs, lead, children }: {
   lead?: ReactNode;
   children: ReactNode;
 }) {
-  const { open, sticky, rowRef, toggle, setOpen, motion } = useStickyDisclosure();
+  const { open, sticky, rowRef, disclosureRef, toggle, setOpen, onTransitionEnd } = useStickyDisclosure();
   // 成员先进 DOM 或由 @starting-style 提供起始帧；悬停/聚焦提前挂载可省去点击当帧创建子树的开销。
   const [mounted, setMounted] = useState(false);
   const prefetch = () => setMounted(true);
@@ -864,7 +864,7 @@ function TurnProcessSummary({ items, durationMs, lead, children }: {
           </span>
         </button>
       </div>
-      <Disclosure open={open} motion={motion}>
+      <Disclosure open={open} disclosureRef={disclosureRef} onTransitionEnd={onTransitionEnd}>
         {mounted ? <div className="turn-process-items">{children}</div> : null}
       </Disclosure>
     </div>
@@ -1584,7 +1584,7 @@ const ThinkingRow = memo(function ThinkingRow({
   streaming: boolean;
   duration?: number;
 }) {
-  const { open, sticky, rowRef, setOpen, motion } = useStickyDisclosure(false);
+  const { open, sticky, rowRef, disclosureRef, setOpen, onTransitionEnd } = useStickyDisclosure(false);
   const [mounted, setMounted] = useState(false);
   const prefetch = () => setMounted(true);
   const features = streaming ? null : detectMessageRenderingFeatures(content);
@@ -1602,7 +1602,7 @@ const ThinkingRow = memo(function ThinkingRow({
       data-sticky={sticky ? "true" : undefined} duration={duration}>
       <ThinkingRowTrigger content={streaming ? content : ""} findText={content} rowRef={rowRef}
         onPrefetch={prefetch} onFindOpen={setFindOpen} />
-      <Disclosure open={open} motion={motion}>
+      <Disclosure open={open} disclosureRef={disclosureRef} onTransitionEnd={onTransitionEnd}>
         {mounted ? <div className="process-content" data-state={open ? "open" : "closed"}>
           <div className="process-text process-markdown">
             {needsRichContent ? <Suspense fallback={<span className="process-markdown-fallback">{content}</span>}>
@@ -1679,7 +1679,7 @@ const ToolStep = memo(function ToolStep({
   const description = toolDescription(block.input);
   const hasDetails = toolHasDetails(block);
   // 失败也默认收起：行尾的红字已说明原因，整段参数与报错由读者自己点开。
-  const { open, sticky, rowRef, toggle, setOpen, motion } = useStickyDisclosure();
+  const { open, sticky, rowRef, disclosureRef, toggle, setOpen, onTransitionEnd } = useStickyDisclosure();
   const [mounted, setMounted] = useState(false);
   const prefetch = () => setMounted(true);
   const showDetails = mounted || open || sticky;
@@ -1736,7 +1736,7 @@ const ToolStep = memo(function ToolStep({
           </div>
         )}
         {hasDetails ? (
-          <Disclosure open={open} motion={motion}>
+          <Disclosure open={open} disclosureRef={disclosureRef} onTransitionEnd={onTransitionEnd}>
             {showDetails ? <ToolDetailSurface block={block} open={showDetails} onCopyDetail={onCopyDetail}
               omit={description.repeats} named /> : null}
           </Disclosure>
@@ -2119,7 +2119,7 @@ const TaskCard = memo(function TaskCard({ block, task, member = false, onCopyDet
 }) {
   const view = taskView(block, task);
   const hasDetails = toolHasDetails(block);
-  const { open, sticky, rowRef, toggle, setOpen, motion } = useStickyDisclosure(block.status === "output-error");
+  const { open, sticky, rowRef, disclosureRef, toggle, setOpen, onTransitionEnd } = useStickyDisclosure(block.status === "output-error");
   const findText = useCallback(() => toolDetailFindText(block), [block]);
   const matches = useFindRegion(rowRef, open, findText, setOpen);
   const tooltipId = useId();
@@ -2147,7 +2147,7 @@ const TaskCard = memo(function TaskCard({ block, task, member = false, onCopyDet
       {hover.anchor ? <TaskHoverCard id={tooltipId} view={view} anchor={hover.anchor}
         onPointerEnter={hover.cancel} onPointerLeave={hover.leave} /> : null}
       {hasDetails ? (
-        <Disclosure open={open} motion={motion}>
+        <Disclosure open={open} disclosureRef={disclosureRef} onTransitionEnd={onTransitionEnd}>
           <ToolDetailSurface block={block} open={open || sticky} onCopyDetail={onCopyDetail} className="delegated-detail-surface" />
         </Disclosure>
       ) : null}
@@ -2178,7 +2178,7 @@ function TaskBatchCard({ members, onCopyToolDetail }: {
   const views = members.map(({ item, task }) => taskView(item.block, task));
   const counts = taskBatchCounts(views);
   // 有任务在跑或失败时默认展开；之后的开合只由读者决定，状态变化不把组弹开或收起。
-  const { open, sticky, rowRef, toggle, setOpen, motion } = useStickyDisclosure(counts.live > 0 || counts.failed > 0);
+  const { open, sticky, rowRef, disclosureRef, toggle, setOpen, onTransitionEnd } = useStickyDisclosure(counts.live > 0 || counts.failed > 0);
   const [mounted, setMounted] = useState(open);
   const prefetch = () => setMounted(true);
   const findText = useCallback(() => members.map(({ item }) => flowItemFindText(item)).join("\n"), [members]);
@@ -2201,7 +2201,7 @@ function TaskBatchCard({ members, onCopyToolDetail }: {
           </span>
         </button>
       </div>
-      <Disclosure open={open} motion={motion}>
+      <Disclosure open={open} disclosureRef={disclosureRef} onTransitionEnd={onTransitionEnd}>
         {mounted ? (
           <div className="delegated-group-members">
             {members.map(({ item, task }) => (
