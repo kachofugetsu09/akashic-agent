@@ -2,10 +2,37 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 from pathlib import Path
+from typing import cast
 
 from agent.restart import SupervisorCommitChannel
+
+
+# Read the immutable receipt written by the exiting Core. Host checks container exit separately.
+def read_closed_boot(workspace: Path, boot_id: str) -> tuple[str, tuple[str, ...]]:
+    if not re.fullmatch(r"[a-zA-Z0-9_-]{1,128}", boot_id):
+        raise ValueError("旧 boot ID 无效")
+    path = workspace / "runtime" / "closed" / f"{boot_id}.json"
+    data: object = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise RuntimeError("旧 Core 关闭回执必须是对象")
+    receipt = cast(dict[str, object], data)
+    root = receipt.get("rootIdentity")
+    if receipt.get("bootId") != boot_id or not isinstance(root, str) or not root:
+        raise RuntimeError("旧 Core 关闭回执的 boot 或 Root 不符")
+    if receipt["state"] == "closed" and "transactions" not in receipt:
+        return root, ()
+    raw = receipt.get("transactions")
+    if receipt["state"] != "generation_cleanup_pending" or not isinstance(raw, list) or not raw:
+        raise RuntimeError("旧 Core 关闭回执缺少待清理事务")
+    transactions: list[str] = []
+    for tx in cast(list[object], raw):
+        if not isinstance(tx, str) or not re.fullmatch(r"[0-9a-f]{32}", tx) or tx in transactions:
+            raise RuntimeError("旧 Core 关闭回执包含无效或重复的事务 ID")
+        transactions.append(tx)
+    return root, tuple(transactions)
 
 
 class RuntimeReadiness:
@@ -68,11 +95,13 @@ class RuntimeReadiness:
         if payload.get("bootId") == self.boot_id and payload.get("pid") == self.pid:
             self.path.unlink()
 
-    def mark_closed(self, root_identity: str | None) -> None:
-        """正常释放资源后保存当前 boot 的关闭证据，不覆盖旧 boot。"""
+    def mark_closed(self, root_identity: str | None, *, pending: tuple[str, ...] = ()) -> None:
+        """保存此 boot 的退出状态及待宿主结算的事务，不覆盖已有回执。"""
         path = self.path.parent / "runtime" / "closed" / f"{self.boot_id}.json"
         path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {"bootId": self.boot_id, "pid": self.pid, "state": "closed", "rootIdentity": root_identity}
+        payload: dict[str, object] = {"bootId": self.boot_id, "pid": self.pid, "state": "closed", "rootIdentity": root_identity}
+        if pending:
+            payload.update(state="generation_cleanup_pending", transactions=list(pending))
         descriptor, temporary = tempfile.mkstemp(dir=path.parent, prefix=".closed-")
         try:
             with os.fdopen(descriptor, "w") as stream:

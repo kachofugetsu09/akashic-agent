@@ -181,7 +181,8 @@ async def _prepare_stop(
     async with await AsyncAkashic.connect(endpoint, workspace_token=read_token(workspace, endpoint)) as client:
         result = await client.request("runtime/prepare-stop", request["stop"])
         try:
-            if not isinstance(result, dict) or result.get("state") != "drained":
+            if (not isinstance(result, dict) or result.get("state") != "drained"
+                    or result.get("bootId") != request["stop"]["boot_id"]):
                 raise RuntimeError("Core 未确认正常回合和排空")
             controller = await UnixWorkloadController(
                 Path(current["AKASHIC_WORKLOAD_RUNTIME_DIR"]) / "controller.sock"
@@ -222,17 +223,16 @@ def cancel_stop(record: dict[str, Any], current: dict[str, str]) -> None:
     asyncio.run(_cancel_stop(record["request"], current))
 
 
-def verify_closed(ack: dict[str, object], current: dict[str, str]) -> None:
-    """停止命令成功之外，核对正常关闭证据和实际容器退出。"""
-    closed = read_json(
-        Path(current["AKASHIC_WORKSPACE"]) / "runtime/closed" / f"{ack['bootId']}.json"
-    )
-    if (
-        closed.get("state") != "closed"
-        or closed.get("bootId") != ack["bootId"]
-        or closed.get("rootIdentity") != ack["rootIdentity"]
-    ):
-        raise RuntimeError("旧 Core 缺少正常关闭证据")
+def verify_closed(ack: dict[str, object], current: dict[str, str]) -> str:
+    """核对 boot 回执、实际容器及 Controller 退出，返回可由发布器结算的 boot。"""
+    from bootstrap.runtime_readiness import read_closed_boot
+
+    boot_id = ack["bootId"]
+    if not isinstance(boot_id, str):
+        raise RuntimeError("停止回执缺少 boot ID")
+    root, _pending = read_closed_boot(Path(current["AKASHIC_WORKSPACE"]), boot_id)
+    if root != ack["rootIdentity"]:
+        raise RuntimeError("旧 Core 关闭回执与排空的 Root 不符")
     controller = read_json(
         Path(current["AKASHIC_EXPERIMENT_ROOT"])
         / "workload-controller"
@@ -278,6 +278,8 @@ def verify_closed(ack: dict[str, object], current: dict[str, str]) -> None:
             state.splitlines()
         ):
             raise RuntimeError(f"旧服务未正常停止: {unit}: {state}")
+
+    return boot_id
 
 
 def _exec_target(path: Path, request: dict[str, Any]) -> None:

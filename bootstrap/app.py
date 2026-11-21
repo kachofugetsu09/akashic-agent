@@ -17,6 +17,7 @@ from bootstrap.runtime_readiness import RuntimeReadiness
 from bootstrap.tools import CoreRuntime, build_core_runtime
 from bootstrap.workspace_lock import WorkspaceInstanceLock
 from utils.timing import measure
+from agent.plugins.reload_journal import GenerationCleanupPending
 from agent.plugins.watcher import PluginWatcher
 from core.net.http import (
     SharedHttpResources,
@@ -322,8 +323,15 @@ class AppRuntime:
                     ),
                 ),
             )
+            pending: tuple[str, ...] = ()
             if self.core is not None:
-                await self.core.stop()
+                try:
+                    await self.core.stop()
+                except GenerationCleanupPending as error:
+                    if not self._started or self.readiness is None or closing_root is None:
+                        raise
+                    pending = error.transactions
+                    logger.warning("已登记插件代清理，等待宿主核对容器退出: %s", pending)
             await _run_cleanup_steps(
                 ("http_resources.aclose", self.http_resources.aclose),
                 (
@@ -332,7 +340,7 @@ class AppRuntime:
                 ),
             )
             if self._started and self.readiness is not None:
-                self.readiness.mark_closed(None if closing_root is None else closing_root.generation_id)
+                self.readiness.mark_closed(None if closing_root is None else closing_root.generation_id, pending=pending)
         finally:
             self._workspace_lock.release()
             clear_default_shared_http_resources(self.http_resources)

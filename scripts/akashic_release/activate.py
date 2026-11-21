@@ -220,6 +220,7 @@ def render_environment(values: Mapping[str, str]) -> str:
 def _publish(
     *, paths: ReleasePaths, candidate: Mapping[str, str], plan: Path,
     inputs: Path, digest: str, backup_dir: Path | None, preflight: bool, run: Run,
+    closed_boot: str | None = None,
 ) -> dict[str, object]:
     """让目标镜像检查或执行同一份固定部署清单。"""
 
@@ -253,6 +254,8 @@ def _publish(
         command += ["--env", f"{key}={candidate[key]}"]
     command += [candidate["AKASHIC_IMAGE"], "publish", "--plan", "/opt/akashic/deploy-plan.json",
                 "--inputs", "/opt/akashic/deploy-inputs"]
+    if closed_boot is not None:
+        command += ["--closed-boot", closed_boot]
     if preflight:
         command.append("--preflight-only")
     elif backup_dir is not None:
@@ -468,9 +471,10 @@ def activate_release(
     try:
         with measure("release.stop"):
             stop_runtime(run=run)
+        closed_boot = None
         if stop_ack is not None:
             from scripts.akashic_release.self_deploy import verify_closed
-            verify_closed(stop_ack, current)
+            closed_boot = verify_closed(stop_ack, current)
         # 旧 Core 排空后才固定恢复点；预检期间的插件换代仍属于旧版本。
         if root_ref is not None:
             stopped_selection = selection_path.read_text(encoding="utf-8")
@@ -485,7 +489,7 @@ def activate_release(
                 atomic_write(backup_dir.with_suffix(".env"), environment_file.read_text(encoding="utf-8"))
             attempt["publication"] = _publish(
                 paths=paths, candidate=candidate, plan=fixed_plan, inputs=inputs,
-                digest=digest, backup_dir=backup_dir, preflight=False, run=run,
+                digest=digest, backup_dir=backup_dir, preflight=False, run=run, closed_boot=closed_boot,
             )
             attempt["phase"] = "published"
             write_json(attempt_path, attempt)

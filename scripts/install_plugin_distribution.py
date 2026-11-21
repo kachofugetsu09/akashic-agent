@@ -953,10 +953,33 @@ def _prepare_distribution_environments(
     return prepared
 
 
+# Both publication locks are held and the host has verified that this exact boot exited.
+def _settle_closed_boot(workspace: Path, boot_id: str) -> None:
+    from bootstrap.runtime_readiness import read_closed_boot
+
+    _, required = read_closed_boot(workspace, boot_id)
+    journal = ReloadJournal(workspace)
+    pending = journal.pending_recovery()
+    receipt = f"release-closed:{boot_id}"
+    by_id = {action.tx_id: action for action in pending}
+    for tx_id in required:
+        action = by_id.get(tx_id)
+        if action is None:
+            # A stopped publish can be retried after it has already settled this receipt.
+            if any(event.details.get("cleanup_receipt") == receipt and
+                   event.details.get("event") == "generation_cleanup_settled" for event in journal.events(tx_id)):
+                continue
+        elif journal.is_boot_generation_cleanup(action, boot_id):
+            continue
+        raise PendingPublicationError("关闭回执所列事务不是该 boot 的纯运行期代清理")
+    for action in pending:
+        _ = journal.settle_exited_generation(action, boot_id, receipt)
+
+
 def publish_distribution(
     *, distribution: Path, workspace: Path, plugins_home: Path,
     config_path: Path, plan: Path, inputs: Path,
-    backup_dir: Path | None = None, preflight_only: bool = False,
+    backup_dir: Path | None = None, preflight_only: bool = False, closed_boot: str | None = None,
 ) -> dict[str, Any]:
     """更新内置 preset 和指定外置输入；先完成 Core 与内置迁移。"""
     digest, expected_root, requested, adoption = load_deployment_plan(plan)
@@ -1033,6 +1056,8 @@ def publish_distribution(
                 # Core 先更新自己的账本结构，业务 step 只由相应插件执行。
                 with measure("publish.migrations.run"):
                     runner.run_under_maintenance(maintenance, core_only=True)
+                    if closed_boot is not None:
+                        _settle_closed_boot(workspace, closed_boot)
                     check_pending_publication(workspace)
                     runner.run_under_maintenance(maintenance)
                 # 迁移可能改变声明输入；只按迁移后的选择提交，显式外置目标重新核对启停。
@@ -1222,10 +1247,13 @@ def main() -> None:
     parser.add_argument("--plan", type=Path)
     parser.add_argument("--inputs", type=Path)
     parser.add_argument("--preflight-only", action="store_true")
+    parser.add_argument("--closed-boot", help=argparse.SUPPRESS)
     args = parser.parse_args()
 
     if sum((args.verify_only, args.ensure_bundle, args.publish)) > 1:
         parser.error("--verify-only、--ensure-bundle、--publish 互斥")
+    if args.closed_boot is not None and (not args.publish or args.preflight_only):
+        parser.error("--closed-boot 仅适用于停止后的发布")
     if args.publish:
         if args.config is None or args.plan is None or args.inputs is None:
             parser.error("--publish 需要 --config、--plan、--inputs")
@@ -1233,7 +1261,7 @@ def main() -> None:
             distribution=args.distribution, workspace=args.workspace,
             plugins_home=args.plugins_home, config_path=args.config,
             plan=args.plan, inputs=args.inputs, backup_dir=args.backup_dir,
-            preflight_only=args.preflight_only,
+            preflight_only=args.preflight_only, closed_boot=args.closed_boot,
         )
         print(json.dumps(result, ensure_ascii=False))
         return

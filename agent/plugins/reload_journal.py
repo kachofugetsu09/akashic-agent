@@ -183,6 +183,13 @@ def _check_journal_source(
         if current_identity != identity or hashlib.sha256(observed).digest() != hashlib.sha256(content).digest():
             raise RuntimeError(f"journal 在读取期间变化: {path}")
 
+
+class GenerationCleanupPending(RuntimeError):
+    def __init__(self, transactions: tuple[str, ...]) -> None:
+        self.transactions = transactions
+        super().__init__("旧 boot 仍持有待清理的插件代: " + ", ".join(transactions))
+
+
 class ReloadJournal:
     """Persist plugin reload phases and expose deterministic crash recovery work."""
 
@@ -807,6 +814,24 @@ class ReloadJournal:
     def pending_recovery(self) -> tuple[ReloadRecoveryAction, ...]:
         with self._connect() as conn:
             return self._pending_recovery(conn)
+
+    # Only a generation cleanup without a selection or installation transition ends with its boot.
+    def is_boot_generation_cleanup(self, action: ReloadRecoveryAction, boot_id: str) -> bool:
+        return (
+            action.runtime_owner_boot_id == boot_id
+            and action.action == "retry_generation_cleanup"
+            and action.failure_resource == f"generation-cleanup:{action.generation_id}"
+            and action.base_snapshot_id is None and action.candidate_snapshot_id is None
+            and action.base_artifact_pointer is None and action.candidate_artifact_pointer is None
+            and self.selection_candidate(action.tx_id) is None
+        )
+
+    def settle_exited_generation(self, action: ReloadRecoveryAction, boot_id: str, receipt: str) -> bool:
+        if not self.is_boot_generation_cleanup(action, boot_id):
+            return False
+        self.settle_generation_cleanup(tx_id=action.tx_id, plugin_id=action.plugin_id,
+                                       generation_id=action.generation_id, receipt=receipt)
+        return True
 
     def settle_generation_cleanup(
         self, *, tx_id: str, plugin_id: str, generation_id: str, receipt: str,

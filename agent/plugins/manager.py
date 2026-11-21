@@ -88,6 +88,7 @@ from agent.plugins.bundles import plugin_choices, preset_plugin_ids, set_plugin_
 from agent.plugins.distribution_sources import DistributionSources
 from agent.plugins.python_environment import PythonEnvironments
 from agent.plugins.reload_journal import (
+    GenerationCleanupPending,
     RecoveryActionName,
     RecoveryTarget,
     ReloadJournal,
@@ -596,18 +597,12 @@ class PluginManager:
             or action.action in {"retry_generation_cleanup", "retry_runtime_recovery"}
         ))
         for action in recovery:
-            committed = self._selection_transition_committed(action.tx_id, selection_ref)
             receipt = receipts.get(action.tx_id)
-            # 旧 boot 已确认回收：它名下纯运行期（不涉及选择切换）的代清理记录随进程结束而完成，
-            # 直接结算；否则这些记录永远停在 cleanup_failed，累积并阻塞之后的部署。
-            if (committed is None and receipt and action.runtime_owner_boot_id is not None
-                    and action.action == "retry_generation_cleanup"
-                    and action.failure_resource == f"generation-cleanup:{action.generation_id}"):
-                self._reload_journal.settle_generation_cleanup(
-                    tx_id=action.tx_id, plugin_id=action.plugin_id,
-                    generation_id=action.generation_id, receipt=receipt,
-                )
+            if (receipt and action.runtime_owner_boot_id is not None and
+                    self._reload_journal.settle_exited_generation(action, action.runtime_owner_boot_id, receipt)):
                 continue
+            intent = self._reload_journal.selection_candidate(action.tx_id)
+            committed = self._selection.transition_committed(*intent) if intent is not None else None
             self._reload_journal.settle_boot(action, committed=committed, cleanup_receipt=receipt)
         if selection_ref is not None:
             with measure("plugins.adopt"):
@@ -1067,14 +1062,6 @@ class PluginManager:
             ),
         )
 
-    def _selection_transition_committed(self, tx_id: str, current_ref: str | None) -> bool | None:
-        """按前驱和完整 refs 认定同一次转换；旧记录缺证据时明确未知。"""
-        intent = self._reload_journal.selection_candidate(tx_id)
-        if intent is None:
-            return None
-        base, components = intent
-        return self._selection.transition_committed(base, components)
-
     async def _prepare_boot_runtime_recovery(
         self,
         actions: tuple[ReloadRecoveryAction, ...],
@@ -1131,6 +1118,7 @@ class PluginManager:
         *,
         state: str,
         retain_selected_failed: bool = False,
+        hand_off_cleanup: bool = False,
     ) -> None:
         """成功后才解除 owner；失败或取消保留资源供显式关闭重试。"""
 
@@ -1177,6 +1165,9 @@ class PluginManager:
                 raise BaseExceptionGroup(
                     "generation 清理与持久失败记录均失败", [error, journal_error],
                 ) from None
+            if hand_off_cleanup and isinstance(error, Exception):
+                assert generation.reload_tx_id is not None
+                raise GenerationCleanupPending((generation.reload_tx_id,)) from error
             raise
 
         # 3. 所有资源确认关闭后才移除模块及排空 owner。
@@ -2538,19 +2529,34 @@ class PluginManager:
         self._restart_gate.close()
         _, externally_cancelled = await _complete_critical(self._plugin_tasks.drain())
         live_root = self._live_root
-        for generation in tuple(reversed(tuple(self._active_generations.values()))):
-            _, cancelled = await _complete_critical(
-                self._dispose_generation(generation, state="retired")
-            )
-            externally_cancelled = externally_cancelled or cancelled
-        for generations in tuple(self._draining_generations.values()):
-            for generation in tuple(generations):
+        exiting_boot = (self._restart_gate.boot_id if self._restart_gate.stop_prepared
+                        and os.environ.get("AKASHIC_DOCKER_RUNTIME") == "1" else None)
+        generations = list(reversed(tuple(self._active_generations.values())))
+        for tracked in self._draining_generations.values():
+            generations.extend(tracked)
+        # The same failed generation can be both selected and draining.
+        owners = {generation.generation_id: generation for generation in generations}
+        pending: list[str] = []
+        for generation in owners.values():
+            try:
                 _, cancelled = await _complete_critical(
-                    self._dispose_generation(generation, state="retired")
+                    self._dispose_generation(generation, state="retired", hand_off_cleanup=exiting_boot is not None)
                 )
                 externally_cancelled = externally_cancelled or cancelled
+            except GenerationCleanupPending as error:
+                pending.extend(error.transactions)
         _, cancelled = await _complete_critical(self._plugin_tasks.close())
         externally_cancelled = externally_cancelled or cancelled
+        if pending:
+            if externally_cancelled:
+                raise asyncio.CancelledError
+            assert exiting_boot is not None
+            eligible = {a.tx_id for a in self._reload_journal.pending_recovery()
+                        if self._reload_journal.is_boot_generation_cleanup(a, exiting_boot)}
+            if self._building_roots or not set(pending).issubset(eligible):
+                raise RuntimeError("插件关闭失败涉及未完成的 Root 或非本 boot 代清理")
+            # Keep the failed Fibers and their providers alive until the verified container exit.
+            raise GenerationCleanupPending(tuple(pending))
         if live_root is not None:
             _, cancelled = await _complete_critical(live_root.dispose())
             externally_cancelled = externally_cancelled or cancelled
