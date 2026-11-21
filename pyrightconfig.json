@@ -10,7 +10,8 @@
     "bootstrap",
     "core",
     "infra",
-    "plugins/ledger"
+    "plugins/ledger",
+    "scripts/akashic_release"
   ],
   "exclude": [
     ".venv",

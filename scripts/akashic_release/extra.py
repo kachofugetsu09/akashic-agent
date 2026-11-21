@@ -36,6 +36,8 @@ class ExtraOptions:
     enabled: bool = True
     repo: str | None = None
     inputs: Path | None = None
+    pull_images: bool = True
+    gaps_only: bool = False
 
 
 @dataclass(frozen=True)
@@ -70,9 +72,14 @@ def read_selected(workspace: Path) -> tuple[str | None, dict[str, SelectedPackag
     return document["root_ref"], selected
 
 
-# 目标发行版自带的身份：目标提交检出里 plugins/ 下有 plugin.py 的目录。
-def provided_ids(checkout: Path) -> frozenset[str]:
-    return frozenset(f"{path.parent.name}@{MARKETPLACE}" for path in (checkout / "plugins").glob("*/plugin.py"))
+# 目标发行版自带的身份：发行版目录读 distribution.json；源码检出读 plugins/ 下各 plugin.py 声明的名字。
+def provided_ids(source: Path) -> frozenset[str]:
+    report = source / "distribution.json"
+    if report.exists():
+        document = json.loads(report.read_text(encoding="utf-8"))
+        return frozenset(f"{row['name']}@{document['marketplace']}" for row in document["plugins"])
+    # 身份取 plugin.py 里的 name，不能用目录名：目录 conversation_ui 的插件名是 conversation-ui。
+    return frozenset(f"{read_literals(path)[0]}@{MARKETPLACE}" for path in (source / "plugins").glob("*/plugin.py"))
 
 
 def _read_rows(path: Path) -> dict[str, dict[str, object]]:
@@ -191,7 +198,7 @@ def _produce(action: ExtraAction, repo: str, options: ExtraOptions, out: Path, r
     else:
         fetch_bundle(repo, name, action.commit, bundle)
     images = check_bundle(bundle, name, action.commit)
-    for image in images:
+    for image in images if options.pull_images else ():
         run(["docker", "pull", image], check=True, capture_output=True, text=True)
     target: dict[str, object] = {
         "plugin_id": action.plugin_id, "kind": action.kind, "bundle_relative_path": bundle.name,
@@ -203,20 +210,23 @@ def _produce(action: ExtraAction, repo: str, options: ExtraOptions, out: Path, r
 
 # 宿主侧入口：任何一步失败都抛错，调用方在停机之前整体失败。
 def prepare_extra_inputs(
-    *, workspace: Path, plugins_home: Path, checkout: Path, mode: str, root_ref: str | None, options: ExtraOptions,
+    *, workspace: Path, plugins_home: Path, source: Path, mode: str, root_ref: str | None, options: ExtraOptions,
     out: Path, run: Run,
 ) -> ExtraResult:
     # 1. 旧选择、目标发行版自带集合、preset 与 patch 的启用集合。
     current_root, selected = read_selected(workspace)
     if current_root != root_ref:
         raise RuntimeError("选择在读取期间改变，停止部署")
-    enabled, preset = composition_ids(checkout, mode, workspace / "bundle.patch.toml")
+    enabled, preset = composition_ids(source, mode, workspace / "bundle.patch.toml")
     repo = resolve_repo(options.repo)
     remote: dict[str, str] = {}
 
     installed = frozenset(pid for pid, package in selected.items() if not package.builtin) | cache_installed_ids(
         workspace, plugins_home)
-    missing = sorted(enabled - provided_ids(checkout) - installed)
+    missing = sorted(enabled - provided_ids(source) - installed)
+    # 启动补装只为 preset 要求的缺口联网；只在 patch 里启用的行（可选或已退役）不是启动的前置条件。
+    if options.gaps_only and not set(missing) & preset:
+        return ExtraResult((), ())
 
     def heads() -> dict[str, str]:
         if not remote:
@@ -227,7 +237,7 @@ def prepare_extra_inputs(
         return remote
 
     # 2. 缺口分类与 pkg sync 共用；preset 缺失且上游也没有会在这里失败，换来源与首装由旧选择区分。
-    gaps = classify_gaps(enabled=sorted(enabled), present=provided_ids(checkout) | installed, preset=preset,
+    gaps = classify_gaps(enabled=sorted(enabled), present=provided_ids(source) | installed, preset=preset,
                          heads=heads, needs_switch=lambda pid: pid.endswith("@" + MARKETPLACE))
     actions: list[ExtraAction] = []
     for gap in gaps:
@@ -236,7 +246,8 @@ def prepare_extra_inputs(
                 raise RuntimeError(f"preset 启用的插件目标发行版不再自带，extra 上游也没有: {gap.plugin_id}")
             kind = "switch" if gap.plugin_id in selected else "install"
             actions.append(ExtraAction(kind, gap.plugin_id, heads()[gap.plugin_id.partition("@")[0]]))
-    actions.extend(upgrade_actions(selected, heads(), repo))
+    if not options.gaps_only:
+        actions.extend(upgrade_actions(selected, heads(), repo))
     skipped = tuple((gap.plugin_id, "上游存在，未自动安装" if gap.action == "optional" else "已退役，上游不存在")
                     for gap in gaps if gap.action in ("optional", "retired"))
     if not actions:

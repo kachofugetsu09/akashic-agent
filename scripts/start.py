@@ -21,6 +21,10 @@ from urllib.request import ProxyHandler, Request, build_opener
 import webbrowser
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from agent.plugins.extra_repo import resolve_repo  # noqa: E402
 
 
 class Preparation:
@@ -139,7 +143,7 @@ def prepare_environment(preparation: Preparation, cache: Path, revision: str) ->
 
 
 def prepare_install(preparation: Preparation, core: Path, distribution: Path,
-                    python: Path, state: Path) -> None:
+                    python: Path, state: Path, extra_repo: str, extra_inputs: Path | None = None) -> None:
     """Initialize only launcher-owned data and retain the installer's existing choices."""
     workspace = state / "workspace"
     config = state / "config.toml"
@@ -176,10 +180,20 @@ def prepare_install(preparation: Preparation, core: Path, distribution: Path,
                          "--workspace", str(workspace)], cwd=core)
     # 2. The formal installer is the only owner of profile installation and receipts.
     preparation.step("检查已安装功能" if receipt.exists() else "安装默认功能")
-    preparation.run([str(python), str(core / "scripts/install_plugin_distribution.py"),
-                     "--distribution", str(distribution), "--bundle", str(distribution / "bundles" / (os.environ.get("AKASHIC_PLUGIN_BUNDLE", "base") + ".toml")),
-                     "--workspace", str(workspace), "--plugins-home", str(plugin_home), "--config", str(config),
-                     "--ensure-bundle", "--receipt", str(receipt)], cwd=core)
+    # 发行版已不再自带而 preset 仍启用的插件从 extra 仓库补装；只有存在缺口时才联网。
+    command = [str(python), str(core / "scripts/install_plugin_distribution.py"),
+               "--distribution", str(distribution), "--bundle", str(distribution / "bundles" / (os.environ.get("AKASHIC_PLUGIN_BUNDLE", "base") + ".toml")),
+               "--workspace", str(workspace), "--plugins-home", str(plugin_home), "--config", str(config),
+               "--ensure-bundle", "--receipt", str(receipt), "--extra-repo", extra_repo]
+    if extra_inputs is not None:
+        command += ["--extra-inputs", str(extra_inputs)]
+    try:
+        preparation.run(command, cwd=core)
+    except RuntimeError as error:
+        # 子进程的原因在日志里；补装失败时把"缺哪些包、怎么办"带到终端。
+        lines = [line for line in preparation.log.read_text(encoding="utf-8", errors="replace").splitlines()
+                 if "无法取得 preset" in line or "preset 启用的插件没有进入选择" in line]
+        raise RuntimeError(f"{error} {lines[-1]}" if lines else str(error)) from error
 
 
 def _local_request(state: Path, url: str) -> Request:
@@ -270,6 +284,9 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=int(os.environ.get("AKASHIC_WEB_PORT", "2236")))
     parser.add_argument("--no-browser", action="store_true")
     parser.add_argument("--distribution", type=Path, help="Use the distribution shipped in the container")
+    parser.add_argument("--extra-repo", help="extra 插件仓库地址（可为本地路径）；默认取 AKASHIC_EXTRA_REPO 或官方仓库")
+    parser.add_argument("--extra-inputs", type=Path,
+                        help="预先下载好的 extra 输入目录，不联网；用于离线环境和 CI")
     parser.add_argument("--host", default="127.0.0.1",
                         help="监听地址；computer 浏览器经宿主出口访问 localhost，开发实例不需要改它")
     args = parser.parse_args()
@@ -308,7 +325,8 @@ def main() -> int:
                     core, distribution, python = ROOT, args.distribution.resolve(), Path(sys.executable)
                 else:
                     core, distribution, python = prepare_source(preparation, args.cache.expanduser().resolve())
-                prepare_install(preparation, core, distribution, python, state)
+                prepare_install(preparation, core, distribution, python, state, resolve_repo(args.extra_repo),
+                                args.extra_inputs.resolve() if args.extra_inputs else None)
             return run_service(preparation, core, python, state, args.port,
                                args.distribution is not None, not args.no_browser, distribution, args.host)
         except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as error:

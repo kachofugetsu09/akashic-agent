@@ -411,7 +411,7 @@ def activate_release(
         if plan is not None and (plan.is_symlink() or not plan.is_file()):
             raise ValueError("部署清单必须是普通文件")
         # 停机之前联网求 extra 包；任何一步失败都在这里抛错，旧服务不动。
-        found = (prepare_extra_inputs(workspace=paths.state / "workspace", plugins_home=paths.state / "plugin-home", checkout=paths.source(target),
+        found = (prepare_extra_inputs(workspace=paths.state / "workspace", plugins_home=paths.state / "plugin-home", source=paths.source(target),
                                       mode=current.get("AKASHIC_PLUGIN_BUNDLE", "base"), root_ref=str(root_ref),
                                       options=extra, out=attempt_path.with_suffix(".inputs"), run=run)
                  if extra is not None and extra.enabled else ExtraResult((), ()))

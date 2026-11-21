@@ -9,7 +9,8 @@ import shutil
 import sqlite3
 import subprocess
 from pathlib import Path
-from typing import cast
+from collections.abc import Mapping
+from typing import Any, cast
 
 from scripts.akashic_release.manifest import atomic_write, read_json, write_json
 from scripts.akashic_release.model import ReleasePaths
@@ -70,16 +71,20 @@ def _plugin_record(home: Path, plugin_id: str) -> dict[str, object]:
     }
 
 
-# 停机后、发布前保存恢复点。
-def capture(paths: ReleasePaths, plugin_ids: list[str], destination: Path) -> None:
-    workspace, home = paths.state / "workspace", paths.state / "plugin-home"
-    write_json(destination, {
+# 当前插件状态的恢复点文档：选择、patch、涉及插件的指针与 artifact、安装恢复点水位线。
+def capture_state(workspace: Path, home: Path, plugin_ids: list[str]) -> dict[str, object]:
+    return {
         "schema_version": _SCHEMA, "plugins_home": str(home), "workspace": str(workspace),
         "selection": _text(workspace / "runtime/plugin-stable.json"),
         "patch": _text(workspace / "bundle.patch.toml"),
         "journal_mark": _journal_mark(workspace),
         "plugins": [_plugin_record(home, plugin_id) for plugin_id in plugin_ids],
-    })
+    }
+
+
+# 停机后、发布前保存恢复点并落盘。
+def capture(paths: ReleasePaths, plugin_ids: list[str], destination: Path) -> None:
+    write_json(destination, capture_state(paths.state / "workspace", paths.state / "plugin-home", plugin_ids))
 
 
 def _restore_file(path: Path, text: str | None) -> None:
@@ -117,9 +122,12 @@ def _restore_plugin(record: dict[str, object], home: Path) -> None:
 # 安装恢复点先结算：发布期间新增的 armed（进程死在提交前）与 committed 记录一律置为已回退，
 # 这样旧版启动不会再按这些记录回滚已被删除的目录；整个还原可重复执行。
 def restore_plugin_state(snapshot: Path) -> None:
-    document = read_json(snapshot)
+    restore_state(read_json(snapshot))
+
+
+def restore_state(document: Mapping[str, Any]) -> None:
     if document.get("schema_version") != _SCHEMA:
-        raise RuntimeError(f"插件状态恢复点版本不支持: {snapshot}")
+        raise RuntimeError("插件状态恢复点版本不支持")
     workspace = Path(document["workspace"])
     # 1. 日志先结算，再动文件。
     journal = _journal(workspace)
