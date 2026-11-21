@@ -5,6 +5,7 @@ from typing import TypeVar
 
 from agent.plugin_composition import Context
 from agent.plugin_composition.model import ServiceKey
+from agent.plugin_composition.runtime_catalog import RUNTIME_CATALOG
 from plugins.gateway.contract import RpcMethod
 from plugins.runtime_inspection.contract import DOCUMENTS
 from .rpc import rpc_methods
@@ -16,9 +17,9 @@ from .inspection import (
 
 api_version = 3
 name = "runtime_inspection"
-version = "1.0.0"
+version = "1.1.0"
 desc = "汇总 owner 文档与可选任务、技能的只读运行时检查投影"
-inject = ()
+inject = (RUNTIME_CATALOG,)
 
 _T = TypeVar("_T")
 
@@ -54,7 +55,7 @@ async def apply(ctx: Context) -> None:
 
     provider = RuntimeInspectionProvider(ctx)
     _ = await ctx.provide(DOCUMENTS, provider)
-    for name, operation in rpc_methods(provider).items():
+    for name, operation in rpc_methods(ctx, provider).items():
         _ = await ctx.provide(RpcMethod.key(name), operation)
     await _bind_optional(
         ctx,

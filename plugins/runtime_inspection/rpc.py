@@ -1,8 +1,10 @@
 """普通检查插件的值级 RPC；外部调用与 Web 使用同一合同。"""
 from pydantic import BaseModel, ConfigDict
 
+from agent.plugin_composition import Context
 from plugins.gateway.contract import RpcMethod
 
+from .capabilities import read_capabilities
 from .inspection import RuntimeInspectionProvider
 
 
@@ -22,7 +24,7 @@ def _unavailable(code: str, message: str) -> dict[str, object]:
     return {"unavailable": {"code": code, "message": message}}
 
 
-def rpc_methods(provider: RuntimeInspectionProvider) -> dict[str, RpcMethod]:
+def rpc_methods(ctx: Context, provider: RuntimeInspectionProvider) -> dict[str, RpcMethod]:
     """发布独立请求入口，具体模型和缺失语义由本插件拥有。"""
     async def documents(params: BaseModel) -> object:
         return {"items": [dict(row) for row in provider.list_documents()]}
@@ -54,7 +56,11 @@ def rpc_methods(provider: RuntimeInspectionProvider) -> dict[str, RpcMethod]:
             "sources": [dict(row) for row in sources or ()],
         }
 
+    async def capabilities(params: BaseModel) -> object:
+        return await read_capabilities(ctx)
+
     return {
+        "inspection/capabilities.get": RpcMethod(EmptyParams, capabilities),
         "inspection/documents.list": RpcMethod(EmptyParams, documents),
         "inspection/documents.get": RpcMethod(DocumentParams, document),
         "inspection/jobs.list": RpcMethod(EmptyParams, jobs),

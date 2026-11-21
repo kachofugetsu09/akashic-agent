@@ -31,6 +31,10 @@ def build_runtime_catalog(
         "snapshot_id": f"{root.generation_id}:{revision}",
         "plugins": _plugin_items(root, active_generations, draining, revision),
         "endpoints": [asdict(item) for item in root.endpoints()],
+        # 当前生效的插件服务及其 owner；能力快照据此列出动态登记的入口。
+        "services": [{"key": key.name, "owner": owner}
+                     for key, owner in sorted(root.plugin_service_owners().items(),
+                                              key=lambda item: item[0].name)],
     }
     return catalog
 
