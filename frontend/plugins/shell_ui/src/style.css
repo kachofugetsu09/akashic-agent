@@ -421,15 +421,14 @@
     position: absolute;
     left: 0;
     bottom: -1px;
-    width: var(--shell-tabs-w, 0px);
+    /* 宽度画死 100px，脚本写入的位置与缩放比都由 transform 表达，切换只动 transform。 */
+    width: 100px;
     height: 2px;
     border-radius: 1px 1px 0 0;
     background: var(--ak-ink-primary);
-    transform: translateX(var(--shell-tabs-x, 0px));
-    /* motion-exempt: 待迁移到合成线程写法，见 ADR 0166 */
-    transition:
-      transform var(--ak-sys-duration-medium) var(--ak-sys-motion-emphasized),
-      width var(--ak-sys-duration-medium) var(--ak-sys-motion-emphasized);
+    transform-origin: left center;
+    transform: translateX(var(--shell-tabs-x, 0px)) scaleX(var(--shell-tabs-scale, 0));
+    transition: transform var(--ak-sys-duration-open) var(--ak-sys-motion-open);
     pointer-events: none;
   }
   .shell-settings-tabs:not([data-ready]) .shell-settings-tabs__indicator { transition: none; }

@@ -127,33 +127,4 @@ html[data-privacy-content="true"] :is(
 ) {
   filter: blur(6px) !important;
   user-select: none !important;
-  /* motion-exempt: 待迁移到合成线程写法，见 ADR 0166 */
-  transition: filter 180ms cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  html[data-privacy-content="true"] :is(
-    .user-bubble > *,
-    .user-message > *,
-    .agent-content > *,
-    .message-bubble > *,
-    .automatic-input > *,
-    .user-row > :not(.user-bubble),
-    .timeline-message.timeline-input > :not(.user-bubble),
-    .timeline-failure,
-    .timeline-control-note,
-    .composer-wrap textarea,
-    .composer-wrap [contenteditable="true"],
-    .composer-reply > div,
-    .composer-tray [data-attachment-id],
-    .steer-card p,
-    .header-meta__path > button,
-    .header-meta-node__label,
-    .header-meta-node__value,
-    .header-meta-node__detail,
-    .md-reader article,
-    .sites-stage
-  ) {
-    transition: none !important;
-  }
 }

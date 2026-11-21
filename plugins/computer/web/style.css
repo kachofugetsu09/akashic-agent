@@ -180,8 +180,8 @@
   border-radius: var(--ak-radius-sm);
   color: var(--ak-ink-secondary);
   background: transparent;
-  /* motion-exempt: 待迁移到合成线程写法，见 ADR 0166 */
-  transition: background-color 120ms var(--computer-ease), box-shadow 120ms var(--computer-ease);
+  /* 聚焦描边直接出现，只有底色过渡 */
+  transition: background-color 120ms var(--computer-ease);
 }
 
 .computer-address:hover { background: var(--ak-paper-raised); }
@@ -415,10 +415,9 @@
   transition-duration: 0ms;
 }
 
-/* 刷新图标每按一次多转一圈，角度由脚本累加 */
+/* 刷新图标每按一次多转一圈，角度由脚本累加；SVG 上只有 transform 能合成 */
 .computer-bar .computer-icon {
-  /* motion-exempt: 待迁移到合成线程写法，见 ADR 0166 */
-  transition: rotate 600ms var(--computer-ease);
+  transition: transform 600ms var(--computer-ease);
 }
 
 /* 空白页引导：压在远端白页上，深色字，不接收点击 */
@@ -454,15 +453,14 @@
   min-height: 0;
 }
 
-/* 内圈压在画面上、不接收点击；尺寸固定为 0 占位，状态切换不改变画面大小 */
+/* 内圈压在画面上、不接收点击；尺寸固定为 0 占位，状态切换不改变画面大小。
+   内圈随状态直接切换：box-shadow 过渡每帧重画整块画面边缘。 */
 .computer-frame::before {
   position: absolute;
   z-index: 3;
   inset: 0;
   content: "";
   pointer-events: none;
-  /* motion-exempt: 待迁移到合成线程写法，见 ADR 0166 */
-  transition: box-shadow 160ms var(--computer-ease);
 }
 
 .computer-frame[data-frame="anonymous"]::before {

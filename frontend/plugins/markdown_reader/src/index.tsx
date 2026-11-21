@@ -1847,25 +1847,20 @@ function FileManagerApp({
               <AnimatePresence mode="popLayout" initial={false}>
                 <motion.div
                   key={viewKey}
-                  // motion-exempt: 待迁移到合成线程写法，见 ADR 0166
                   initial={{
                     opacity: 0,
-                    filter: "blur(5px)",
                     scale: direction > 0 ? 1.018 : 0.982,
                   }}
                   animate={{
                     opacity: 1,
-                    filter: "blur(0px)",
                     scale: 1,
                   }}
                   exit={{
                     opacity: 0,
-                    filter: "blur(5px)",
                     scale: direction > 0 ? 0.982 : 1.018,
                   }}
                   transition={{
                     opacity: { duration: 0.18, ease: [0.22, 1, 0.36, 1] },
-                    filter: { duration: 0.22, ease: [0.22, 1, 0.36, 1] },
                     scale: { duration: 0.24, ease: [0.22, 1, 0.36, 1] },
                   }}
                   className="md-stage-panel"

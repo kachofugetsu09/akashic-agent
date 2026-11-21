@@ -211,9 +211,9 @@ function Shell({ pages, railActions, settings, settingsPlugins, http, inventory 
       const current = track.querySelector<HTMLElement>('[aria-current="page"]');
       if (current) {
         track.style.setProperty("--band-indicator-x", `${current.offsetLeft + 12}px`);
-        track.style.setProperty("--band-indicator-w", `${Math.max(0, current.offsetWidth - 24)}px`);
+        track.style.setProperty("--band-indicator-scale", String(Math.max(0, current.offsetWidth - 24) / 100));
       } else {
-        track.style.setProperty("--band-indicator-w", "0px");
+        track.style.setProperty("--band-indicator-scale", "0");
       }
       if (nav && nav.clientWidth !== lastNavWidth) {
         lastNavWidth = nav.clientWidth;
@@ -269,7 +269,7 @@ function Shell({ pages, railActions, settings, settingsPlugins, http, inventory 
         return;
       }
       bar.style.setProperty("--shell-tabs-x", `${current.offsetLeft}px`);
-      bar.style.setProperty("--shell-tabs-w", `${current.offsetWidth}px`);
+      bar.style.setProperty("--shell-tabs-scale", String(current.offsetWidth / 100));
       if (!bar.dataset.ready) frame = requestAnimationFrame(() => { bar.dataset.ready = "true"; });
     };
     measure();

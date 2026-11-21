@@ -113,7 +113,7 @@ export class PanelSurface {
     this.reload.addEventListener("click", () => {
       // 刷新图标转一圈，确认按下去了；远端加载进度拿不到，不假装有进度条。
       const svg = this.reload.querySelector<SVGElement>(".computer-icon");
-      if (svg) svg.style.rotate = `${++this.spins * 360}deg`;
+      if (svg) svg.style.transform = `rotate(${++this.spins * 360}deg)`;
       this.onNav("reload");
     });
     bar.append(this.back, this.forward, this.reload, this.buildAddress(), tools);
