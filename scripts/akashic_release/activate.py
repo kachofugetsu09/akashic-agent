@@ -508,7 +508,9 @@ def _restore_selection(path: Path, snapshot: str, published: object, publishing:
     current = selected["root_ref"]
     if current == previous:
         return
-    if current != published and not (publishing and selected["transition"]["base"] == previous):
+    transition = selected["transition"]
+    if not ((published is not None and current == published)
+            or (publishing and transition is not None and transition["base"] == previous)):
         raise RuntimeError(f"selection 已被其他写入者改变: {current}")
     atomic_write(path, snapshot)
 
