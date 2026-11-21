@@ -12,7 +12,7 @@ const BATCH_LIMIT = 100;
 const INTERACTIVE = "[data-perf], button, a[href], summary, input, textarea, select, label, [role=button], [role=tab], [role=menuitem], [role=option], [role=switch], [role=checkbox], [tabindex]";
 const NOISE = /ResizeObserver loop|^Script error\.?$/;
 // Tailwind 工具类不表达「点的是什么」，取动作名时跳过。
-const UTILITY = /^(w|h|size|min|max|p[xytrbl]?|m[xytrbl]?|text|bg|border|rounded|flex|grid|gap|items|justify|font|leading|tracking|overflow|shadow|ring|outline|opacity|z|top|left|right|bottom|inset|col|row|self|place|space|divide|cursor|select|resize|transition|duration|ease|animate|sr|truncate|shrink|grow|basis|order|align|whitespace|break|fill|stroke)(-|$)/;
+const UTILITY = /^(w|h|size|min|max|p[xytrbl]?|m[xytrbl]?|text|bg|border|rounded|flex|grid|gap|items|justify|font|leading|tracking|overflow|shadow|ring|outline|opacity|z|top|left|right|bottom|inset|col|row|self|place|space|divide|cursor|select|resize|transition|duration|ease|animate|sr|truncate|shrink|grow|basis|order|align|whitespace|break|fill|stroke|field-sizing)(-|$)/;
 
 interface EventTiming extends PerformanceEntry {
   readonly interactionId?: number;
