@@ -30,20 +30,29 @@ Phase 5 之前默认组合不变：新装实例仍然装齐今天 `bundles/base.
 - `visuals` 没有浏览器时工具直接返回错误，没有降级路径。
 - playwright 和 Chromium 由 `design`、`visuals` 使用，与 `computer` 无关。
 - 容器镜像不在本地时启动会失败（2026-11-21 事故）。声明镜像的包必须在安装和升级时先拉取再激活。
-- 一个插件只有一个来源。来源优先级覆盖、临时试用放到 Phase 5，并且不得让“现在跑的是哪份”变模糊。
+- 一个插件只有一个来源。来源优先级覆盖、临时试用暂不做，并且不得让“现在跑的是哪份”变模糊。
+
+## 已定决策（2026-11-22）
+
+- extra 仓库：公开的 `kachofugetsu09/akashic-plugins`。
+- 插件来源：Core 镜像不带 extra 插件，也没有 lock。安装或 `pkg upgrade` 时联网拉取 extra 仓库当前最新版。
+- 重依赖：插件声明自己的依赖，装进插件自己的环境并挂进主进程；安装时检查与已装插件的包版本冲突。
+- 数据目录：统一成 `plugin-data/<name>`。归一化是显式命令，不在启动流程里；遗留的非在用目录原地不动。
+- Phase 5 先做包组和 Web 首次引导，其余做完后再定。
 
 ## 分层
 
-每个插件声明层级 `core` 或 `extra`。门禁：`core` 层不得 import `extra` 层的 contract。切分是否正确由门禁判定，不靠手列清单。
+每个插件在 `plugin_boundary.toml` 的 `[tiers]` 声明层级 `core` 或 `extra`。门禁 R14：`core` 层不得 import `extra` 层的任何模块。
 
-当前已知需要反转的依赖：
+哪些插件属于最小闭环是设计判断，不由门禁决定。R14 只证明这个划分下受支持的 Python import 方向成立：它覆盖模块级、函数内、相对 import 和字面参数的 `import_module`；不覆盖计算出来的模块名、前端模块之间的依赖、`bundles/*.toml` 里对插件的点名。这三类在每批迁移时人工核对。
+
+core 的判定标准：裸核能独立跑完长程循环（账本、上下文、压缩、工具、文件与 shell、一个通用模型驱动）、提供 Web 宿主与投递、能装卸插件。`workloads`（`ui`、`mcp` 依赖）、`runtime_inspection`（`prompt` 依赖）、`content_view`（工具大输出回读）因此留在 core。
 
 | 依赖 | 现状 | 处理 |
 |---|---|---|
-| `ui` → `workloads` | 可选借用 | 由 `ui` 定义端口，`workloads` 实现 |
-| `runtime_inspection` → `scheduler` | 可选借用 | 由 `runtime_inspection` 定义端口，`scheduler` 实现 |
-| `prompt` → `runtime_inspection` | 登记文档 | 文档登记口留在 core |
-| `mcp` → `workloads` | 合同字段 | `workloads` 留在 core |
+| `runtime_inspection` → `scheduler` | 可选借用 | 已反转：端口由 `runtime_inspection` 定义，`scheduler` 实现 |
+| `ui` → `workloads`、`mcp` → `workloads` | 借用与合同字段 | `workloads` 留在 core，不需要反转 |
+| `prompt` → `runtime_inspection` | 登记文档 | `runtime_inspection` 留在 core |
 
 ## 阶段
 
@@ -52,8 +61,14 @@ Phase 5 之前默认组合不变：新装实例仍然装齐今天 `bundles/base.
 1. 能力快照脚本，导出生产基线。
 2. 层级声明与门禁。
 3. 反转上表的依赖。
-4. 外置插件需要的内部模块收进公开 SDK。
-5. 数据目录去来源化（`plugin-data/<name>/`），带自动迁移。
+4. 公开接口：插件可用的 Core 模块以门禁里的 `PLUGIN_ALLOWED_MODULES` 为准，不另建 SDK 包；extra 仓库的 CI 运行同一套门禁。
+5. 数据目录：
+   - 已选择的插件一律以选择记录里的 `data_dir` 为准。
+   - 记录只接受 `<name>-<marketplace>`（旧形态）和 `<name>`（归一化形态）。
+   - 归一化是一条在实例停止时手动执行的命令，带回执和反向命令；启动流程不改任何目录。
+   - 本阶段不支持换来源：同逻辑名的其他来源一律拒绝安装。换来源是 Phase 1 的一个原子操作。
+
+回退合同：只升级不归一化时，新旧版本可以来回切换。归一化之后旧版读不了选择记录（启动报错，不会静默使用空目录），回退前先执行反向命令。
 
 验收：快照与基线一致，生产数据零丢失。
 
@@ -63,6 +78,7 @@ Phase 5 之前默认组合不变：新装实例仍然装齐今天 `bundles/base.
 2. `akashic pkg sync / install / upgrade / remove / list`。
 3. 包元数据声明容器镜像，安装时先拉取。
 4. 部署脚本与 Agent 自部署衔接 `pkg upgrade`，失败可回退。
+5. 换来源：在一次提交内把同逻辑名插件从旧来源替换为新来源，沿用同一数据目录，并同步 `distribution_adoption` 里的历史归属。
 
 验收：隔离实例上用本地索引跑通；改一个包只更新一个包。
 
@@ -77,18 +93,20 @@ Phase 5 之前默认组合不变：新装实例仍然装齐今天 `bundles/base.
 
 每批一个 PR，顺序以门禁结果为准：
 
-- A：`subagent` 族、`standard_web` 族、`stable_view`、`content_view`
+- A：`subagent` 族、`standard_web` 族、`stable_view`
 - B：`projects`、`main_session`、`session_title`、`session_reference`、`workspace_changes`、`markdown_reader`、`terminal`
 - C：`goal`、`scheduler`、`timer`、`userinformation`、`message_push`、`markdown_memory`
 - D：`codex`、`gemini`、`opencode_go`、`telegram_sender`、`vision`、`computer`
 
 ### Phase 4：带重依赖的插件
 
-先定依赖方案（子进程、进程内挂载插件环境、或依赖暂留 Core 镜像），再依次迁 `telegram_channel`、`visuals`、`design`、`akasha`。之后才从 Core 镜像删除对应依赖，并实测镜像体积与内存。
+先实现“插件自带依赖挂进主进程”和安装时的版本冲突检查，再依次迁 `telegram_channel`、`visuals`、`design`、`akasha`。之后才从 Core 镜像删除对应依赖，并实测镜像体积与内存。
 
 ### Phase 5：新用户体验
 
-包组与默认组合；Web 首次引导与终端 `akashic init`；插件目录页、缺能力提示、Agent 查包工具；`try`、`rollback`、`export/apply`。
+先做：包组与默认组合；Web 首次引导里按场景选装。
+
+做完后再定：终端 `akashic init`、插件目录页、缺能力提示、Agent 查包工具、`try`、`rollback`、`export/apply`。
 
 ### Phase 6：收尾
 
