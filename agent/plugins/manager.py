@@ -65,7 +65,6 @@ from agent.plugins.input_preparation import (
     PLUGIN_INPUT_API,
     PluginInitialConfigError,
     SOURCE_EXCLUDED_NAMES,
-    _resolve_plugin_data_dir,
     _resolve_plugin_id,
     _source_revision,
     source_revisions,
@@ -82,8 +81,8 @@ from agent.plugins.manifest import (
     installed_plugin_ids,
     plugins_root,
     validate_workspace_plugin_data_path,
-    workspace_plugin_data_dir,
 )
+from agent.plugins.data_dirs import read_recorded_data_dirs, recorded_data_dir
 from agent.plugins.bundles import plugin_choices, preset_plugin_ids, set_plugin_choice
 from agent.plugins.distribution_sources import DistributionSources
 from agent.plugins.python_environment import PythonEnvironments
@@ -336,14 +335,11 @@ class PluginManager:
             identity = failure.plugin_id or f"source:{failure.source_type}:{failure.source_root}"
             revisions[identity] = _source_metadata_revision(failure.source_root)
             root_map[str(failure.source_root.resolve(strict=False))] = ""
+        recorded = read_recorded_data_dirs(self._selection)
         for mod in mods:
             plugin_id = _resolve_plugin_id(mod)
             plugin_dir = Path(mod["plugin_root"])
-            data_dir = _resolve_plugin_data_dir(
-                mod["name"],
-                mod,
-                self._workspace,
-            )
+            data_dir = recorded_data_dir(self._workspace, plugin_id, recorded)
             revisions[plugin_id] = (
                 _source_metadata_revision(plugin_dir)
                 + _path_metadata(data_dir / CONFIG_INPUT)
@@ -1280,8 +1276,7 @@ class PluginManager:
         if not isinstance(config, dict):
             raise ValueError("配置请求不是映射")
         plugin_id = cast(str, row["plugin_id"])
-        name, _, marketplace = plugin_id.partition("@")
-        data_dir = workspace_plugin_data_dir(self._workspace, name, marketplace or "builtin")
+        data_dir = recorded_data_dir(self._workspace, plugin_id, read_recorded_data_dirs(self._selection))
         _, revision = load_config(data_dir)
         if revision != row["config_revision"]:
             save_config(data_dir, config)
@@ -1704,7 +1699,7 @@ class PluginManager:
                 continue
             revision = await run_file_io(lambda: _source_revision(Path(mod["plugin_root"])))
             _config, config_revision = load_config(
-                _resolve_plugin_data_dir(mod["name"], mod, self._workspace),
+                recorded_data_dir(self._workspace, plugin_id, read_recorded_data_dirs(self._selection)),
             )
             had_source_failure = (
                 _source_failure_key_for_mod(mod) in self._source_failures

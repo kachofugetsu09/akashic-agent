@@ -25,10 +25,12 @@ from agent.migrations.bundles import (
     validate_pending_requirements,
 )
 from agent.plugins.source_resolver import ResolvedPluginSource
-from agent.plugins.manifest import plugins_root, workspace_plugin_data_dir
+from agent.plugins.data_dirs import read_recorded_data_dirs, recorded_data_dir
+from agent.plugins.manifest import LAYOUT_RECEIPT, plugins_root, read_layout_state
 from agent.plugins.distribution_sources import distribution_migration_sources
 from agent.plugins.reload_journal import check_pending_publication
 from agent.plugins.selection import PluginSelection
+from infra.persistence.json_store import atomic_write_text
 from bootstrap.workspace_lock import WorkspaceInstanceLock, WorkspaceMaintenanceLock
 
 
@@ -124,6 +126,9 @@ class MigrationRunner:
     ) -> MigrationOutcome:
         """加载不可变目录并提交全部缺失迁移。"""
 
+        # 0. 数据目录归一化或还原被中断时目录与记录不一致，必须先重跑命令，不能带着半截状态启动。
+        if read_layout_state(self.workspace) not in (None, "normalized"):
+            raise RuntimeError("插件数据目录归一化或还原未完成；请重新运行 scripts/plugin_data_layout.py")
         # 1. 初始化由 workspace 持有的迁移账本
         fresh = _workspace_is_empty(self.workspace, self.config_path)
         baseline = _read_baseline(self.ledger_path)
@@ -172,11 +177,13 @@ class MigrationRunner:
             os.chmod(self.ledger_path, 0o600)
 
             # 2. 为 Yoyo Python step 绑定明确的安装路径
+            recorded = read_recorded_data_dirs(PluginSelection(self.workspace))
             bundle_data_roots = {
-                bundle.bundle_id: workspace_plugin_data_dir(
+                bundle.bundle_id: recorded_data_dir(
                     self.workspace,
-                    bundle.plugin_name or bundle.bundle_id,
-                    bundle.marketplace or "builtin",
+                    (f"{bundle.plugin_name}@{bundle.marketplace}" if bundle.marketplace
+                     else bundle.plugin_name) or bundle.bundle_id,
+                    recorded,
                 )
                 for bundle in bundles
             }
@@ -319,6 +326,10 @@ def initialize_empty_workspace(*, repo_root: Path, workspace: Path, config_path:
             _save_baseline(workspace / "migrations.sqlite3", (*_NEW_WORKSPACE_BASELINE, *(
                 item.migration_id for item in requirements if item.bundle_id is not None
             )))
+            # 全新 workspace 直接使用归一化的 plugin-data/<name>。
+            (workspace / "runtime").mkdir(mode=0o700, exist_ok=True)
+            atomic_write_text(workspace / LAYOUT_RECEIPT, json.dumps({"version": 1, "state": "normalized", "moves": []}),
+                              domain="plugin_data_layout")
     finally:
         lock.release()
 

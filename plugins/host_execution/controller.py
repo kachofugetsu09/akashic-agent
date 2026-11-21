@@ -1286,7 +1286,7 @@ def _plugin_data_root(workspace: Path, request: WorkloadStartRequest) -> Path:
         name, marketplace = request.plugin_id, "builtin"
     _safe_segment(name, "plugin name")
     _safe_segment(marketplace, "plugin marketplace")
-    dirname = f"{name}-{marketplace}"
+    dirname = _recorded_dirname(workspace, name, marketplace)
     if request.mode == "formal":
         return workspace / "plugin-data" / dirname
     return (
@@ -1298,6 +1298,26 @@ def _plugin_data_root(workspace: Path, request: WorkloadStartRequest) -> Path:
         / "plugin-data"
         / dirname
     )
+
+
+# 以 workspace 的选择记录为准；没有记录时已归一化的实例用 <name>，否则用 <name>-<marketplace>。
+def _recorded_dirname(workspace: Path, name: str, marketplace: str) -> str:
+    plugin_id = name if marketplace == "builtin" else f"{name}@{marketplace}"
+    try:
+        inputs = json.loads((workspace / "runtime" / "plugin-stable.json").read_text(encoding="utf-8"))["inputs"]
+        label = {str(item["plugin_id"]): str(item["data_dir"]) for item in inputs.values()}.get(plugin_id)
+    except (OSError, ValueError, KeyError, TypeError):
+        label = None
+    if label is None:
+        try:
+            normalized = json.loads((workspace / "runtime" / "plugin-data-layout.json").read_text(
+                encoding="utf-8")).get("state") == "normalized"
+        except (OSError, ValueError):
+            normalized = False
+        label = f"plugin-data/{name if normalized else f'{name}-{marketplace}'}"
+    dirname = label.removeprefix("plugin-data/")
+    _safe_segment(dirname, "plugin data dir")
+    return dirname
 
 
 def _make_safe_dir(workspace: Path, target: Path, *, uid: int, gid: int) -> None:

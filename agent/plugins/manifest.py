@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 from pathlib import Path
@@ -32,6 +33,31 @@ def workspace_plugin_data_dir(
 
     # 2. 数据根始终归属于显式 workspace
     return workspace.resolve(strict=False) / "plugin-data" / f"{plugin_name}-{marketplace}"
+
+
+# 实例是否已归一化的标记；状态不是 normalized 时说明归一化或还原被中断，启动必须拒绝。
+LAYOUT_RECEIPT = "runtime/plugin-data-layout.json"
+
+
+def read_layout_state(workspace: Path) -> str | None:
+    path = workspace / LAYOUT_RECEIPT
+    if not path.exists():
+        return None
+    state = json.loads(path.read_text(encoding="utf-8")).get("state")
+    return state if isinstance(state, str) else "invalid"
+
+
+# 选择记录允许的两种数据目录形态：旧形态 <name>-<marketplace>，归一化形态 <name>。
+def plugin_data_labels(plugin_id: str) -> tuple[str, str]:
+    name, _, marketplace = plugin_id.partition("@")
+    legacy = workspace_plugin_data_dir(Path("/"), name, marketplace or "builtin").name
+    return f"plugin-data/{legacy}", f"plugin-data/{name}"
+
+
+# 没有选择记录时的默认目录：已归一化的实例用 <name>，否则与旧版一致用 <name>-<marketplace>。
+def default_plugin_data_label(workspace: Path, plugin_id: str) -> str:
+    legacy, normalized = plugin_data_labels(plugin_id)
+    return normalized if read_layout_state(workspace) == "normalized" else legacy
 
 
 def ensure_workspace_plugin_data_dir(path: Path, workspace: Path) -> None:

@@ -18,10 +18,8 @@ from agent.plugins.importer import (
     source_compile_verified,
 )
 from agent.plugins.selection import PluginSelection
-from agent.plugins.manifest import (
-    validate_workspace_plugin_data_path,
-    workspace_plugin_data_dir,
-)
+from agent.plugins.data_dirs import read_recorded_data_dirs, recorded_data_dir
+from agent.plugins.manifest import validate_workspace_plugin_data_path
 from agent.plugins.python_environment import ENVIRONMENT_FILE, PythonEnvironments, read_environment_refs
 from agent.plugins.static_manifest import (
     PluginSourceCompileError,
@@ -115,7 +113,7 @@ def prepare_plugin_input(
     if mod.get("manifest_digest", "") != identity.identity_digest:
         raise RuntimeError("source discovery identity 已漂移")
     revision, runtime_revision = source_revisions(plugin_dir)
-    data_dir = _resolve_plugin_data_dir(mod["name"], mod, workspace)
+    data_dir = recorded_data_dir(workspace, plugin_id, read_recorded_data_dirs(selection))
     validate_workspace_plugin_data_path(data_dir, workspace)
     config, config_revision = load_config(data_dir)
     if initial and not (data_dir / CONFIG_INPUT).exists():
@@ -169,15 +167,6 @@ def _resolve_plugin_id(mod: Mapping[str, str]) -> str:
     if not marketplace:
         return name
     return f"{name}@{marketplace}"
-
-
-def _resolve_plugin_data_dir(
-    name: str, mod: Mapping[str, str], workspace: Path,
-) -> Path:
-    """Use the plugin's existing private data path in this workspace."""
-    marketplace = mod.get("marketplace", "").strip()
-    suffix = marketplace or "builtin"
-    return workspace_plugin_data_dir(workspace, name, suffix)
 
 
 def _require_plugin_path(plugin_dir: Path, path: Path, label: str) -> None:

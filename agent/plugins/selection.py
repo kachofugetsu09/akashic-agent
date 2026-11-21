@@ -12,6 +12,7 @@ from collections.abc import Mapping
 from typing import Literal, cast
 
 from agent.plugins.files import sync_directory
+from agent.plugins.manifest import plugin_data_labels
 from core.common.frozen_json import freeze_json, json_value
 from agent.plugins.static_manifest import check_entrypoints
 
@@ -131,7 +132,8 @@ class PluginSelection:
         return None
 
     def commit(self, components: tuple[str, ...], *, expected_ref: str | None,
-               distribution_adoption: Mapping[str, object] | None = None) -> str:
+               distribution_adoption: Mapping[str, object] | None = None,
+               replace_adoption: bool = False) -> str:
         """CAS 提交完整当前组合，旧选择文件由新选择替换。"""
         # 1. 构造方持有唯一 writer，输入来自实际安装或本次准备。
         _reference(expected_ref, nullable=True)
@@ -142,11 +144,16 @@ class PluginSelection:
         inputs = {ref: self.read_input(ref) for ref in components}
         if len({value["plugin_id"] for value in inputs.values()}) != len(inputs):
             raise SelectionFormatError("完整选择不能重复包含插件身份")
+        # 数据目录按逻辑名归属：同逻辑名只能选一个来源，不同输入也不能共用数据目录。
+        if len({cast(str, value["plugin_id"]).partition("@")[0] for value in inputs.values()}) != len(inputs):
+            raise SelectionFormatError("完整选择不能以不同来源重复包含同名插件")
+        if len({value["data_dir"] for value in inputs.values()}) != len(inputs):
+            raise SelectionFormatError("完整选择不能让不同插件共用数据目录")
         assert self._current is not None
         previous = cast(Mapping[str, object] | None, self._current["distribution_adoption"])
         if distribution_adoption is None:
             distribution_adoption = previous
-        elif previous is not None and freeze_json(distribution_adoption) != previous:
+        elif previous is not None and not replace_adoption and freeze_json(distribution_adoption) != previous:
             raise SelectionConflictError("历史归属已经转换，不能覆盖凭证")
         # 2. 仅当前状态和最后一次提交证据原子落盘，不保存前驱链。
         ref = secrets.token_hex(32)
@@ -234,13 +241,12 @@ def _input(value: object) -> Mapping[str, object]:
     plugin_id = cast(str, value["plugin_id"])
     if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*(?:@[A-Za-z0-9][A-Za-z0-9._-]*)?", plugin_id) is None:
         raise SelectionFormatError("插件输入身份无效")
-    name, _, marketplace = plugin_id.partition("@")
+    marketplace = plugin_id.partition("@")[2]
     if value["source_type"] == "installed" and not marketplace:
         raise SelectionFormatError("已安装来源缺少 marketplace")
     if not Path(cast(str, value["code"])).is_absolute():
         raise SelectionFormatError("插件代码路径必须是绝对路径")
-    data = Path(cast(str, value["data_dir"]))
-    if data.parts != ("plugin-data", f"{name}-{marketplace or 'builtin'}"):
+    if value["data_dir"] not in plugin_data_labels(plugin_id):
         raise SelectionFormatError("插件数据路径与来源身份不一致")
     for key in ("source_revision", "config_revision"):
         _reference(value[key])

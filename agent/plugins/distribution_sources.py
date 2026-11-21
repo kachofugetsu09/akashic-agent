@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import cast
 
 from agent.plugins.artifacts import read_pointers, resolve_pointer
-from agent.plugins.manifest import workspace_plugin_data_dir
+from agent.plugins.manifest import plugin_data_labels
 from agent.plugins.source_resolver import ResolvedPluginSource
 from agent.plugins.selection import PluginSelection, SelectionConflictError
 from agent.plugins.static_manifest import load_static_plugin_manifest
@@ -141,8 +141,9 @@ def _adopted_distribution_roots(
     for row in cast(tuple[Mapping[str, str], ...], record["entries"]):
         plugin_id = row["plugin_id"]
         name, marketplace = plugin_id.split("@")
-        data = workspace_plugin_data_dir(workspace, name, marketplace)
-        if (row["data_dir"] != data.relative_to(workspace).as_posix()
+        # 凭证里的目录是旧形态或归一化形态之一，归一化命令会同步改写它。
+        data = workspace.resolve(strict=False) / row["data_dir"]
+        if (row["data_dir"] not in plugin_data_labels(plugin_id)
             or data.resolve() != data or not data.is_dir()):
             raise SelectionConflictError(f"历史归属数据身份不符: {plugin_id}")
         if any(item["data_dir"] == row["data_dir"] and item["plugin_id"] != plugin_id
