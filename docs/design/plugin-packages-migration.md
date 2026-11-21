@@ -103,6 +103,17 @@ Core 侧一个 PR，extra 侧先行或同时：
 6. 其余插件的 release 提交 SHA 迁出前后逐个相同。
 7. 发行版不再含该插件，但 preset 行还在：`install_plugin_distribution.py --ensure-bundle` 的 `_require_preset_rows` 会以"preset 启用的插件没有进入选择，停止发布"终止，除非同名外置插件已经选中。所以合并前，部署流程必须能在 `--ensure-bundle` 之前从 extra 仓库装上它（`pkg sync` 应装集合会把它报成 `available`）。
 
+带数据、带依赖、带测试的插件（以 `watch` 为模板）要多做这些：
+
+- **找全持久状态再动手。** 读插件的 `workspace_roots`、`ctx.data_root`、`Files(...)`、`MESSAGE_CATALOG`、迁移目录，并核对三处：`workspace/<root>/` 与 `workspace/memory/<root>/` 下的文件、`plugin-data/<name>-<marketplace>/`（含 `config.input.json`、`state.json`）、`sessions.db` 的 `owner_records`。设置保存在选择记录的 `config_revision`/`config.input.json` 里，换来源必须原样带过去。`watch` 没有迁移目录，也不写 `owner_records`。
+- **数据核对要用真实实例。** 在含该插件的版本上经设置接口配好并跑起来产生真实数据，停机后记文件摘要，再换成"已迁出"版本（`start.py --extra-repo <本地裸仓库>`）启动，对比：`data_dir` 与 `config_revision` 不变、数据文件摘要不变；运行中的插件会重写自己的游标和日志，那类文件的差异只能是它自己追加的内容。
+- **依赖方向。** 列出 `from plugins.X.contract import`。`core` 层不得依赖被迁出的插件（门禁 R14 保证），被迁出的插件依赖仍在 Core 的 core 层或 extra 层插件没有问题（`watch` 依赖 `userinformation`：实测外置的 `watch` 能导入内置 `userinformation` 的合同）。被依赖的插件之后也迁出时，extra 仓库合成树里必须仍能找到它的源码：先把它放进 extra 仓库（同一批或更早），再让 Core 删除它。部署必须把两者在同一次发布里装上，否则"新代先导入"会让依赖方安装失败。
+- **反向依赖。** 搜 Core 里对被迁出插件的 `ServiceKey` 字符串（如 `watch.events.v1`）、`contract` import、`bundles`、技能与提示词的点名；有就先反转依赖再迁。
+- **测试。** `tests/` 里逐个判断：测插件自身行为的搬到 extra 仓库 `tests/<name>/`；只是拿它的名字当例子的（如 `test_material_execution.py`）改成中性名字。没有测试就不建目录。
+- **源码目录里的构建产物。** 本地构建会在 `plugins/<name>/` 生成未入库的 `plugin_ui.js` 等；复制到 extra 仓库前清掉，并用 `git ls-tree` 的文件清单和逐文件 `cmp` 核对与 Core 提交一致。
+- **技能与文档。** 技能随插件目录走，不用单独处理；`docs/INDEX.md` 的代码路径指向 extra 仓库；历史 ADR 不改。
+- **能力快照。** 迁出前后 `capability_snapshot.py diff --ignore-source --ignore-build` 应只剩 `[preset].retired` 多出该插件（来源变化的预期信号）。面板用 `/api/chat/plugin-ui/query` 的 `day` 读一次，确认能从迁出后的实例读到旧数据。
+
 ### Phase 3：批量迁纯 Python 插件
 
 每批一个 PR，顺序以门禁结果为准：
