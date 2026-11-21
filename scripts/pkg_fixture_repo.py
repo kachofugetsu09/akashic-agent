@@ -60,9 +60,10 @@ def branch_head(output: Path, branch: str) -> tuple[str, str]:
     return git(output, "rev-parse", f"{sha}^{{tree}}").decode().strip(), sha
 
 
-# 无父提交、固定作者和时间；来源提交只进说明，不进 tree。
-def commit_tree(output: Path, tree: str, name: str, source_commit: str, source_path: str) -> str:
-    message = f"release {name} {tree}\n\nsource-commit: {source_commit}\nsource-path: {source_path}\n"
+# 无父提交、固定作者和时间、说明只含名字和 tree：提交 SHA 完全由内容决定，
+# 从零重建仓库也得到同一个版本号。来源提交不记在这里，由 CI 日志追溯。
+def commit_tree(output: Path, tree: str, name: str) -> str:
+    message = f"release {name} {tree}\n"
     env = {**os.environ, **_FIXED_ENV}
     result = git(output, "-c", "commit.gpgSign=false", "commit-tree", tree, "-m", message, env=env)
     return result.decode().strip()
@@ -90,7 +91,7 @@ def release_plugin(
     if old_tree == tree:
         return {"name": name, "branch": branch, "tree": tree, "sha": old_sha, "status": "unchanged"}
     # 3. 新建无父提交并推进分支（旧值作为 CAS 条件，新分支用全零）。
-    sha = commit_tree(output, tree, name, commit, root)
+    sha = commit_tree(output, tree, name)
     _ = git(output, "update-ref", f"refs/heads/{branch}", sha, old_sha or "0" * 40)
     return {"name": name, "branch": branch, "tree": tree, "sha": sha, "status": "updated"}
 
