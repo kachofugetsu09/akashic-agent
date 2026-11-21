@@ -226,6 +226,28 @@ def install_git_plugin(
     return activation.result
 
 
+# 只读：按提交取代码，返回静态 manifest 与实际 HEAD，不写 plugins_home 与 workspace。
+def read_git_plugin_manifest(*, source: str, ref_name: str) -> tuple[StaticPluginManifest, str]:
+    # 1. 参数与 install_git_plugin 同口径。
+    if not source or source != source.strip() or ref_name != ref_name.strip() or ref_name.startswith("-"):
+        raise ValueError("插件 source/ref 必须是非空且不含首尾空白，ref 不能以命令选项开头")
+    with tempfile.TemporaryDirectory(prefix="akashic-plugin-peek-") as directory:
+        root = Path(directory)
+        # 2. 取代码并读静态 manifest（api_version 在这里校验）。
+        _clone_git_source(source=source, destination=root, ref_name=ref_name, sparse_paths=[])
+        _validate_source_tree(root)
+        revision = _run_git(["rev-parse", "HEAD"], cwd=root)
+        manifest = load_static_plugin_manifest(root)
+        check_plugin_source(root)
+        _ = _validate_path_segment(manifest.name, "插件 name")
+    return manifest, revision
+
+
+# 把 artifact 的 origin 改成真实上游地址；artifact 内容摘要不含 .git，不影响身份。
+def set_artifact_origin(artifact: Path, upstream: str) -> None:
+    _ = _run_git(["remote", "set-url", "origin", "--", upstream], cwd=artifact)
+
+
 # 默认 preset 的身份不能被外置安装接管；只有 takeover 显式列出的 plugin_id 放行。
 def _reject_takeover(
     *,

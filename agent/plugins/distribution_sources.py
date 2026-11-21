@@ -277,6 +277,17 @@ def distribution_plugin_sources(distribution: Path) -> tuple[ResolvedPluginSourc
     return tuple(sources)
 
 
+# 选择里 installed 来源输入的代码目录，按 plugin_id 索引。
+def _switched_artifacts(workspace: Path) -> dict[str, Path]:
+    selection = PluginSelection(workspace)
+    root = selection.read() if selection.path.exists() else None
+    if root is None:
+        return {}
+    records = (selection.read_input(ref) for ref in selection.components(root))
+    return {cast(str, item["plugin_id"]): Path(cast(str, item["code"])).resolve()
+            for item in records if item["source_type"] == "installed"}
+
+
 def distribution_migration_sources(
     workspace: Path, plugins_home: Path, distribution: Path | None = None,
     *, adoption: Mapping[str, object] | None = None, replacing_distribution: bool = False,
@@ -292,6 +303,8 @@ def distribution_migration_sources(
     sources = distribution_plugin_sources(distribution)
     by_id = {f"{source.plugin_name}@{source.marketplace}": source for source in sources}
     legacy_codes: dict[str, str] = {}
+    switched = _switched_artifacts(workspace)
+    verified_switched: set[str] = set()
     # 1. 同 ID 外置安装与内置共用 data root，停用也不能证明其数据归内置。
     for plugin_id, source in by_id.items():
         base = plugins_home / "cache" / source.marketplace / source.plugin_name
@@ -299,9 +312,13 @@ def distribution_migration_sources(
         if pointers is None or pointers.stable.path is None:
             continue
         artifact = resolve_pointer(base, pointers.stable)
+        assert artifact is not None
+        # 已换来源的插件：选择里的 installed 输入正是 cache 指向的 artifact，这是显式切换的结果。
+        if plugin_id not in available.legacy_ids and switched.get(plugin_id) == artifact.resolve():
+            verified_switched.add(plugin_id)
+            continue
         if artifact not in available.ignored_installed_roots:
             raise SelectionConflictError(f"内置与外置共用数据身份，停止迁移: {plugin_id}; 替代插件须使用独立身份")
-        assert artifact is not None
         legacy_codes[plugin_id] = hashlib.sha256(encode_tree(tree_entries(
             artifact, exclude=frozenset({".venv", "node_modules", ENVIRONMENT_FILE}),
         ))).hexdigest()
@@ -312,7 +329,7 @@ def distribution_migration_sources(
         for ref in selection.components(root):
             record = selection.read_input(ref)
             plugin_id = cast(str, record["plugin_id"])
-            if plugin_id not in by_id:
+            if plugin_id not in by_id or plugin_id in verified_switched:
                 continue
             owned = (is_distribution_owned(record) if replacing_distribution else
                      is_distribution_input(record, Path(cast(str, record["code"])).resolve(strict=True)))

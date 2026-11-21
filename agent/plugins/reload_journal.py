@@ -296,6 +296,14 @@ class ReloadJournal:
             if changed.rowcount != 1:
                 raise RuntimeError("插件安装恢复点不能提交")
 
+    def revert_committed_install(self, update_id: str, error: str) -> None:
+        """换来源撤销已提交的安装恢复点；只改本 ID 的 phase，不碰指针。"""
+        with self._connect() as conn:
+            _ = conn.execute(
+                "UPDATE plugin_updates SET phase='rolled_back',updated_at=?,error=? WHERE update_id=? AND phase='committed'",
+                (_now(), error, update_id),
+            )
+
     def rollback_updates(self, plugins_home: Path, *, update_id: str | None = None, error: str = "update interrupted") -> None:
         """启动前或安装失败后恢复旧指针；已有提交不参加自动回退。"""
         with self._connect() as conn:
