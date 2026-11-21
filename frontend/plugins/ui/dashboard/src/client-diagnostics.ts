@@ -11,6 +11,8 @@ const FRAME_WINDOW_MS = 10_000;
 const BATCH_LIMIT = 100;
 const INTERACTIVE = "[data-perf], button, a[href], summary, input, textarea, select, label, [role=button], [role=tab], [role=menuitem], [role=option], [role=switch], [role=checkbox], [tabindex]";
 const NOISE = /ResizeObserver loop|^Script error\.?$/;
+// Tailwind 工具类不表达「点的是什么」，取动作名时跳过。
+const UTILITY = /^(w|h|size|min|max|p[xytrbl]?|m[xytrbl]?|text|bg|border|rounded|flex|grid|gap|items|justify|font|leading|tracking|overflow|shadow|ring|outline|opacity|z|top|left|right|bottom|inset|col|row|self|place|space|divide|cursor|select|resize|transition|duration|ease|animate|sr|truncate|shrink|grow|basis|order|align|whitespace|break|fill|stroke)(-|$)/;
 
 interface EventTiming extends PerformanceEntry {
   readonly interactionId?: number;
@@ -83,7 +85,7 @@ function describe(node: Node | null): string {
   const labelled = element.closest<HTMLElement>("[data-perf]");
   if (labelled?.dataset.perf) return labelled.dataset.perf;
   const owner = element.closest(INTERACTIVE) ?? element;
-  const tokens = [...owner.classList].filter((token) => /^[a-z][\w-]*$/i.test(token) && !/^(is|has)-|^(open|active|selected|disabled)$/.test(token));
+  const tokens = [...owner.classList].filter((token) => /^[a-z][\w-]*$/i.test(token) && !UTILITY.test(token) && !/^(is|has)-|^(open|active|selected|disabled)$/.test(token));
   const named = tokens.find((token) => /[-_]/.test(token)) ?? tokens[0];
   if (named) return `${owner.tagName.toLowerCase()}.${named}`;
   const label = owner.getAttribute("aria-label")?.trim().slice(0, 40);
@@ -187,7 +189,7 @@ function watchInteractions(queue: DiagnosticsQueue): void {
     const dom = document.getElementsByTagName("*").length;
     const touch = window.matchMedia("(pointer: coarse)").matches;
     for (const item of pending.values()) {
-      if (item.event.startsWith("key") && item.duration < KEY_THRESHOLD_MS) continue;
+      if (item.event === "keyboard" && item.duration < KEY_THRESHOLD_MS) continue;
       const end = item.start + item.duration;
       queue.push({
         kind: "interaction", at: Math.round(performance.timeOrigin + item.start), action: item.action || item.event, event: item.event,
@@ -212,7 +214,8 @@ function watchInteractions(queue: DiagnosticsQueue): void {
         continue;
       }
       const action = (entry.target?.isConnected ? describe(entry.target) : "") || actionAt(entry.startTime);
-      pending.set(id, { start: entry.startTime, duration: entry.duration, processingStart: entry.processingStart, processingEnd: entry.processingEnd, event: entry.name, action });
+      const event = entry.name.startsWith("key") ? "keyboard" : "pointer";
+      pending.set(id, { start: entry.startTime, duration: entry.duration, processingStart: entry.processingStart, processingEnd: entry.processingEnd, event, action });
     }
     if (pending.size && !settleTimer) settleTimer = window.setTimeout(settle, SETTLE_MS);
   }).observe({ type: "event", buffered: true, durationThreshold: 16 } as PerformanceObserverInit);
