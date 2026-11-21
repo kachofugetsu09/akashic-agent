@@ -21,7 +21,7 @@ class Turn:
 
 
 # 从会话尾部往回读到时间窗边界；只留用户原话、对话回复和不经用户发起的主动消息。
-def read_turns(reader: MessageReader, now: datetime, hours: int = 72, scan: int = 800) -> list[Turn]:
+def read_turns(reader: MessageReader, now: datetime, hours: float = 72, scan: int = 800) -> list[Turn]:
     turns: list[Turn] = []
     floor = now - timedelta(hours=hours)
     try:

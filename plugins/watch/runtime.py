@@ -17,8 +17,8 @@ from plugins.models.contract import CHAT_MODELS, MODEL_CATALOG, ModelError, Mode
 from plugins.programmatic.contract import PROGRAMMATIC
 
 from . import orders as watch_orders
-from . import panel, recent, scripts, trail, wake
-from .events import Event, EventLog, clip, load_places, name_places, normalize, parse_line, read_sources
+from . import panel, recent, scripts, timeline, trail, wake
+from .events import Event, EventLog, clip, load_places, name_places, normalize, parse_line, read_day, read_sources
 from .settings import WAKE_MODEL, Config
 from .watcher import Call, Files, ModelFailure, ModelStats, Outcome, Reply, Verdict, judge
 
@@ -40,6 +40,10 @@ class State:
     review_day: str | None = None
     last_agent: str | None = None
     review_tries: int = 0
+    dream_day: str | None = None
+    # 时间线记到哪了：他说的话按时间、状态事件按编号
+    said_until: str | None = None
+    timeline_event: int = 0
 
 
 class Runtime:
@@ -155,6 +159,11 @@ class Runtime:
     async def tick(self, now: datetime) -> None:
         # 1. 收进新事件，整理嘱托文件
         await self._ingest(now)
+        try:
+            await self._timeline(now)
+        except Exception:
+            # 时间线是给后台回合查的旁路，记不上不该让这一次值班停下；游标没动，下一次接着补。
+            logger.exception("[skipped] 时间线这一次没有记上，下一次轻唤醒重试")
         orders = await run_file_io(lambda: watch_orders.maintain(self.root, now.date()))
         after = datetime.fromisoformat(self.state.orders_checked) if self.state.orders_checked else now
         timed = [order for order in orders if watch_orders.due(order, after, now)]
@@ -167,9 +176,29 @@ class Runtime:
         # 3. 待看列表定时过一眼、每日复盘与清理
         await self._digest(now)
         await self._review(now, orders)
+        await self._dream(now)
         log_keys, live_ids = await run_file_io(lambda: self._clean(now))
         async with self._lock:
             self._sync_keys(log_keys, live_ids)
+        await self._save()
+
+    # 把上次以来他说的话和状态变化追加进时间线。第一次往回补到账本和事件文件够得着的地方。
+    async def _timeline(self, now: datetime) -> None:
+        if not self.config.target:
+            return
+        reader = self.ctx.require(MESSAGE_CATALOG).reader(self.config.target)
+        since = datetime.fromisoformat(self.state.said_until) if self.state.said_until else now - timedelta(days=60)
+        back = 1 if self.state.said_until else 14
+
+        def work() -> tuple[list[recent.Turn], list[Event]]:
+            said = [turn for turn in recent.read_turns(reader, now, (now - since).total_seconds() / 3600, 9000) if turn.kind == "user" and turn.at > since]
+            known = [event for offset in range(back, -1, -1) for event in read_day(self.root, (now - timedelta(days=offset)).date()) if event.state]
+            fresh = [event for event in known if event.number > self.state.timeline_event]
+            timeline.append(self.root, timeline.rows(fresh, said, known, self.zone))
+            return said, fresh
+        said, fresh = await run_file_io(work)
+        self.state.said_until = now.isoformat()
+        self.state.timeline_event = max([self.state.timeline_event, *(event.number for event in fresh)])
         await self._save()
 
     # 事件全文与值班记录留十四天；待看列表三天没处理的条目自动清掉。
@@ -370,6 +399,14 @@ class Runtime:
             if status != "complete":
                 logger.warning("[paused] 每日复盘连续 3 次没有成功，今天不再重试：最后状态=%s", status)
         await self._save()
+
+    # 复盘跑完的当天再单独跑一轮整理记忆：复盘管对外的事，这一轮只把这些天看到的并成对他的认识。一天只试一次。
+    async def _dream(self, now: datetime) -> None:
+        today = f"{now:%Y-%m-%d}"
+        if self.state.review_day != today or self.state.dream_day == today:
+            return
+        self.state.dream_day = today
+        _ = await self._run_agent(now, "dream", wake.dream_prompt(await self._scene(now)), "整理记忆")
 
     # 每一轮用自己的会话名：同一次轻唤醒里可能先后跑事件叫醒、待看过目和复盘。
     async def _run_agent(self, now: datetime, kind: str, prompt: str, label: str) -> str:
