@@ -272,10 +272,10 @@ async def test_material_prepare_reuses_bound_scope_while_owner_is_unloading(tmp_
 
             async def prepare(snapshot, source):
                 async with child.runtime_scope():
-                    return {"reminders": ({"name": "watch", "text": "P", "priority": 20},)}
+                    return {"reminders": ({"name": "pointer", "text": "P", "priority": 20},)}
 
             return await child.require(MATERIALS_V4).register(
-                child, name="watch", kind="context", prepare=prepare,
+                child, name="pointer", kind="context", prepare=prepare,
             )
 
         pointer_fibers.append(await ctx.inject((MATERIALS_V4,), register_pointer, name="pointer"))
@@ -287,8 +287,8 @@ async def test_material_prepare_reuses_bound_scope_while_owner_is_unloading(tmp_
     )
     watch_fiber = await root.mount(
         watch_apply,
-        name="watch",
-        runtime=PluginRuntime("watch", "materials", tmp_path, tmp_path, tmp_path, {}),
+        name="pointer",
+        runtime=PluginRuntime("pointer", "materials", tmp_path, tmp_path, tmp_path, {}),
     )
     service = services[0]
     pointer_fiber = pointer_fibers[0]
@@ -342,10 +342,10 @@ async def test_cancelled_material_prepare_during_owner_unload_releases_captured_
             pointer_contexts.append(child)
 
             async def prepare(snapshot, source):
-                return {"reminders": ({"name": "watch", "text": "P", "priority": 20},)}
+                return {"reminders": ({"name": "pointer", "text": "P", "priority": 20},)}
 
             return await child.require(MATERIALS_V4).register(
-                child, name="watch", kind="context", prepare=prepare,
+                child, name="pointer", kind="context", prepare=prepare,
             )
 
         pointer_fibers.append(await ctx.inject((MATERIALS_V4,), register_pointer, name="pointer"))
@@ -365,8 +365,8 @@ async def test_cancelled_material_prepare_during_owner_unload_releases_captured_
     )
     watch_fiber = await root.mount(
         watch_apply,
-        name="watch",
-        runtime=PluginRuntime("watch", "materials", tmp_path, tmp_path, tmp_path, {}),
+        name="pointer",
+        runtime=PluginRuntime("pointer", "materials", tmp_path, tmp_path, tmp_path, {}),
     )
     await root.mount(
         slow_apply,
