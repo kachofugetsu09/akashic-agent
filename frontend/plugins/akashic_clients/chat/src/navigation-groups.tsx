@@ -1,11 +1,12 @@
 import { ChevronDown, ChevronRight, FolderPlus, Plus, SlidersHorizontal } from "lucide-react";
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import type { NavigationControls, NavigationForm, NavigationFormControls, NavigationGroup } from "@akashic/chat-ui-v1";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { NavigationRowMenu, type NavigationRowAction } from "./navigation-row-menu";
 import { IconSwap } from "./icon-swap";
 import { SessionStatusLabel, SessionStatusMark, summarizeStatus, type SessionStatus } from "./session-status-mark";
 import { MarqueeText } from "./marquee-text";
+import { followingInView, motionTiming, settle, slideClose, slideOpen } from "./motion";
 import { NavigationGroupMount, PluginUiSlot, navigationGroupSources, navigationGroupsPending, usePluginUiCatalogVersion, type NavigationGroupSource } from "./plugin-ui-runtime";
 import { createScopeFields } from "./scope-fields";
 
@@ -289,8 +290,8 @@ export function GroupNavigationRow({
   // 状态消失时图标还要淡出：退场期间 b 槽沿用上一个状态，不立刻变空。
   const [lastStatus, setLastStatus] = useState<SessionStatus | undefined>(collapsedStatus);
   if (collapsedStatus && collapsedStatus !== lastStatus) setLastStatus(collapsedStatus);
-  // 只有用户显式点按开合（非初始挂载、非搜索驱动）才播 200ms 展开 / 120ms 收起动画；
-  // 初始就是展开态、搜索打开或从无结果搜索恢复挂载时首帧带 is-instant 瞬时落位，并在下一帧恢复过渡能力。
+  // 只有用户显式点按开合（非初始挂载、非搜索驱动）才播展开 / 收起动画；
+  // 搜索打开或离开搜索时 instant 置位，开合直接落位，下一帧恢复。
   const [wasOpen, setWasOpen] = useState(open);
   const [wasSearching, setWasSearching] = useState(searching);
   const [closing, setClosing] = useState(false);
@@ -313,15 +314,39 @@ export function GroupNavigationRow({
     const frame = window.requestAnimationFrame(() => setInstant(false));
     return () => window.cancelAnimationFrame(frame);
   }, [instant, searching]);
-  useEffect(() => {
-    if (!closing) return;
-    if (typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-      setClosing(false);
+  // 开合走合成线程（design.md §2.3）：展开在内容挂上之后、收起在卸载之前，都在绘制前起步；
+  // 收起时下方项目用 transform 盖上来，动画结束才卸载，卸载的同一次提交里撤掉 transform，位置与终点重合。
+  const hostRef = useRef<HTMLDivElement>(null);
+  const disclosureRef = useRef<HTMLDivElement>(null);
+  const motionRef = useRef<Animation[]>([]);
+  const previousOpen = useRef(open);
+  useLayoutEffect(() => {
+    const before = previousOpen.current;
+    previousOpen.current = open;
+    if (before === open || instant) return;
+    settle(motionRef.current);
+    motionRef.current = [];
+    const host = hostRef.current;
+    const disclosure = disclosureRef.current;
+    const content = disclosure?.firstElementChild;
+    if (!host || !disclosure || !(content instanceof HTMLElement)) return;
+    const height = disclosure.getBoundingClientRect().height;
+    const followers = followingInView(host, host.closest(".chat-sidebar__navigation") ?? document.body);
+    if (open) {
+      motionRef.current = slideOpen(followers, content, height, motionTiming(host, "open"));
       return;
     }
-    const timer = window.setTimeout(() => setClosing(false), 140);
-    return () => window.clearTimeout(timer);
-  }, [closing]);
+    const animations = slideClose(followers, content, height, motionTiming(host, "close"));
+    motionRef.current = animations;
+    if (!animations.length) setClosing(false);
+    else void animations[0].finished.then(() => { if (motionRef.current === animations) setClosing(false); }, () => undefined);
+  }, [open, instant]);
+  useLayoutEffect(() => {
+    if (open || closing) return;
+    settle(motionRef.current);
+    motionRef.current = [];
+  }, [open, closing]);
+  useEffect(() => () => settle(motionRef.current), []);
   // 项目内默认只铺前几条：一个项目攒下几十支会话时，全铺会把侧栏占满。
   // 搜索不做截断——匹配到的行都该在结果里；离开搜索后回到折叠态。
   const [allShown, setAllShown] = useState(false);
@@ -335,7 +360,7 @@ export function GroupNavigationRow({
     return activeItem && !head.includes(activeItem)
       ? [...head.slice(0, GROUP_SESSION_LIMIT - 1), activeItem] : head;
   }, [items, truncated, allShown]);
-  return <div className={`navigation-group ${active ? "active" : ""}`} data-group-key={groupKey(groupRef)}>
+  return <div ref={hostRef} className={`navigation-group ${active ? "active" : ""}`} data-group-key={groupKey(groupRef)}>
     <NavigationRowMenu title={group.label} className="navigation-group__row" actions={[
       { label: "新建对话", icon: <Plus size={18} aria-hidden="true" />, onSelect: onNewChat },
       ...(actions ?? []),
@@ -358,13 +383,10 @@ export function GroupNavigationRow({
         <Plus size={14} aria-hidden="true" />
       </button>
     </NavigationRowMenu>
-    {open || closing ? <div
-      className={`navigation-group__disclosure${open ? " open" : ""}${instant ? " is-instant" : ""}`}
+    {open || closing ? <div ref={disclosureRef}
+      className={`navigation-group__disclosure${open ? " open" : ""}`}
       aria-hidden={!open}
-      inert={!open ? true : undefined}
-      onTransitionEnd={(event) => {
-        if (event.target === event.currentTarget && !open) setClosing(false);
-      }}>
+      inert={!open ? true : undefined}>
       <div className="navigation-group__disclosure-inner">
         <nav className="navigation-group__sessions" aria-label={`${group.label} 的对话`}>
           {searching && !items.some((item) => !item.hidden) ? <small className="navigation-group__hint">没有匹配的对话</small> : null}

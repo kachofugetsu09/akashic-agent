@@ -653,7 +653,8 @@ input {
 }
 
 .chat-sidebar--entry {
-  background: var(--ak-color-bg-surface-low, color-mix(in oklab, var(--ak-ink-primary) 2.2%, var(--ak-paper-canvas)));
+  --chat-sidebar-surface: var(--ak-color-bg-surface-low, color-mix(in oklab, var(--ak-ink-primary) 2.2%, var(--ak-paper-canvas)));
+  background: var(--chat-sidebar-surface);
 }
 
 .chat-sidebar--entry .conversation-navigation {
@@ -1256,15 +1257,16 @@ input {
 .navigation-group__chevron {
   flex: 0 0 auto;
   color: var(--chat-faint);
-  /* motion-exempt: 待迁移到合成线程写法，见 ADR 0166 */
+  /* lucide 图标是 SVG：独立 rotate 属性上不了合成线程，旋转写在 transform 上。 */
   transition:
-    rotate var(--ak-sys-duration-snap, 120ms) var(--ak-sys-motion-standard),
+    transform var(--ak-sys-duration-close) var(--ak-sys-motion-close),
     opacity var(--ak-sys-duration-snap, 120ms) var(--ak-sys-motion-standard);
 }
 
 .navigation-group__open[aria-expanded="true"] .navigation-group__chevron {
-  rotate: 90deg;
-  transition-duration: var(--ak-sys-duration-expand, 200ms), var(--ak-sys-duration-snap, 120ms);
+  transform: rotate(90deg);
+  transition-duration: var(--ak-sys-duration-open), var(--ak-sys-duration-snap, 120ms);
+  transition-timing-function: var(--ak-sys-motion-open), var(--ak-sys-motion-standard);
 }
 
 .navigation-group__name {
@@ -1293,46 +1295,19 @@ input {
   white-space: nowrap;
 }
 
-/* 项目子树折叠过渡：展开 200ms (--ak-sys-duration-expand) 平滑铺开，收起 120ms (--ak-sys-duration-snap) 迅速让位。 */
-.navigation-group__disclosure {
-  display: grid;
-  grid-template-rows: 0fr;
-  /* motion-exempt: 待迁移到合成线程写法，见 ADR 0166 */
-  transition: grid-template-rows var(--ak-sys-duration-snap, 120ms) var(--ak-sys-motion-standard);
-}
-
-.navigation-group__disclosure.open {
-  grid-template-rows: 1fr;
-  transition-duration: var(--ak-sys-duration-expand, 200ms);
-  @starting-style {
-    grid-template-rows: 0fr;
-  }
-}
-
+/* 项目子树开合由 navigation-groups.tsx 用 transform/opacity 驱动（motion.ts）：展开区直接按内容高度排版，
+   收起时下方项目带着侧栏底色盖上来，结束后卸载。 */
 .navigation-group__disclosure-inner {
   min-width: 0;
-  min-height: 0;
-  overflow: clip;
-  opacity: 0;
-  translate: 0 -4px;
-  transition:
-    opacity var(--ak-sys-duration-snap, 120ms) ease-out,
-    translate var(--ak-sys-duration-snap, 120ms) var(--ak-sys-motion-standard);
 }
 
-.navigation-group__disclosure.open > .navigation-group__disclosure-inner {
-  opacity: 1;
-  translate: 0 0;
-  transition-duration: var(--ak-sys-duration-expand, 200ms), var(--ak-sys-duration-expand, 200ms);
-  @starting-style {
-    opacity: 0;
-    translate: 0 -4px;
-  }
+.chat-sidebar__navigation .is-motion-cover {
+  position: relative;
+  z-index: 1;
+  background: var(--chat-sidebar-surface);
 }
 
-/* 搜索驱动的分组开合瞬时完成，不触发高度与透明度动画。 */
-.navigation-group__disclosure.is-instant,
-.navigation-group__disclosure.is-instant > .navigation-group__disclosure-inner,
+/* 搜索驱动的分组开合瞬时完成。 */
 .chat-sidebar__navigation[data-searching] .navigation-group__chevron {
   transition: none !important;
 }
@@ -1452,8 +1427,6 @@ input {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .navigation-group__disclosure,
-  .navigation-group__disclosure-inner,
   .navigation-group__chevron,
   .navigation-group__new-chat,
   .navigation-menu-trigger,
