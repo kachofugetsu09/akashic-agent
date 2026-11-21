@@ -9,7 +9,7 @@ import io
 import tarfile
 import tempfile
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
@@ -120,6 +120,17 @@ def check_distribution_adoption_format(record: Mapping[str, object]) -> None:
             or "\\" in source_path or "\x00" in source_path
             or any(part in {"", ".", ".."} for part in source_path.split("/"))):
             raise ValueError(f"历史归属 source_path 无效: {plugin_id}")
+
+
+# 去掉指定插件的归属条目；条目清空时整条凭证置空，其余条目原样保留。
+def adoption_without(adoption: Mapping[str, object] | None, plugin_id: str) -> Mapping[str, object] | None:
+    if adoption is None:
+        return None
+    entries = cast(Sequence[Mapping[str, object]], adoption["entries"])
+    kept = tuple(item for item in entries if item["plugin_id"] != plugin_id)
+    if len(kept) == len(entries):
+        return adoption
+    return {**adoption, "entries": kept} if kept else None
 
 
 def _adopted_distribution_roots(

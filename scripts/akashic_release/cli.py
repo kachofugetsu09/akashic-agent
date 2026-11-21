@@ -12,6 +12,7 @@ if str(_SOURCE_ROOT) not in sys.path:
 
 from scripts.akashic_release.activate import activate_release, resume_release
 from scripts.akashic_release.doctor import verify_release
+from scripts.akashic_release.extra import ExtraOptions
 from scripts.akashic_release.manifest import read_json, release_lock
 from scripts.akashic_release.migrate import migration_plan
 from scripts.akashic_release.model import ReleasePaths
@@ -95,6 +96,9 @@ def install(args: argparse.Namespace, *, self_deploy: dict[str, object] | None =
                 backup=args.backup,
                 unit_root=args.unit_root, cli_path=args.cli_path,
                 self_deploy=self_deploy, warmer=warmer,
+                extra=ExtraOptions(enabled=not getattr(args, "no_extra", False),
+                                   repo=getattr(args, "extra_repo", None),
+                                   inputs=getattr(args, "extra_inputs", None)),
             )
     # 降级的外置插件进入 install 结果，自部署 worker 的 status 也能看到。
     runtime_check = (read_json(paths.activation / "active.json").get("runtimeCheck")
@@ -104,6 +108,7 @@ def install(args: argparse.Namespace, *, self_deploy: dict[str, object] | None =
         "commit": commit,
         "imageId": manifest["imageId"],
         "backupRequested": args.backup,
+        "extra": read_json(paths.activation / "active.json").get("extra") if status == "activated" else None,
         "degradedExternal": (runtime_check.get("degraded_external", {})
                              if isinstance(runtime_check, dict) else {}),
     }
@@ -175,6 +180,10 @@ def _parser() -> argparse.ArgumentParser:
     resume_parser = subparsers.add_parser("resume", help="只重试已发布版本的启动和验收")
     resume_parser.add_argument("--root", type=Path, default=_DEFAULT_ROOT)
     resume_parser.add_argument("--runtime-env", type=Path, default=_DEFAULT_ENV)
+    install_parser.add_argument("--no-extra", action="store_true", help="不在停机前联网求 extra 插件（首装、换来源、升级）")
+    install_parser.add_argument("--extra-repo", help="extra 仓库地址，默认取 AKASHIC_EXTRA_REPO 或内置常量")
+    install_parser.add_argument("--extra-inputs", type=Path,
+                                help="预先下载好的 extra 输入目录（此前联网部署留下的 .inputs 目录），不联网")
     resume_parser.add_argument("--mise", type=Path, default=_DEFAULT_MISE)
     resume_parser.add_argument("--attempt", type=Path, required=True)
     resume_parser.add_argument("--unit-root", type=Path, default=Path("/etc/systemd/system"))

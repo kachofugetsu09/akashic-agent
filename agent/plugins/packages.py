@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import subprocess
 import sys
 from dataclasses import asdict, dataclass
@@ -12,16 +11,14 @@ from typing import cast
 
 from agent.plugins.bundles import composition_rows, preset_plugin_ids
 from agent.plugins.distribution_sources import distribution_sources
+from agent.plugins.extra_repo import DEFAULT_EXTRA_REPO as DEFAULT_EXTRA_REPO
+from agent.plugins.extra_repo import classify_gaps, list_release_heads as list_release_heads
+from agent.plugins.extra_repo import resolve_repo as resolve_repo
 from agent.plugins.install import is_same_source_upgrade, same_origin
 from agent.plugins.manifest import plugins_root
 from agent.plugins.selection import PluginSelection, SelectionFormatError
 from agent.plugins.source_resolver import ResolvedPluginSource, resolve_plugin_sources
 from agent.plugins.static_manifest import load_static_plugin_manifest, read_only_manifest_facts
-
-DEFAULT_EXTRA_REPO = "https://github.com/kachofugetsu09/akashic-plugins.git"
-_BRANCH_PREFIX = "refs/heads/release/"
-_GIT_TIMEOUT_S = 60
-
 
 @dataclass(frozen=True)
 class InstalledPackage:
@@ -51,28 +48,6 @@ class SyncRow:
     plugin_id: str
     upstream: str
     action: str = "install"
-
-
-# 来源仓库：--repo 优先，其次环境变量，最后是默认常量。
-def resolve_repo(option: str | None) -> str:
-    return option or os.environ.get("AKASHIC_EXTRA_REPO", "").strip() or DEFAULT_EXTRA_REPO
-
-
-# 一次 ls-remote 取全部 release/<name> 分支，返回 name 到提交 SHA 的映射。
-def list_release_heads(repo: str) -> dict[str, str]:
-    result = subprocess.run(
-        ["git", "ls-remote", "--heads", "--", repo, _BRANCH_PREFIX + "*"],
-        capture_output=True, text=True, check=False, timeout=_GIT_TIMEOUT_S,
-        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"git ls-remote 失败: {repo}\n{result.stderr.strip()}")
-    heads: dict[str, str] = {}
-    for line in result.stdout.splitlines():
-        sha, _, ref = line.partition("\t")
-        if ref.startswith(_BRANCH_PREFIX) and len(sha) == 40:
-            heads[ref.removeprefix(_BRANCH_PREFIX)] = sha
-    return heads
 
 
 # 在 artifact 目录里问 git；目录自己不是仓库根时不向上查找，避免读到宿主源码仓库。
@@ -179,31 +154,16 @@ def read_state(workspace: Path, repo: str) -> PackageState:
                         workspace, repo)
 
 
-# 缺口分类：preset 启用的行才是"默认组合"的承诺，缺了就要装（或需要换来源）；
-# 只在用户 patch 里启用的行，上游不存在归为已退役，上游存在只提示、不自动装。
-def _action_of(state: PackageState, preset: frozenset[str], plugin_id: str, upstream: bool) -> str:
-    if plugin_id not in preset:
-        return "optional" if upstream else "retired"
-    return "switch" if state.requires_switch(plugin_id) else "install"
-
-
 # 应装集合 = 启用的组合行 - 发行版当前自带的 - cache 里已装的；旧选择里的内置输入不算数。
-# 没有发行版时 Core 只有 patch 行（composition_rows 的既有语义）。
+# 没有发行版时 Core 只有 patch 行（composition_rows 的既有语义）。分类与部署清单共用 classify_gaps。
 def sync_rows(workspace: Path, repo: str) -> list[SyncRow]:
     state = read_state(workspace, repo)
-    present = state.provided | state.installed
-    missing = [row.plugin for row in composition_rows(workspace)
-               if not row.disabled and row.plugin not in present]
-    if not missing:
-        return []
-    heads = list_release_heads(repo)
     preset: frozenset[str] = preset_plugin_ids(state.root) if state.root is not None else frozenset[str]()
-    rows: list[SyncRow] = []
-    for plugin_id in missing:
-        upstream = plugin_id.partition("@")[0] in heads
-        rows.append(SyncRow(plugin_id, "available" if upstream else "missing-upstream",
-                            _action_of(state, preset, plugin_id, upstream)))
-    return rows
+    gaps = classify_gaps(
+        enabled=[row.plugin for row in composition_rows(workspace) if not row.disabled],
+        present=state.provided | state.installed, preset=preset,
+        heads=lambda: list_release_heads(repo), needs_switch=state.requires_switch)
+    return [SyncRow(gap.plugin_id, gap.upstream, gap.action) for gap in gaps]
 
 
 # 本地列表；带 --remote 时只给 extra 来源的包标状态，其余标 "-"。

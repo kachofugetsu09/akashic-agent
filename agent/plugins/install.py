@@ -15,6 +15,7 @@ from uuid import uuid4
 from agent.plugins.python_environment import ENVIRONMENT_FILE, OfflineWheels, PythonEnvironments
 from agent.plugins.reload_journal import ReloadJournal
 from agent.plugins.distribution_sources import distribution_plugin_sources, read_distribution_adoption
+from agent.plugins.extra_repo import same_origin as same_origin
 from agent.plugins.source_resolver import ResolvedPluginSource
 from agent.plugins.files import sync_directory
 from agent.plugins.input_preparation import check_plugin_source, read_initial_config
@@ -246,6 +247,12 @@ def _reject_pending_migrations(workspace: Path, clone_root: Path, plugin_name: s
         )
 
 
+# 把 artifact 的 origin 改成真实上游地址；artifact 内容摘要不含 .git，不影响身份。
+# 地址按 same_origin 的口径写入（去首尾空白与末尾 /），pkg 才会把它判成同一来源。
+def set_artifact_origin(artifact: Path, upstream: str) -> None:
+    _ = _run_git(["remote", "set-url", "origin", "--", upstream.strip().rstrip("/")], cwd=artifact)
+
+
 # 默认 preset 的身份不能被外置安装接管；只有 takeover 显式列出的 plugin_id，
 # 或已是已安装来源的同源升级放行。
 def _reject_takeover(
@@ -303,8 +310,7 @@ def is_same_source_upgrade(workspace: Path, plugin_id: str, source: str) -> bool
 
 # 来源地址比较：只去掉首尾空白和末尾斜杠，其余逐字比较。
 # x 与 x.git 在本地路径和 HTTP 服务上都可以是两个不同的仓库，不做会改变含义的归一化。
-def same_origin(left: str, right: str) -> bool:
-    return left.strip().rstrip("/") == right.strip().rstrip("/")
+
 
 
 def _clone_git_source(
