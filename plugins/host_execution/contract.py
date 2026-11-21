@@ -20,6 +20,11 @@ class WorkloadEffectUnknown(RuntimeError):
     """The connection failed after Controller may have changed Docker state."""
 
 
+# Controller 在启动失败后按稳定名核实过：没有容器也没有 lease，这次请求没有留下任何资源。
+class WorkloadStartRejected(RuntimeError):
+    pass
+
+
 @dataclass(frozen=True, slots=True)
 class WorkloadEndpoint:
     name: str

@@ -45,6 +45,11 @@ _T = TypeVar("_T")
 logger = logging.getLogger(__name__)
 
 
+# 启动失败且已核实没有留下容器或 lease；回包带 residual=none，Core 据此不再挂起这次请求。
+class _NoResidualStart(Exception):
+    pass
+
+
 class _UnixHttpConnection(http.client.HTTPConnection):
     def __init__(self, socket_path: Path) -> None:
         super().__init__("docker", timeout=60)
@@ -412,6 +417,8 @@ class WorkloadControllerServer:
             except Exception as error:
                 message = str(error).strip() or type(error).__name__
                 response = {"ok": False, "error": message[:4096]}
+                if isinstance(error, _NoResidualStart):
+                    response["residual"] = "none"
             writer.write(
                 json.dumps(response, ensure_ascii=False, separators=(",", ":")).encode(
                     "utf-8"
@@ -432,7 +439,12 @@ class WorkloadControllerServer:
         if action == "start":
             request = _start_request(body)
             async with self._plugin_access(request.plugin_id):
-                return await self._start(request)
+                try:
+                    return await self._start(request)
+                except Exception as error:
+                    if await self._start_left_nothing(request):
+                        raise _NoResidualStart(str(error).strip() or type(error).__name__) from error
+                    raise
         if action == "stop":
             if set(body) != {"lease"}:
                 raise ValueError("Controller stop schema 不匹配")
@@ -445,6 +457,15 @@ class WorkloadControllerServer:
             async with self._maintenance():
                 return await self._cleanup_candidates(_required_text(body, "workspace_id"))
         raise ValueError(f"Controller action 无效: {action}")
+
+    # 启动失败后按稳定名核对现场；核对本身失败时不作结论，保持「结果未知」的保守语义。
+    async def _start_left_nothing(self, request: WorkloadStartRequest) -> bool:
+        try:
+            containers = await _finish_effect(self._find(request))
+        except Exception:
+            logger.exception("Workload start 失败后核对现场失败")
+            return False
+        return not containers and _lease_key(request) not in self._leases
 
     def _check_peer(self, writer: asyncio.StreamWriter) -> None:
         sock = writer.get_extra_info("socket")
