@@ -141,7 +141,9 @@ class _State:
 # provided 是目标发行版当前自带的身份，installed 是 cache 里可用的外置 artifact 身份。
 def read_state(workspace: Path, repo: str) -> _State:
     home = plugins_root()
-    distribution = distribution_sources(workspace, home)
+    # 与目标发行版比较：旧选择的来源路径可能已换成新源码或已不存在，只核对归属声明，
+    # 不要求旧路径仍由旧发行版占据；cache、数据身份和内容摘要的核对不变。
+    distribution = distribution_sources(workspace, home, replacing_distribution=True)
     provided = frozenset(_source_id(source) for source in distribution.sources)
     ignored = {root.resolve() for root in distribution.ignored_installed_roots}
     packages: dict[str, InstalledPackage] = {}
