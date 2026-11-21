@@ -166,12 +166,16 @@
 .changes-row[data-kind="hunk"],
 .changes-row[data-kind="meta"] { color: var(--ak-ink-muted); }
 .changes-row[data-kind="hunk"] { margin-block-start: 6px; background: var(--ak-paper-quiet); }
-/* 从回复带行号打开：目标行亮一下再淡出（宿主不允许插件声明 @keyframes，用 transition） */
-.changes-row { /* motion-exempt: 待迁移到合成线程写法，见 ADR 0166 */ transition: background-color 0.8s ease-out, box-shadow 0.8s ease-out; }
-.changes-row.is-target { box-shadow: inset 3px 0 0 var(--ak-color-status-warning); background: color-mix(in oklab, var(--ak-color-status-warning) 22%, transparent); transition: none; }
+/* 从回复带行号打开：目标行亮一下再淡出（宿主不允许插件声明 @keyframes，用 transition）。
+   左侧色条画死在伪元素上，只过渡 opacity；底色是颜色过渡，只重绘。 */
+.changes-row { position: relative; transition: background-color 0.8s ease-out; }
+.changes-row::before { content: ""; position: absolute; inset-block: 0; left: 0; width: 3px; background: var(--ak-color-status-warning); opacity: 0; pointer-events: none; transition: opacity 0.8s ease-out; }
+.changes-row.is-target { background: color-mix(in oklab, var(--ak-color-status-warning) 22%, transparent); transition: none; }
+.changes-row.is-target::before { opacity: 1; transition: none; }
 
 @media (prefers-reduced-motion: reduce) {
-  .changes-row { transition: none; }
+  .changes-row,
+  .changes-row::before { transition: none; }
 }
 
 /* Token colors never change diff backgrounds, metrics, or the +/- prefix; light-dark() works inside @scope where ancestor .dark cannot match. */

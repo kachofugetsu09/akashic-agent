@@ -994,21 +994,42 @@
   --fb-syntax-title: #90c7f7;
 }
 
+/* 左侧色条画死在两层伪元素上（选中、跳转），只过渡 opacity；底色是颜色过渡，只重绘。 */
 .md-code-row {
+  position: relative;
   display: flex;
   align-items: baseline;
-  /* motion-exempt: 待迁移到合成线程写法，见 ADR 0166 */
-  transition: background-color 0.6s ease-out, box-shadow 0.6s ease-out;
+  transition: background-color 0.6s ease-out;
 }
+
+.md-code-row::before,
+.md-code-row::after {
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  left: 0;
+  width: 3px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.6s ease-out;
+}
+
+.md-code-row::before { background: var(--ak-color-action-primary); }
+.md-code-row::after { background: var(--ak-color-status-warning); }
 
 .md-code-row.is-selected {
   background: color-mix(in oklab, var(--ak-color-action-primary) 12%, transparent);
-  box-shadow: inset 3px 0 0 var(--ak-color-action-primary);
 }
+
+.md-code-row.is-selected::before { opacity: 1; }
 
 .md-code-row.is-target {
   background: color-mix(in oklab, var(--ak-color-status-warning) 22%, transparent);
-  box-shadow: inset 3px 0 0 var(--ak-color-status-warning);
+  transition: none;
+}
+
+.md-code-row.is-target::after {
+  opacity: 1;
   transition: none;
 }
 
@@ -1255,7 +1276,9 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .md-code-row {
+  .md-code-row,
+  .md-code-row::before,
+  .md-code-row::after {
     transition: none;
   }
 }

@@ -142,23 +142,21 @@
   background: var(--ak-rule-focus);
 }
 
-/* 滑动指示器：宿主在 track 上写 --band-indicator-x/-w；存在时取代逐项 ::after。 */
+/* 滑动指示器：宿主在 track 上写 --band-indicator-x/-scale（宽度 / 100px）；存在时取代逐项 ::after。
+   宽度画死 100px，位置与长度都由 transform 表达，切换只动 transform。 */
 .product-band__indicator {
   position: absolute;
   /* --band-indicator-x uses physical offsetLeft in both writing directions. */
   left: 0;
   bottom: 0;
-  /* token-exempt: 顶栏归 shell_ui 所有，这份样式待迁出 theme */
-  width: var(--band-indicator-w, 0);
+  width: 100px;
   height: 2px;
   border-radius: 1px 1px 0 0;
   background: var(--ak-rule-focus);
+  transform-origin: left center;
   /* token-exempt: 顶栏归 shell_ui 所有，这份样式待迁出 theme */
-  transform: translateX(var(--band-indicator-x, 0));
-  /* motion-exempt: 待迁移到合成线程写法，见 ADR 0166 */
-  transition:
-    transform var(--ak-sys-duration-medium) var(--ak-sys-motion-emphasized),
-    width var(--ak-sys-duration-medium) var(--ak-sys-motion-emphasized);
+  transform: translateX(var(--band-indicator-x, 0)) scaleX(var(--band-indicator-scale, 0));
+  transition: transform var(--ak-sys-duration-open) var(--ak-sys-motion-open);
   pointer-events: none;
 }
 
