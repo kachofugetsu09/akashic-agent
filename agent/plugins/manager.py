@@ -2140,7 +2140,8 @@ class PluginManager:
             "preset": self._preset_status(manifest, selected_refs),
         }
 
-    # preset 声明且启用的行必须在选择中；patch 里启用但发行版已不提供的内置行只汇报为退役。
+    # preset 声明且启用的行必须在选择中；发行版命名空间里启用、既不被发行版自带、也没有被选择的已安装输入，
+# 才汇报为退役（没有任何可用来源）；已从外置仓库装上并被选择的是换了代码来源，不算退役。
     def _preset_status(
         self, choices: Mapping[str, bool], selected_refs: Mapping[str, str],
     ) -> dict[str, object] | None:
@@ -2150,6 +2151,10 @@ class PluginManager:
         provided = {f"{source.plugin_name}@{source.marketplace}" for source in self._distribution.sources}
         marketplaces = {source.marketplace for source in self._distribution.sources}
         selected_names = {plugin_id.rpartition("@")[0] for plugin_id in selected_refs}
+        installed_selected = {
+            plugin_id for plugin_id, ref in selected_refs.items()
+            if self._selection.read_input(ref)["source_type"] == "installed"
+        }
         return {
             "bundle": os.environ.get("AKASHIC_PLUGIN_BUNDLE", "base"),
             "missing": sorted(
@@ -2160,6 +2165,7 @@ class PluginManager:
             "retired": sorted(
                 plugin_id for plugin_id, enabled in choices.items()
                 if enabled and plugin_id.rpartition("@")[2] in marketplaces and plugin_id not in provided
+                and plugin_id not in installed_selected
             ),
         }
 
