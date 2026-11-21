@@ -1098,6 +1098,7 @@ function UserTextClamp({ enabled, children }: { enabled: boolean; children: Reac
       settleClamp();
       return;
     }
+    // motion-exempt: 长文本折叠的高度过渡：合成写法需要盖板与不透明底色，ADR 0166 已知限制
     element.style.transition = `max-height ${before.expanding ? "var(--ak-sys-duration-expand)" : "var(--ak-sys-duration-snap)"} var(--ak-sys-motion-standard)`;
     element.style.maxHeight = `${targetHeight}px`;
     // transitionend 可能不来（节点被隐藏、过渡被样式打断），到点兜底归位。

@@ -26,6 +26,7 @@
   border-radius: var(--ak-radius-lg);
   background: color-mix(in oklab, var(--ak-rule-focus) 4%, transparent);
   pointer-events: none;
+  /* motion-exempt: 选中框跟随所选消息移动，只在选择模式出现，ADR 0166 已知限制 */
   transition:
     top var(--ak-sys-duration-short) var(--ak-sys-motion-standard),
     height var(--ak-sys-duration-short) var(--ak-sys-motion-standard);

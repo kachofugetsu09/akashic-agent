@@ -127,6 +127,7 @@ html[data-privacy-content="true"] :is(
 ) {
   filter: blur(6px) !important;
   user-select: none !important;
+  /* motion-exempt: 待迁移到合成线程写法，见 ADR 0166 */
   transition: filter 180ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 

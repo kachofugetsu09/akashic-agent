@@ -393,6 +393,8 @@
   initial-value: 0px;
 }
 
+/* motion-exempt: 跑马灯只在桌面悬停时出现，触屏不触发，ADR 0166 已知限制 */
+
 @keyframes marquee-pingpong {
   0%, 100% { --marquee-pos: -6px; }
   50% { --marquee-pos: calc(var(--marquee-travel, 0px) + 6px); }

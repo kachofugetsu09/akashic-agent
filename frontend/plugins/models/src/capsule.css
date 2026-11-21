@@ -203,6 +203,7 @@
 /* 浮层从触发点长出来：锚点写在 --models-pop-origin（触发钮那条边上的水平中心，由定位代码算出），
    和 Radix 下拉已有的 zoom-in 同一档观感，只是那两个面板此前没有任何入场。
    窄屏走下面的底部抽屉 picker-sheet-in，本规则按源码顺序让位。 */
+/* motion-exempt: 待迁移到合成线程写法，见 ADR 0166 */
 @keyframes ak-panel-in {
   from { opacity: 0; scale: 0.96; filter: blur(2px); }
 }

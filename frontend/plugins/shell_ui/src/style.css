@@ -426,6 +426,7 @@
     border-radius: 1px 1px 0 0;
     background: var(--ak-ink-primary);
     transform: translateX(var(--shell-tabs-x, 0px));
+    /* motion-exempt: 待迁移到合成线程写法，见 ADR 0166 */
     transition:
       transform var(--ak-sys-duration-medium) var(--ak-sys-motion-emphasized),
       width var(--ak-sys-duration-medium) var(--ak-sys-motion-emphasized);
@@ -486,7 +487,7 @@
   .shell-inventory-tech-trigger .shell-inventory-chevron svg { width: 14px; height: 14px; }
   .shell-inventory-body dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 16px; margin: 8px 0 0; }
   .shell-inventory-body dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
-  .shell-disclosure { display: grid; grid-template-rows: 0fr; transition: grid-template-rows var(--ak-sys-duration-snap, 120ms) var(--ak-sys-motion-standard, cubic-bezier(0.2, 0, 0, 1)); }
+  .shell-disclosure { display: grid; grid-template-rows: 0fr; /* motion-exempt: 设置页插件清单展开，低频，ADR 0166 已知限制 */ transition: grid-template-rows var(--ak-sys-duration-snap, 120ms) var(--ak-sys-motion-standard, cubic-bezier(0.2, 0, 0, 1)); }
   .shell-disclosure.open { grid-template-rows: 1fr; transition-duration: var(--ak-sys-duration-expand, 200ms); }
   .shell-disclosure__inner { min-width: 0; min-height: 0; overflow: clip; opacity: 0; translate: 0 -4px; transition: opacity var(--ak-sys-duration-snap, 120ms) ease-out, translate var(--ak-sys-duration-snap, 120ms) var(--ak-sys-motion-standard, cubic-bezier(0.2, 0, 0, 1)); }
   .shell-disclosure.open > .shell-disclosure__inner { opacity: 1; translate: 0 0; transition-duration: var(--ak-sys-duration-expand, 200ms), var(--ak-sys-duration-expand, 200ms); }

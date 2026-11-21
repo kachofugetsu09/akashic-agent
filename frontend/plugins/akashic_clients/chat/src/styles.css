@@ -108,6 +108,7 @@ input {
 
 /* 只声明过渡本身，特异性为 0：自己写了过渡的组件照旧优先，这里不会替它们做决定。 */
 :where(.chat-shell, [role="dialog"]) :where(button, a[href], summary, [role="button"], [tabindex]:not([tabindex="-1"])) {
+  /* motion-exempt: 待迁移到合成线程写法，见 ADR 0166 */
   transition: box-shadow var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
 }
 
@@ -207,6 +208,7 @@ input {
   translate: -0.5px 0;
   background: var(--ak-rule-strong);
   opacity: 0;
+  /* motion-exempt: 待迁移到合成线程写法，见 ADR 0166 */
   transition:
     opacity var(--ak-sys-duration-short) var(--ak-sys-motion-standard),
     width var(--ak-sys-duration-short) var(--ak-sys-motion-standard),
@@ -800,7 +802,10 @@ input {
   }
 }
 
+/* motion-exempt: 滚动驱动的侧栏渐隐遮罩：滚动本身在合成线程，只是遮罩边缘逐帧重画，ADR 0166 已知限制 */
+
 @keyframes nav-fade-top { from { --nav-fade-top: 0px; } to { --nav-fade-top: 24px; } }
+/* motion-exempt: 滚动驱动的侧栏渐隐遮罩：滚动本身在合成线程，只是遮罩边缘逐帧重画，ADR 0166 已知限制 */
 @keyframes nav-fade-bottom { from { --nav-fade-bottom: 24px; } to { --nav-fade-bottom: 0px; } }
 
 .chat-sidebar__navigation .conversation-navigation {
@@ -985,6 +990,8 @@ input {
 .session-delete-notice[data-paused] .session-delete-notice__ring-bar {
   animation-play-state: paused;
 }
+
+/* motion-exempt: 删除提示 10 秒倒计时的细描边，重绘面积很小，ADR 0166 已知限制 */
 
 @keyframes ak-notice-countdown {
   to {
@@ -1249,6 +1256,7 @@ input {
 .navigation-group__chevron {
   flex: 0 0 auto;
   color: var(--chat-faint);
+  /* motion-exempt: 待迁移到合成线程写法，见 ADR 0166 */
   transition:
     rotate var(--ak-sys-duration-snap, 120ms) var(--ak-sys-motion-standard),
     opacity var(--ak-sys-duration-snap, 120ms) var(--ak-sys-motion-standard);
@@ -1289,6 +1297,7 @@ input {
 .navigation-group__disclosure {
   display: grid;
   grid-template-rows: 0fr;
+  /* motion-exempt: 待迁移到合成线程写法，见 ADR 0166 */
   transition: grid-template-rows var(--ak-sys-duration-snap, 120ms) var(--ak-sys-motion-standard);
 }
 
@@ -1932,6 +1941,7 @@ input {
   opacity: 0;
   translate: -50% 4px;
   pointer-events: none;
+  /* motion-exempt: 回到底部按钮跟随输入卡长高移动，要和输入卡一起改，ADR 0166 已知限制 */
   transition:
     opacity var(--ak-sys-duration-snap) var(--ak-sys-motion-standard),
     translate var(--ak-sys-duration-snap) var(--ak-sys-motion-standard),
@@ -2065,6 +2075,7 @@ input {
   font-size: var(--md-sys-typescale-label-large-size);
   font-weight: var(--md-sys-typescale-label-large-weight);
   text-decoration: none;
+  /* motion-exempt: 待迁移到合成线程写法，见 ADR 0166 */
   transition: box-shadow var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
 }
 
@@ -2314,6 +2325,7 @@ input {
   background: var(--chat-lift, var(--ak-paper-editing));
   box-shadow: var(--ak-elevation-raised), var(--composer-lift-shadow);
   interpolate-size: allow-keywords;
+  /* motion-exempt: 输入卡高度随内容变化，合成写法要把外框拆成两片，改动面过大，ADR 0166 已知限制 */
   transition-property: border-color, box-shadow, padding, height, min-height;
   transition-duration: var(--ak-sys-duration-short);
   transition-timing-function: var(--ak-sys-motion-standard);
@@ -2749,6 +2761,7 @@ form.composer:focus-within [data-slot="input-group"] {
     background: var(--ak-paper-canvas);
     box-shadow: none;
     animation: none;
+    /* motion-exempt: 待迁移到合成线程写法，见 ADR 0166 */
     transition:
       transform 220ms var(--ak-sys-motion-emphasized, cubic-bezier(0.05, 0.7, 0.1, 1)),
       opacity 180ms var(--ak-sys-motion-standard),
@@ -2799,6 +2812,7 @@ form.composer:focus-within [data-slot="input-group"] {
   display: grid;
   grid-area: 1 / 1;
   place-items: center;
+  /* motion-exempt: 待迁移到合成线程写法，见 ADR 0166 */
   transition:
     opacity var(--ak-sys-duration-short) var(--ak-sys-motion-standard),
     scale var(--ak-sys-duration-short) var(--ak-sys-motion-standard),
@@ -2821,6 +2835,8 @@ form.composer:focus-within [data-slot="input-group"] {
 .icon-swap[data-state="b"] .icon-swap__tick > path {
   animation: ak-icon-tick 160ms var(--ak-sys-motion-standard) 50ms forwards;
 }
+
+/* motion-exempt: 14px 图标一次性描线，重绘面积很小，ADR 0166 已知限制 */
 
 @keyframes ak-icon-tick {
   to { stroke-dashoffset: 0; }
@@ -2889,6 +2905,7 @@ form.composer:focus-within [data-slot="input-group"] {
    全链路走纯 CSS transition，连续变化可打断；reduced-motion 下只留淡入淡出。 */
 .swap-text {
   display: inline-block;
+  /* motion-exempt: 待迁移到合成线程写法，见 ADR 0166 */
   transition:
     opacity var(--ak-sys-duration-instant) var(--ak-sys-motion-standard),
     translate var(--ak-sys-duration-instant) var(--ak-sys-motion-standard),
@@ -3147,7 +3164,7 @@ form.composer:focus-within [data-slot="input-group"] {
   /* 标题栏在场时吸顶的工具/思考行停在它下面（44px 按钮 + 上下 6px + 发丝线），向下阅读它移出后贴回顶缘。 */
   .chat-main:not(.is-empty) { --heading-cover: 57px; }
   .chat-main.is-reading { --heading-cover: 0px; }
-  .chat-main :is(.tool-step-sticky, .process-trigger-sticky) { transition: top var(--ak-sys-duration-short) var(--ak-sys-motion-standard); }
+  .chat-main :is(.tool-step-sticky, .process-trigger-sticky) { /* motion-exempt: 窄屏阅读时顶栏收起，吸顶偏移跟着过渡；合成写法要逐个吸顶元素做 FLIP，ADR 0166 已知限制 */ transition: top var(--ak-sys-duration-short) var(--ak-sys-motion-standard); }
   .chat-main:not(.is-empty) .conversation-content { padding-block-start: calc(1.5rem + 53px); }
 
   .chat-main .composer.is-compact {
@@ -3467,6 +3484,7 @@ form.composer:focus-within [data-slot="input-group"] {
   grid-column: 1 / 3;
   display: grid;
   grid-template-rows: 0fr;
+  /* motion-exempt: 会话内查找条展开第二行，低频，ADR 0166 已知限制 */
   transition: grid-template-rows var(--ak-sys-duration-snap) var(--ak-sys-motion-standard);
 }
 .thread-find[data-has-query="true"] .thread-find__meta-wrap {
@@ -3487,6 +3505,7 @@ form.composer:focus-within [data-slot="input-group"] {
   color: var(--chat-muted);
   font-size: var(--chat-type-control);
   line-height: 24px;
+  /* motion-exempt: 会话内查找条展开第二行，低频，ADR 0166 已知限制 */
   transition:
     opacity var(--ak-sys-duration-snap) var(--ak-sys-motion-standard),
     translate var(--ak-sys-duration-snap) var(--ak-sys-motion-standard),
