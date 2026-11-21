@@ -13,6 +13,8 @@
 | [0159](0159-watch-act-without-asking.md) | proposed / implemented for review | 值班：后台回合动手不设限，办成或卡住先交代 | PRO-004～PRO-006 |
 | [0161](0161-watch-trail.md) | proposed / implemented for review | 值班：后台回合的足迹自动带进下一轮，看不明白可以问 | PRO-005 |
 | [0162](0162-watch-places-to-sources.md) | proposed / implemented for review | 值班：反复去的地方接成来源，搁久的猜测当天了结 | PRO-005 |
+| [0164](0164-watch-timeline.md) | proposed / implemented for review | 值班：一条不删的时间线，反复开口的事写成嘱托 | PRO-005 |
+| [0165](0165-watch-dream.md) | proposed / implemented for review | 值班：见闻和记忆分开，每天单独一轮整理记忆 | PRO-005 |
 | [0160](0160-watch-panel-ledger.md) | proposed / implemented for review | 值班面板：一天是一张流水，嘱托和便签按结构排版 | PRO-005 |
 | [0157](0157-background-idle-compaction.md) | accepted | 空闲摘要提前后台生成，摘要与聊天边界同事务发布 | CTX-001、CTX-007、STA-002、PLG-017 |
 | [0156](0156-watch-observations-carry-over.md) | proposed / implemented for review | 值班：看到的和走过的路留进记忆专题，收尾并进已有回合 | PRO-004～PRO-006 |
