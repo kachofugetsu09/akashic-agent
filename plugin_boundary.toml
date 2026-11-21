@@ -82,3 +82,7 @@ extra = [
     "timer", "userinformation", "vision", "visuals", "watch", "web_fetch_http", "web_search_exa",
     "web_search_searxng", "workspace_changes",
 ]
+
+# 已迁出 Core 的插件：目录不再存在，但仍按 extra 层约束（core 层不得 import 它们）。
+# 迁出一个插件时，把名字从上面的 extra 移到这里；extra 仓库自己的新插件由它的 extra_tiers.toml 声明，不进本表。
+external = []
