@@ -10,7 +10,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import cast
 
-from agent.plugins.bundles import composition_rows
+from agent.plugins.bundles import composition_rows, preset_plugin_ids
 from agent.plugins.distribution_sources import distribution_sources
 from agent.plugins.manifest import plugins_root
 from agent.plugins.selection import PluginSelection, SelectionFormatError
@@ -49,6 +49,7 @@ class ListRow:
 class SyncRow:
     plugin_id: str
     upstream: str
+    action: str = "install"
 
 
 # 来源仓库：--repo 优先，其次环境变量，最后是默认常量。
@@ -131,15 +132,24 @@ def _source_id(source: ResolvedPluginSource) -> str:
 
 
 @dataclass(frozen=True)
-class _State:
+class PackageState:
     packages: list[InstalledPackage]
     provided: frozenset[str]
     installed: frozenset[str]
+    adopted: frozenset[str]
+    marketplaces: frozenset[str]
+    root: Path | None = None
+
+    # 发行版命名空间里的身份、历史归属身份、旧选择里的内置输入，都只能经换来源操作处理。
+    def requires_switch(self, plugin_id: str) -> bool:
+        builtin = {item.plugin_id for item in self.packages if item.source == "core"}
+        return (plugin_id in self.adopted or plugin_id in builtin or plugin_id in self.provided
+                or plugin_id.partition("@")[2] in self.marketplaces)
 
 
 # 已装包 = 当前选择里的输入，加上 cache 里尚未被选择引用的 artifact；
 # provided 是目标发行版当前自带的身份，installed 是 cache 里可用的外置 artifact 身份。
-def read_state(workspace: Path, repo: str) -> _State:
+def read_state(workspace: Path, repo: str) -> PackageState:
     home = plugins_root()
     # 与目标发行版比较：旧选择的来源路径可能已换成新源码或已不存在，只核对归属声明，
     # 不要求旧路径仍由旧发行版占据；cache、数据身份和内容摘要的核对不变。
@@ -162,7 +172,16 @@ def read_state(workspace: Path, repo: str) -> _State:
         if plugin_id not in packages or packages[plugin_id].retired:
             packages[plugin_id] = _package(plugin_id, source.plugin_root, False, repo, False)
     ordered = sorted(packages.values(), key=lambda item: item.plugin_id)
-    return _State(ordered, provided, frozenset(installed))
+    marketplaces = frozenset(source.marketplace for source in distribution.sources if source.marketplace)
+    return PackageState(ordered, provided, frozenset(installed), distribution.legacy_ids, marketplaces, distribution.root)
+
+
+# 缺口分类：preset 启用的行才是"默认组合"的承诺，缺了就要装（或需要换来源）；
+# 只在用户 patch 里启用的行，上游不存在归为已退役，上游存在只提示、不自动装。
+def _action_of(state: PackageState, preset: frozenset[str], plugin_id: str, upstream: bool) -> str:
+    if plugin_id not in preset:
+        return "optional" if upstream else "retired"
+    return "switch" if state.requires_switch(plugin_id) else "install"
 
 
 # 应装集合 = 启用的组合行 - 发行版当前自带的 - cache 里已装的；旧选择里的内置输入不算数。
@@ -175,8 +194,13 @@ def sync_rows(workspace: Path, repo: str) -> list[SyncRow]:
     if not missing:
         return []
     heads = list_release_heads(repo)
-    return [SyncRow(plugin_id, "available" if plugin_id.partition("@")[0] in heads else "missing-upstream")
-            for plugin_id in missing]
+    preset: frozenset[str] = preset_plugin_ids(state.root) if state.root is not None else frozenset[str]()
+    rows: list[SyncRow] = []
+    for plugin_id in missing:
+        upstream = plugin_id.partition("@")[0] in heads
+        rows.append(SyncRow(plugin_id, "available" if upstream else "missing-upstream",
+                            _action_of(state, preset, plugin_id, upstream)))
+    return rows
 
 
 # 本地列表；带 --remote 时只给 extra 来源的包标状态，其余标 "-"。
@@ -213,12 +237,22 @@ def _print_list(rows: list[ListRow], remote: bool, as_json: bool) -> None:
 
 
 def _print_sync(rows: list[SyncRow], repo: str, as_json: bool) -> None:
+    groups = {action: [row for row in rows if row.action == action]
+              for action in ("install", "switch", "optional", "retired")}
     if as_json:
-        print(json.dumps({"repo": repo, "to_install": [asdict(row) for row in rows]}, ensure_ascii=False, indent=2))
+        keys = {"install": "to_install", "switch": "to_switch", "optional": "optional", "retired": "retired"}
+        print(json.dumps({"repo": repo, **{keys[a]: [asdict(row) for row in items] for a, items in groups.items()}},
+                         ensure_ascii=False, indent=2))
         return
-    for row in rows:
-        print(f"{row.plugin_id:<32} {row.upstream}")
-    if not rows:
+    titles = {"install": "", "switch": "需要换来源（pkg sync 不处理，需专门的换来源操作）：",
+              "optional": "只在用户 patch 里启用、上游存在（不自动安装，需要请 pkg install）：",
+              "retired": "已退役（只在用户 patch 里启用，上游已不存在，忽略）："}
+    for action, items in groups.items():
+        if items and titles[action]:
+            print(titles[action])
+        for row in items:
+            print(f"{row.plugin_id:<32} {row.upstream}")
+    if not any(groups["install"] or groups["switch"]):
         print("无需安装")
 
 
@@ -232,9 +266,11 @@ def _parser() -> argparse.ArgumentParser:
     _ = listing.add_argument("--remote", action="store_true", help="对比远端 release/* 分支")
     sync = commands.add_parser("sync", help="安装应装集合", parents=[common])
     _ = sync.add_argument("--dry-run", action="store_true", help="只打印，不做修改")
+    _ = sync.add_argument("--timeout", type=float, default=120.0, help="在线等待每个包到终态的秒数")
     for name, help_text in (("install", "安装包"), ("upgrade", "升级 extra 来源的包"), ("remove", "卸载包，保留数据")):
         command = commands.add_parser(name, help=help_text, parents=[common])
         _ = command.add_argument("names", nargs="*" if name == "upgrade" else "+")
+        _ = command.add_argument("--timeout", type=float, default=120.0, help="在线等待每个包到终态的秒数")
     return parser
 
 
@@ -253,10 +289,11 @@ def pkg_main(arguments: list[str], *, workspace: Path, config_path: Path) -> int
 
 
 def _run_write(options: argparse.Namespace, workspace: Path, config_path: Path, repo: str) -> int:
-    from agent.plugins.package_ops import run_write
+    from agent.plugins.package_ops import BAD_RESULTS, run_write
 
     outcomes = run_write(cast(str, options.command), cast(list[str], getattr(options, "names", [])),
-                         workspace=workspace, config_path=config_path, repo=repo)
+                         workspace=workspace, config_path=config_path, repo=repo,
+                         timeout=cast(float, options.timeout))
     if options.json:
         print(json.dumps([asdict(item) for item in outcomes], ensure_ascii=False, indent=2))
     else:
@@ -264,7 +301,7 @@ def _run_write(options: argparse.Namespace, workspace: Path, config_path: Path, 
             print(f"{item.name:<28} {item.result:<17} {item.detail}".rstrip())
         if not outcomes:
             print("无需处理")
-    return 1 if any(item.result == "failed" for item in outcomes) else 0
+    return 1 if any(item.result in BAD_RESULTS for item in outcomes) else 0
 
 
 def _dispatch(options: argparse.Namespace, workspace: Path, repo: str) -> int:
