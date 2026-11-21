@@ -123,6 +123,7 @@ class _Registration:
     parallel: bool = False
     release: ToolRelease | None = None
     icon: Mapping[str, object] | None = None
+    label: str | None = None
 
 
 # 旧 binding 可能带已退役的 "authorize" 字段；限制改为执行时读取当前注册，这里只忽略它。
@@ -252,6 +253,7 @@ class ToolCatalog:
         exclusive_batch: bool = False,
         release: ToolRelease | None = None,
         icon: ToolIcon | None = None,
+        label: str | None = None,
     ) -> ToolRef:
         """目标自行校验参数 schema；注册表固定发现描述与真实资源入口。"""
         self._check_context(ctx)
@@ -268,6 +270,8 @@ class ToolCatalog:
             raise TypeError("工具 capture 必须是可调用对象")
         if release is not None and not callable(release):
             raise TypeError("工具 release 必须是可调用对象")
+        if label is not None and (not isinstance(label, str) or not label.strip() or len(label) > 16):
+            raise ValueError("工具显示名必须是 1–16 字的短语")
         normalized_icon = normalize_tool_icon(icon)
         descriptor = cast(
             Mapping[str, object],
@@ -293,6 +297,7 @@ class ToolCatalog:
             parallel=parallel,
             release=release,
             icon=normalized_icon,
+            label=label.strip() if label is not None else None,
         )
 
         def setup() -> Callable[[], None]:
@@ -430,6 +435,13 @@ class ToolCatalog:
     def group_description(self, ref: ToolRef) -> str:
         registration = self._registration(ref)
         return self._groups.get(registration.context.runtime.plugin_id, (False, "未声明用途", None))[1]
+
+    def display_label(self, name: str, owner: str | None) -> str | None:
+        """只读当前活跃工具声明的显示名；分组没有显示名，归档里已换 owner 的同名工具不借用。"""
+        registration = self._tools.get(name)
+        if registration is None or not _owners_active(registration):
+            return None
+        return registration.label if owner is None or registration.context.runtime.plugin_id == owner else None
 
     def display_icon(self, name: str, owner: str | None) -> Mapping[str, object] | None:
         """只读当前活跃工具或分组声明的图标；不打开工具，不改写归档描述。"""
@@ -638,9 +650,10 @@ async def apply(ctx: Context) -> None:
     _ = await ctx.provide(ALL_TOOLS, catalog._all_view)
 
     def read_display(binding_id: str) -> ToolDisplay:
-        """只读原 binding 的名称与 owner，并附带当前注册的展示图标；展示消费者不能打开或执行工具。"""
+        """只读原 binding 的名称与 owner，并附带当前注册的展示图标与显示名；展示消费者不能打开或执行工具。"""
         base = display_tool(ctx.require(BINDINGS).describe(binding_id, TOOLS))
-        return ToolDisplay(base.name, base.owner, catalog.display_icon(base.name, base.owner))
+        return ToolDisplay(base.name, base.owner, catalog.display_icon(base.name, base.owner),
+                           catalog.display_label(base.name, base.owner))
 
     _ = await ctx.provide(TOOL_DISPLAY, read_display)
     watcher: asyncio.Task[None] | None = None

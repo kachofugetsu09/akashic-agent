@@ -325,7 +325,8 @@ export function GroupNavigationRow({
   // 项目内默认只铺前几条：一个项目攒下几十支会话时，全铺会把侧栏占满。
   // 搜索不做截断——匹配到的行都该在结果里；离开搜索后回到折叠态。
   const [allShown, setAllShown] = useState(false);
-  const truncated = !searching && items.length > GROUP_SESSION_LIMIT;
+  // 只多出 1 条时直接显示：「展开更多（1）」本身也占一行，折起来不省高度，还多一次点击。
+  const truncated = !searching && items.length > GROUP_SESSION_LIMIT + 1;
   const visibleItems = useMemo(() => {
     if (!truncated || allShown) return items;
     const head = items.slice(0, GROUP_SESSION_LIMIT);

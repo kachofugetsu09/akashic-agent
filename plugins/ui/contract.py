@@ -481,7 +481,7 @@ def _message_row(
 
 
 def _tool_call(part: ToolCall, *, providers: MessageDisplayProviders) -> dict[str, object]:
-    """只通过 tools 的展示回调读取名称、owner 与图标，不解析或重开工具；owner 决定谁能渲染结果。"""
+    """只通过 tools 的展示回调读取名称、owner、图标与显示名，不解析或重开工具；owner 决定谁能渲染结果。"""
     reader = providers.tool_display
     if reader is None:
         return {
@@ -496,6 +496,7 @@ def _tool_call(part: ToolCall, *, providers: MessageDisplayProviders) -> dict[st
         "name": display.name,
         **({"owner": display.owner} if display.owner is not None else {}),
         **({"icon": json_value(display.icon)} if display.icon is not None else {}),
+        **({"label": display.label} if display.label is not None else {}),
         "arguments": json_value(part.arguments),
     }
 

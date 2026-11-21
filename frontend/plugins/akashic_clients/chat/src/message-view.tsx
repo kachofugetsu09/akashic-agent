@@ -346,7 +346,8 @@ function timelineFlow(messages: TimelineMessage[], finalId: string | undefined, 
         const result = toolResults.get(key);
         const outcome = result?.body.kind === "tool_result" ? result.body.outcome : null;
         return [{ kind: "tool", key, origin, index, part, block: {
-          kind: "tool", callId: key, name: part.name, owner: part.owner, icon: readToolIcon(part.icon), input: part.arguments,
+          kind: "tool", callId: key, name: part.name, owner: part.owner, icon: readToolIcon(part.icon),
+          label: typeof part.label === "string" && part.label.trim() ? part.label.trim() : undefined, input: part.arguments,
           output: result ? timelineToolOutput(result) : undefined,
           attachments: toolImages(result),
           status: outcome === null ? active ? "input-available" : "output-unknown" : outcome === "success" ? "output-available" : "output-error",
@@ -767,8 +768,7 @@ function SettledTurnFlow({ flow, startedAt, endedAt, beforeReasoning, partView }
   if (answerStart > 0 && flow.slice(0, answerStart).some((item) => item.kind === "narration")) {
     const head = flow.slice(0, answerStart);
     return <>
-      {beforeReasoning?.(process[0].origin)}
-      <TurnProcessSummary items={head} durationMs={turnDurationMs(startedAt, endedAt)}>
+      <TurnProcessSummary items={head} durationMs={turnDurationMs(startedAt, endedAt)} lead={beforeReasoning?.(process[0].origin)}>
         <TimelineProcess flow={head} groupTools={false} partView={partView} />
       </TurnProcessSummary>
       <TimelineProcess flow={flow.slice(answerStart)} partView={partView} />
@@ -783,12 +783,15 @@ function SettledTurnFlow({ flow, startedAt, endedAt, beforeReasoning, partView }
     else groups.push({ body, items: [item] });
   }
   const processGroups = groups.filter((group) => !group.body);
-  // 3. 召回槽位只出现一次；整轮用时不能重复标在每段过程上。
+  const summarized = (group: { body: boolean; items: FlowItem[] }) => !group.body && (group.items.length > 1 || group.items[0].kind === "tool");
+  // 3. 召回槽位只出现一次：流以摘要行开头时并进那一行，否则单独一行；整轮用时不能重复标在每段过程上。
+  const recall = beforeReasoning?.(process[0].origin);
+  const recallInline = summarized(groups[0]);
   return <>
-    {beforeReasoning?.(process[0].origin)}
-    {groups.map((group) => group.body || (group.items.length === 1 && group.items[0].kind !== "tool")
+    {recallInline ? null : recall}
+    {groups.map((group, index) => !summarized(group)
       ? <TimelineProcess key={group.items[0].key} flow={group.items} partView={partView} />
-      : <TurnProcessSummary key={group.items[0].key} items={group.items}
+      : <TurnProcessSummary key={group.items[0].key} items={group.items} lead={index === 0 && recallInline ? recall : undefined}
           durationMs={processGroups.length === 1 ? turnDurationMs(startedAt, endedAt) : undefined}>
           <TimelineProcess flow={group.items} groupTools={false} />
         </TurnProcessSummary>)}
@@ -812,9 +815,18 @@ function formatTurnDuration(durationMs: number): string {
   return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 }
 
-function TurnProcessSummary({ items, durationMs, children }: {
+// 摘要写做了哪几类事（最多两类）：「读取文件、搜索网页等 4 步」比「调用 4 个工具」多说了内容。
+function toolKindsLabel(tools: ToolBlock[]): string {
+  const kinds = [...new Set(tools.map((block) => block.label ?? block.name))];
+  const head = kinds.slice(0, 2).join("、") + (kinds.length > 2 ? " 等" : "");
+  return tools.length === 1 ? head : `${head} ${tools.length} 步`;
+}
+
+function TurnProcessSummary({ items, durationMs, lead, children }: {
   items: FlowItem[];
   durationMs?: number;
+  /** 同一行开头的插件内容（本轮的回想）；它有自己的点按入口，不属于展开按钮。 */
+  lead?: ReactNode;
   children: ReactNode;
 }) {
   const { open, sticky, rowRef, disclosureRef, toggle, setOpen, onTransitionEnd } = useStickyDisclosure();
@@ -828,12 +840,14 @@ function TurnProcessSummary({ items, durationMs, children }: {
   const failed = tools.filter((item) => item.kind === "tool" && item.block.status === "output-error").length;
   const { version } = usePluginUiCatalogVersion();
   const allTasks = tools.length > 0 && tools.every((item) => item.kind === "tool" && toolTaskSummary(item.block, version) !== null);
-  const label = [thinking ? `思考 ${thinking} 次` : "", tools.length ? (allTasks ? `委派 ${tools.length} 个任务` : `调用 ${tools.length} 个工具`) : ""]
-    .filter(Boolean).join("，") || "过程记录";
+  const label = tools.length
+    ? (allTasks ? `委派 ${tools.length} 个任务` : toolKindsLabel(tools.flatMap((item) => item.kind === "tool" ? [item.block] : [])))
+    : thinking ? `思考 ${thinking} 次` : "过程记录";
   const Icon = tools.length ? Wrench : Brain;
   return (
     <div className={`turn-process${sticky ? " is-open" : ""}`}>
       <div ref={rowRef} className={`tool-step-sticky${sticky ? " is-open" : ""}`}>
+        {lead ? <div className="turn-process-lead">{lead}</div> : null}
         <button type="button" className="tool-step-summary turn-process-summary" aria-expanded={open}
           onPointerEnter={prefetch} onFocus={prefetch}
           onClick={() => { setMounted(true); toggle(); }}>
@@ -845,7 +859,6 @@ function TurnProcessSummary({ items, durationMs, children }: {
             <span className="tool-step-description">{failed ? <em className="turn-process-failed">{failed} 个失败</em> : null}<FindRegionCount count={matches} /></span>
             <span className="tool-step-state">
               {durationMs !== undefined ? formatTurnDuration(durationMs) : ""}
-              <CollapseHint open={open} lead={durationMs !== undefined} />
             </span>
             <ChevronDown className={`tool-step-chevron ${open ? "open" : ""}`} size={14} aria-hidden="true" />
           </span>
@@ -1665,22 +1678,25 @@ const ToolStep = memo(function ToolStep({
 }) {
   const description = toolDescription(block.input);
   const hasDetails = toolHasDetails(block);
-  const { open, sticky, rowRef, disclosureRef, toggle, setOpen, onTransitionEnd } = useStickyDisclosure(block.status === "output-error");
-  const [mounted, setMounted] = useState(block.status === "output-error");
+  // 失败也默认收起：行尾的红字已说明原因，整段参数与报错由读者自己点开。
+  const { open, sticky, rowRef, disclosureRef, toggle, setOpen, onTransitionEnd } = useStickyDisclosure();
+  const [mounted, setMounted] = useState(false);
   const prefetch = () => setMounted(true);
   const showDetails = mounted || open || sticky;
   const findText = useCallback(() => toolDetailFindText(block), [block]);
   const matches = useFindRegion(rowRef, open, findText, (next) => { setMounted(true); setOpen(next); });
-  // 成功是默认结果，不再逐行写"完成"；只有运行中、失败和耗时值得占位。
+  // 成功是默认结果，不再逐行写"完成"；运行中与失败常驻，耗时只在悬停时出现。
+  const failure = block.status === "output-error" ? toolErrorHeadline(block) : "";
   const stateLabel = block.status === "input-available"
     ? "运行中"
     : block.status === "output-unknown"
       ? "状态未知"
     : block.status === "output-error"
-      ? "失败"
+      ? <>失败{failure ? <span className="tool-step-error"> · {failure}</span> : null}</>
       : block.durationMs === undefined
         ? ""
         : formatToolDuration(block.durationMs);
+  const quietState = block.status === "output-available";
 
   return (
     <div
@@ -1701,6 +1717,7 @@ const ToolStep = memo(function ToolStep({
                 block={block}
                 description={description}
                 stateLabel={stateLabel}
+                quietState={quietState}
                 expandable
                 open={open}
                 matches={matches}
@@ -1720,7 +1737,8 @@ const ToolStep = memo(function ToolStep({
         )}
         {hasDetails ? (
           <Disclosure open={open} disclosureRef={disclosureRef} onTransitionEnd={onTransitionEnd}>
-            {showDetails ? <ToolDetailSurface block={block} open={showDetails} onCopyDetail={onCopyDetail} /> : null}
+            {showDetails ? <ToolDetailSurface block={block} open={showDetails} onCopyDetail={onCopyDetail}
+              omit={description.repeats} named /> : null}
           </Disclosure>
         ) : null}
       </div>
@@ -1734,15 +1752,21 @@ function toolHasDetails(block: ToolBlock): boolean {
 }
 
 // 展开后的参数与结果：工具行与任务卡共用；收起时不计算参数与结果文字。
-function ToolDetailSurface({ block, open, onCopyDetail, className = "" }: {
+function ToolDetailSurface({ block, open, onCopyDetail, className = "", omit, named = false }: {
   block: ToolBlock;
   open: boolean;
   onCopyDetail?: (text: string) => void;
   className?: string;
+  /** 标题行已经完整写出的参数，展开后不再重复；复制仍给全部参数。 */
+  omit?: string;
+  /** 工具行显示的是动作短语时，在第一节小标题后补上工具原名。 */
+  named?: boolean;
 }) {
   const resultValue = block.output === undefined ? block.errorText : block.output;
   const hasResult = toolHasValue(resultValue) || Boolean(block.attachments?.length);
-  const parameters = useMemo(() => open ? toolParameters(block.input) : [], [block.input, open]);
+  const parameters = useMemo(() => open ? toolParameters(block.input).filter(([name]) => name !== omit) : [], [block.input, open, omit]);
+  const errorMessage = useMemo(() => open && block.status === "output-error" ? toolErrorMessage(resultValue) : null, [block.status, open, resultValue]);
+  const toolName = named ? block.name : undefined;
   const result = useMemo(() => open ? toolDataText(resultValue) : "", [open, resultValue]);
   const parameterCopyText = useMemo(() => open ? toolParameterCopyText(block.input) : "", [block.input, open]);
   const [copiedDetail, setCopiedDetail] = useState<{ section: "parameters" | "result"; text: string } | null>(null);
@@ -1764,7 +1788,7 @@ function ToolDetailSurface({ block, open, onCopyDetail, className = "" }: {
           data-copied-highlight={copiedDetail?.section === "parameters" && copiedDetail.text === parameterCopyText ? "true" : undefined}
           aria-label="工具参数"
         >
-          <ToolDetailHeading label="参数" onCopy={copy("parameters", parameterCopyText)}
+          <ToolDetailHeading label="参数" meta={toolName} onCopy={copy("parameters", parameterCopyText)}
             copied={copiedDetail?.section === "parameters" && copiedDetail.text === parameterCopyText} />
           <dl className="tool-parameter-list">
             {parameters.map(([name, value]) => (
@@ -1782,10 +1806,12 @@ function ToolDetailSurface({ block, open, onCopyDetail, className = "" }: {
           data-copied-highlight={copiedDetail?.section === "result" && copiedDetail.text === result ? "true" : undefined}
           aria-label={error ? "工具错误" : "工具结果"}
         >
-          <ToolDetailHeading label={error ? "错误" : "结果"} onCopy={copy("result", result)}
+          <ToolDetailHeading label={error ? "错误" : "结果"} meta={parameters.length ? undefined : toolName}
+            onCopy={copy("result", result)}
             copied={copiedDetail?.section === "result" && copiedDetail.text === result} />
-          {toolHasValue(resultValue) ? <ToolResultContent value={resultValue} error={error}
-            tool={{ owner: block.owner, name: block.name, arguments: block.input }} /> : null}
+          {errorMessage !== null ? <ToolResultContent value={errorMessage} error />
+            : toolHasValue(resultValue) ? <ToolResultContent value={resultValue} error={error}
+              tool={{ owner: block.owner, name: block.name, arguments: block.input }} /> : null}
           {block.attachments?.length ? <SentAttachments items={block.attachments} /> : null}
         </section>
       ) : null}
@@ -1795,16 +1821,18 @@ function ToolDetailSurface({ block, open, onCopyDetail, className = "" }: {
 
 function ToolDetailHeading({
   label,
+  meta,
   copied,
   onCopy,
 }: {
   label: string;
+  meta?: string;
   copied: boolean;
   onCopy?: () => void;
 }) {
   return (
     <div className="tool-detail-heading">
-      <h4>{label}</h4>
+      <h4>{label}{meta ? <span className="tool-detail-meta"> · {meta}</span> : null}</h4>
       {onCopy ? (
         <button
           className={copied ? "tool-detail-copy copied" : "tool-detail-copy"}
@@ -1820,24 +1848,20 @@ function ToolDetailHeading({
   );
 }
 
-// 展开后行尾提示可收起；吸顶时这一行就是随时可点的收起入口。
-function CollapseHint({ open, lead = true }: { open: boolean; lead?: boolean }) {
-  return <span className={`tool-step-collapse-hint${open ? " is-open" : ""}`} aria-hidden="true">
-    <span>{lead ? " · 收起" : "收起"}</span>
-  </span>;
-}
-
 function ToolStepSummary({
   block,
   description,
   stateLabel,
+  quietState = false,
   expandable,
   open,
   matches = 0,
 }: {
   block: ToolBlock;
   description: ToolDescription;
-  stateLabel: string;
+  stateLabel: ReactNode;
+  /** 只有耗时：悬停或展开时才出现，静止的过程行只留动作与对象。 */
+  quietState?: boolean;
   expandable: boolean;
   open: boolean;
   matches?: number;
@@ -1846,10 +1870,10 @@ function ToolStepSummary({
     <span className="tool-step-heading">
       <span className="tool-step-title">
         <ToolStepIcon block={block} className="tool-step-icon" size={14} />
-        <span>{block.name}</span>
+        <span title={block.label ? block.name : undefined}>{block.label ?? block.name}</span>
       </span>
       <ToolDescriptionText description={description} />
-      <span className="tool-step-state"><FindRegionCount count={matches} />{stateLabel}<CollapseHint open={open} lead={Boolean(stateLabel)} /></span>
+      <span className={`tool-step-state${quietState ? " is-quiet" : ""}`}><FindRegionCount count={matches} />{stateLabel}</span>
       {expandable ? <ChevronDown className={`tool-step-chevron ${open ? "open" : ""}`} size={14} /> : null}
     </span>
   );
@@ -1867,7 +1891,8 @@ function ToolDescriptionText({ description }: { description: ToolDescription }) 
   );
 }
 
-type ToolDescription = { kind: "text"; text: string } | { kind: "path"; text: string; full: string };
+/** repeats：行里已经完整写出的参数名，展开后的参数表不再重复它。 */
+type ToolDescription = ({ kind: "text"; text: string } | { kind: "path"; text: string; full: string }) & { repeats?: string };
 
 // 工具行摘要：优先模型写的 description；没有时取调用目标（文件、网址、检索词、命令），
 // 不展开也知道读了哪个文件、搜了什么——只有工具名的一行等于没说。
@@ -1878,13 +1903,14 @@ function toolDescription(input: unknown): ToolDescription {
   const args = input as Record<string, unknown>;
   const text = (name: string) => typeof args[name] === "string" ? (args[name] as string).trim() : "";
   if (text("description")) return { kind: "text", text: text("description") };
-  if (text("path")) return { kind: "path", text: text("path").split(/[\\/]/u).filter(Boolean).slice(-3).join("/"), full: text("path") };
-  if (text("url")) return { kind: "text", text: text("url").replace(/^https?:\/\//u, "") };
-  if (text("query")) return { kind: "text", text: text("query") };
-  if (text("label")) return { kind: "text", text: text("label") };
-  if (text("title")) return { kind: "text", text: text("title") };
-  if (text("task")) return { kind: "text", text: firstLine(text("task")) };
-  return { kind: "text", text: text("command").split("\n")[0] ?? "" };
+  // 路径行只写末三段，完整路径在悬停提示里；网址只去掉协议。两者都算已写出。
+  if (text("path")) return { kind: "path", text: text("path").split(/[\\/]/u).filter(Boolean).slice(-3).join("/"), full: text("path"), repeats: "path" };
+  if (text("url")) return { kind: "text", text: text("url").replace(/^https?:\/\//u, ""), repeats: "url" };
+  for (const name of ["query", "label", "title"]) if (text(name)) return { kind: "text", text: text(name), repeats: name };
+  // 任务与命令只取首行：多行时展开后仍要看全文。
+  const multiline = (name: string) => text(name).includes("\n") ? undefined : name;
+  if (text("task")) return { kind: "text", text: firstLine(text("task")), repeats: multiline("task") };
+  return { kind: "text", text: text("command").split("\n")[0] ?? "", repeats: text("command") ? multiline("command") : undefined };
 }
 
 const SUMMARY_STATUS: Record<ToolBlock["status"], ToolSummaryFacts["status"]> = {
@@ -2218,6 +2244,29 @@ function toolHasParameters(input: unknown): boolean {
     && input !== null
     && !Array.isArray(input)
     && Object.keys(input).some((name) => name !== "description");
+}
+
+// 报错常包在 JSON 里（{"error": "..."}）：取出给人读的那句；取不到时返回 null，照原样显示。
+function toolErrorMessage(value: unknown): string | null {
+  const data = readToolData(value);
+  if (typeof data === "string") return data;
+  if (data === null || typeof data !== "object" || Array.isArray(data)) return null;
+  const record = data as Record<string, unknown>;
+  for (const key of ["error", "message", "detail"]) {
+    const item = record[key];
+    if (typeof item === "string" && item.trim()) return item;
+    if (item !== null && typeof item === "object" && typeof (item as Record<string, unknown>).message === "string") {
+      return (item as Record<string, string>).message;
+    }
+  }
+  return null;
+}
+
+// 失败行尾的一句原因：报错的首个非空行，长度交给样式省略。
+function toolErrorHeadline(block: ToolBlock): string {
+  const value = block.output === undefined ? block.errorText : block.output;
+  const text = toolErrorMessage(value) ?? toolDataText(value);
+  return text.split("\n").map((line) => line.trim()).find(Boolean)?.slice(0, 160) ?? "";
 }
 
 function toolHasValue(value: unknown): boolean {

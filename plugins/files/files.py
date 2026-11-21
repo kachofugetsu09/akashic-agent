@@ -135,6 +135,13 @@ _FILE_ICONS: dict[type[FileBackend], str] = {
     ListDirTool: "folder-open",
 }
 
+_FILE_LABELS: dict[type[FileBackend], str] = {
+    ReadFileTool: "读取文件",
+    WriteFileTool: "写入文件",
+    EditFileTool: "编辑文件",
+    ListDirTool: "列出目录",
+}
+
 
 async def register_file(
     ctx: Context, backend_type: type[FileBackend], *, allowed_dir: Path | None,
@@ -170,4 +177,5 @@ async def register_file(
         capture=capture,
         parallel=backend_type in (ReadFileTool, ListDirTool),
         icon=_FILE_ICONS[backend_type],
+        label=_FILE_LABELS[backend_type],
     ))

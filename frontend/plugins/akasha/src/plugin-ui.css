@@ -1,8 +1,7 @@
-/* 回想一行：跟在思考过程前，安静的灰字；悬停或点按展开面板。 */
+/* 回想：跟在思考过程前（有过程摘要时与它同一行），安静的灰字；悬停或点按展开面板。与下方的间距由宿主槽位决定。 */
 .akasha-plugin-ui-recall-group {
   display: flex;
   min-width: 0;
-  margin: 0 0 4px;
 }
 
 .akasha-recall-badge,

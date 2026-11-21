@@ -26,7 +26,7 @@ export interface CompactionBoundaryValue {
 export type TimelinePart =
   | { kind: "text" | "artifact_ref" | "reply_ref"; value: string }
   | { kind: "session.reference"; value: { sessions: TimelineSessionReference[] } }
-  | { kind: "tool_call"; binding_id: string; name: string; owner?: string; icon?: ToolIconSpec; arguments: Record<string, unknown> }
+  | { kind: "tool_call"; binding_id: string; name: string; owner?: string; icon?: ToolIconSpec; label?: string; arguments: Record<string, unknown> }
   | { kind: "context.notice"; value: { text: string } }
   | { kind: "compaction.boundary"; value: CompactionBoundaryValue }
   | { kind: "history.provenance" | "history.transcript" | "history.record" | "history.turn_input"; archive: unknown }

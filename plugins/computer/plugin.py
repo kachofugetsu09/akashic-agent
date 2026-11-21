@@ -360,6 +360,7 @@ async def apply(ctx: Context) -> None:
         public=True,
         idempotent=False,
         icon="monitor",
+        label="操作浏览器",
     )
     workload = await _register_workload(ctx)
     await ctx.require(MCP_SERVERS).register(

@@ -1,5 +1,6 @@
 import { gfm, gfmHtml } from "micromark-extension-gfm";
 import { micromark } from "micromark";
+import { cjkFriendlyExtension as cjkFriendly } from "micromark-extension-cjk-friendly";
 import { kaomojiLiteralExtension } from "./kaomoji-markdown";
 import { isConceptLabel, isNumericColumn, isPlainTextLanguage, stripConceptSeparator } from "./markdown-reading";
 
@@ -43,7 +44,7 @@ export function closeStreamingInline(markdown: string): string {
 export function markdownPlainText(markdown: string): string {
   const template = document.createElement("template");
   // 颜文字保护与正文同一扩展，预览和正文显示同样的字符。
-  template.innerHTML = micromark(markdown, { extensions: [gfm(), kaomojiLiteralExtension(markdown)], htmlExtensions: [gfmHtml()] });
+  template.innerHTML = micromark(markdown, { extensions: [gfm(), cjkFriendly(), kaomojiLiteralExtension(markdown)], htmlExtensions: [gfmHtml()] });
   const root = template.content;
   root.querySelector("section[data-footnotes]")?.remove();
   for (const reference of root.querySelectorAll("sup:has(> a[data-footnote-ref])")) reference.remove();
@@ -56,7 +57,7 @@ export function markdownPlainText(markdown: string): string {
 /** Render settled GFM while keeping raw HTML and unsafe protocols inert. */
 export function renderStaticMarkdown(markdown: string) {
   const html = micromark(markdown, {
-    extensions: [gfm(), kaomojiLiteralExtension(markdown)],
+    extensions: [gfm(), cjkFriendly(), kaomojiLiteralExtension(markdown)],
     // 脚注区的隐藏标题与返回链接读屏名默认是英文（Footnotes / Back to reference 1）：与富渲染路径同说"返回引用 1"。
     htmlExtensions: [gfmHtml({
       label: "脚注",
