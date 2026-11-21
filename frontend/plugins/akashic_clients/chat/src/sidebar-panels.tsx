@@ -232,6 +232,15 @@ function useSheetHeightFlip(rootRef: RefObject<HTMLDivElement | null>, sheet: bo
     const offset = previous ? height - previous.height + carried : 0;
     last.current = { height, animation: Math.abs(offset) >= 1 ? slideSheetEdge(root, offset) : null };
   }, [rootRef, sheet, open, shape]);
+  // 地址栏伸缩、窗口改高时 60dvh 直接重排：持续写回布局高度（不含 transform），下一次 FLIP 的起点不陈旧。
+  // ResizeObserver 回调晚于提交时的 layout effect，不会抢先覆盖本次要读的旧值。
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root || !sheet) return;
+    const observer = new ResizeObserver(() => { if (last.current) last.current.height = root.offsetHeight; });
+    observer.observe(root);
+    return () => observer.disconnect();
+  }, [rootRef, sheet]);
   useEffect(() => () => { last.current?.animation?.cancel(); }, []);
 }
 
