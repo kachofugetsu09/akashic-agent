@@ -1632,9 +1632,9 @@ button.tool-step-summary:active {
   color: var(--ak-color-status-error);
 }
 
-/* 失败原因跟在"失败"后面：最多占半行，放不下时省略，完整报错在展开区。 */
+/* 失败原因跟在"失败"后面：给对象（路径、网址）留出位置，放不下时省略，完整报错在展开区。 */
 .tool-step.error .tool-step-state {
-  max-width: 24em;
+  max-width: min(24em, 40vw);
   min-width: 0;
 }
 .tool-step-error {
@@ -2307,6 +2307,8 @@ button.tool-step-summary:active {
 
 /* 本轮摘要行开头的插件内容（回想）：与摘要同一行，用一条短竖线隔开，各自点开各自的内容。 */
 .turn-process-lead {
+  /* 与摘要同字号：插件控件读这个排版令牌。 */
+  --chat-type-control: 0.75rem;
   display: flex;
   flex: none;
   min-width: 0;
