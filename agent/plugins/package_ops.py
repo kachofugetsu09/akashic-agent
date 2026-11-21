@@ -12,6 +12,7 @@ from typing import Literal, cast
 from uuid import uuid4
 
 from agent.plugins.bundles import composition_rows, set_plugin_choice
+from agent.plugins.extra_repo import is_official_repo, official_marketplace
 from agent.plugins.distribution_sources import distribution_sources
 from agent.plugins.install import PluginInstallResult, finalize_uninstall_plugin, fetch_sha_shallow, install_git_plugin
 from agent.plugins.manifest import plugins_root
@@ -50,12 +51,12 @@ def _last_line(error: BaseException) -> str:
     return lines[-1] if lines else type(error).__name__
 
 
-# 身份取组合行里该包的完整身份；不在任何行里的新包用 extra。
-def identity_of(workspace: Path, name: str) -> str:
-    for row in composition_rows(workspace):
-        if row.plugin.partition("@")[0] == name:
-            return row.plugin if "@" in row.plugin else f"{name}@{_DEFAULT_MARKETPLACE}"
-    return f"{name}@{_DEFAULT_MARKETPLACE}"
+# 官方 extra 仓库的包，身份一律是发行版的官方 marketplace（取自 distribution.json）。
+def identity_of(name: str) -> str:
+    marketplace = official_marketplace()
+    if marketplace is None:
+        raise ValueError("无法确定官方 marketplace：未配置发行版（AKASHIC_PLUGIN_DISTRIBUTION）")
+    return f"{name}@{marketplace}"
 
 
 # 取远端提交并读静态 manifest，校验 name 与 api_version；不写 cache。
@@ -153,6 +154,17 @@ def install_one(ctx: Context, state: PackageState, plugin_id: str, sha: str, upg
     except (RuntimeError, ValueError, OSError, subprocess.CalledProcessError) as error:
         return Outcome(name, "failed", _last_line(error))
     return Outcome(name, "upgraded" if upgrade else "installed", sha[:12])
+
+
+# 按名字安装：pkg 只管官方仓库；其他仓库用 plugin-install --marketplace，这里明确拒绝。
+def install_named(ctx: Context, names: list[str]) -> list[Outcome]:
+    if not is_official_repo(ctx.repo):
+        return [Outcome(name, "failed", f"{ctx.repo} 不是官方 extra 仓库；pkg 只管官方仓库，"
+                        "其他仓库请用 plugin-install --marketplace") for name in names]
+    try:
+        return install_many(ctx, [identity_of(name) for name in names])
+    except ValueError as error:
+        return [Outcome(name, "failed", str(error)) for name in names]
 
 
 # 逐个安装；只有已被选择、启用且正常的同版本才跳过，其余走安装路径（可复用已有 artifact）。
@@ -281,7 +293,7 @@ def run_write(command: str, names: list[str], *, workspace: Path, config_path: P
             publication.acquire()
         ctx = Context(workspace, config_path, repo, online, timeout)
         if command == "install":
-            return install_many(ctx, [identity_of(workspace, name) for name in names])
+            return install_named(ctx, names)
         if command == "upgrade":
             return upgrade_many(ctx, names)
         if command == "remove":

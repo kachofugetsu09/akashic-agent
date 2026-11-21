@@ -1,8 +1,10 @@
 """extra 仓库的来源解析与缺口分类；只依赖标准库，宿主部署脚本与包管理命令共用。"""
 from __future__ import annotations
 
+import json
 import os
 import subprocess
+from pathlib import Path
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Literal
@@ -39,6 +41,21 @@ class ExtraAction:
 # 来源仓库：显式参数优先，其次环境变量，最后是默认常量。
 def resolve_repo(option: str | None) -> str:
     return option or os.environ.get("AKASHIC_EXTRA_REPO", "").strip() or DEFAULT_EXTRA_REPO
+
+
+# 官方 marketplace：目标发行版 distribution.json 声明的那个；没有发行版时无法确定，返回 None。
+def official_marketplace() -> str | None:
+    configured = os.environ.get("AKASHIC_PLUGIN_DISTRIBUTION", "").strip()
+    if not configured:
+        return None
+    report = json.loads((Path(configured) / "distribution.json").read_text(encoding="utf-8"))
+    marketplace = report.get("marketplace")
+    return marketplace if isinstance(marketplace, str) and marketplace else None
+
+
+# 来源是否就是配置的官方 extra 仓库（环境变量或默认常量解析出的那个）。
+def is_official_repo(repo: str) -> bool:
+    return same_origin(repo, resolve_repo(None))
 
 
 # 两个仓库地址是否同一来源：只去首尾空白与末尾 /（pkg、安装器守卫与部署清单共用这一口径）。

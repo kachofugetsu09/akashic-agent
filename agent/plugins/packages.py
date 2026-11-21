@@ -14,7 +14,7 @@ from agent.plugins.distribution_sources import distribution_sources
 from agent.plugins.extra_repo import DEFAULT_EXTRA_REPO as DEFAULT_EXTRA_REPO
 from agent.plugins.extra_repo import classify_gaps, list_release_heads as list_release_heads
 from agent.plugins.extra_repo import resolve_repo as resolve_repo
-from agent.plugins.install import is_same_source_upgrade, same_origin
+from agent.plugins.install import is_official_fresh_install, is_same_source_upgrade, same_origin
 from agent.plugins.manifest import plugins_root
 from agent.plugins.selection import PluginSelection, SelectionFormatError
 from agent.plugins.source_resolver import ResolvedPluginSource, resolve_plugin_sources
@@ -114,15 +114,16 @@ class PackageState:
     workspace: Path = Path()
     repo: str = ""
 
-    # 发行版自带、历史归属、旧选择里的内置输入，以及发行版命名空间里不满足同源升级的身份，
-    # 只能经换来源操作处理；同源升级与安装器守卫共用 is_same_source_upgrade。
+    # 发行版自带、历史归属、旧选择里的内置输入，以及发行版命名空间里既不是同源升级、
+    # 也不是官方仓库全新安装的身份，只能经换来源操作处理；与安装器守卫共用同两个判定函数。
     def requires_switch(self, plugin_id: str) -> bool:
         builtin = {item.plugin_id for item in self.packages if item.source == "core"}
         if plugin_id in self.adopted or plugin_id in builtin or plugin_id in self.provided:
             return True
         if plugin_id.partition("@")[2] not in self.marketplaces:
             return False
-        return not is_same_source_upgrade(self.workspace, plugin_id, self.repo)
+        return not (is_same_source_upgrade(self.workspace, plugin_id, self.repo)
+                    or is_official_fresh_install(self.workspace, plugin_id, self.repo))
 
 
 # 已装包 = 当前选择里的输入，加上 cache 里尚未被选择引用的 artifact；
@@ -145,10 +146,12 @@ def read_state(workspace: Path, repo: str) -> PackageState:
         if source.plugin_root.resolve() in ignored:
             continue
         plugin_id = _source_id(source)
-        installed.add(plugin_id)
         # 发行版已不提供的旧内置输入让位给 cache 里的新安装。
         if plugin_id not in packages or packages[plugin_id].retired:
             packages[plugin_id] = _package(plugin_id, source.plugin_root, False, repo, False)
+        # 只有来源是 extra 仓库的 artifact 才算"已装"；旧内置遗留制品不能掩盖缺口。
+        if _source_of(source.plugin_root, False, repo) == "extra":
+            installed.add(plugin_id)
     ordered = sorted(packages.values(), key=lambda item: item.plugin_id)
     marketplaces = frozenset(source.marketplace for source in distribution.sources if source.marketplace)
     return PackageState(ordered, provided, frozenset(installed), distribution.legacy_ids, marketplaces, distribution.root,
