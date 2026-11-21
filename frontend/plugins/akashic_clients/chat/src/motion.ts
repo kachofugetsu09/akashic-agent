@@ -31,20 +31,22 @@ export function followingInView(host: Element, boundary: Element): HTMLElement[]
 }
 
 // 展开之后调用（内容已在布局里，高度 height）：跟随者从上移 height 处滑回原位，内容渐显。
-export function slideOpen(followers: HTMLElement[], content: HTMLElement, height: number, timing: { duration: number; easing: string }): Animation[] {
+export function slideOpen(host: Element, followers: HTMLElement[], content: HTMLElement, height: number, timing: { duration: number; easing: string }): Animation[] {
   if (timing.duration <= 0 || height <= 0) return [];
   const options: KeyframeAnimationOptions = { duration: timing.duration, easing: timing.easing };
-  const animations = followers.map((element) => coverWhile(element, element.animate(
+  const gaps = coverGaps(host, followers);
+  const animations = followers.map((element, index) => coverWhile(element, gaps[index], element.animate(
     [{ transform: `translateY(${-height}px)` }, { transform: "none" }], options)));
   animations.push(content.animate([{ opacity: 0, transform: "translateY(-4px)" }, { opacity: 1, transform: "none" }], options));
   return animations;
 }
 
 // 收起：布局先不动，跟随者上移 height 盖住内容、内容渐隐；停在终点（fill: forwards），由调用方在卸载内容的同一提交里 cancel。
-export function slideClose(followers: HTMLElement[], content: HTMLElement, height: number, timing: { duration: number; easing: string }): Animation[] {
+export function slideClose(host: Element, followers: HTMLElement[], content: HTMLElement, height: number, timing: { duration: number; easing: string }): Animation[] {
   if (timing.duration <= 0 || height <= 0) return [];
   const options: KeyframeAnimationOptions = { duration: timing.duration, easing: timing.easing, fill: "forwards" };
-  const animations = followers.map((element) => coverWhile(element, element.animate(
+  const gaps = coverGaps(host, followers);
+  const animations = followers.map((element, index) => coverWhile(element, gaps[index], element.animate(
     [{ transform: "none" }, { transform: `translateY(${-height}px)` }], options)));
   animations.push(content.animate([{ opacity: 1 }, { opacity: 0 }], options));
   return animations;
@@ -53,13 +55,26 @@ export function slideClose(followers: HTMLElement[], content: HTMLElement, heigh
 // 每个跟随者当前负责遮盖的动画：上一轮动画的 cancel 事件是异步派发的，不能撤掉新一轮加上的遮盖。
 const coverOwner = new WeakMap<HTMLElement, Animation>();
 
-function coverWhile(element: HTMLElement, animation: Animation): Animation {
+// 跟随者与上一个元素（第一个是 host）之间的缝：网格间距、外边距。遮盖层向上补齐这段，内容不从缝里透出来。
+function coverGaps(host: Element, followers: HTMLElement[]): number[] {
+  let previous = host.getBoundingClientRect().bottom;
+  return followers.map((element) => {
+    const rect = element.getBoundingClientRect();
+    const gap = Math.max(0, rect.top - previous);
+    previous = Math.max(previous, rect.bottom);
+    return gap;
+  });
+}
+
+function coverWhile(element: HTMLElement, gap: number, animation: Animation): Animation {
   coverOwner.set(element, animation);
   element.classList.add(COVER_CLASS);
+  element.style.setProperty("--motion-cover-gap", `${Math.ceil(gap)}px`);
   const release = () => {
     if (coverOwner.get(element) !== animation) return;
     coverOwner.delete(element);
     element.classList.remove(COVER_CLASS);
+    element.style.removeProperty("--motion-cover-gap");
   };
   animation.addEventListener("finish", () => { if (animation.effect?.getComputedTiming().fill !== "forwards") release(); });
   animation.addEventListener("cancel", release);

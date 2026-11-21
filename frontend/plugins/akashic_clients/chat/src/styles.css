@@ -1305,6 +1305,8 @@ input {
   position: relative;
   z-index: 1;
   background: var(--chat-sidebar-surface);
+  /* 静态阴影向上补齐与上一个元素之间的缝（motion.ts 写入缝高），只画不动。 */
+  box-shadow: 0 calc(-1 * var(--motion-cover-gap, 0px)) 0 var(--chat-sidebar-surface);
 }
 
 /* 搜索驱动的分组开合瞬时完成。 */

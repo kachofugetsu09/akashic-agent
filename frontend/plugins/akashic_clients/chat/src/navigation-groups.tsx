@@ -333,10 +333,10 @@ export function GroupNavigationRow({
     const height = disclosure.getBoundingClientRect().height;
     const followers = followingInView(host, host.closest(".chat-sidebar__navigation") ?? document.body);
     if (open) {
-      motionRef.current = slideOpen(followers, content, height, motionTiming(host, "open"));
+      motionRef.current = slideOpen(host, followers, content, height, motionTiming(host, "open"));
       return;
     }
-    const animations = slideClose(followers, content, height, motionTiming(host, "close"));
+    const animations = slideClose(host, followers, content, height, motionTiming(host, "close"));
     motionRef.current = animations;
     if (!animations.length) setClosing(false);
     else void animations[0].finished.then(() => { if (motionRef.current === animations) setClosing(false); }, () => undefined);
