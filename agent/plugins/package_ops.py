@@ -24,7 +24,7 @@ _MAIN = Path(__file__).resolve().parents[2] / "main.py"
 _DEFAULT_MARKETPLACE = "extra"
 
 Result = Literal["installed", "upgraded", "current", "restart-required", "removed", "failed",
-                 "in-progress", "needs-switch", "inactive", "retired", "optional"]
+                 "in-progress", "needs-switch", "inactive", "retired", "optional", "retire"]
 BAD_RESULTS = frozenset({"failed", "in-progress", "needs-switch", "inactive"})
 
 
@@ -258,6 +258,7 @@ def sync_install(ctx: Context) -> list[Outcome]:
         "switch": ("needs-switch", "需要换来源，已跳过"),
         "optional": ("optional", "只在用户 patch 里启用，不自动安装；需要请 pkg install"),
         "retired": ("retired", "已退役：上游已不存在，忽略"),
+        "retire": ("retire", "在用的内置插件，发行版已不提供且上游不存在，部署后会消失"),
     }
     outcomes.extend(Outcome(row.plugin_id.partition("@")[0], notes[row.action][0],
                             f"{row.plugin_id} {notes[row.action][1]}") for row in rows if row.action in notes)

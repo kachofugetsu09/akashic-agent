@@ -11,7 +11,7 @@ DEFAULT_EXTRA_REPO = "https://github.com/kachofugetsu09/akashic-plugins.git"
 BRANCH_PREFIX = "refs/heads/release/"
 _GIT_TIMEOUT_S = 60
 
-GapAction = Literal["install", "switch", "optional", "retired"]
+GapAction = Literal["install", "switch", "retire", "optional", "retired"]
 
 
 @dataclass(frozen=True)
@@ -63,12 +63,15 @@ def list_release_heads(repo: str) -> dict[str, str]:
     return heads
 
 
-# 缺口分类，pkg sync 与部署清单共用：preset 启用的行才是默认组合的承诺，缺了就要装（或需要换来源）；
-# 只在用户 patch 里启用的行，上游不存在归为已退役，上游存在只提示、不自动装。
+# 缺口分类，pkg sync 与部署清单共用。判据是"现在是否在用"，不只看 preset：
+#   preset 启用的行            -> 换来源（旧选择里是内置）或首装；
+#   当前选择里是内置输入（在用）-> 上游存在则换来源，上游不存在是真正的退役（switch / retire），退役会让在运行的能力消失；
+#   其余只在用户 patch 里启用的行 -> 上游存在只提示、不自动装（optional），不存在记为已退役并跳过（retired）。
 # heads 是惰性的：没有缺口时不联网。
 def classify_gaps(
     *, enabled: Iterable[str], present: frozenset[str], preset: frozenset[str],
     heads: Callable[[], Mapping[str, str]], needs_switch: Callable[[str], bool],
+    in_use: frozenset[str] = frozenset(),
 ) -> list[Gap]:
     missing = [plugin_id for plugin_id in enabled if plugin_id not in present]
     if not missing:
@@ -77,10 +80,12 @@ def classify_gaps(
     gaps: list[Gap] = []
     for plugin_id in missing:
         upstream = plugin_id.partition("@")[0] in remote
-        if plugin_id not in preset:
-            action: GapAction = "optional" if upstream else "retired"
+        if plugin_id in preset:
+            action: GapAction = "switch" if needs_switch(plugin_id) else "install"
+        elif plugin_id in in_use:
+            action = "switch" if upstream else "retire"
         else:
-            action = "switch" if needs_switch(plugin_id) else "install"
+            action = "optional" if upstream else "retired"
         gaps.append(Gap(plugin_id, "available" if upstream else "missing-upstream", action))
     return gaps
 
