@@ -85,7 +85,7 @@ function closePanel() {
 }
 
 /** 面板挂到 document.body：不继承宿主样式，也不被消息裁切；滚动、Esc 或点外部即收起。 */
-function showPanel(anchor, view, side) {
+function showPanel(anchor, view) {
   clearTimeout(closeTimer);
   if (openPanel?.anchor === anchor) return;
   closePanel();
@@ -99,10 +99,7 @@ function showPanel(anchor, view, side) {
     const box = anchor.getBoundingClientRect();
     const width = panel.offsetWidth, height = panel.offsetHeight;
     let left = box.left, top = box.bottom + 6;
-    if (side === "right") {
-      left = box.right + 12 + width <= innerWidth - 12 ? box.right + 12 : box.left - 12 - width;
-      top = box.top + box.height / 2 - height / 2;
-    } else if (top + height > innerHeight - 12) top = box.top - 6 - height;
+    if (top + height > innerHeight - 12) top = box.top - 6 - height;
     panel.style.left = `${Math.max(12, Math.min(left, innerWidth - width - 12))}px`;
     panel.style.top = `${Math.max(12, Math.min(top, innerHeight - height - 12))}px`;
   };
@@ -137,54 +134,15 @@ function showPanel(anchor, view, side) {
 }
 
 /** 悬停打开（有悬停的指针），点按切换（触屏与键盘）。 */
-function attachPanel(anchor, getView, side) {
+function attachPanel(anchor, getView) {
   anchor.setAttribute("aria-haspopup", "dialog");
   anchor.setAttribute("aria-expanded", "false");
-  anchor.addEventListener("pointerenter", () => { if (hoverable()) showPanel(anchor, getView(), side); });
+  anchor.addEventListener("pointerenter", () => { if (hoverable()) showPanel(anchor, getView()); });
   anchor.addEventListener("pointerleave", () => { if (hoverable()) closeTimer = setTimeout(closePanel, 180); });
   anchor.addEventListener("click", () => {
     if (openPanel?.anchor === anchor && !hoverable()) closePanel();
-    else showPanel(anchor, getView(), side);
+    else showPanel(anchor, getView());
   });
-}
-
-// 同一轮的召回按会话与消息登记，回答工具栏凭自己的消息认领，不重复查询。
-const turnViews = new Map();
-const viewWatchers = new Set();
-const viewKey = (sessionId, messageId) => `${sessionId}\n${messageId}`;
-
-function publishView(sessionId, ids, view) {
-  for (const id of ids) turnViews.set(viewKey(sessionId, id), view);
-  viewWatchers.forEach((watch) => watch());
-}
-
-function retractView(sessionId, ids, view) {
-  for (const id of ids) if (turnViews.get(viewKey(sessionId, id)) === view) turnViews.delete(viewKey(sessionId, id));
-  viewWatchers.forEach((watch) => watch());
-}
-
-/** 回答工具栏里的脑图标：本轮有召回才出现，面板在按钮右侧。 */
-export function mountActions(host, context) {
-  const key = viewKey(context.sessionId, context.messageId);
-  let button = null;
-  const sync = () => {
-    const view = turnViews.get(key);
-    if (!view?.count) { if (openPanel?.anchor === button) closePanel(); button?.remove(); button = null; return; }
-    if (button) return;
-    button = document.createElement("button");
-    button.type = "button";
-    button.innerHTML = BRAIN;
-    button.setAttribute("aria-label", "回想");
-    button.dataset.tip = "回想";
-    attachPanel(button, () => turnViews.get(key), "right");
-    host.replaceChildren(button);
-  };
-  viewWatchers.add(sync);
-  sync();
-  return () => {
-    viewWatchers.delete(sync);
-    if (openPanel?.anchor === button) closePanel();
-  };
 }
 
 /** 已接纳 Input 持有一行「N 段回想」；事实失效只刷新内容，不重新挂载。 */
@@ -196,7 +154,6 @@ export function mountRecall(host, context) {
   let rendered = null;
   let unsubscribe;
   let view = null;
-  let claimed = [];
   const content = document.createElement("div");
   const status = document.createElement("p");
   status.className = "akasha-plugin-ui-query-status";
@@ -217,7 +174,7 @@ export function mountRecall(host, context) {
       badge = document.createElement("button");
       badge.type = "button";
       badge.className = "akasha-recall-badge";
-      attachPanel(badge, () => view, "below");
+      attachPanel(badge, () => view);
       group.append(badge);
       content.replaceChildren(group);
     }
@@ -236,16 +193,12 @@ export function mountRecall(host, context) {
       const result = await readRecall(context, () => active);
       if (!active) return;
       const next = recallView(result);
-      // 3. 换下旧登记再登记新快照，回答工具栏随之出现或更新。
-      retractView(context.sessionId, claimed, view);
       view = next;
-      claimed = Array.isArray(result.message_ids) ? result.message_ids : [];
-      publishView(context.sessionId, claimed, view);
       show(view);
       status.hidden = true;
       settled = result.pending === false;
     } catch (error) {
-      // 4. 失败只更新局部状态，重试沿同一查询入口走，不销毁已有的回想。
+      // 3. 失败只更新局部状态，重试沿同一查询入口走，不销毁已有的回想。
       if (active) {
         const retry = document.createElement("button");
         retry.type = "button";
@@ -268,14 +221,12 @@ export function mountRecall(host, context) {
     active = false;
     unsubscribe?.();
     if (openPanel?.anchor === content.querySelector(".akasha-recall-badge")) closePanel();
-    retractView(context.sessionId, claimed, view);
   };
 }
 
 export default {
   slots: {
     "turn.before_reasoning": { mount: mountRecall },
-    "message.actions": { mount: mountActions },
     "scope.fields": { mount: mountMemoryField },
     "scope.badge": { mount: mountMemoryBadge },
   },

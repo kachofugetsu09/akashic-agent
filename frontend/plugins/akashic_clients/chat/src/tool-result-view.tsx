@@ -137,11 +137,15 @@ export function Disclosure({ open, children, disclosureRef, onTransitionEnd }: {
   );
 }
 
-// 长文本先给预览：命令输出看末尾，其它看开头；显示全部与收起都在原位平滑过渡，流里不出现内部滚动。
+// 长文本先给预览：按显示高度截（几行很长、折成几十行的也算），命令输出看末尾，其它看开头；
+// 显示全部与收起都在原位平滑过渡，流里不出现内部滚动。
 export function PreviewText({ text, tail, className }: { text: string; tail: boolean; className: string }) {
   const lines = useMemo(() => text.split("\n"), [text]);
   const [full, setFull] = useState(false);
   const [closing, setClosing] = useState(false);
+  // 行数不多但折行后超高：渲染后按行高量一次，宽度变化（折行跟着变）时重量。
+  const [tall, setTall] = useState(false);
+  const many = lines.length > PREVIEW_LINES + PREVIEW_SLACK;
   const preRef = useRef<HTMLPreElement>(null);
   const moreRef = useRef<HTMLButtonElement>(null);
   const pendingRef = useRef<{ height: number; expanding: boolean } | null>(null);
@@ -150,10 +154,25 @@ export function PreviewText({ text, tail, className }: { text: string; tail: boo
 
   useLayoutEffect(() => {
     const pre = preRef.current;
+    if (!pre || many) return;
+    const measure = () => {
+      const line = parseFloat(getComputedStyle(pre).lineHeight) || 18;
+      setTall(pre.scrollHeight > line * (PREVIEW_LINES + PREVIEW_SLACK));
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(pre);
+    return () => observer.disconnect();
+  }, [many, text]);
+
+  useLayoutEffect(() => {
+    const pre = preRef.current;
     if (!pre) return;
     if (!full && !closing) {
       pre.style.maxHeight = "";
       pre.style.transition = "";
+      // 看末尾的预览：截掉的是开头，折行后超出的部分也从上方让出。
+      if (tail) pre.scrollTop = pre.scrollHeight;
     }
     const before = pendingRef.current;
     if (!before) return;
@@ -177,7 +196,16 @@ export function PreviewText({ text, tail, className }: { text: string; tail: boo
     // motion-exempt: 工具结果预览的高度过渡：合成写法需要盖板与不透明底色，ADR 0166 已知限制
     pre.style.transition = `max-height ${before.expanding ? "var(--ak-sys-duration-expand)" : "var(--ak-sys-duration-snap)"} var(--ak-sys-motion-standard)`;
     pre.style.maxHeight = `${targetHeight}px`;
-  }, [full, closing]);
+  }, [full, closing, tail, tall]);
+
+  // 看末尾的预览在阅读列变宽变窄后重新折行，要跟着贴回末尾；只改滚动位置，不会再触发尺寸变化。
+  useEffect(() => {
+    const pre = preRef.current;
+    if (!pre || !tail || full || closing) return;
+    const observer = new ResizeObserver(() => { pre.scrollTop = pre.scrollHeight; });
+    observer.observe(pre);
+    return () => observer.disconnect();
+  }, [tail, full, closing]);
 
   useEffect(() => {
     if (!closing) return;
@@ -197,11 +225,11 @@ export function PreviewText({ text, tail, className }: { text: string; tail: boo
   const diff = useMemo(() => looksLikeDiff(lines), [lines]);
   // diff 按行对照着读，折行会把一行增删拆散：整块不折行，在结果区里横向滚动。
   const kind = diff ? `${className} is-diff` : className;
-  if (lines.length <= PREVIEW_LINES + PREVIEW_SLACK) return <pre className={kind}>{diff ? <DiffLines lines={lines} /> : text}</pre>;
-  const renderFull = full || closing;
+  const clippable = many || tall;
+  const renderFull = full || closing || !many;
   const visible = renderFull ? lines : tail ? lines.slice(-PREVIEW_LINES) : lines.slice(0, PREVIEW_LINES);
   const shown = diff ? <DiffLines lines={visible} /> : visible.join("\n");
-  const clipped = full ? "" : tail ? " is-clipped-head" : " is-clipped-tail";
+  const clipped = full || !clippable ? "" : tail ? " is-clipped-head" : " is-clipped-tail";
   const moreFirst = tail && !full;
   const onToggleMore = () => {
     const pre = preRef.current;
@@ -225,9 +253,9 @@ export function PreviewText({ text, tail, className }: { text: string; tail: boo
       preRef.current.style.transition = "";
     }
   };
-  const more = <button ref={moreRef} type="button" className="tool-result-more" aria-expanded={full} onClick={onToggleMore}>
-    {full ? `收起到${tail ? "末尾" : "前"} ${PREVIEW_LINES} 行` : `显示全部 · ${lines.length} 行`}
-  </button>;
+  const more = clippable ? <button ref={moreRef} type="button" className="tool-result-more" aria-expanded={full} onClick={onToggleMore}>
+    {full ? "收起" : `显示全部 · ${lines.length} 行`}
+  </button> : null;
   return <div className="tool-result-preview">
     {moreFirst ? more : null}
     <pre ref={preRef} className={`${kind}${clipped}`} onTransitionEnd={onPreTransitionEnd}>{shown}</pre>

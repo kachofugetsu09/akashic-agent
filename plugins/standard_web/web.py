@@ -192,13 +192,13 @@ async def register_web(ctx: Context, providers: Providers, config: WebConfig) ->
     tools = (
         ("web_search", "用关键词搜索互联网，返回最新的搜索结果（标题 + 摘要 + URL）。"
          "适合查询时效性信息：新闻、产品发布、价格、人物动态等。拿到 URL 后可用 web_fetch 获取完整内容。",
-         search_parameters(config), search, "search"),
+         search_parameters(config), search, "search", "搜索网页"),
         ("web_fetch", "抓取指定 URL 的内容并返回。支持 text（纯文本）、markdown（转换后的 Markdown，默认）、"
          "html（原始 HTML）三种格式。仅支持 HTTP/HTTPS。",
-         fetch_parameters(config), fetch, "globe"),
+         fetch_parameters(config), fetch, "globe", "抓取网页"),
     )
     refs: list[ToolRef] = []
-    for name, description, parameters, run, icon in tools:
+    for name, description, parameters, run, icon, label in tools:
         @asynccontextmanager
         async def open_tool(_state: Mapping[str, object], parameters: dict[str, object] = parameters,
                             run: Callable[[dict[str, Any]], Awaitable[dict[str, object]]] = run) -> AsyncGenerator[WebTool]:
@@ -206,6 +206,6 @@ async def register_web(ctx: Context, providers: Providers, config: WebConfig) ->
 
         refs.append(cast(ToolRef, await ctx.require(TOOLS).register(
             ctx, name=name, description=description,
-            parameters=normalize_tool_parameters(parameters), open=open_tool, parallel=True, icon=icon,
+            parameters=normalize_tool_parameters(parameters), open=open_tool, parallel=True, icon=icon, label=label,
         )))
     return tuple(refs)

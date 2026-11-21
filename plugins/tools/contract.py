@@ -189,6 +189,7 @@ class ToolCatalog(Protocol):
         exclusive_batch: bool = False,
         release: ToolRelease | None = None,
         icon: ToolIcon | None = None,
+        label: str | None = None,
     ) -> ToolRef: ...
     async def register_prepare(
         self,
@@ -246,11 +247,13 @@ TOOLS = ServiceKey[ToolCatalog]("tools.v1")
 ALL_TOOLS = ServiceKey[Callable[[], ToolView]]("tools.all.v1")
 @dataclass(frozen=True, slots=True)
 class ToolDisplay:
-    """聊天展示一次调用所需的身份与可选图标：工具名、注册它的插件；没有记录 owner 的旧 binding 为 None。"""
+    """聊天展示一次调用所需的身份与可选图标、显示名：工具名、注册它的插件；没有记录 owner 的旧 binding 为 None。
+    label 是给人看的动作短语（例如"读取文件"），工具没声明时聊天退回显示工具名。"""
 
     name: str
     owner: str | None
     icon: Mapping[str, object] | None = None
+    label: str | None = None
 
 
 TOOL_DISPLAY = ServiceKey[Callable[[str], ToolDisplay]]("tools.display.v2")

@@ -229,6 +229,7 @@ async def apply(ctx: Context) -> None:
         idempotent=True,
         parallel=True,
         icon="blocks",
+        label="加载工具",
     )
 
     def present(awarded: ToolView) -> tuple[ToolView, ToolPresentation]:

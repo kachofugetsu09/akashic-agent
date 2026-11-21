@@ -4,6 +4,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { DestinationMount, destinationsPending, identityDestinationSource, type DestinationSource } from "./plugin-ui-runtime";
 import { NavigationRowMenu, type NavigationRowAction } from "./navigation-row-menu";
 import { SessionStatusMark, type SessionStatus } from "./session-status-mark";
+import { markdownPlainText } from "./static-markdown";
 import "./navigation-destinations.css";
 
 /** 侧栏 identity 目的地的宿主状态；数据全部来自插件的 navigation.destinations。 */
@@ -110,7 +111,8 @@ export function IdentityDestinationRow({ destination, mark, status, updatedAt, a
   onOpen(): void;
 }) {
   const time = destination.sessionId ? contactTime(updatedAt) : "";
-  const preview = destination.preview || destination.hint || "";
+  // 预览取自最近一条消息的原文：去掉 Markdown 标记再显示，星号、井号不占这一行。
+  const preview = useMemo(() => destination.preview ? markdownPlainText(destination.preview) : destination.hint || "", [destination.preview, destination.hint]);
   return <NavigationRowMenu title={destination.label} actions={actions} className="destination-row">
     <button type="button" className="destination-row__open" data-active={active || undefined}
       aria-current={active ? "page" : undefined} data-unread={status === "unread" || undefined} onClick={onOpen}>

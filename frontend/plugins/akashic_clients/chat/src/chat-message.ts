@@ -17,6 +17,8 @@ export interface ToolBlock {
   owner?: string;
   /** 后端注册声明的展示图标（语义名或受限单色矢量）。 */
   icon?: ToolIconSpec;
+  /** 后端注册声明的动作短语（例如"读取文件"）；没有时显示工具名。 */
+  label?: string;
   status: "input-available" | "output-available" | "output-error" | "output-unknown";
   input: unknown;
   output: unknown;

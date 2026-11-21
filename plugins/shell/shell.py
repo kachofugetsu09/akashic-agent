@@ -452,6 +452,12 @@ _SHELL_ICONS = {
     "task_stop": "square",
 }
 
+_SHELL_LABELS = {
+    "shell": "运行命令",
+    "write_stdin": "续接命令",
+    "task_stop": "停止命令",
+}
+
 
 async def _register(
     ctx: Context,
@@ -483,4 +489,5 @@ async def _register(
         capture=capture,
         release=owners.release_call,
         icon=_SHELL_ICONS[name],
+        label=_SHELL_LABELS[name],
     ))

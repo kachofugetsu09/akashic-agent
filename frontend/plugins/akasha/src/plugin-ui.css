@@ -1,8 +1,7 @@
-/* 回想一行：跟在思考过程前，安静的灰字；悬停或点按展开面板。 */
+/* 回想：跟在思考过程前（有过程摘要时与它同一行），安静的灰字；悬停或点按展开面板。与下方的间距由宿主槽位决定。 */
 .akasha-plugin-ui-recall-group {
   display: flex;
   min-width: 0;
-  margin: 0 0 4px;
 }
 
 .akasha-recall-badge,
@@ -10,7 +9,7 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  min-height: 32px;
+  min-height: var(--chat-control-height, 32px);
   color: color-mix(in oklab, var(--ak-ink-secondary) 85%, transparent);
   font-size: var(--chat-type-control, 0.875rem);
 }
@@ -19,7 +18,9 @@
   border: 0;
   padding: 0;
   background: none;
-  font: inherit;
+  /* 只继承字族与行高：font 简写会连字号一起重置，上面按 --chat-type-control 给的字号就失效了。 */
+  font-family: inherit;
+  line-height: inherit;
   cursor: help;
   transition: color var(--ak-sys-duration-short, 150ms) var(--ak-sys-motion-standard, ease);
 }

@@ -132,7 +132,7 @@ async def apply(ctx: Context) -> None:
         "在图表、关系或参数试验能帮助理解时，生成可交互附件。先读 visualize 技能，先解释直觉再调用；"
         "成功后可继续说明。" + desc),
                            parameters=Visual.model_json_schema(), open=open_tool, parallel=True,
-                           icon="bar-chart-2")
+                           icon="bar-chart-2", label="绘制图表")
 
     async def register_ui(child: Context) -> None:
         await child.require(UI).register(child, web="web_module.js", dashboard=lambda: dashboard,

@@ -2,6 +2,7 @@
 
 import { configureReadingMarkdown, jumpToFootnote } from "@/markdown-reading";
 import { configureKaomojiMarkdown } from "@/kaomoji-markdown";
+import { configureCjkEmphasis } from "@/cjk-emphasis";
 import { cn } from "@/lib/utils";
 import { canBatchStreamingMarkdown } from "@/message-rendering-policy";
 import { memo, useEffect, useMemo } from "react";
@@ -18,7 +19,7 @@ import type { MarkdownIt } from "stream-markdown-parser";
 import { mightContainMath, preloadMath, ReadingMath, type MathNode } from "@/reading-math";
 
 function configureMessageMarkdown(markdown: MarkdownIt) {
-  return configureReadingMarkdown(configureKaomojiMarkdown(markdown));
+  return configureReadingMarkdown(configureKaomojiMarkdown(configureCjkEmphasis(markdown)));
 }
 
 export interface MessageResponseProps {

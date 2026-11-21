@@ -1628,8 +1628,26 @@ button.tool-step-summary:active {
   color: var(--ak-color-status-trace-text);
 }
 
-.tool-step.error :is(.tool-step-state, .tool-step-chevron) {
+.tool-step.error :is(.tool-step-state, .tool-step-chevron, .tool-step-icon) {
   color: var(--ak-color-status-error);
+}
+
+/* 失败原因跟在"失败"后面：给对象（路径、网址）留出位置，放不下时省略，完整报错在展开区。 */
+.tool-step.error .tool-step-state {
+  max-width: min(24em, 40vw);
+  min-width: 0;
+}
+.tool-step-error {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 成功行的耗时与箭头悬停、聚焦或展开时才出现；静止时一行只剩动作与对象。触屏照常常驻。 */
+@media (hover: hover) {
+  .tool-step-summary:not(:hover, :focus-visible, [aria-expanded="true"]) :is(.tool-step-state.is-quiet, .tool-step-state.is-quiet + .tool-step-chevron) {
+    opacity: 0;
+  }
 }
 
 /* 展开区：grid 行过渡高度，内层淡入并下移 4px。容器常驻 DOM，开合只切 class，首次点开也有过渡；
@@ -1705,35 +1723,6 @@ button.tool-step-summary:active {
   z-index: 2;
 }
 
-.tool-step-collapse-hint {
-  display: inline-grid;
-  grid-template-columns: 0fr;
-  opacity: 0;
-  visibility: hidden;
-  color: var(--ak-color-text-secondary);
-  /* 收起提示是控件文字，跟着工具行走界面字体。 */
-  font-family: var(--ak-type-ui);
-  font-size: 0.6875rem;
-  font-weight: 400;
-  /* motion-exempt: 待迁移到合成线程写法，见 ADR 0166 */
-  transition:
-    grid-template-columns var(--ak-sys-duration-snap) var(--ak-sys-motion-standard),
-    opacity var(--ak-sys-duration-snap) var(--ak-sys-motion-standard),
-    visibility var(--ak-sys-duration-snap) allow-discrete;
-}
-
-.tool-step-collapse-hint.is-open {
-  grid-template-columns: 1fr;
-  opacity: 1;
-  visibility: visible;
-  transition-duration: var(--ak-sys-duration-expand), var(--ak-sys-duration-expand), var(--ak-sys-duration-expand);
-}
-
-.tool-step-collapse-hint > span {
-  overflow: hidden;
-  white-space: nowrap;
-}
-
 @media (pointer: coarse) {
   .process-trace,
   .turn-process {
@@ -1746,13 +1735,22 @@ button.tool-step-summary:active {
   }
 }
 
+/* 展开详情装进一个浅底细边框：与正文分开，读的时候知道工具输出到哪里为止。左缘对齐标题文字（图标 14px + 间距 6px）。 */
 .tool-detail-surface {
   display: grid;
   gap: 8px;
-  margin-top: 2px;
-  border-left: 0;
-  padding: 0 0 6px 20px;
-  background: transparent;
+  margin: 2px 0 6px 20px;
+  border: 1px solid var(--ak-rule-subtle);
+  border-radius: var(--ak-radius-sm);
+  padding: 10px 12px 8px;
+  background: color-mix(in oklab, var(--ak-ink-primary) 2.5%, var(--ak-color-bg-canvas));
+}
+
+.tool-detail-meta {
+  color: var(--ak-ink-muted);
+  font-family: var(--ak-type-technical, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  font-weight: 400;
+  letter-spacing: 0;
 }
 
 .tool-detail-heading {
@@ -1864,7 +1862,13 @@ button.tool-step-summary:active {
 .tool-diff-line.is-hunk { color: var(--ak-color-status-trace-text); }
 .tool-diff-line.is-meta { opacity: 0.7; }
 
+/* 预览按显示高度截：折行也算行。看末尾的预览由脚本滚到底，所以用 hidden（clip 不能滚）。 */
+.tool-result:is(.is-clipped-head, .is-clipped-tail) {
+  max-height: 12lh;
+}
+
 .tool-result.is-clipped-head {
+  overflow: hidden;
   mask-image: linear-gradient(to bottom, transparent 0, #000 2.2rem);
 }
 
@@ -2215,6 +2219,11 @@ button.tool-step-summary:active {
   gap: 2px;
 }
 
+/* 热区互相重叠 12px：图标中心距从 42px 收到 30px，与时间、tokens 读成一组；每个热区仍是 40px（触屏 44px）。 */
+.shared-message-actions button + button {
+  margin-inline-start: -12px;
+}
+
 /* 复制成功反馈短暂常驻：即使鼠标已移开也保持可见，复位节奏由 copiedMessageId 状态控制。 */
 .shared-message-actions button.copied {
   opacity: 1;
@@ -2235,11 +2244,6 @@ button.tool-step-summary:active {
 
   /* 左滑引用松手后消息回弹原位。 */
   .web-message-anchor { transition: translate var(--ak-sys-duration-short) var(--ak-sys-motion-standard, ease); }
-
-  /* 热区互相重叠 12px：图标间距与时间到首个图标同为 18px，每个热区仍是 44px。 */
-  .shared-message-actions button + button {
-    margin-inline-start: -12px;
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -2253,7 +2257,6 @@ button.tool-step-summary:active {
   .tool-step-summary,
   .tool-step-sticky,
   .tool-step-chevron,
-  .tool-step-collapse-hint,
   .tool-step-disclosure,
   .tool-step-disclosure-inner,
   .tool-result-nested__chevron,
@@ -2295,6 +2298,34 @@ button.tool-step-summary:active {
   display: grid;
   min-width: 0;
   gap: 2px;
+}
+
+/* 单独成行时与下方过程隔开一点；空槽位不占高度。 */
+.plugin-ui-slot[data-slot="turn.before_reasoning"]:has(button):not(.turn-process-lead > *) {
+  margin-bottom: 4px;
+}
+
+/* 本轮摘要行开头的插件内容（回想）：与摘要同一行，用一条短竖线隔开，各自点开各自的内容。 */
+.turn-process-lead {
+  /* 与摘要同字号、不高过吸顶行：插件控件读这两个令牌。 */
+  --chat-type-control: 0.75rem;
+  --chat-control-height: var(--tool-sticky-h);
+  display: flex;
+  flex: none;
+  min-width: 0;
+  align-items: center;
+}
+.turn-process-lead > .plugin-ui-slot { display: flex; margin: 0; }
+.turn-process-lead:has(button)::after {
+  width: 1px;
+  height: 12px;
+  margin-inline: 10px;
+  background: var(--ak-rule-subtle);
+  content: "";
+}
+.turn-process-lead + .tool-step-summary {
+  flex: 1 1 auto;
+  width: auto;
 }
 
 .plugin-ui-slot[data-slot="turn.after_answer"] {
