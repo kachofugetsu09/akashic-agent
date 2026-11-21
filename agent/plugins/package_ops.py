@@ -183,7 +183,9 @@ def upgrade_many(ctx: Context, names: list[str]) -> list[Outcome]:
     for name in names or sorted(installed):
         package = installed.get(name)
         if package is None:
-            outcomes.append(Outcome(name, "failed", "未安装，或来源不是 extra"))
+            other = next((item for item in state.packages if item.name == name), None)
+            detail = "未安装" if other is None else f"来源不同（{other.source}，目标 {ctx.repo}），不能升级"
+            outcomes.append(Outcome(name, "failed", detail))
         elif name not in heads:
             outcomes.append(Outcome(name, "failed", "上游已移除 release 分支"))
         elif heads[name] != package.head:
