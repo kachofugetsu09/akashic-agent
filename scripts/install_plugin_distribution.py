@@ -1035,7 +1035,9 @@ def publish_distribution(
                 _require_preset_rows(candidate=candidate, workspace=workspace, distribution=distribution)
                 runner = MigrationRunner(repo_root=_SOURCE_ROOT, config_path=config_path,
                                      plugins_home=plugins_home, bundle_directory=distribution / "bundles",
-                                         workspace=workspace, fixed_sources=migration_sources)
+                                         workspace=workspace, fixed_sources=migration_sources,
+                                         replacement_sources=tuple(candidate[item] for item in replacements),
+                                         distribution_state=available)
                 with measure("publish.migrations.check"):
                     pending = runner.check()
                 result: dict[str, Any] = {

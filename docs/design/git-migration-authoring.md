@@ -19,7 +19,7 @@ Core 自有脚本 / 当前发行版全部内置 migration bundle
    明确的持久状态变换
 ```
 
-- `migrations/core/` 仅放 Core 自有迁移；内置业务迁移从当前固定发行版的插件 bundle 读取，范围不受默认 profile 或启停选择裁剪。外置插件自行负责兼容和迁移，框架不发现、校验或执行其 Yoyo catalog。
+- `migrations/core/` 仅放 Core 自有迁移；内置业务迁移从当前固定发行版的插件 bundle 读取，范围不受默认 profile 或启停选择裁剪。官方 marketplace（发行版 `distribution.json` 声明的 `marketplace`）的已装插件与内置同口径：宿主在停机发布与启动时读取其 catalog 并执行，账本只按迁移 ID 记账，来源变化不重跑。其他 marketplace 的外置插件自行负责兼容和迁移，框架不发现、校验或执行其 Yoyo catalog。在线安装（`install_git_plugin`）遇到官方来源新制品带有未执行迁移时拒绝，须走停机部署。
 - 当前历史迁移已退役；Core catalog 为空。旧 ledger 记录保留，新脚本不得依赖已退役 ID。
 - 其他 migration 子目录是旧 Git cursor 系统的历史源码，不注册、不执行。
 - `agent/migrations/runner.py` 负责核对来源与成功账本、复用写入锁、调用 Yoyo 和报告失败。选择发行版即接受必要的 Core/内置迁移，发布与启动先完成迁移再加载新版组合；部署清单不再接受 `migrations` ID 列表。
@@ -68,7 +68,7 @@ steps = [step(apply_change)]
 ## 4. 最小验证
 
 按 [WORKFLOW](../WORKFLOW.md) 使用临时真实 workspace 验证：来源和 owner 冲突在业务写入前拒绝、
-发布与启动自动推进必要 Core/内置迁移、停用内置仍被发现、外置 catalog 不被执行、
+发布与启动自动推进必要 Core/内置迁移、停用内置仍被发现、其他 marketplace 的外置 catalog 不被执行、官方已装插件的迁移随发布与启动执行、
 成功 ID 不重跑、失败不落成功账且按 step 合同可重试，以及持有 workspace 锁。
 涉及业务状态时按持久化状态地图核对真实写入范围与完整性，不只检查返回值。
 

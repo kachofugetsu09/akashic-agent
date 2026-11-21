@@ -115,8 +115,9 @@ def discover_migration_bundles(
     *,
     plugin_dirs: Sequence[Path] = (),
     fixed_sources: Sequence[ResolvedPluginSource] | None = None,
+    trusted_marketplaces: frozenset[str] = frozenset(),
 ) -> tuple[MigrationBundle, ...]:
-    """只从明确的插件 source 读取 bundle，不扫描 checkout/plugins。"""
+    """只从明确的插件 source 读取 bundle，不扫描 checkout/plugins；已装来源只认官方 marketplace。"""
 
     sources = (
         tuple(fixed_sources) if fixed_sources is not None else
@@ -127,7 +128,7 @@ def discover_migration_bundles(
     seen_packages: set[str] = set()
     seen_migrations: set[str] = set()
     for source in sources:
-        if source.source_type != "builtin":
+        if source.source_type != "builtin" and source.marketplace not in trusted_marketplaces:
             continue
         catalog = source.plugin_root / _MIGRATION_CATALOG
         if not catalog.exists() and not catalog.is_symlink():

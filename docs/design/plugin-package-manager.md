@@ -358,7 +358,7 @@ P1-X 独立（Phase 3 之前）
 
 **P1-X · 已装插件的迁移（独立，Phase 3 之前，约 200 行，规模待评估）**
 - 改：`agent/migrations/bundles.py:130`（不再只认 `builtin`）、`agent/migrations/runner.py`。
-- 说明：`akasha`、`scheduler` 带迁移目录。规则要先定：extra 的迁移在哪个时机、以什么信任级别执行（它们会在停机窗口里以宿主权限跑）。不在 Phase 1 范围，这里只登记。
+- 已实现：只对官方 marketplace（`distribution.json` 的 `marketplace`，即 `release`）的已装插件执行迁移，时机与内置相同（停机发布、启动）；部署清单的目标取目标代码；在线安装遇到未执行迁移拒绝。其他 marketplace 维持现状。
 
 PR 数量：C1、A1、A2、B1、B2、B3、B4、C2a、C2b，共九个，外加 P1-X。
 

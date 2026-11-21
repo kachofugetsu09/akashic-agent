@@ -19,6 +19,7 @@ from agent.migrations.bundles import (
     MigrationBundleError,
     _read_migrations,
     discover_migration_bundles,
+    load_migration_bundle,
     load_migration_requirements,
     migration_import_paths,
     validate_bundle_dependencies,
@@ -26,7 +27,13 @@ from agent.migrations.bundles import (
 )
 from agent.plugins.source_resolver import ResolvedPluginSource
 from agent.plugins.manifest import plugins_root, workspace_plugin_data_dir
-from agent.plugins.distribution_sources import distribution_migration_sources
+from agent.plugins.distribution_sources import (
+    DistributionSources,
+    distribution_marketplace,
+    distribution_sources,
+    distribution_migration_sources,
+    official_installed_sources,
+)
 from agent.plugins.reload_journal import check_pending_publication
 from agent.plugins.selection import PluginSelection
 from bootstrap.workspace_lock import WorkspaceInstanceLock, WorkspaceMaintenanceLock
@@ -59,6 +66,8 @@ class MigrationRunner:
         migration_catalog: Path | None = None,
         fixed_sources: Sequence[ResolvedPluginSource] | None = None,
         startup_selection: bool = False,
+        replacement_sources: Sequence[ResolvedPluginSource] = (),
+        distribution_state: DistributionSources | None = None,
     ) -> None:
         self.repo_root = repo_root.resolve()
         self.config_path = config_path.expanduser().resolve()
@@ -76,6 +85,10 @@ class MigrationRunner:
         self.plugin_dirs = tuple(path.expanduser() for path in plugin_dirs)
         self.fixed_sources = None if fixed_sources is None else tuple(fixed_sources)
         self.startup_selection = startup_selection
+        # 本次发布将换入的已装目标；它们的迁移取目标代码，而不是选择里的旧代码。
+        self.replacement_sources = tuple(replacement_sources)
+        # 部署发布阶段按目标发行版语义取得的来源；缺省按运行态语义读取。
+        self.distribution_state = distribution_state
         self.migration_catalog = (
             migration_catalog
             if migration_catalog is not None
@@ -131,7 +144,8 @@ class MigrationRunner:
             core_migrations = _read_migrations(str(self.migrations_root))
             bundles = discover_migration_bundles(
                 plugin_dirs=self.plugin_dirs,
-                fixed_sources=self.fixed_sources,
+                fixed_sources=self._migration_sources(core_only),
+                trusted_marketplaces=self._official_marketplaces(),
             )
             requirements = load_migration_requirements(self.migration_catalog)
             applied_ids = _read_applied_ids(self.ledger_path)
@@ -229,6 +243,25 @@ class MigrationRunner:
         )
         return MigrationOutcome(state=state, migrations=migration_ids)
 
+    # 官方 marketplace 来自当前发行版声明；没有发行版时没有可信的已装来源。
+    def _official_marketplaces(self) -> frozenset[str]:
+        if self.bundle_directory is None or not (self.bundle_directory.parent / "distribution.json").is_file():
+            return frozenset()
+        return frozenset({distribution_marketplace(self.bundle_directory.parent)})
+
+    # 内置来源加官方已装来源；Core 先行阶段不读选择，保持原有的失败顺序。
+    def _migration_sources(self, core_only: bool) -> tuple[ResolvedPluginSource, ...] | None:
+        if self.fixed_sources is None or core_only or not self._official_marketplaces():
+            return self.fixed_sources
+        assert self.bundle_directory is not None
+        replaced = frozenset(f"{item.plugin_name}@{item.marketplace}" for item in self.replacement_sources)
+        distribution = self.bundle_directory.parent
+        state = self.distribution_state or distribution_sources(self.workspace, self.plugins_home, distribution)
+        installed = official_installed_sources(
+            self.workspace, self.plugins_home, distribution, state, exclude_ids=replaced,
+        )
+        return (*self.fixed_sources, *installed, *self.replacement_sources)
+
     def _ledger_uri(self) -> str:
         encoded = quote(self.ledger_path.as_posix(), safe="/:")
         return f"sqlite:///{encoded}"
@@ -257,6 +290,22 @@ def migrate_installation(config_path: Path, workspace: Path) -> MigrationOutcome
         workspace=workspace,
         startup_selection=True,
     ).run()
+
+
+# 在线安装前核对：官方来源的新制品带有尚未执行的迁移时返回它们；在线实例不执行迁移。
+def pending_artifact_migrations(workspace: Path, source: ResolvedPluginSource) -> tuple[str, ...]:
+    # 1. 只有官方 marketplace 的已装来源才会被宿主执行迁移，其他来源保持现状。
+    distribution = os.environ.get("AKASHIC_PLUGIN_DISTRIBUTION")
+    if not distribution or source.marketplace != distribution_marketplace(Path(distribution)):
+        return ()
+    catalog = source.plugin_root / "migration.catalog.toml"
+    if not catalog.exists() and not catalog.is_symlink():
+        return ()
+    # 2. 与启动时相同的口径：目录里的 ID 减去账本已成功与新建起点。
+    ledger = workspace / "migrations.sqlite3"
+    done = {*_read_applied_ids(ledger), *(_read_baseline(ledger) or ())}
+    bundle = load_migration_bundle(source)
+    return tuple(item for item in bundle.migration_ids if item not in done)
 
 
 def _workspace_is_empty(workspace: Path, config_path: Path) -> bool:
