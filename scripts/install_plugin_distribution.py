@@ -25,12 +25,12 @@ if str(_SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(_SOURCE_ROOT))
 
 from agent.plugins.bundles import composition_rows, plugin_choices, preset_plugin_ids
-from agent.plugins.install import install_git_plugin
+from agent.plugins.install import install_git_plugin, set_artifact_origin
 from agent.migrations.release_backup import backup_release_state
 from agent.migrations.runner import MigrationRunner
 from agent.plugins.source_resolver import ResolvedPluginSource
 from agent.plugins.source_resolver import scan_plugin_sources
-from agent.plugins.distribution_sources import distribution_sources, distribution_migration_sources, DistributionSources, is_distribution_input, is_distribution_owned, check_distribution_adoption_format
+from agent.plugins.distribution_sources import adoption_without, distribution_sources, distribution_migration_sources, DistributionSources, is_distribution_input, is_distribution_owned, check_distribution_adoption_format
 from agent.plugins.files import encode_tree, tree_entries
 from agent.plugin_composition.config_input import CONFIG_INPUT, load_config, save_config
 from agent.migrations.runner import initialize_empty_workspace
@@ -40,9 +40,12 @@ from agent.plugins.static_manifest import PluginSourceCompileError, load_static_
 from agent.plugins.python_environment import ENVIRONMENT_FILE, PythonEnvironments
 from agent.plugins.python_environment import OfflineWheels, preflight_offline_runtime, wheel_tree_sha256
 from agent.plugins.input_preparation import prepare_plugin_input, PLUGIN_INPUT_API, PluginInitialConfigError
+from agent.plugins.input_preparation import check_plugin_source, read_initial_config
 from agent.plugins.reload_journal import ReloadJournal, PendingPublicationError, check_pending_publication
-from agent.plugins.selection import PluginSelection, SelectionConflictError
+from agent.plugins.selection import PluginSelection, SelectionConflictError, SelectionWriteError
 from bootstrap.workspace_lock import PluginPublicationLock, WorkspaceMaintenanceLock
+from scripts.akashic_release.manifest import write_json
+from scripts.akashic_release.snapshot import capture_state, restore_state
 from utils.timing import measure
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -50,6 +53,7 @@ _REVISION = re.compile(r"^[0-9a-f]{40}$")
 _PATH_SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _CONFIG_KEY = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
 _FORMAL_INSTALLER = "agent.plugins.install.install_git_plugin"
+_KINDS = frozenset({"upgrade", "install", "switch"})
 
 
 def _external_path(root: Path, relative: object, *, directory: bool) -> Path:
@@ -109,7 +113,8 @@ def load_deployment_plan(path: Path) -> tuple[str, str, list[dict[str, Any]], di
             or plugin_id in seen):
             raise ValueError(f"plugin_id 重复或无效: {plugin_id}")
         seen.add(plugin_id)
-        fields = set(item) - {"offline_wheels"}
+        fields = set(item) - {"offline_wheels", "kind", "upstream", "images"}
+        _check_target_kind(item, bundled="bundled" in item)
         if fields == {"plugin_id", "bundled"}:
             if item["bundled"] is not True:
                 raise ValueError("bundled 必须为 true")
@@ -139,6 +144,19 @@ def load_deployment_plan(path: Path) -> tuple[str, str, list[dict[str, Any]], di
     return digest, root_ref, targets, adoption
 
 
+# 清单条目的 kind、upstream、images：首装与换来源必须带真实上游地址；bundled 只能是 upgrade。
+def _check_target_kind(item: dict[str, Any], *, bundled: bool) -> None:
+    kind = item.get("kind", "upgrade")
+    if kind not in _KINDS or (bundled and kind != "upgrade"):
+        raise ValueError(f"target kind 无效: {item.get('plugin_id')}")
+    upstream, images = item.get("upstream"), item.get("images", [])
+    if ("upstream" in item and (not isinstance(upstream, str) or not upstream or upstream != upstream.strip())) \
+            or (kind != "upgrade" and "upstream" not in item):
+        raise ValueError(f"target upstream 无效: {item.get('plugin_id')}")
+    if not isinstance(images, list) or not all(isinstance(value, str) for value in images):
+        raise ValueError(f"target images 无效: {item.get('plugin_id')}")
+
+
 def _external_path_syntax(relative: object) -> str:
     if (not isinstance(relative, str) or not relative or relative.startswith("/")
         or "\\" in relative or "\x00" in relative
@@ -148,7 +166,7 @@ def _external_path_syntax(relative: object) -> str:
 
 
 def _stage_deployment_targets(
-    *, targets: list[dict[str, Any]], distribution: Path, inputs: Path, staged: Path, expected_root_ref: str,
+    *, targets: list[dict[str, Any]], distribution: Path, inputs: Path, staged: Path, expected_root_ref: str | None,
     selection: PluginSelection, workspace: Path, plugins_home: Path,
 ) -> list[dict[str, Any]]:
     """在临时目录固定 bundle/wheels，并核对每个显式目标。"""
@@ -159,20 +177,27 @@ def _stage_deployment_targets(
     # 1. Require each target to own a coherent selected installed input.
     report = verify_distribution(distribution)
     bundled = {row["name"]: row for row in report["plugins"]}
-    _, selected = _selected_components(selection, expected_root_ref, replacing_distribution=True)
+    selected = ({} if expected_root_ref is None
+                else _selected_components(selection, expected_root_ref, replacing_distribution=True)[1])
+    provided = {f"{row['name']}@{report['marketplace']}" for row in report["plugins"]}
     result: list[dict[str, Any]] = []
     for index, target in enumerate(targets):
         plugin_id = target["plugin_id"]
-        if plugin_id not in selected:
-            raise SelectionConflictError(f"external target 未选择: {plugin_id}")
-        old_ref, descriptor, old_code = selected[plugin_id]
+        kind = target.get("kind", "upgrade")
         name, marketplace = plugin_id.split("@")
-        if (descriptor["source_type"] != "installed"
-            or descriptor.get("data_dir") != workspace_plugin_data_dir(workspace, name, marketplace).relative_to(workspace).as_posix()):
-            raise SelectionConflictError(f"external target 非已安装输入: {plugin_id}")
-        artifact, current_code, current_source = _current_artifact(
-            workspace=workspace, plugins_home=plugins_home, plugin_id=plugin_id,
-        )
+        old_ref = None
+        if kind == "upgrade":
+            if plugin_id not in selected:
+                raise SelectionConflictError(f"external target 未选择: {plugin_id}")
+            old_ref, descriptor, old_code = selected[plugin_id]
+            if (descriptor["source_type"] != "installed"
+                or descriptor.get("data_dir") != workspace_plugin_data_dir(workspace, name, marketplace).relative_to(workspace).as_posix()):
+                raise SelectionConflictError(f"external target 非已安装输入: {plugin_id}")
+            artifact, current_code, current_source = _current_artifact(
+                workspace=workspace, plugins_home=plugins_home, plugin_id=plugin_id,
+            )
+        else:
+            _check_new_source_target(kind, plugin_id, selected, provided)
         # 2. Copy fixed bundle bytes into tmpfs and resolve its exact commit.
         if target.get("bundled"):
             row = bundled.get(name)
@@ -198,13 +223,19 @@ def _stage_deployment_targets(
             raise ValueError(f"bundle provenance 与 distribution 不符: {plugin_id}")
         # 已安装目标版本可继续准备输入；第三种 cache 状态必须显式修复。
         target_code = _code_identity(code)
-        same_current = old_code == artifact and _provenance(old_code) == current_source
-        installed_target = current_code == target_code and _git("-C", str(artifact), "rev-parse", "HEAD") == commit
-        if not same_current and not installed_target:
-            raise SelectionConflictError(f"selection/cache 既不是原输入也不是本次目标: {plugin_id}")
+        if kind == "upgrade":
+            same_current = old_code == artifact and _provenance(old_code) == current_source
+            installed_target = current_code == target_code and _git("-C", str(artifact), "rev-parse", "HEAD") == commit
+            if not same_current and not installed_target:
+                raise SelectionConflictError(f"selection/cache 既不是原输入也不是本次目标: {plugin_id}")
         identity = load_static_plugin_manifest(code)
         if identity.name != name:
             raise ValueError(f"external target 静态身份不一致: {plugin_id}")
+        # 宿主声明已预拉的镜像必须与包静态声明一致；其余安装期会拒绝的问题也在预检阶段暴露。
+        if ("images" in target or kind != "upgrade") and sorted(identity.images) != sorted(target.get("images", [])):
+            raise ValueError(f"external target 镜像声明与宿主预拉清单不一致: {plugin_id}")
+        check_plugin_source(code)
+        _ = read_initial_config(code)
         required = any((code / runtime.requirements).read_text(encoding="utf-8").strip() for runtime in identity.python)
         wheels_spec = target.get("offline_wheels")
         if required != (wheels_spec is not None):
@@ -229,9 +260,22 @@ def _stage_deployment_targets(
                 destination.mkdir()
                 preflight_offline_runtime(code, runtime, wheels, destination)
         result.append({"plugin_id": plugin_id, "old_ref": old_ref, "bundle": local,
-                       "commit": commit, "code": code,
+                       "commit": commit, "code": code, "kind": kind, "upstream": target.get("upstream"),
                        "wheels": wheels, "bundle_sha256": bundle_digest})
     return result
+
+
+# 首装与换来源的前提：目标发行版不再自带该身份；换来源要求旧选择是内置输入，首装要求选择里没有。
+def _check_new_source_target(
+    kind: str, plugin_id: str, selected: Mapping[str, tuple[str, Mapping[str, object], Path]], provided: set[str],
+) -> None:
+    old = selected.get(plugin_id)
+    if plugin_id in provided:
+        raise SelectionConflictError(f"目标发行版仍自带该插件，不能从外置来源接管: {plugin_id}")
+    if kind == "install" and old is not None:
+        raise SelectionConflictError(f"首装目标已在选择里: {plugin_id}")
+    if kind == "switch" and (old is None or old[1]["source_type"] != "builtin"):
+        raise SelectionConflictError(f"换来源目标不是内置输入: {plugin_id}")
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -821,7 +865,9 @@ def _require_preset_rows(
         and plugin_id.rpartition("@")[0] not in names
     )
     if missing:
-        raise RuntimeError("preset 启用的插件没有进入选择，停止发布: " + ", ".join(missing))
+        raise RuntimeError("preset 启用的插件没有进入选择，停止发布: " + ", ".join(missing)
+                           + "。发行版已不再自带的插件需先从 extra 仓库装上：用 scripts/start.py（自带补装），"
+                           "或给 --ensure-bundle 传 --extra-repo / --extra-inputs，生产部署用 akashic-release install")
 
 
 def _prepare_distribution_inputs(
@@ -976,6 +1022,53 @@ def _settle_closed_boot(workspace: Path, boot_id: str) -> None:
         _ = journal.settle_exited_generation(action, boot_id, receipt)
 
 
+# 把已核对的清单目标装成 installed 输入，并写入候选组合与已选输入；发布与首装/启动补装共用。
+def _install_targets(
+    targets: list[dict[str, Any]], *, workspace: Path, plugins_home: Path, selection: PluginSelection,
+    selected: dict[str, tuple[str, Mapping[str, object], Path]], candidate: dict[str, ResolvedPluginSource],
+) -> None:
+    for target in targets:
+        plugin_id = target["plugin_id"]
+        name, marketplace = plugin_id.split("@")
+        # Matching code does not prove an existing Python environment belongs to this interpreter.
+        # 清单是部署者信任的显式替换：目标发行版是否自带已在预检核对，这里放行防接管。
+        installed = install_git_plugin(
+            workspace=workspace, source=str(target["bundle"]), marketplace=marketplace,
+            ref_name=target["commit"], plugins_home=plugins_home,
+            refresh_existing_artifact=False, offline_wheels=target["wheels"],
+            takeover=frozenset({plugin_id}),
+        )
+        artifact = installed.installed_path
+        if target["upstream"]:
+            set_artifact_origin(artifact, target["upstream"])
+        prepared = prepare_plugin_input(
+            {"name": name, "plugin_root": str(artifact), "module_path": str(artifact / "plugin.py"),
+             "manifest_digest": load_static_plugin_manifest(artifact).identity_digest,
+             "marketplace": marketplace, "source_type": "installed"},
+            workspace=workspace, selection=selection, initial=target["kind"] == "install",
+        )
+        if prepared.plugin_id != plugin_id:
+            raise RuntimeError(f"安装输入身份不符: {plugin_id}")
+        ReloadJournal(workspace).set_input_ref(installed.update_id, prepared.input_ref)
+        selected[plugin_id] = (prepared.input_ref, selection.read_input(prepared.input_ref), prepared.code_dir)
+        candidate[plugin_id] = ResolvedPluginSource(prepared.code_dir, "installed", marketplace, name,
+                                                   load_static_plugin_manifest(prepared.code_dir))
+
+
+# 最终提交的归属凭证：部署清单自带的转换凭证原样提交；否则从已提交凭证里去掉本次首装或换来源的身份
+# （历史归属对未在选择里的身份依然保留，首装不释放就会让指针校验失败）。
+def _final_adoption(
+    selection: PluginSelection, adoption: Mapping[str, object] | None, switched: set[str],
+) -> tuple[Mapping[str, object] | None, bool]:
+    if adoption is not None:
+        return adoption, False
+    current = selection.adoption()
+    stripped = current
+    for plugin_id in switched:
+        stripped = adoption_without(stripped, plugin_id)
+    return (stripped, True) if stripped != current else (None, False)
+
+
 def publish_distribution(
     *, distribution: Path, workspace: Path, plugins_home: Path,
     config_path: Path, plan: Path, inputs: Path,
@@ -1026,7 +1119,9 @@ def publish_distribution(
                                                                         adoption=adoption, replacing_distribution=True)
                 reserved_ids = {f"{item.plugin_name}@{item.marketplace}" for item in migration_sources}
                 reserved_ids.update(available.legacy_ids)
-                if reserved_ids.intersection(replacements):
+                # 首装与换来源在预检里已核对目标发行版不再自带；只有已装升级仍按内置数据身份拒绝。
+                taken_over = frozenset(item["plugin_id"] for item in targets if item["kind"] != "upgrade")
+                if reserved_ids.difference(taken_over).intersection(replacements):
                     raise SelectionConflictError("外置部署目标不能接管内置数据身份；替代插件须使用独立身份")
                 for plugin_id, code in replacements.items():
                     name, marketplace = plugin_id.rsplit("@", 1)
@@ -1077,38 +1172,19 @@ def publish_distribution(
                                                                load_static_plugin_manifest(code))
                 _require_preset_rows(candidate=candidate, workspace=workspace, distribution=distribution)
                 prepared_selected = dict(selected)
-                for target in targets:
-                    plugin_id = target["plugin_id"]
-                    name, marketplace = plugin_id.split("@")
-                    # Matching code does not prove an existing Python environment
-                    # belongs to this interpreter. The idempotent installer owns
-                    # both inputs, including explicit same-commit reinstalls.
-                    installed = install_git_plugin(
-                        workspace=workspace, source=str(target["bundle"]), marketplace=marketplace,
-                        ref_name=target["commit"], plugins_home=plugins_home,
-                        refresh_existing_artifact=False, offline_wheels=target["wheels"],
-                    )
-                    artifact, update_id = installed.installed_path, installed.update_id
-                    identity = load_static_plugin_manifest(artifact)
-                    prepared = prepare_plugin_input(
-                        {"name": name, "plugin_root": str(artifact), "module_path": str(artifact / "plugin.py"),
-                         "manifest_digest": identity.identity_digest, "marketplace": marketplace, "source_type": "installed"},
-                        workspace=workspace, selection=selection,
-                    )
-                    if prepared.plugin_id != plugin_id:
-                        raise RuntimeError(f"安装输入身份不符: {plugin_id}")
-                    ReloadJournal(workspace).set_input_ref(update_id, prepared.input_ref)
-                    prepared_selected[plugin_id] = (
-                        prepared.input_ref, selection.read_input(prepared.input_ref), prepared.code_dir,
-                    )
+                _install_targets(targets, workspace=workspace, plugins_home=plugins_home, selection=selection,
+                                 selected=prepared_selected, candidate=candidate)
                 with measure("publish.inputs"):
                     new_components = _prepare_distribution_inputs(
                         available=available, candidate=candidate, selected=prepared_selected,
                         distribution=distribution, workspace=workspace, plugins_home=plugins_home, selection=selection,
                     )
+                # 换来源与最终选择提交合并成这一次 CAS：新输入与历史归属条目的移除同时发布。
+                final_adoption, replace = _final_adoption(
+                    selection, adoption, {item["plugin_id"] for item in targets if item["kind"] != "upgrade"})
                 new_root = (selection.commit(new_components, expected_ref=expected_root,
-                                             distribution_adoption=adoption)
-                            if new_components != components or adoption is not None else expected_root)
+                                             distribution_adoption=final_adoption, replace_adoption=replace)
+                            if new_components != components or adoption is not None or replace else expected_root)
                 return {**result, "status": "selected_not_started", "new_root_ref": new_root,
                         "ordered_components": list(new_components)}
         finally:
@@ -1127,8 +1203,14 @@ def ensure_bundle(
     plugins_home: Path,
     config_path: Path,
     receipt_path: Path,
+    extra_repo: str | None = None,
+    extra_inputs: Path | None = None,
 ) -> dict[str, Any]:
-    """First-install defaults, then compose the deployed distribution with external inputs."""
+    """First-install defaults, then compose the deployed distribution with external inputs.
+
+    给了 extra_repo 或 extra_inputs 时，发行版已不再自带、而 preset 仍启用的插件先从 extra 装上；
+    没给则保持原行为（缺失即停止发布）。
+    """
     workspace = workspace.expanduser().resolve(strict=False)
     plugins_home = plugins_home.expanduser().resolve(strict=False)
     distribution = distribution.expanduser().resolve(strict=True)
@@ -1148,9 +1230,11 @@ def ensure_bundle(
     maintenance = WorkspaceMaintenanceLock(workspace)
     publication = PluginPublicationLock(plugins_home)
     maintenance.acquire()
+    extra_root = Path(tempfile.mkdtemp(prefix="akashic-extra-"))
     try:
         publication.acquire()
         try:
+            _recover_extra_install(workspace)
             if not receipt_path.exists():
                 current = PluginSelection(workspace)
                 if current.path.exists() and current.read() is not None:
@@ -1178,6 +1262,19 @@ def ensure_bundle(
                 available, candidate = _distribution_candidate(
                     distribution=distribution, workspace=workspace, plugins_home=plugins_home, selected=selected,
                 )
+                extra_targets: list[dict[str, Any]] = []
+                if extra_repo is not None or extra_inputs is not None:
+                    selected = dict(selected)
+                    extra_targets = _stage_missing_from_extra(
+                        distribution=distribution, workspace=workspace, plugins_home=plugins_home, selection=selection,
+                        expected=expected, repo=extra_repo, inputs=extra_inputs, root=extra_root)
+                    for target in extra_targets:
+                        name, marketplace = target["plugin_id"].split("@")
+                        candidate[target["plugin_id"]] = ResolvedPluginSource(
+                            target["code"], "installed", marketplace, name, load_static_plugin_manifest(target["code"]))
+                    # 与发布路径相同的目标语义：迁移看到的是目标代码与已核对的发行版状态，不按运行态重读旧归属。
+                    runner.replacement_sources = tuple(candidate[item["plugin_id"]] for item in extra_targets)
+                    runner.distribution_state = available
                 _require_preset_rows(candidate=candidate, workspace=workspace, distribution=distribution)
             try:
                 check_pending_publication(workspace)
@@ -1193,20 +1290,102 @@ def ensure_bundle(
                         "recovery_pending": True}
             with measure("inputs.migrations"):
                 runner.run_under_maintenance(maintenance)
-            with measure("inputs.prepare"):
-                new_components = _prepare_distribution_inputs(
-                    available=available, candidate=candidate, selected=selected,
-                    distribution=distribution, workspace=workspace, plugins_home=plugins_home, selection=selection,
-                )
-            # 空组合也必须提交，首次启动不能重新发现并启用全部制品。
-            new_root = expected
-            if expected is None or new_components != components:
-                new_root = selection.commit(new_components, expected_ref=expected)
+            # 补装的安装、输入准备与选择提交是一个单元：恢复点先落盘（进程死亡后下次启动先还原），
+            # 失败时按选择的落盘事实决定是否还原，不能留下"指针已推进、选择未提交"或"选择已提交、制品被删"。
+            restore_file = _save_extra_restore(workspace, plugins_home, extra_targets, expected)
+            try:
+                _install_targets(extra_targets, workspace=workspace, plugins_home=plugins_home, selection=selection,
+                                 selected=selected, candidate=candidate)
+                with measure("inputs.prepare"):
+                    new_components = _prepare_distribution_inputs(
+                        available=available, candidate=candidate, selected=selected,
+                        distribution=distribution, workspace=workspace, plugins_home=plugins_home, selection=selection,
+                    )
+                # 空组合也必须提交，首次启动不能重新发现并启用全部制品。
+                new_root = expected
+                final_adoption, replace = _final_adoption(
+                    selection, None, {item["plugin_id"] for item in extra_targets if item["kind"] != "upgrade"})
+                if expected is None or new_components != components or replace:
+                    new_root = _commit_selection(selection, new_components, expected, final_adoption, replace)
+            except BaseException:
+                if extra_targets and PluginSelection(workspace).read() == expected:
+                    restore_state(json.loads(cast(Path, restore_file).read_text(encoding="utf-8"))["state"])
+                if restore_file is not None:
+                    restore_file.unlink(missing_ok=True)
+                raise
+            if restore_file is not None:
+                restore_file.unlink(missing_ok=True)
             return {**receipt, "status": "existing", "new_root_ref": new_root}
         finally:
             publication.release()
     finally:
+        shutil.rmtree(extra_root, ignore_errors=True)
         maintenance.release()
+
+
+_EXTRA_RESTORE = "runtime/extra-install-restore.json"
+
+
+# 启动补装的耐久恢复点：第一笔可见安装写入之前落盘，附带选择基线；没有补装目标时不写。
+def _save_extra_restore(
+    workspace: Path, plugins_home: Path, targets: list[dict[str, Any]], base_root: str | None,
+) -> Path | None:
+    if not targets:
+        return None
+    path = workspace / _EXTRA_RESTORE
+    write_json(path, {"base_root_ref": base_root,
+                      "state": capture_state(workspace, plugins_home, [item["plugin_id"] for item in targets])})
+    return path
+
+
+# 上次补装进程死在安装之后、选择提交之前：选择仍是基线就先还原插件状态，选择已前进说明已提交，只清理恢复点。
+def _recover_extra_install(workspace: Path) -> None:
+    path = workspace / _EXTRA_RESTORE
+    if not path.exists():
+        return
+    document = json.loads(path.read_text(encoding="utf-8"))
+    if PluginSelection(workspace).read() == document["base_root_ref"]:
+        restore_state(document["state"])
+    path.unlink()
+
+
+# 选择提交；写入结果不确定时按落盘事实判断（与换来源一致）：基线已变说明新选择已发布，视为已提交。
+def _commit_selection(
+    selection: PluginSelection, components: tuple[str, ...], expected: str | None,
+    adoption: Mapping[str, object] | None, replace: bool,
+) -> str:
+    try:
+        return selection.commit(components, expected_ref=expected, distribution_adoption=adoption,
+                                replace_adoption=replace)
+    except SelectionWriteError as error:
+        if error.outcome == "uncertain" and error.observed_ref not in (None, expected):
+            return cast(str, error.observed_ref)
+        raise
+
+
+# 首装与启动时补装的第一步：preset 启用、发行版不再自带的插件从 extra 取代码并核对（只补缺口，不升级）。
+# 只在 root 下固定 bundle 与代码，不写 cache、选择或 patch；联网失败直接停止，并说明怎么用预先下载好的输入目录。
+def _stage_missing_from_extra(
+    *, distribution: Path, workspace: Path, plugins_home: Path, selection: PluginSelection, expected: str | None,
+    repo: str | None, inputs: Path | None, root: Path,
+) -> list[dict[str, Any]]:
+    from scripts.akashic_release.extra import ExtraOptions, prepare_extra_inputs
+
+    options = ExtraOptions(repo=repo, inputs=inputs, pull_images=False, gaps_only=True)
+    try:
+        found = prepare_extra_inputs(workspace=workspace, plugins_home=plugins_home, source=distribution,
+                                     mode=os.environ.get("AKASHIC_PLUGIN_BUNDLE", "base"), root_ref=expected,
+                                     options=options, out=root / "inputs", run=subprocess.run)
+    except (RuntimeError, OSError, subprocess.SubprocessError) as error:
+        raise RuntimeError(
+            f"无法取得 preset 启用但发行版已不再自带的插件（{str(error).splitlines()[0] if str(error) else type(error).__name__}）。请检查网络与 extra 仓库地址"
+            "（AKASHIC_EXTRA_REPO），或用 --extra-inputs 指向预先下载好的输入目录后重试") from error
+    if not found.targets:
+        return []
+    (root / "staged").mkdir()
+    return _stage_deployment_targets(
+        targets=list(found.targets), distribution=distribution, inputs=root / "inputs", staged=root / "staged",
+        expected_root_ref=expected, selection=selection, workspace=workspace, plugins_home=plugins_home)
 
 
 def _write_receipt(path: Path, result: dict[str, Any]) -> None:
@@ -1250,6 +1429,8 @@ def main() -> None:
     parser.add_argument("--inputs", type=Path)
     parser.add_argument("--preflight-only", action="store_true")
     parser.add_argument("--closed-boot", help=argparse.SUPPRESS)
+    parser.add_argument("--extra-repo", help="--ensure-bundle：preset 启用而发行版已不再自带的插件从该 extra 仓库补装")
+    parser.add_argument("--extra-inputs", type=Path, help="--ensure-bundle：预先下载好的 extra 输入目录（不联网）")
     args = parser.parse_args()
 
     if sum((args.verify_only, args.ensure_bundle, args.publish)) > 1:
@@ -1291,6 +1472,8 @@ def main() -> None:
                     plugins_home=args.plugins_home,
                     config_path=args.config,
                     receipt_path=args.receipt,
+                    extra_repo=args.extra_repo,
+                    extra_inputs=args.extra_inputs,
                 )
         else:
             result = install_bundle(

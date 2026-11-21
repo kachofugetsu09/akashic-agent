@@ -20,6 +20,7 @@ from agent.plugins.selection import PluginSelection, SelectionFormatError
 from agent.plugins.source_resolver import ResolvedPluginSource, resolve_plugin_sources
 from agent.plugins.static_manifest import load_static_plugin_manifest, read_only_manifest_facts
 
+
 @dataclass(frozen=True)
 class InstalledPackage:
     plugin_id: str

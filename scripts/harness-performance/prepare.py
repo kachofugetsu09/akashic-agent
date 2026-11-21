@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import inspect
 import os
 import shutil
 import subprocess
@@ -67,6 +68,16 @@ def build_distribution(side: Side) -> None:
                         "--distribution", str(side.distribution)], cwd=side.root, env=env, check=True)
 
 
+# 基线一侧可能是尚未支持补装的旧提交：只在该侧的 ensure_bundle 认识 extra_repo 时才传。
+# CI 环境联网取 extra 仓库（AKASHIC_EXTRA_REPO 可改地址）；发行版没有缺口时不联网。
+def _extra_arguments(ensure_bundle: Any) -> dict[str, str]:
+    if "extra_repo" not in inspect.signature(ensure_bundle).parameters:
+        return {}
+    from agent.plugins.extra_repo import resolve_repo
+
+    return {"extra_repo": resolve_repo(None)}
+
+
 # 只通过正式安装链与模型设置命令写入状态，不直接改数据库。
 async def install_and_configure(side: Side) -> None:
     from agent.config import Config
@@ -84,7 +95,7 @@ async def install_and_configure(side: Side) -> None:
     save_config(workspace / "plugin-data/reply-release", {"max_steps": 0})
     _ = ensure_bundle(side.distribution, side.distribution / "bundles/base.toml", workspace=workspace,
                       plugins_home=side.state / "home", config_path=config,
-                      receipt_path=workspace / "runtime/distribution-install.json")
+                      receipt_path=workspace / "runtime/distribution-install.json", **_extra_arguments(ensure_bundle))
 
     # 2. 启动一次运行时，经 models/command 注册 mock 连接、模型与默认角色。
     app = AppRuntime(Config.load(config, workspace=workspace), workspace)

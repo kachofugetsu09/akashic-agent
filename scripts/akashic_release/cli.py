@@ -149,6 +149,15 @@ def preset_diff(args: argparse.Namespace) -> dict[str, object]:
     return {"status": "ok", "preset": str(checkout / "bundles"), **groups, "notShipped": missing}
 
 
+def restore_state(args: argparse.Namespace) -> dict[str, object]:
+    from scripts.akashic_release.activate import restore_state as restore
+
+    paths = ReleasePaths(args.root.resolve(strict=True))
+    with release_lock(paths.run / "release.lock"):
+        restore(paths=paths, attempt_path=args.attempt)
+    return {"status": "restored", "attempt": str(args.attempt)}
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="akashic-release")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -171,6 +180,10 @@ def _parser() -> argparse.ArgumentParser:
     install_parser.add_argument("--plan", type=Path, help="显式外置插件目标；省略时更新 Core/Bridge 与内置 preset，并先执行必要内置迁移")
     install_parser.add_argument("--inputs", type=Path, help="清单引用的 bundle/wheels 目录")
     install_parser.add_argument("--backup", action="store_true", help="停止期备份 state 和 runtime.env；默认不备份")
+    install_parser.add_argument("--no-extra", action="store_true", help="不在停机前联网求 extra 插件（首装、换来源、升级）")
+    install_parser.add_argument("--extra-repo", help="extra 仓库地址，默认取 AKASHIC_EXTRA_REPO 或内置常量")
+    install_parser.add_argument("--extra-inputs", type=Path,
+                                help="预先下载好的 extra 输入目录（此前联网部署留下的 .inputs 目录），不联网")
     install_parser.set_defaults(handler=install)
 
     doctor_parser = subparsers.add_parser("doctor")
@@ -180,15 +193,16 @@ def _parser() -> argparse.ArgumentParser:
     resume_parser = subparsers.add_parser("resume", help="只重试已发布版本的启动和验收")
     resume_parser.add_argument("--root", type=Path, default=_DEFAULT_ROOT)
     resume_parser.add_argument("--runtime-env", type=Path, default=_DEFAULT_ENV)
-    install_parser.add_argument("--no-extra", action="store_true", help="不在停机前联网求 extra 插件（首装、换来源、升级）")
-    install_parser.add_argument("--extra-repo", help="extra 仓库地址，默认取 AKASHIC_EXTRA_REPO 或内置常量")
-    install_parser.add_argument("--extra-inputs", type=Path,
-                                help="预先下载好的 extra 输入目录（此前联网部署留下的 .inputs 目录），不联网")
     resume_parser.add_argument("--mise", type=Path, default=_DEFAULT_MISE)
     resume_parser.add_argument("--attempt", type=Path, required=True)
     resume_parser.add_argument("--unit-root", type=Path, default=Path("/etc/systemd/system"))
     resume_parser.add_argument("--cli-path", type=Path, default=Path.home() / ".local/bin/akashic-release")
     resume_parser.set_defaults(handler=resume)
+
+    restore_parser = subparsers.add_parser("restore-state", help="按部署回执里的恢复点还原选择、patch 与插件 cache 指针（先停服务）")
+    restore_parser.add_argument("--root", type=Path, default=_DEFAULT_ROOT)
+    restore_parser.add_argument("--attempt", type=Path, required=True, help="部署回执（deploy-*.json），含恢复点与发布结果")
+    restore_parser.set_defaults(handler=restore_state)
 
     migrate_parser = subparsers.add_parser("migrate")
     migrate_parser.add_argument("--snapshot-manifest", type=Path, required=True)

@@ -16,7 +16,11 @@ parse_args() {
                 [ "$#" -ge 2 ] || { echo "$1 requires a value" >&2; exit 2; }
                 shift 2
                 ;;
-            --yes|--no-activate|--backup) shift ;;
+            --extra-repo|--extra-inputs)
+                [ "$#" -ge 2 ] || { echo "$1 requires a value" >&2; exit 2; }
+                shift 2
+                ;;
+            --yes|--no-activate|--backup|--no-extra) shift ;;
             *) echo "unsupported bootstrap argument: $1" >&2; exit 2 ;;
         esac
     done

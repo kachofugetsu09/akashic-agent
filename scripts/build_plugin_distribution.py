@@ -44,6 +44,11 @@ CORE_PATHS = (
     "scripts/install_plugin_distribution.py",
     "scripts/distribution_runtime.py",
     "scripts/start.py",
+    "scripts/akashic_release/__init__.py",
+    "scripts/akashic_release/extra.py",
+    "scripts/akashic_release/manifest.py",
+    "scripts/akashic_release/model.py",
+    "scripts/akashic_release/snapshot.py",
     "docker/host-runtime",
 )
 
