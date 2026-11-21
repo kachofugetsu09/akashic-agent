@@ -1,9 +1,11 @@
 import "./styles.css";
 import { initializeTheme, startCrossPortThemeSync } from "../../../../../packages/akashic-theme/src/theme-runtime";
 import { WebHostUnauthorizedError, loginRedirectUrl, startWebHost } from "./webHost";
+import { startClientDiagnostics } from "./client-diagnostics";
 
 initializeTheme();
 startCrossPortThemeSync();
+startClientDiagnostics();
 
 const root = document.getElementById("root");
 if (!(root instanceof HTMLElement)) throw new Error("Dashboard root is missing");
