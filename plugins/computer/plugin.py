@@ -165,10 +165,12 @@ inject = (UI,
 workspace_roots = ()
 workspace_files = ()
 
-_IMAGE = (
+# 静态声明供安装侧不执行插件就能预拉镜像；运行时注册的镜像必须与它一致。
+images = (
     "ghcr.io/kachofugetsu09/akashic-computer@"
-    "sha256:dd107c74c91d5778ebdc130f1c26828638f8c53e142c69771f4feb858b67f054"
+    "sha256:dd107c74c91d5778ebdc130f1c26828638f8c53e142c69771f4feb858b67f054",
 )
+_IMAGE = images[0]
 
 
 class _ComputerTool:
@@ -379,26 +381,26 @@ async def apply(ctx: Context) -> None:
 
 async def _register_workload(ctx: Context):
     """取得持久 source-driver Workload 句柄，再供 MCP 借用。"""
-    return await ctx.require(WORKLOADS).register(
-        ctx,
-        Workload(
-            name="computer",
-            image=_IMAGE,
-            command=("/opt/computer/start.sh",),
-            ports=(
-                WorkloadPort("gateway", 8080),
-                WorkloadPort("stream", 6081),
-                WorkloadPort("opencli", 19826, loopback=19825),
-                WorkloadPort("spaces", 19827, loopback=19827),
-            ),
-            data=(WorkloadData("state", "/data"),),
-            health=WorkloadHealth("gateway", "/health", 90.0),
-            limits=WorkloadLimits(0, 0.0, 0),
-            user_namespaces=True,
-            udp_ports=(MEDIA_PORT,),
-            host_egress=True,
+    workload = Workload(
+        name="computer",
+        image=_IMAGE,
+        command=("/opt/computer/start.sh",),
+        ports=(
+            WorkloadPort("gateway", 8080),
+            WorkloadPort("stream", 6081),
+            WorkloadPort("opencli", 19826, loopback=19825),
+            WorkloadPort("spaces", 19827, loopback=19827),
         ),
+        data=(WorkloadData("state", "/data"),),
+        health=WorkloadHealth("gateway", "/health", 90.0),
+        limits=WorkloadLimits(0, 0.0, 0),
+        user_namespaces=True,
+        udp_ports=(MEDIA_PORT,),
+        host_egress=True,
     )
+    if workload.image not in images:
+        raise RuntimeError("computer 注册的镜像不在静态 images 声明中")
+    return await ctx.require(WORKLOADS).register(ctx, workload)
 
 
 async def _start_follower(ctx: Context) -> None:
