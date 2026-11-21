@@ -16,7 +16,9 @@ from typing import cast
 
 from agent.plugins.artifacts import read_pointers, resolve_pointer
 from agent.plugins.manifest import workspace_plugin_data_dir
-from agent.plugins.source_resolver import ResolvedPluginSource
+from agent.plugins.source_resolver import ResolvedPluginSource, scan_plugin_sources
+from agent.plugins.bundles import plugin_choices
+from agent.plugins.installed_adoption import plan_installed_adoption
 from agent.plugins.selection import PluginSelection, SelectionConflictError
 from agent.plugins.static_manifest import load_static_plugin_manifest
 from agent.plugins.files import encode_tree, tree_entries
@@ -321,3 +323,49 @@ def distribution_migration_sources(
                 continue
             raise SelectionConflictError(f"已选外置输入占用内置数据身份，停止迁移: {plugin_id}")
     return sources
+
+
+# 发行版声明的 marketplace；迁出的插件沿用它做身份命名空间，也是迁移可信的唯一判据。
+def distribution_marketplace(distribution: Path) -> str:
+    return cast(str, json.loads((distribution / "distribution.json").read_text())["marketplace"])
+
+
+# 启动时运行时将采用的官方已装插件代码（与 Manager 同一份采用规则）；迁移因此读到新制品而非选择里的旧代码。
+def official_installed_sources(
+    workspace: Path, plugins_home: Path, distribution: Path, available: DistributionSources,
+    *, exclude_ids: frozenset[str] = frozenset(),
+) -> tuple[ResolvedPluginSource, ...]:
+    # 1. 与 Manager 相同的输入：当前选择、制品扫描结果和启停选择；发行版来源由调用方按其阶段的语义给出。
+    selection = PluginSelection(workspace)
+    root = selection.read() if selection.path.exists() else None
+    scan = scan_plugin_sources(
+        installed_cache_root=plugins_home / "cache", fixed_sources=available.sources,
+        ignored_installed_roots=available.ignored_installed_roots,
+    )
+    records = () if root is None else tuple((ref, selection.read_input(ref)) for ref in selection.components(root))
+    steps = plan_installed_adoption(
+        records,
+        {f"{item.plugin_name}@{item.marketplace}": item.plugin_root
+         for item in scan.sources if item.source_type == "installed"},
+        plugin_choices(workspace, distribution),
+        frozenset(item.source_root for item in scan.failures
+                  if item.source_type == "installed" and item.phase == "identity"),
+    )
+    # 2. 只取官方 marketplace、不与发行版或本次替换目标重名、会有代码可读的已装输入。
+    marketplace = distribution_marketplace(distribution)
+    builtin_ids = {f"{item.plugin_name}@{item.marketplace}" for item in available.sources}
+    result: list[ResolvedPluginSource] = []
+    for step in steps:
+        name, _, owner = step.plugin_id.partition("@")
+        if (step.code is None or not step.installed or owner != marketplace
+                or step.plugin_id in builtin_ids | exclude_ids):
+            continue
+        result.append(ResolvedPluginSource(step.code, "installed", owner, name, load_static_plugin_manifest(step.code)))
+    # 3. 迁移不受启停与选择裁剪：cache 当前指针上的其余官方已装制品（停用、未入选择）也要迁移。
+    covered = {f"{item.plugin_name}@{item.marketplace}" for item in result}
+    for item in scan.sources:
+        plugin_id = f"{item.plugin_name}@{item.marketplace}"
+        if (item.source_type == "installed" and item.marketplace == marketplace
+                and plugin_id not in covered | builtin_ids | exclude_ids):
+            result.append(item)
+    return tuple(result)

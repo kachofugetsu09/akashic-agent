@@ -15,6 +15,7 @@ from uuid import uuid4
 from agent.plugins.python_environment import ENVIRONMENT_FILE, OfflineWheels, PythonEnvironments
 from agent.plugins.reload_journal import ReloadJournal
 from agent.plugins.distribution_sources import distribution_plugin_sources, read_distribution_adoption
+from agent.plugins.source_resolver import ResolvedPluginSource
 from agent.plugins.files import sync_directory
 from agent.plugins.input_preparation import check_plugin_source, read_initial_config
 
@@ -136,6 +137,7 @@ def install_git_plugin(
     offline_wheels: OfflineWheels | None = None,
     reserved_ids: frozenset[str] = frozenset(),
     takeover: frozenset[str] = frozenset(),
+    reject_pending_migrations: bool = False,
 ) -> PluginInstallResult:
     home = (plugins_home or plugins_root()).resolve(strict=False)
     journal = ReloadJournal(workspace)
@@ -197,6 +199,9 @@ def install_git_plugin(
             takeover=takeover,
             source=source,
         )
+        # 只有实例运行中的在线调用方要求拒绝；离线安装放行，新迁移由下次启动的 runner 执行。
+        if reject_pending_migrations:
+            _reject_pending_migrations(workspace, clone_root, plugin_name, marketplace)
         plugin_version = _validate_path_segment(
             static_manifest.version,
             "插件 version",
@@ -226,6 +231,19 @@ def install_git_plugin(
             raise
         journal.commit_update(update_id)
     return activation.result
+
+
+# 官方来源的新制品带有未执行迁移时拒绝换代：在线实例不跑迁移，须走停机部署或启动。
+def _reject_pending_migrations(workspace: Path, clone_root: Path, plugin_name: str, marketplace: str) -> None:
+    from agent.migrations.runner import pending_artifact_migrations
+
+    source = ResolvedPluginSource(clone_root, "installed", marketplace, plugin_name)
+    pending = pending_artifact_migrations(workspace, source)
+    if pending:
+        raise ValueError(
+            f"{plugin_name}@{marketplace} 的目标版本带有待执行迁移 {', '.join(pending)}；"
+            "在线安装不执行迁移，请停机后离线安装或走停机部署"
+        )
 
 
 # 默认 preset 的身份不能被外置安装接管；只有 takeover 显式列出的 plugin_id，

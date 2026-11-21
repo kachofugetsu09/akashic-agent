@@ -97,6 +97,7 @@ from agent.plugins.reload_journal import (
 )
 from agent.plugins.scope import CleanupFailure, PluginScope
 from agent.plugins.distribution_sources import is_distribution_input
+from agent.plugins.installed_adoption import plan_installed_adoption
 from agent.plugins.selection import PluginSelection, SelectionConflictError
 from agent.plugins.source_resolver import (
     PluginSourceFailure,
@@ -649,42 +650,28 @@ class PluginManager:
 
     # 启动以磁盘为准：外置安装的当前指针与启停选择覆盖上次应用留下的 selection 输入。
     async def _adopt_installed_inputs(self, selection_ref: str, discovered: list[dict[str, str]]) -> str:
-        # 1. 已选外置输入：停用则移除，制品与当前指针不同则换成当前制品。
+        # 1. 采用规则由共用函数决定，启动迁移读取的候选代码与这里一致。
         choices = plugin_choices(self._workspace, self._distribution.root)
         installed = {_resolve_plugin_id(mod): mod for mod in discovered if mod["source_type"] == "installed"}
         # discovery 读不出的已提交制品：同一插件目录下、但不是当前运行代码的那一份。
-        broken = {failure.source_root for failure in self._source_failures.values()
-                  if failure.source_type == "installed" and failure.phase == "identity"}
+        broken = frozenset(failure.source_root for failure in self._source_failures.values()
+                           if failure.source_type == "installed" and failure.phase == "identity")
+        steps = plan_installed_adoption(
+            tuple((ref, self._selection.read_input(ref)) for ref in self._selection_components(selection_ref)),
+            {plugin_id: Path(mod["plugin_root"]) for plugin_id, mod in installed.items()}, choices, broken,
+        )
         components: list[str] = []
-        selected: set[str] = set()
-        for ref in self._selection_components(selection_ref):
-            record = self._selection.read_input(ref)
-            plugin_id = cast(str, record["plugin_id"])
-            mod = installed.get(plugin_id)
-            selected.add(plugin_id)
-            if record["source_type"] == "installed" and choices.get(plugin_id) is False:
-                continue
-            code = Path(cast(str, record["code"])).resolve()
-            if record["source_type"] == "installed" and mod is None and any(
-                    root.parent == code.parent and root != code for root in broken):
-                # 当前制品内容错误：插件不可用并保留诊断，不自动退回旧制品。
-                continue
-            # cache 缺失时保留原输入，由加载 fail loud，不静默丢掉已启用插件。
-            if record["source_type"] != "installed" or mod is None or (
-                Path(cast(str, record["code"])) == Path(mod["plugin_root"]).resolve()
-            ):
-                components.append(ref)
-            elif (replacement := await self._boot_input(mod, initial=False)) is not None:
-                components.append(replacement)
-        # 2. 已启用但尚未进入 selection 的外置安装，同样按当前制品加入。
-        for plugin_id, mod in sorted(installed.items()):
-            if plugin_id not in selected and choices.get(plugin_id) is True:
-                if (added := await self._boot_input(mod, initial=True)) is not None:
-                    components.append(added)
+        for step in steps:
+            if step.action == "keep" and step.ref is not None:
+                components.append(step.ref)
+            elif step.action in {"replace", "add"}:
+                replacement = await self._boot_input(installed[step.plugin_id], initial=step.action == "add")
+                if replacement is not None:
+                    components.append(replacement)
         if tuple(components) == self._selection_components(selection_ref):
             self._bind_installed_inputs(selection_ref)
             return selection_ref
-        # 3. 一次 CAS 提交按磁盘换代后的完整选择；绑定在提交后补做，崩溃后下次启动仍会补。
+        # 2. 一次 CAS 提交按磁盘换代后的完整选择；绑定在提交后补做，崩溃后下次启动仍会补。
         operation = self._check_operation_commit()
         committed = self._selection.commit(tuple(components), expected_ref=selection_ref)
         operation.committed = committed
@@ -1451,6 +1438,7 @@ class PluginManager:
                     update_id=update_id,
                     reserved_ids=frozenset(f"{item.plugin_name}@{item.marketplace}"
                                            for item in self._distribution.sources),
+                    reject_pending_migrations=True,
                 )
             )
             if install_cancelled:
