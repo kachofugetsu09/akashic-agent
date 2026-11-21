@@ -323,22 +323,29 @@ export function GroupNavigationRow({
   useLayoutEffect(() => {
     const before = previousOpen.current;
     previousOpen.current = open;
+    // 1. 搜索驱动（instant）时无论 open 变没变都先结算在途动画：开合途中进入搜索，遮盖、透明度、位移都不能留。
+    if (instant) {
+      settle(motionRef.current);
+      motionRef.current = [];
+      return;
+    }
     if (before === open) return;
-    // 在途动画先结算：收起途中进入搜索（instant）时，停在终点的遮盖与透明度也要撤掉。
     settle(motionRef.current);
     motionRef.current = [];
-    if (instant) return;
     const host = hostRef.current;
     const disclosure = disclosureRef.current;
     const content = disclosure?.firstElementChild;
     if (!host || !disclosure || !(content instanceof HTMLElement)) return;
     const height = disclosure.getBoundingClientRect().height;
-    const followers = followingInView(host, host.closest(".chat-sidebar__navigation") ?? document.body, height);
+    const boundary = host.closest(".chat-sidebar__navigation") ?? document.body;
+    const followers = followingInView(host, boundary, height);
     if (open) {
       motionRef.current = slideOpen(host, followers, content, height, motionTiming(host, "open"));
       return;
     }
-    const animations = slideClose(host, followers, content, height, motionTiming(host, "close"));
+    // 2. 滚到底时收起，卸载后 scrollTop 会被钳制、整列下移，固定上移 height 的终点对不上：这种情况直接落位。
+    const clamped = boundary.scrollTop + boundary.clientHeight > boundary.scrollHeight - height + 1;
+    const animations = clamped ? [] : slideClose(host, followers, content, height, motionTiming(host, "close"));
     motionRef.current = animations;
     if (!animations.length) setClosing(false);
     else void animations[0].finished.then(() => { if (motionRef.current === animations) setClosing(false); }, () => undefined);
