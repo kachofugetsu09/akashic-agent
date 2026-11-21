@@ -415,9 +415,8 @@ def activate_release(
                              digest=digest, backup_dir=None, preflight=True, run=run)
         if self_deploy is not None and preflight["migration_ids"]:
             raise RuntimeError(f"目标版本有待执行迁移，需由运维发布；原服务继续运行: {preflight['migration_ids']}")
-    rollback = _rollback_point(current=current, selected=selected, preflight=preflight,
-                               snapshot=selection_path.read_text(encoding="utf-8")
-                               if selection_path.exists() else None)
+    can_roll_back = bool(previous and preflight is not None and not preflight["migration_ids"])
+    selection_snapshot: str | None = None
     require_unit_install(checkout=paths.source(target), run=run, unit_root=unit_root, runtime_env=environment_file)
     backup_dir = paths.backups / attempt_path.stem if backup else None
     attempt = activation_receipt(status="pending", target_commit=target, previous_commit=previous)
@@ -425,7 +424,7 @@ def activate_release(
                    attemptPath=str(attempt_path), publication=None,
                    backupDir=None if backup_dir is None else str(backup_dir),
                    planPath=None if root_ref is None else str(fixed_plan),
-                   rollback="eligible" if rollback is not None else "not_eligible",
+                   rollback="eligible" if can_roll_back else "not_eligible",
                    previousActivationSha256=(hashlib.sha256((paths.activation / "active.json").read_bytes()).hexdigest()
                                              if (paths.activation / "active.json").exists() else None))
     write_json(attempt_path, attempt)
@@ -467,6 +466,12 @@ def activate_release(
         if stop_ack is not None:
             from scripts.akashic_release.self_deploy import verify_closed
             verify_closed(stop_ack, current)
+        # 旧 Core 排空后才固定恢复点；预检期间的插件换代仍属于旧版本。
+        if root_ref is not None:
+            stopped_selection = selection_path.read_text(encoding="utf-8")
+            if json.loads(stopped_selection)["root_ref"] != root_ref:
+                raise RuntimeError("预检后插件选择已更新，请基于当前选择重新部署")
+            selection_snapshot = stopped_selection
         attempt["phase"] = "publishing"
         write_json(attempt_path, attempt)
         if root_ref is not None:
@@ -483,46 +488,34 @@ def activate_release(
                           attempt_path=attempt_path, attempt=attempt, run=run, unit_root=unit_root, cli_path=cli_path)
     except BaseException as error:
         _record_failure(paths=paths, attempt_path=attempt_path, attempt=attempt, error=error, run=run)
-        if rollback is None:
+        if not can_roll_back:
             raise RuntimeError(f"部署未完成，保留现场: {attempt_path}; 原因: {error}") from error
-        _recover_previous(paths=paths, environment_file=environment_file, previous=current, point=rollback,
+        _recover_previous(paths=paths, environment_file=environment_file, previous=current, snapshot=selection_snapshot,
                           attempt_path=attempt_path, attempt=attempt, error=error, run=run,
                           unit_root=unit_root, cli_path=cli_path)
     return "activated"
 
 
-# 只有原版本存在、且本次没有待执行迁移时才记录回退点；迁移可能让数据前移，原代码不一定能读。
-def _rollback_point(
-    *, current: Mapping[str, str], selected: Mapping[str, object] | None,
-    preflight: Mapping[str, object] | None, snapshot: str | None,
-) -> dict[str, object] | None:
-    if (not current.get("AKASHIC_RUNTIME_COMMIT") or selected is None or preflight is None
-            or snapshot is None):
-        return None
-    if preflight.get("migration_ids"):
-        return None
-    return {"rootRef": selected["root_ref"], "selection": snapshot}
-
-
-# 选择里的输入记录不能凭 ref 重建，回退写回停机前原文；只在本次发布确实改过时 CAS 改回。
-# 发布在返回前崩溃时回执还没有新 Root；停机期间只有本次发布能写选择，此时接受任意新 Root。
-def _restore_selection(path: Path, point: Mapping[str, object], published: object, publishing: bool) -> None:
-    current = json.loads(path.read_text(encoding="utf-8")).get("root_ref")
-    if current == point["rootRef"]:
+# A stopped publisher can fail after the selection CAS and before returning its receipt.
+def _restore_selection(path: Path, snapshot: str, published: object, publishing: bool) -> None:
+    previous = json.loads(snapshot)["root_ref"]
+    selected = json.loads(path.read_text(encoding="utf-8"))
+    current = selected["root_ref"]
+    if current == previous:
         return
-    if not (current == published or (published is None and publishing)):
+    if current != published and not (publishing and selected["transition"]["base"] == previous):
         raise RuntimeError(f"selection 已被其他写入者改变: {current}")
-    atomic_write(path, str(point["selection"]))
+    atomic_write(path, snapshot)
 
 
 # 部署失败后回到原版本，让自部署失败的 Agent 仍能继续工作；回退本身失败才保留停机现场。
 def _recover_previous(
     *, paths: ReleasePaths, environment_file: Path, previous: Mapping[str, str],
-    point: Mapping[str, object], attempt_path: Path, attempt: dict[str, object],
+    snapshot: str | None, attempt_path: Path, attempt: dict[str, object],
     error: BaseException, run: Run, unit_root: Path, cli_path: Path,
 ) -> None:
     try:
-        _roll_back(paths=paths, environment_file=environment_file, previous=previous, point=point,
+        _roll_back(paths=paths, environment_file=environment_file, previous=previous, snapshot=snapshot,
                    publication=attempt.get("publication"), publishing=attempt.get("phase") == "publishing",
                    run=run, unit_root=unit_root, cli_path=cli_path)
     except BaseException as rollback_error:
@@ -538,13 +531,14 @@ def _recover_previous(
 
 def _roll_back(
     *, paths: ReleasePaths, environment_file: Path, previous: Mapping[str, str],
-    point: Mapping[str, object], publication: object, publishing: bool,
+    snapshot: str | None, publication: object, publishing: bool,
     run: Run, unit_root: Path, cli_path: Path,
 ) -> None:
     # 1. 候选可能已部分启动；先停下，再把选择文件改回停机前的原文。
     stop_runtime(run=run)
     published = publication.get("new_root_ref") if isinstance(publication, dict) else None
-    _restore_selection(paths.state / "workspace/runtime/plugin-stable.json", point, published, publishing)
+    if snapshot is not None:
+        _restore_selection(paths.state / "workspace/runtime/plugin-stable.json", snapshot, published, publishing)
     # 2. 恢复原单元、CLI 与 runtime.env，再按原版本启动并核对健康。
     checkout = paths.source(previous["AKASHIC_RUNTIME_COMMIT"])
     install_units(checkout=checkout, backup_root=None, run=run, unit_root=unit_root, runtime_env=environment_file)
