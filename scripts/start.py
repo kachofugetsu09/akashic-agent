@@ -143,7 +143,8 @@ def prepare_environment(preparation: Preparation, cache: Path, revision: str) ->
 
 
 def prepare_install(preparation: Preparation, core: Path, distribution: Path,
-                    python: Path, state: Path, extra_repo: str, extra_inputs: Path | None = None) -> None:
+                    python: Path, state: Path, extra_repo: str, extra_inputs: Path | None = None,
+                    allow_retire: bool = False) -> None:
     """Initialize only launcher-owned data and retain the installer's existing choices."""
     workspace = state / "workspace"
     config = state / "config.toml"
@@ -187,12 +188,14 @@ def prepare_install(preparation: Preparation, core: Path, distribution: Path,
                "--ensure-bundle", "--receipt", str(receipt), "--extra-repo", extra_repo]
     if extra_inputs is not None:
         command += ["--extra-inputs", str(extra_inputs)]
+    if allow_retire:
+        command.append("--allow-retire")
     try:
         preparation.run(command, cwd=core)
     except RuntimeError as error:
         # 子进程的原因在日志里；补装失败时把"缺哪些包、怎么办"带到终端。
         lines = [line for line in preparation.log.read_text(encoding="utf-8", errors="replace").splitlines()
-                 if "无法取得 preset" in line or "preset 启用的插件没有进入选择" in line]
+                 if "无法取得 preset" in line or "preset 启用的插件没有进入选择" in line or "在用的内置插件" in line]
         raise RuntimeError(f"{error} {lines[-1]}" if lines else str(error)) from error
 
 
@@ -287,6 +290,8 @@ def main() -> int:
     parser.add_argument("--extra-repo", help="extra 插件仓库地址（可为本地路径）；默认取 AKASHIC_EXTRA_REPO 或官方仓库")
     parser.add_argument("--extra-inputs", type=Path,
                         help="预先下载好的 extra 输入目录，不联网；用于离线环境和 CI")
+    parser.add_argument("--allow-retire", action="store_true",
+                        help="确认让在用而发行版不再提供、extra 上游也没有的内置插件消失；默认启动失败并列出它们")
     parser.add_argument("--host", default="127.0.0.1",
                         help="监听地址；computer 浏览器经宿主出口访问 localhost，开发实例不需要改它")
     args = parser.parse_args()
@@ -326,7 +331,7 @@ def main() -> int:
                 else:
                     core, distribution, python = prepare_source(preparation, args.cache.expanduser().resolve())
                 prepare_install(preparation, core, distribution, python, state, resolve_repo(args.extra_repo),
-                                args.extra_inputs.resolve() if args.extra_inputs else None)
+                                args.extra_inputs.resolve() if args.extra_inputs else None, args.allow_retire)
             return run_service(preparation, core, python, state, args.port,
                                args.distribution is not None, not args.no_browser, distribution, args.host)
         except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as error:

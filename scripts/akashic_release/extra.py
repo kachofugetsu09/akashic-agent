@@ -253,12 +253,11 @@ def prepare_extra_inputs(
     if not options.gaps_only:
         actions.extend(upgrade_actions(selected, heads(), repo))
     retiring = tuple(gap.plugin_id for gap in gaps if gap.action == "retire")
-    if retiring and not options.gaps_only and not options.allow_retire:
+    if retiring and not options.allow_retire:
         raise RuntimeError("以下在用的内置插件目标发行版不再提供、extra 上游也没有，部署后会消失: "
                            + ", ".join(retiring) + "；确认要移除请加 --allow-retire")
     notes = {"optional": "上游存在，未自动安装", "retired": "已退役，上游不存在", "retire": "将被移除（在用的内置插件，上游不存在）"}
     skipped = tuple((gap.plugin_id, notes[gap.action]) for gap in gaps if gap.action in notes)
-    retiring = () if options.gaps_only else retiring
     if not actions:
         return ExtraResult((), skipped, retiring)
     # 3. 逐个产出输入。

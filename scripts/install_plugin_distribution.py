@@ -865,16 +865,24 @@ def _distribution_candidate(
 
 # 在用的内置输入（选择里的发行版来源输入、仍被启用）若目标发行版不再提供、又没有被换来源，就会随这次发布消失。
 # 必须在清单里显式确认（retire）；手工清单或 --no-extra 漏掉时在预检拦住，不依赖宿主侧。
+def _dropped_inuse(
+    *, selected: Mapping[str, tuple[str, Mapping[str, object], Path]], candidate: Mapping[str, ResolvedPluginSource],
+    workspace: Path, distribution: Path, acknowledged: frozenset[str],
+) -> list[str]:
+    choices = plugin_choices(workspace, distribution)
+    names = {source.plugin_name for source in candidate.values()}
+    return sorted(
+        plugin_id for plugin_id, (_, descriptor, _) in selected.items()
+        if is_distribution_owned(descriptor) and choices.get(plugin_id, False) and plugin_id not in candidate
+        and plugin_id.rpartition("@")[0] not in names and plugin_id not in acknowledged)
+
+
 def _require_inuse_covered(
     *, selected: Mapping[str, tuple[str, Mapping[str, object], Path]], candidate: Mapping[str, ResolvedPluginSource],
     workspace: Path, distribution: Path, acknowledged: frozenset[str],
 ) -> None:
-    choices = plugin_choices(workspace, distribution)
-    names = {source.plugin_name for source in candidate.values()}
-    dropped = sorted(
-        plugin_id for plugin_id, (_, descriptor, _) in selected.items()
-        if is_distribution_owned(descriptor) and choices.get(plugin_id, False) and plugin_id not in candidate
-        and plugin_id.rpartition("@")[0] not in names and plugin_id not in acknowledged)
+    dropped = _dropped_inuse(selected=selected, candidate=candidate, workspace=workspace,
+                             distribution=distribution, acknowledged=acknowledged)
     if dropped:
         raise RuntimeError("在用的内置插件目标发行版不再提供，也没有换来源或被确认移除，发布后会消失: "
                            + ", ".join(dropped) + "。从 extra 换来源，或在清单 retire 里（akashic-release install --allow-retire）确认")
@@ -1234,6 +1242,7 @@ def ensure_bundle(
     receipt_path: Path,
     extra_repo: str | None = None,
     extra_inputs: Path | None = None,
+    allow_retire: bool = False,
 ) -> dict[str, Any]:
     """First-install defaults, then compose the deployed distribution with external inputs.
 
@@ -1296,7 +1305,8 @@ def ensure_bundle(
                     selected = dict(selected)
                     extra_targets = _stage_missing_from_extra(
                         distribution=distribution, workspace=workspace, plugins_home=plugins_home, selection=selection,
-                        expected=expected, repo=extra_repo, inputs=extra_inputs, root=extra_root)
+                        expected=expected, repo=extra_repo, inputs=extra_inputs, root=extra_root,
+                        allow_retire=allow_retire)
                     for target in extra_targets:
                         name, marketplace = target["plugin_id"].split("@")
                         candidate[target["plugin_id"]] = ResolvedPluginSource(
@@ -1304,6 +1314,14 @@ def ensure_bundle(
                     # 与发布路径相同的目标语义：迁移看到的是目标代码与已核对的发行版状态，不按运行态重读旧归属。
                     runner.replacement_sources = tuple(candidate[item["plugin_id"]] for item in extra_targets)
                     runner.distribution_state = available
+                # 与部署同一实现：在用的内置插件若发行版不再提供，要么已换来源，要么必须用 --allow-retire 明确确认，不能静默移出选择。
+                dropped = _dropped_inuse(selected=selected, candidate=candidate, workspace=workspace,
+                                         distribution=distribution, acknowledged=frozenset())
+                if dropped and not allow_retire:
+                    raise RuntimeError("在用的内置插件发行版不再提供，也没有从 extra 换来源，启动后会消失: " + ", ".join(dropped)
+                                       + "。请先放到 extra 仓库（--extra-repo / --extra-inputs），或用 --allow-retire 确认移除")
+                if dropped:
+                    print("将被移除（--allow-retire，在用的内置插件发行版不再提供）: " + ", ".join(dropped), file=sys.stderr, flush=True)
                 _require_preset_rows(candidate=candidate, workspace=workspace, distribution=distribution)
             try:
                 check_pending_publication(workspace)
@@ -1396,16 +1414,18 @@ def _commit_selection(
 # 只在 root 下固定 bundle 与代码，不写 cache、选择或 patch；联网失败直接停止，并说明怎么用预先下载好的输入目录。
 def _stage_missing_from_extra(
     *, distribution: Path, workspace: Path, plugins_home: Path, selection: PluginSelection, expected: str | None,
-    repo: str | None, inputs: Path | None, root: Path,
+    repo: str | None, inputs: Path | None, root: Path, allow_retire: bool = False,
 ) -> list[dict[str, Any]]:
     from scripts.akashic_release.extra import ExtraOptions, prepare_extra_inputs
 
-    options = ExtraOptions(repo=repo, inputs=inputs, pull_images=False, gaps_only=True)
+    options = ExtraOptions(repo=repo, inputs=inputs, pull_images=False, gaps_only=True, allow_retire=allow_retire)
     try:
         found = prepare_extra_inputs(workspace=workspace, plugins_home=plugins_home, source=distribution,
                                      mode=os.environ.get("AKASHIC_PLUGIN_BUNDLE", "base"), root_ref=expected,
                                      options=options, out=root / "inputs", run=subprocess.run)
     except (RuntimeError, OSError, subprocess.SubprocessError) as error:
+        if "--allow-retire" in str(error):
+            raise RuntimeError(str(error)) from error
         raise RuntimeError(
             f"无法取得 preset 启用但发行版已不再自带的插件（{str(error).splitlines()[0] if str(error) else type(error).__name__}）。请检查网络与 extra 仓库地址"
             "（AKASHIC_EXTRA_REPO），或用 --extra-inputs 指向预先下载好的输入目录后重试") from error
@@ -1460,6 +1480,7 @@ def main() -> None:
     parser.add_argument("--closed-boot", help=argparse.SUPPRESS)
     parser.add_argument("--extra-repo", help="--ensure-bundle：preset 启用而发行版已不再自带的插件从该 extra 仓库补装")
     parser.add_argument("--extra-inputs", type=Path, help="--ensure-bundle：预先下载好的 extra 输入目录（不联网）")
+    parser.add_argument("--allow-retire", action="store_true", help="--ensure-bundle：确认让在用而发行版不再提供、上游也没有的内置插件消失")
     args = parser.parse_args()
 
     if sum((args.verify_only, args.ensure_bundle, args.publish)) > 1:
@@ -1503,6 +1524,7 @@ def main() -> None:
                     receipt_path=args.receipt,
                     extra_repo=args.extra_repo,
                     extra_inputs=args.extra_inputs,
+                    allow_retire=args.allow_retire,
                 )
         else:
             result = install_bundle(
