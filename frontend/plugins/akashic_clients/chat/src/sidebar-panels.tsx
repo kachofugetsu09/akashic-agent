@@ -1,6 +1,7 @@
 import { ChevronLeft, LayoutGrid, Maximize2, Minimize2, X } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type RefObject } from "react";
 import { createPortal } from "react-dom";
+import { cssDurationMs } from "./motion";
 import type { SidebarPanelControls, SidebarPanelStatus } from "@akashic/chat-ui-v1";
 
 import { chatPortalRoot } from "./chat-layout";
@@ -252,7 +253,7 @@ const backingOwner = new WeakMap<HTMLElement, Animation>();
 function slideSheetEdge(root: HTMLElement, offset: number): Animation | null {
   const styles = getComputedStyle(root);
   const phase = offset > 0 ? "open" : "close";
-  const duration = cssTimeMs(styles.getPropertyValue(`--ak-sys-duration-${phase}`));
+  const duration = cssDurationMs(styles.getPropertyValue(`--ak-sys-duration-${phase}`));
   if (!(duration > 0)) return null;
   const gap = -offset;
   if (gap > 0) root.style.boxShadow = `0 ${gap / 2 + 24}px 0 ${gap / 2}px ${styles.backgroundColor}, ${styles.boxShadow}`;
@@ -268,14 +269,6 @@ function slideSheetEdge(root: HTMLElement, offset: number): Animation | null {
   animation.addEventListener("finish", release);
   animation.addEventListener("cancel", release);
   return animation;
-}
-
-// 时长 token 的源码写 240ms，生产构建压缩后是 .24s：按单位换算，不能直接 parseFloat。
-function cssTimeMs(value: string): number {
-  const text = value.trim();
-  const amount = Number.parseFloat(text);
-  if (!Number.isFinite(amount)) return 0;
-  return text.endsWith("ms") ? amount : text.endsWith("s") ? amount * 1000 : amount;
 }
 
 // 带遮罩的形态是模态的：Tab 在面板里循环，不落到遮罩后面的会话与输入框。
