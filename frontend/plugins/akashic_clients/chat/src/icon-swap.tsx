@@ -1,11 +1,11 @@
 import type { ReactNode } from "react";
 
 /**
- * 同一个格子里的两枚图标：切到哪一枚，另一枚就缩小、模糊着让位。
+ * 同一个格子里的两枚图标：切到哪一枚，另一枚就缩小、淡出让位。
  *
  * 两枚都常驻 DOM 并叠在同一个 grid 单元，所以切换过程不改变按钮尺寸，
  * 也不会把控件移出 Tab 序。样式在 styles.css 的 .icon-swap，只动
- * transform / opacity / filter，不参与布局。
+ * scale / opacity，不参与布局。
  */
 export function IconSwap({ state, a, b }: { state: boolean; a: ReactNode; b: ReactNode }) {
   return (

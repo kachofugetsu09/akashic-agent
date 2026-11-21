@@ -273,5 +273,5 @@
 
 @media (prefers-reduced-motion: reduce) {
   .sidebar-panels,
-  .sidebar-panels-scrim { transition: none; filter: none; }
+  .sidebar-panels-scrim { transition: none; }
 }

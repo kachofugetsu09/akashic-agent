@@ -226,12 +226,16 @@ function useSheetHeightFlip(rootRef: RefObject<HTMLDivElement | null>, sheet: bo
     }
     // 2. 进行中的滑动按当前位移折进起点。
     const carried = running ? new DOMMatrixReadOnly(getComputedStyle(root).transform).m42 : 0;
+    // 3. cancel 事件异步才到：垫层在这里同步撤掉，新一轮读到的是 CSS 本来的阴影。
     running?.cancel();
+    root.style.boxShadow = "";
     const offset = previous ? height - previous.height + carried : 0;
     last.current = { height, animation: Math.abs(offset) >= 1 ? slideSheetEdge(root, offset) : null };
   }, [rootRef, sheet, open, shape]);
   useEffect(() => () => { last.current?.animation?.cancel(); }, []);
 }
+
+const backingOwner = new WeakMap<HTMLElement, Animation>();
 
 // 抽屉贴着视口底：变高时从下压 offset 处升上来，变矮时从上提处落下；
 // 变矮那段抽屉底下会露出一截，用一层画死的纸色投影垫住（静态，不参与动画），结束即撤。
@@ -245,7 +249,13 @@ function slideSheetEdge(root: HTMLElement, offset: number): Animation | null {
   if (gap > 0) root.style.boxShadow = `0 ${gap / 2 + 24}px 0 ${gap / 2}px ${styles.backgroundColor}, ${styles.boxShadow}`;
   const animation = root.animate([{ transform: `translateY(${offset}px)` }, { transform: "translateY(0)" }],
     { duration, easing: styles.getPropertyValue(`--ak-sys-motion-${phase}`).trim() || "ease" });
-  const release = () => { root.style.boxShadow = ""; };
+  if (gap > 0) backingOwner.set(root, animation);
+  // 被打断的旧动画晚到的 cancel 不能撤掉新一轮的垫层：只有垫层的主人能撤。
+  const release = () => {
+    if (backingOwner.get(root) !== animation) return;
+    backingOwner.delete(root);
+    root.style.boxShadow = "";
+  };
   animation.addEventListener("finish", release);
   animation.addEventListener("cancel", release);
   return animation;
