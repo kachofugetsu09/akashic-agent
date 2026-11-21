@@ -884,6 +884,12 @@ class PluginManager:
         self._require_ingress(generation)
         try:
             await self._load_selected_generation(generation)
+            # Validate this plugin's path declarations before handing it to the live Root.
+            plugin = cast(ComposablePlugin, generation.instance)
+            for name in plugin.workspace_roots:
+                _ = resolve_declared_workspace_root(self._workspace, name)
+            for name in plugin.workspace_files:
+                _ = resolve_declared_workspace_file(self._workspace, name)
         except Exception as error:
             if generation.fiber is not None:
                 raise RuntimeError(
@@ -2312,10 +2318,6 @@ class PluginManager:
 
         plugin = cast(ComposablePlugin, generation.instance)
         workspace = self._workspace
-        for name in plugin.workspace_roots:
-            _ = resolve_declared_workspace_root(workspace, name)
-        for name in plugin.workspace_files:
-            _ = resolve_declared_workspace_file(workspace, name)
         try:
             generation.fiber = await root._mount_module(  # pyright: ignore[reportPrivateUsage]
                 plugin.apply,
