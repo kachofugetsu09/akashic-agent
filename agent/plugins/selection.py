@@ -131,7 +131,8 @@ class PluginSelection:
         return None
 
     def commit(self, components: tuple[str, ...], *, expected_ref: str | None,
-               distribution_adoption: Mapping[str, object] | None = None) -> str:
+               distribution_adoption: Mapping[str, object] | None = None,
+               replace_adoption: bool = False) -> str:
         """CAS 提交完整当前组合，旧选择文件由新选择替换。"""
         # 1. 构造方持有唯一 writer，输入来自实际安装或本次准备。
         _reference(expected_ref, nullable=True)
@@ -144,7 +145,10 @@ class PluginSelection:
             raise SelectionFormatError("完整选择不能重复包含插件身份")
         assert self._current is not None
         previous = cast(Mapping[str, object] | None, self._current["distribution_adoption"])
-        if distribution_adoption is None:
+        # replace_adoption：换来源时同一次提交改写（含清空）归属凭证；默认语义不变。
+        if replace_adoption:
+            pass
+        elif distribution_adoption is None:
             distribution_adoption = previous
         elif previous is not None and freeze_json(distribution_adoption) != previous:
             raise SelectionConflictError("历史归属已经转换，不能覆盖凭证")

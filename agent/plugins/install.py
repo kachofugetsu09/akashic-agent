@@ -246,6 +246,12 @@ def _reject_pending_migrations(workspace: Path, clone_root: Path, plugin_name: s
         )
 
 
+# 把 artifact 的 origin 改成真实上游地址；artifact 内容摘要不含 .git，不影响身份。
+# 地址按 same_origin 的口径写入（去首尾空白与末尾 /），pkg 才会把它判成同一来源。
+def set_artifact_origin(artifact: Path, upstream: str) -> None:
+    _ = _run_git(["remote", "set-url", "origin", "--", upstream.strip().rstrip("/")], cwd=artifact)
+
+
 # 默认 preset 的身份不能被外置安装接管；只有 takeover 显式列出的 plugin_id，
 # 或已是已安装来源的同源升级放行。
 def _reject_takeover(
