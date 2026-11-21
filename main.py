@@ -141,7 +141,7 @@ def _run_lightweight_command() -> bool:
             while flag in pkg_args:
                 index = pkg_args.index(flag)
                 del pkg_args[index:index + 2]
-        raise SystemExit(pkg_main(pkg_args, workspace=workspace))
+        raise SystemExit(pkg_main(pkg_args, workspace=workspace, config_path=Path(config_path)))
 
     if command == "plugin-install-trusted-batch":
         from agent.plugins.trusted_install import install_trusted_plugin_batch

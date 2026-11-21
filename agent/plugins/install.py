@@ -285,7 +285,7 @@ def _clone_git_source(
             cwd=destination,
         )
         return
-    if re.fullmatch(r"[0-9a-f]{40}", ref_name) and _fetch_sha_shallow(source, destination, ref_name):
+    if re.fullmatch(r"[0-9a-f]{40}", ref_name) and fetch_sha_shallow(source, destination, ref_name):
         return
     _ = _run_git(["clone", "--", source, str(destination)])
     if ref_name:
@@ -294,7 +294,7 @@ def _clone_git_source(
 
 
 # 按 40 位 SHA 浅取单个提交；服务器不允许按 SHA 取时返回 False，由调用方回退到完整克隆。
-def _fetch_sha_shallow(source: str, destination: Path, sha: str) -> bool:
+def fetch_sha_shallow(source: str, destination: Path, sha: str) -> bool:
     # 1. 空仓库加 origin，让 origin.url 与完整克隆一致。
     _ = _run_git(["init", "--quiet"], cwd=destination)
     _ = _run_git(["remote", "add", "origin", "--", source], cwd=destination)

@@ -158,7 +158,8 @@ def read_state(workspace: Path, repo: str) -> _State:
             continue
         plugin_id = _source_id(source)
         installed.add(plugin_id)
-        if plugin_id not in packages:
+        # 发行版已不提供的旧内置输入让位给 cache 里的新安装。
+        if plugin_id not in packages or packages[plugin_id].retired:
             packages[plugin_id] = _package(plugin_id, source.plugin_root, False, repo, False)
     ordered = sorted(packages.values(), key=lambda item: item.plugin_id)
     return _State(ordered, provided, frozenset(installed))
@@ -222,23 +223,28 @@ def _print_sync(rows: list[SyncRow], repo: str, as_json: bool) -> None:
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="pkg", description="包管理器（只读命令）")
+    parser = argparse.ArgumentParser(prog="pkg", description="包管理器")
     common = argparse.ArgumentParser(add_help=False)
     _ = common.add_argument("--repo", help="extra 仓库地址，默认取 AKASHIC_EXTRA_REPO 或内置常量")
     _ = common.add_argument("--json", action="store_true", help="输出 JSON")
     commands = parser.add_subparsers(dest="command", required=True)
     listing = commands.add_parser("list", help="列出已装包", parents=[common])
     _ = listing.add_argument("--remote", action="store_true", help="对比远端 release/* 分支")
-    sync = commands.add_parser("sync", help="求应装集合", parents=[common])
-    _ = sync.add_argument("--dry-run", action="store_true", help="只打印，不做修改（目前必须带）")
+    sync = commands.add_parser("sync", help="安装应装集合", parents=[common])
+    _ = sync.add_argument("--dry-run", action="store_true", help="只打印，不做修改")
+    for name, help_text in (("install", "安装包"), ("upgrade", "升级 extra 来源的包"), ("remove", "卸载包，保留数据")):
+        command = commands.add_parser(name, help=help_text, parents=[common])
+        _ = command.add_argument("names", nargs="*" if name == "upgrade" else "+")
     return parser
 
 
-# 命令入口：参数错误由 argparse 以退出码 2 结束，远端不可达以退出码 1 结束。
-def pkg_main(arguments: list[str], *, workspace: Path) -> int:
+# 命令入口：参数错误由 argparse 以退出码 2 结束；远端不可达或有包失败以退出码 1 结束。
+def pkg_main(arguments: list[str], *, workspace: Path, config_path: Path) -> int:
     options = _parser().parse_args(arguments)
     repo = resolve_repo(cast(str | None, options.repo))
     try:
+        if options.command in {"install", "upgrade", "remove"} or (options.command == "sync" and not options.dry_run):
+            return _run_write(options, workspace, config_path, repo)
         with read_only_manifest_facts():
             return _dispatch(options, workspace, repo)
     except (RuntimeError, subprocess.TimeoutExpired) as error:
@@ -246,13 +252,25 @@ def pkg_main(arguments: list[str], *, workspace: Path) -> int:
         return 1
 
 
+def _run_write(options: argparse.Namespace, workspace: Path, config_path: Path, repo: str) -> int:
+    from agent.plugins.package_ops import run_write
+
+    outcomes = run_write(cast(str, options.command), cast(list[str], getattr(options, "names", [])),
+                         workspace=workspace, config_path=config_path, repo=repo)
+    if options.json:
+        print(json.dumps([asdict(item) for item in outcomes], ensure_ascii=False, indent=2))
+    else:
+        for item in outcomes:
+            print(f"{item.name:<28} {item.result:<17} {item.detail}".rstrip())
+        if not outcomes:
+            print("无需处理")
+    return 1 if any(item.result == "failed" for item in outcomes) else 0
+
+
 def _dispatch(options: argparse.Namespace, workspace: Path, repo: str) -> int:
     if options.command == "list":
         remote = bool(options.remote)
         _print_list(list_rows(read_state(workspace, repo).packages, repo, remote), remote, bool(options.json))
         return 0
-    if not options.dry_run:
-        print("pkg sync 目前只支持 --dry-run", file=sys.stderr)
-        return 2
     _print_sync(sync_rows(workspace, repo), repo, bool(options.json))
     return 0
