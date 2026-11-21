@@ -392,3 +392,17 @@ PR 数量：C1、A1、A2、B1、B2、B3、B4、C2a、C2b，共九个，外加 P1
 - Q8：extra 插件的迁移（P1-X）在迁 `scheduler`、`akasha` 之前单独设计。
 
 身份不变带来的结论：迁出插件的数据目录、ledger owner、Message metadata、preset 行都不需要变。因此数据目录归一化（#2165）不是迁移的前置条件，已搁置；B4 需要的"清除 adoption 条目"语义由 B4 自己实现，换来源沿用旧记录里的 `data_dir`。
+
+## 8. 评审修订（2026-11-22）
+
+以下两点修正前文，实现以这里为准。
+
+**回退必须连同 cache 指针一起恢复（修正 2.8、2.9、2.10）。** `install_git_plugin` 不是只建立不可见制品：它会把 `cache/<marketplace>/<name>` 的 stable/latest 指针发布到新 artifact，并写用户 patch、提交安装恢复点。而部署回退 `_roll_back` 只恢复选择文件、旧单元和 `runtime.env`。换来源后同身份（如 `watch@release`）的 cache 指针指向 extra artifact，旧 Core 又自带这个插件，启动时会因"内置与外置共用数据身份"拒绝。因此：
+
+- 部署在停机时保存的恢复快照，除选择文件外，还要包含本次清单涉及的每个插件的 cache 指针文件和用户 patch；`_roll_back` 一并恢复。
+- 在线 `pkg switch` 在选择 CAS 之前失败时（如新代导入失败），同样要把该插件的 cache 指针和 patch 恢复到切换前。
+- C2b 的验收必须包含：换来源成功后让启动验收失败，回退到旧 Core 能正常启动，选择、cache 指针、patch 与停机前逐字相同。B4 的验收包含导入失败后指针已恢复、重启实例正常。
+
+**artifact 的 origin 要指向真实上游（修正 2.3、2.9）。** 部署走离线 bundle 安装时，clone 的 origin 是临时 bundle 路径，按 origin 判断来源会把这些包识别成 `git:<临时路径>`，`pkg upgrade` 会漏掉它们。因此部署清单的每个条目携带真实上游地址，安装完成后把 artifact 的 `remote.origin.url` 设为该地址；`pkg list` 与 `pkg upgrade` 仍只以 artifact 的 origin 作为唯一的来源表示，不另存状态。C2b 验收包含：经部署安装的 extra 包在 `pkg list` 里来源为 `extra`，随后 `pkg upgrade` 能升级它。
+
+**镜像（修正 2.7）。** controller 里的拉取只是小镜像的兜底，带硬的总期限，到期干净失败；大镜像依赖部署前在宿主预拉。
