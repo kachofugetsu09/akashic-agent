@@ -8,7 +8,9 @@ import json
 import os
 import re
 import sys
-from collections.abc import Mapping
+from collections.abc import Generator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from functools import cache, lru_cache
 from pathlib import Path, PurePosixPath
@@ -296,9 +298,22 @@ def _cached_entrypoints(value: object) -> tuple[tuple[str, str], ...] | None:
     return entries if list(entries) == pairs else None
 
 
+_READ_ONLY_FACTS: ContextVar[bool] = ContextVar("manifest_facts_read_only", default=False)
+
+
+# 只读命令在此作用域内照常读取已有事实，但不创建目录或写入新事实。
+@contextmanager
+def read_only_manifest_facts() -> Generator[None]:
+    token = _READ_ONLY_FACTS.set(True)
+    try:
+        yield
+    finally:
+        _READ_ONLY_FACTS.reset(token)
+
+
 def _write_fact(kind: str, source: str, value: object) -> None:
     path = _fact_path(kind, source)
-    if path is None or sys.dont_write_bytecode:
+    if path is None or sys.dont_write_bytecode or _READ_ONLY_FACTS.get():
         return
     temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     try:

@@ -11,16 +11,15 @@ from pathlib import Path
 from typing import cast
 
 from agent.plugins.bundles import composition_rows
-from agent.plugins.distribution_sources import distribution_plugin_sources
+from agent.plugins.distribution_sources import distribution_sources
 from agent.plugins.manifest import plugins_root
 from agent.plugins.selection import PluginSelection, SelectionFormatError
-from agent.plugins.source_resolver import resolve_plugin_sources
-from agent.plugins.static_manifest import load_static_plugin_manifest
+from agent.plugins.source_resolver import ResolvedPluginSource, resolve_plugin_sources
+from agent.plugins.static_manifest import load_static_plugin_manifest, read_only_manifest_facts
 
 DEFAULT_EXTRA_REPO = "https://github.com/kachofugetsu09/akashic-plugins.git"
 _BRANCH_PREFIX = "refs/heads/release/"
 _GIT_TIMEOUT_S = 60
-_CORE_ROOT = Path(__file__).resolve().parents[2]
 
 
 @dataclass(frozen=True)
@@ -31,6 +30,7 @@ class InstalledPackage:
     source: str
     head: str
     selected: bool
+    retired: bool = False
 
 
 @dataclass(frozen=True)
@@ -40,6 +40,7 @@ class ListRow:
     source: str
     head: str
     selected: bool
+    retired: bool
     status: str
     remote_head: str
 
@@ -103,9 +104,11 @@ def _source_of(artifact: Path, builtin: bool, repo: str) -> str:
     return "extra" if _normalize_repo(origin) == _normalize_repo(repo) else f"git:{origin}"
 
 
-def _package(plugin_id: str, artifact: Path, builtin: bool, repo: str, selected: bool) -> InstalledPackage:
+def _package(plugin_id: str, artifact: Path, builtin: bool, repo: str, selected: bool,
+             retired: bool = False) -> InstalledPackage:
     return InstalledPackage(plugin_id, plugin_id.partition("@")[0], _version_of(artifact),
-                            _source_of(artifact, builtin, repo), _git(artifact, "rev-parse", "HEAD") or "-", selected)
+                            _source_of(artifact, builtin, repo), _git(artifact, "rev-parse", "HEAD") or "-",
+                            selected, retired)
 
 
 # 选择文件缺失（从未启动过的 workspace）等同空选择。
@@ -122,36 +125,50 @@ def _selected_inputs(workspace: Path) -> list[dict[str, object]]:
     return [dict(selection.read_input(identity)) for identity in selection.components(reference)]
 
 
-# 已装包 = 当前选择里的输入，加上 cache 里尚未被选择引用的 artifact。
-def read_installed(workspace: Path, repo: str) -> list[InstalledPackage]:
+# 与 Core 一致：内置来源有 marketplace 时身份是 name@marketplace，否则就是裸 name。
+def _source_id(source: ResolvedPluginSource) -> str:
+    return f"{source.plugin_name}@{source.marketplace}" if source.marketplace else source.plugin_name
+
+
+@dataclass(frozen=True)
+class _State:
+    packages: list[InstalledPackage]
+    provided: frozenset[str]
+    installed: frozenset[str]
+
+
+# 已装包 = 当前选择里的输入，加上 cache 里尚未被选择引用的 artifact；
+# provided 是目标发行版当前自带的身份，installed 是 cache 里可用的外置 artifact 身份。
+def read_state(workspace: Path, repo: str) -> _State:
+    home = plugins_root()
+    distribution = distribution_sources(workspace, home)
+    provided = frozenset(_source_id(source) for source in distribution.sources)
+    ignored = {root.resolve() for root in distribution.ignored_installed_roots}
     packages: dict[str, InstalledPackage] = {}
     for record in _selected_inputs(workspace):
         plugin_id = cast(str, record["plugin_id"])
-        packages[plugin_id] = _package(plugin_id, Path(cast(str, record["code"])),
-                                       record["source_type"] == "builtin", repo, True)
-    for source in resolve_plugin_sources(installed_cache_root=plugins_root() / "cache"):
-        plugin_id = f"{source.plugin_name}@{source.marketplace}"
+        builtin = record["source_type"] == "builtin"
+        retired = builtin and bool(distribution.sources) and plugin_id not in provided
+        packages[plugin_id] = _package(plugin_id, Path(cast(str, record["code"])), builtin, repo, True, retired)
+    installed: set[str] = set()
+    for source in resolve_plugin_sources(installed_cache_root=home / "cache"):
+        if source.plugin_root.resolve() in ignored:
+            continue
+        plugin_id = _source_id(source)
+        installed.add(plugin_id)
         if plugin_id not in packages:
             packages[plugin_id] = _package(plugin_id, source.plugin_root, False, repo, False)
-    return sorted(packages.values(), key=lambda item: item.plugin_id)
+    ordered = sorted(packages.values(), key=lambda item: item.plugin_id)
+    return _State(ordered, provided, frozenset(installed))
 
 
-# 发行版自带的插件名；开发 checkout 没有发行版时取源码树 plugins/。
-def _builtin_names() -> frozenset[str]:
-    configured = os.environ.get("AKASHIC_PLUGIN_DISTRIBUTION")
-    sources = (distribution_plugin_sources(Path(configured)) if configured
-               else resolve_plugin_sources((_CORE_ROOT / "plugins",)))
-    return frozenset(source.plugin_name for source in sources)
-
-
-# 应装集合 = preset 启用的行 - 发行版自带的 - 已装的；没有缺口时不访问网络。
+# 应装集合 = 启用的组合行 - 发行版当前自带的 - cache 里已装的；旧选择里的内置输入不算数。
+# 没有发行版时 Core 只有 patch 行（composition_rows 的既有语义）。
 def sync_rows(workspace: Path, repo: str) -> list[SyncRow]:
-    present = {item.plugin_id for item in read_installed(workspace, repo)}
-    builtin = _builtin_names()
-    configured = os.environ.get("AKASHIC_PLUGIN_DISTRIBUTION")
-    rows = composition_rows(workspace, None if configured else _CORE_ROOT)
-    missing = [row.plugin for row in rows if not row.disabled and row.plugin not in present
-               and row.plugin.partition("@")[0] not in builtin]
+    state = read_state(workspace, repo)
+    present = state.provided | state.installed
+    missing = [row.plugin for row in composition_rows(workspace)
+               if not row.disabled and row.plugin not in present]
     if not missing:
         return []
     heads = list_release_heads(repo)
@@ -169,7 +186,8 @@ def list_rows(packages: list[InstalledPackage], repo: str, remote: bool) -> list
             remote_head = heads.get(item.name, "")
             status = ("removed-upstream" if not remote_head
                       else "current" if remote_head == item.head else "upgradable")
-        rows.append(ListRow(item.plugin_id, item.version, item.source, item.head, item.selected, status, remote_head))
+        rows.append(ListRow(item.plugin_id, item.version, item.source, item.head, item.selected,
+                            item.retired, status, remote_head))
     return rows
 
 
@@ -185,7 +203,8 @@ def _print_list(rows: list[ListRow], remote: bool, as_json: bool) -> None:
         line = f"{row.plugin_id:<32} {row.version:<10} {row.source:<10} {_short(row.head)}"
         if remote:
             line += f"  {row.status} {_short(row.remote_head)}"
-        print(line + ("" if row.selected else "  [已装，未进选择]"))
+        marks = ("" if row.selected else "  [已装，未进选择]") + ("  [发行版已不提供]" if row.retired else "")
+        print(line + marks)
     if not rows:
         print("没有已装的包")
 
@@ -218,15 +237,20 @@ def pkg_main(arguments: list[str], *, workspace: Path) -> int:
     options = _parser().parse_args(arguments)
     repo = resolve_repo(cast(str | None, options.repo))
     try:
-        if options.command == "list":
-            remote = bool(options.remote)
-            _print_list(list_rows(read_installed(workspace, repo), repo, remote), remote, bool(options.json))
-            return 0
-        if not options.dry_run:
-            print("pkg sync 目前只支持 --dry-run", file=sys.stderr)
-            return 2
-        _print_sync(sync_rows(workspace, repo), repo, bool(options.json))
-        return 0
+        with read_only_manifest_facts():
+            return _dispatch(options, workspace, repo)
     except (RuntimeError, subprocess.TimeoutExpired) as error:
         print(str(error), file=sys.stderr)
         return 1
+
+
+def _dispatch(options: argparse.Namespace, workspace: Path, repo: str) -> int:
+    if options.command == "list":
+        remote = bool(options.remote)
+        _print_list(list_rows(read_state(workspace, repo).packages, repo, remote), remote, bool(options.json))
+        return 0
+    if not options.dry_run:
+        print("pkg sync 目前只支持 --dry-run", file=sys.stderr)
+        return 2
+    _print_sync(sync_rows(workspace, repo), repo, bool(options.json))
+    return 0
