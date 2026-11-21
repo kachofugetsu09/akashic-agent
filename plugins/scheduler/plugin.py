@@ -37,7 +37,7 @@ from .inputs import (
     ALL_TOOLS, CONTENT, CONVERSATION_COMPLETE, DELIVERY, DELIVERY_SENDERS, INPUT_ORIGIN,
     TOOL_LOADING_PRESENTATION, TOOLS, CallSource,
 )
-from .contract import SCHEDULER_INSPECTION
+from plugins.runtime_inspection.contract import SCHEDULER_INSPECTION
 from .inspection import SchedulerInspectionProvider
 from .runtime import SchedulerRuntime
 from .schedule import SCHEDULE_MAX_ACTIVE_JOBS
