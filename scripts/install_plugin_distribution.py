@@ -35,6 +35,7 @@ from agent.plugins.files import encode_tree, tree_entries
 from agent.plugin_composition.config_input import CONFIG_INPUT, load_config, save_config
 from agent.migrations.runner import initialize_empty_workspace
 from agent.plugins.artifacts import read_pointers, resolve_pointer
+from agent.plugins.data_dirs import read_recorded_data_dirs, recorded_data_dir
 from agent.plugins.manifest import workspace_plugin_data_dir, ensure_workspace_plugin_data_dir
 from agent.plugins.static_manifest import PluginSourceCompileError, load_static_plugin_manifest
 from agent.plugins.python_environment import ENVIRONMENT_FILE, PythonEnvironments
@@ -168,7 +169,7 @@ def _stage_deployment_targets(
         old_ref, descriptor, old_code = selected[plugin_id]
         name, marketplace = plugin_id.split("@")
         if (descriptor["source_type"] != "installed"
-            or descriptor.get("data_dir") != workspace_plugin_data_dir(workspace, name, marketplace).relative_to(workspace).as_posix()):
+            or not descriptor.get("data_dir")):
             raise SelectionConflictError(f"external target 非已安装输入: {plugin_id}")
         artifact, current_code, current_source = _current_artifact(
             workspace=workspace, plugins_home=plugins_home, plugin_id=plugin_id,
@@ -484,7 +485,8 @@ def _write_plugin_configs(
     for declaration in declarations:
         owner = declaration["owner"]
         config = declaration["config"]
-        data_dir = workspace_plugin_data_dir(workspace, owner, marketplace)
+        data_dir = recorded_data_dir(workspace, f"{owner}@{marketplace}",
+                                     read_recorded_data_dirs(PluginSelection(workspace)))
         config_path = data_dir / CONFIG_INPUT
         _ = load_config(data_dir)
         if config_path.exists():
@@ -739,7 +741,7 @@ def _current_artifact(
     identity = load_static_plugin_manifest(artifact)
     if identity.name != name:
         raise ValueError(f"incomplete_or_drift: artifact 身份不一致: {plugin_id}")
-    data = workspace_plugin_data_dir(workspace, name, marketplace)
+    data = recorded_data_dir(workspace, plugin_id, read_recorded_data_dirs(PluginSelection(workspace)))
     if data.is_symlink() or not data.is_dir():
         raise ValueError(f"incomplete_or_drift: plugin-data 身份无效: {data}")
     return artifact, _code_identity(artifact), _provenance(artifact)
@@ -830,6 +832,7 @@ def _prepare_distribution_inputs(
     distribution: Path, workspace: Path, plugins_home: Path, selection: PluginSelection,
 ) -> tuple[str, ...]:
     """Prepare immutable inputs, then let the caller publish one complete selection."""
+    recorded = read_recorded_data_dirs(selection)
     for row in composition_rows(workspace, distribution):
         if row.config and not row.disabled and row.plugin in candidate:
             name, marketplace = row.plugin.rsplit("@", 1)
@@ -842,13 +845,12 @@ def _prepare_distribution_inputs(
         if not source.distribution_source and old is not None and old[2] == source.plugin_root:
             prepared[plugin_id] = old[0]
             continue
-        data_dir = workspace_plugin_data_dir(workspace, source.plugin_name, source.marketplace)
+        # 已有记录的数据目录原样沿用；新插件用该来源的默认目录。
+        data_dir = recorded_data_dir(workspace, plugin_id, recorded)
         ensure_workspace_plugin_data_dir(data_dir, workspace)
         identity = source.static_manifest
         assert identity is not None
         code, source_commit = source.plugin_root, source.distribution_source
-        if old is not None and old[1]["data_dir"] != data_dir.relative_to(workspace).as_posix():
-            raise SelectionConflictError(f"distribution data identity changed: {plugin_id}")
         # The old immutable input already passed compilation. Reuse only when
         # code, post-migration config, dependencies, and the Core contract match.
         with measure("plugin.input", plugin=plugin_id) as timing:

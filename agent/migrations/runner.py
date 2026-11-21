@@ -25,7 +25,8 @@ from agent.migrations.bundles import (
     validate_pending_requirements,
 )
 from agent.plugins.source_resolver import ResolvedPluginSource
-from agent.plugins.manifest import plugins_root, workspace_plugin_data_dir
+from agent.plugins.data_dirs import read_recorded_data_dirs, recorded_data_dir
+from agent.plugins.manifest import plugins_root
 from agent.plugins.distribution_sources import distribution_migration_sources
 from agent.plugins.reload_journal import check_pending_publication
 from agent.plugins.selection import PluginSelection
@@ -172,11 +173,14 @@ class MigrationRunner:
             os.chmod(self.ledger_path, 0o600)
 
             # 2. 为 Yoyo Python step 绑定明确的安装路径
+            # 已选择的插件以记录里的数据目录为准；未选择的用默认目录。
+            recorded = read_recorded_data_dirs(PluginSelection(self.workspace))
             bundle_data_roots = {
-                bundle.bundle_id: workspace_plugin_data_dir(
+                bundle.bundle_id: recorded_data_dir(
                     self.workspace,
-                    bundle.plugin_name or bundle.bundle_id,
-                    bundle.marketplace or "builtin",
+                    (f"{bundle.plugin_name}@{bundle.marketplace}" if bundle.marketplace
+                     else bundle.plugin_name) or bundle.bundle_id,
+                    recorded,
                 )
                 for bundle in bundles
             }
