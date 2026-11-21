@@ -14,6 +14,7 @@ from scripts.akashic_release.extra import ExtraOptions, ExtraResult, merge_input
 from scripts.akashic_release.doctor import read_environment, release_health_timeout, verify_release
 from scripts.akashic_release.manifest import activation_receipt, atomic_write, read_json, write_json
 from scripts.akashic_release.model import ReleasePaths
+from scripts.akashic_release.snapshot import capture, restore_plugin_state
 from scripts.akashic_release.systemd import install_units, install_operator_entrypoint, require_unit_install
 from scripts.akashic_release.systemd import start_bridge, start_core, stop_runtime
 from scripts.akashic_release.warm import StateCacheWarmer
@@ -398,8 +399,8 @@ def activate_release(
                 if selection_path.exists() or previous is not None else None)
     root_ref = None if selected is None else selected["root_ref"]
     preflight: dict[str, object] | None = None
-    attempt_path = paths.activation / f"deploy-{secrets.token_hex(12)}.json"
     extra_report: dict[str, object] | None = None
+    attempt_path = paths.activation / f"deploy-{secrets.token_hex(12)}.json"
     fixed_plan = attempt_path.with_suffix(".plan.json")
     if root_ref is None:
         if previous is not None or plan is not None:
@@ -434,6 +435,7 @@ def activate_release(
             raise RuntimeError(f"目标版本有待执行迁移，需由运维发布；原服务继续运行: {preflight['migration_ids']}")
     can_roll_back = bool(previous and preflight is not None and not preflight["migration_ids"])
     selection_snapshot: str | None = None
+    snapshot_path: Path | None = None
     require_unit_install(checkout=paths.source(target), run=run, unit_root=unit_root, runtime_env=environment_file)
     backup_dir = paths.backups / attempt_path.stem if backup else None
     attempt = activation_receipt(status="pending", target_commit=target, previous_commit=previous)
@@ -490,6 +492,10 @@ def activate_release(
             if json.loads(stopped_selection)["root_ref"] != root_ref:
                 raise RuntimeError("预检后插件选择已更新，请基于当前选择重新部署")
             selection_snapshot = stopped_selection
+            # 恢复点落盘：选择、patch、清单涉及插件的 cache 指针；进程崩溃后可用 restore-state 还原。
+            snapshot_path = attempt_path.with_suffix(".snapshot.json")
+            capture(paths, [str(item["plugin_id"]) for item in read_json(fixed_plan)["targets"]], snapshot_path)
+            attempt["snapshotPath"] = str(snapshot_path)
         attempt["phase"] = "publishing"
         write_json(attempt_path, attempt)
         if root_ref is not None:
@@ -509,6 +515,7 @@ def activate_release(
         if not can_roll_back:
             raise RuntimeError(f"部署未完成，保留现场: {attempt_path}; 原因: {error}") from error
         _recover_previous(paths=paths, environment_file=environment_file, previous=current, snapshot=selection_snapshot,
+                          snapshot_path=snapshot_path,
                           attempt_path=attempt_path, attempt=attempt, error=error, run=run,
                           unit_root=unit_root, cli_path=cli_path)
     return "activated"
@@ -540,7 +547,9 @@ def _restore_selection(path: Path, snapshot: str, published: object, publishing:
     if current == previous:
         return
     transition = selected["transition"]
+    # 发布成功后新实例启动期间可能又提交过一次选择（base 正是已发布的 Root）；回退的目的就是丢弃它。
     if not ((published is not None and current == published)
+            or (published is not None and transition is not None and transition["base"] == published)
             or (publishing and transition is not None and transition["base"] == previous)):
         raise RuntimeError(f"selection 已被其他写入者改变: {current}")
     atomic_write(path, snapshot)
@@ -550,10 +559,11 @@ def _restore_selection(path: Path, snapshot: str, published: object, publishing:
 def _recover_previous(
     *, paths: ReleasePaths, environment_file: Path, previous: Mapping[str, str],
     snapshot: str | None, attempt_path: Path, attempt: dict[str, object],
-    error: BaseException, run: Run, unit_root: Path, cli_path: Path,
+    error: BaseException, run: Run, unit_root: Path, cli_path: Path, snapshot_path: Path | None = None,
 ) -> None:
     try:
         _roll_back(paths=paths, environment_file=environment_file, previous=previous, snapshot=snapshot,
+                   snapshot_path=snapshot_path,
                    publication=attempt.get("publication"), publishing=attempt.get("phase") == "publishing",
                    run=run, unit_root=unit_root, cli_path=cli_path)
     except BaseException as rollback_error:
@@ -570,13 +580,16 @@ def _recover_previous(
 def _roll_back(
     *, paths: ReleasePaths, environment_file: Path, previous: Mapping[str, str],
     snapshot: str | None, publication: object, publishing: bool,
-    run: Run, unit_root: Path, cli_path: Path,
+    run: Run, unit_root: Path, cli_path: Path, snapshot_path: Path | None = None,
 ) -> None:
     # 1. 候选可能已部分启动；先停下，再把选择文件改回停机前的原文。
     stop_runtime(run=run)
     published = publication.get("new_root_ref") if isinstance(publication, dict) else None
     if snapshot is not None:
         _restore_selection(paths.state / "workspace/runtime/plugin-stable.json", snapshot, published, publishing)
+    # 选择先还原，再还原 patch 与 cache 指针，避免选择引用已被删除的 artifact。
+    if snapshot_path is not None:
+        restore_plugin_state(snapshot_path)
     # 2. 恢复原单元、CLI 与 runtime.env，再按原版本启动并核对健康。
     checkout = paths.source(previous["AKASHIC_RUNTIME_COMMIT"])
     install_units(checkout=checkout, backup_root=None, run=run, unit_root=unit_root, runtime_env=environment_file)
@@ -599,6 +612,19 @@ def _start_core_after_limit(*, run: Run, attempts: int = 18) -> None:
                 raise
             print(f"回退后启动 Core 失败（start-limit），10 秒后重试 {index + 2}/{attempts}", file=sys.stderr, flush=True)
             time.sleep(10)
+
+
+# 崩溃后的手动还原：按部署回执里的恢复点与发布结果还原选择、patch、指针；调用方先停服务。
+def restore_state(*, paths: ReleasePaths, attempt_path: Path) -> None:
+    from scripts.akashic_release.snapshot import snapshot_selection
+
+    attempt = read_json(attempt_path)
+    snapshot = Path(str(attempt["snapshotPath"]))
+    publication = attempt.get("publication")
+    published = publication.get("new_root_ref") if isinstance(publication, dict) else None
+    _restore_selection(paths.state / "workspace/runtime/plugin-stable.json", snapshot_selection(snapshot),
+                       published, attempt.get("phase") == "publishing")
+    restore_plugin_state(snapshot)
 
 
 def resume_release(
