@@ -36,10 +36,10 @@ from agent.plugin_composition.config_input import CONFIG_INPUT, load_config, sav
 from agent.migrations.runner import initialize_empty_workspace
 from agent.plugins.artifacts import read_pointers, resolve_pointer
 from agent.plugins.manifest import workspace_plugin_data_dir, ensure_workspace_plugin_data_dir
-from agent.plugins.static_manifest import load_static_plugin_manifest
+from agent.plugins.static_manifest import PluginSourceCompileError, load_static_plugin_manifest
 from agent.plugins.python_environment import ENVIRONMENT_FILE, PythonEnvironments
 from agent.plugins.python_environment import OfflineWheels, preflight_offline_runtime, wheel_tree_sha256
-from agent.plugins.input_preparation import prepare_plugin_input, PLUGIN_INPUT_API
+from agent.plugins.input_preparation import prepare_plugin_input, PLUGIN_INPUT_API, PluginInitialConfigError
 from agent.plugins.reload_journal import ReloadJournal, PendingPublicationError, check_pending_publication
 from agent.plugins.selection import PluginSelection, SelectionConflictError
 from bootstrap.workspace_lock import PluginPublicationLock, WorkspaceMaintenanceLock
@@ -865,14 +865,21 @@ def _prepare_distribution_inputs(
                 prepared[plugin_id] = old[0]
                 timing.update(reused=True, ref=old[0])
                 continue
-            result = prepare_plugin_input(
-                {"name": source.plugin_name, "marketplace": source.marketplace,
-                 "plugin_root": str(code), "module_path": str(code / "plugin.py"),
-                 "manifest_digest": identity.identity_digest, "source_type": source.source_type,
-                 **({"distribution_source": source_commit, "wheel_tree_sha256": source.wheel_tree_sha256}
-                    if source.distribution_source else {})},
-                workspace=workspace, selection=selection, initial=old is None,
-            )
+            try:
+                result = prepare_plugin_input(
+                    {"name": source.plugin_name, "marketplace": source.marketplace,
+                     "plugin_root": str(code), "module_path": str(code / "plugin.py"),
+                     "manifest_digest": identity.identity_digest, "source_type": source.source_type,
+                     **({"distribution_source": source_commit, "wheel_tree_sha256": source.wheel_tree_sha256}
+                        if source.distribution_source else {})},
+                    workspace=workspace, selection=selection, initial=old is None,
+                )
+            except (PluginSourceCompileError, PluginInitialConfigError) as error:
+                if source.source_type != "installed":
+                    raise
+                # Existing bad artifacts stay installed and enabled for repair through the live manager.
+                print(f"外置插件无法准备输入: {plugin_id}: {error}", file=sys.stderr, flush=True)
+                continue
             timing.update(reused=False, ref=result.input_ref)
         # 停止期已结算配置 owner；读取迁移后的持久输入，也支持迁移成功后的发布重试。
         prepared[plugin_id] = result.input_ref

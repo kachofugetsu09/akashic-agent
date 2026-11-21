@@ -56,6 +56,8 @@ def _verify_selected_runtime(
         or any(not isinstance(ref, str) for ref in components)
         or len(set(components)) != len(components)):
         raise RuntimeError("live runtime 未报告 plugin owner 状态")
+    source_errors = {row["plugin_id"]: row["error_text"] for row in status.get("source_failures", [])
+                     if row["source_type"] == "installed" and row["plugin_id"] is not None}
     active_refs: list[str] = []
     degraded: dict[str, str] = {}
     ready = 0
@@ -65,6 +67,9 @@ def _verify_selected_runtime(
         selected = item.get("selected_ref")
         if selected is not None and not isinstance(selected, str):
             raise RuntimeError("live runtime selected_ref 格式无效")
+        plugin_id = item.get("plugin_id")
+        if selected is None and item.get("enabled") and plugin_id in source_errors:
+            degraded[str(plugin_id)] = str(source_errors[plugin_id])
         if selected is not None and (
             item.get("input_ref") != selected or item.get("state") != "active"
             or item.get("fiber_state") != "active"
@@ -72,7 +77,7 @@ def _verify_selected_runtime(
             # 外置插件坏掉只降级它自己；Core 与内置插件仍须全部就绪，否则 Agent 无法自救。
             if item.get("selected_distribution_source") is not None:
                 raise RuntimeError(f"selected plugin 尚未 ACTIVE: {item.get('plugin_id')}")
-            degraded[str(item.get("plugin_id"))] = str(item.get("load_error") or item.get("state"))
+            degraded[str(item.get("plugin_id"))] = str(item.get("load_error") or item.get("fiber_state") or item.get("state"))
             print(f"外置插件未就绪，Core 照常启动: {item.get('plugin_id')}", file=sys.stderr, flush=True)
             ready -= 1
         if isinstance(selected, str):

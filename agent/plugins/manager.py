@@ -63,12 +63,14 @@ from agent.plugins.importer import FreshPluginImporter
 from agent.plugins.public_contracts import public_contracts
 from agent.plugins.input_preparation import (
     PLUGIN_INPUT_API,
+    PluginInitialConfigError,
     SOURCE_EXCLUDED_NAMES,
     _resolve_plugin_data_dir,
     _resolve_plugin_id,
     _source_revision,
     source_revisions,
     prepare_plugin_input,
+    read_initial_config,
 )
 from agent.plugins.install import (
     _split_installed_plugin_id,
@@ -611,7 +613,11 @@ class PluginManager:
             with measure("plugins.adopt"):
                 selection_ref = await self._adopt_installed_inputs(selection_ref, discovered)
             components = self._selection_components(selection_ref)
-            await self._load_live_initial(components, expected_ref=selection_ref)
+            # A broken enabled guard still closes ingress even if its source could not form an input.
+            choices = plugin_choices(self._workspace, self._distribution.root)
+            guard_required = any(mod["ingress_guard"] == "true" and choices.get(_resolve_plugin_id(mod), False)
+                                 for mod in discovered)
+            await self._load_live_initial(components, expected_ref=selection_ref, guard_required=guard_required)
             return
         enabled = plugin_choices(self._workspace, self._distribution.root)
         selected = tuple(
@@ -706,9 +712,13 @@ class PluginManager:
                 mod, workspace=self._workspace, selection=self._selection, initial=initial,
             ))
         except PluginSourceContentError as error:
-            phase = "compile" if isinstance(error, PluginSourceCompileError) else "identity"
+            phase: Literal["compile", "source", "identity"] = "identity"
+            if isinstance(error, PluginSourceCompileError):
+                phase = "compile"
+            elif isinstance(error, PluginInitialConfigError):
+                phase = "source"
             self._remember_source_failures((self._source_failure_for_error(
-                mod, error, phase=phase, plugin_id=_resolve_plugin_id(mod) if phase == "compile" else None,
+                mod, error, phase=phase, plugin_id=_resolve_plugin_id(mod) if phase != "identity" else None,
             ),))
             return None
         return prepared.input_ref
@@ -744,10 +754,13 @@ class PluginManager:
         *,
         expected_ref: str | None,
         prepared: tuple[PluginGeneration, ...] = (),
+        guard_required: bool = False,
     ) -> None:
         """Build the single formal Root without compiling a snapshot or fallback Root."""
         generation_id = "plugins-live:" + secrets.token_hex(16)
         self._plan_writer = EndpointPlanWriter(self._workspace / "runtime/endpoints.json", generation_id)
+        if guard_required:
+            self._plan_writer.require(GUARD_PROTOCOL)
         root = CompositionRoot(generation_id, endpoint_publisher=self._plan_writer.publish)
         generations: tuple[PluginGeneration, ...] = prepared
         cleanup_generations: tuple[PluginGeneration, ...] = generations
@@ -784,12 +797,10 @@ class PluginManager:
             runnable_items: list[PluginGeneration] = []
             with measure("plugins.import", generations=len(generations)):
                 for generation in generations:
-                    if not (generation.data_dir / CONFIG_INPUT).exists() and generation.config_projection:
-                        save_config(generation.data_dir, generation.config_projection)
                     # 逐插件导入耗时；cpu 远小于 seconds 时是在等 I/O 或事件循环。
                     started, cpu = time.monotonic(), time.thread_time()
                     try:
-                        await self._load_live_generation(generation)
+                        await self._load_live_generation(generation, boot=True)
                     except Exception:
                         await self._retain_pre_fiber_failure(generation)
                         continue
@@ -878,11 +889,17 @@ class PluginManager:
                 and generation.static_manifest.ingress_guard):
             self._plan_writer.require(GUARD_PROTOCOL)
 
-    async def _load_live_generation(self, generation: PluginGeneration) -> None:
+    async def _load_live_generation(self, generation: PluginGeneration, *, boot: bool = False) -> None:
         """Record only live pre-Fiber load failures before normal retention."""
         # 运行中启用或换代守卫插件同样先登记要求；其 apply 失败时入口拒绝而非放行。
         self._require_ingress(generation)
         try:
+            if boot and not (generation.data_dir / CONFIG_INPUT).exists():
+                defaults = read_initial_config(generation.code_dir)
+                if defaults is not None:
+                    generation.config_projection, generation.config_revision = defaults
+                if generation.config_projection:
+                    save_config(generation.data_dir, generation.config_projection)
             await self._load_selected_generation(generation)
             # Validate this plugin's path declarations before handing it to the live Root.
             plugin = cast(ComposablePlugin, generation.instance)
@@ -2236,14 +2253,6 @@ class PluginManager:
             if manifest.name != plugin_id.split("@", 1)[0]:
                 raise ValueError(f"已安装插件身份改变: {plugin_id}")
             projection, config_revision = load_config(data_dir)
-            defaults = code_dir / "initial_config.json"
-            if not (data_dir / CONFIG_INPUT).exists() and defaults.exists():
-                if defaults.is_symlink():
-                    raise ValueError("初始配置不能是符号链接")
-                projection = json.loads(defaults.read_bytes())
-                if not isinstance(projection, dict):
-                    raise ValueError("初始配置必须是映射")
-                config_revision = hashlib.sha256(config_bytes(projection)).hexdigest()
             generation = PluginGeneration(
                 plugin_id=plugin_id, generation_id=generation_id, module_path=module_path,
                 source_revision=revision, config_revision=config_revision,
