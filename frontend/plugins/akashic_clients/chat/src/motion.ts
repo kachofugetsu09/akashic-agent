@@ -50,9 +50,17 @@ export function slideClose(followers: HTMLElement[], content: HTMLElement, heigh
   return animations;
 }
 
+// 每个跟随者当前负责遮盖的动画：上一轮动画的 cancel 事件是异步派发的，不能撤掉新一轮加上的遮盖。
+const coverOwner = new WeakMap<HTMLElement, Animation>();
+
 function coverWhile(element: HTMLElement, animation: Animation): Animation {
+  coverOwner.set(element, animation);
   element.classList.add(COVER_CLASS);
-  const release = () => element.classList.remove(COVER_CLASS);
+  const release = () => {
+    if (coverOwner.get(element) !== animation) return;
+    coverOwner.delete(element);
+    element.classList.remove(COVER_CLASS);
+  };
   animation.addEventListener("finish", () => { if (animation.effect?.getComputedTiming().fill !== "forwards") release(); });
   animation.addEventListener("cancel", release);
   return animation;
