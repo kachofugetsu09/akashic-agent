@@ -38,12 +38,15 @@ class ExtraOptions:
     inputs: Path | None = None
     pull_images: bool = True
     gaps_only: bool = False
+    allow_retire: bool = False
 
 
 @dataclass(frozen=True)
 class ExtraResult:
     targets: tuple[dict[str, object], ...]
     skipped: tuple[tuple[str, str], ...]
+    # 在用的内置插件，发行版不再提供、上游也不存在，部署者已确认让它们消失（写进清单的 retire）。
+    retiring: tuple[str, ...] = ()
 
 
 def _git(*args: str, cwd: Path | None = None) -> str:
@@ -224,8 +227,9 @@ def prepare_extra_inputs(
     installed = frozenset(pid for pid, package in selected.items() if not package.builtin) | cache_installed_ids(
         workspace, plugins_home)
     missing = sorted(enabled - provided_ids(source) - installed)
-    # 启动补装只为 preset 要求的缺口联网；只在 patch 里启用的行（可选或已退役）不是启动的前置条件。
-    if options.gaps_only and not set(missing) & preset:
+    in_use = frozenset(pid for pid, package in selected.items() if package.builtin)
+    # 启动补装只为 preset 要求的缺口和在用的内置插件联网；只在 patch 里启用而没在用的行不是启动的前置条件。
+    if options.gaps_only and not set(missing) & (preset | in_use):
         return ExtraResult((), ())
 
     def heads() -> dict[str, str]:
@@ -238,7 +242,7 @@ def prepare_extra_inputs(
 
     # 2. 缺口分类与 pkg sync 共用；preset 缺失且上游也没有会在这里失败，换来源与首装由旧选择区分。
     gaps = classify_gaps(enabled=sorted(enabled), present=provided_ids(source) | installed, preset=preset,
-                         heads=heads, needs_switch=lambda pid: pid.endswith("@" + MARKETPLACE))
+                         heads=heads, needs_switch=lambda pid: pid.endswith("@" + MARKETPLACE), in_use=in_use)
     actions: list[ExtraAction] = []
     for gap in gaps:
         if gap.action in ("install", "switch"):
@@ -248,14 +252,19 @@ def prepare_extra_inputs(
             actions.append(ExtraAction(kind, gap.plugin_id, heads()[gap.plugin_id.partition("@")[0]]))
     if not options.gaps_only:
         actions.extend(upgrade_actions(selected, heads(), repo))
-    skipped = tuple((gap.plugin_id, "上游存在，未自动安装" if gap.action == "optional" else "已退役，上游不存在")
-                    for gap in gaps if gap.action in ("optional", "retired"))
+    retiring = tuple(gap.plugin_id for gap in gaps if gap.action == "retire")
+    if retiring and not options.gaps_only and not options.allow_retire:
+        raise RuntimeError("以下在用的内置插件目标发行版不再提供、extra 上游也没有，部署后会消失: "
+                           + ", ".join(retiring) + "；确认要移除请加 --allow-retire")
+    notes = {"optional": "上游存在，未自动安装", "retired": "已退役，上游不存在", "retire": "将被移除（在用的内置插件，上游不存在）"}
+    skipped = tuple((gap.plugin_id, notes[gap.action]) for gap in gaps if gap.action in notes)
+    retiring = () if options.gaps_only else retiring
     if not actions:
-        return ExtraResult((), skipped)
+        return ExtraResult((), skipped, retiring)
     # 3. 逐个产出输入。
     out.mkdir(parents=True, exist_ok=True)
     targets = tuple(_produce(action, repo, options, out, run) for action in actions)
-    return ExtraResult(targets, skipped)
+    return ExtraResult(targets, skipped, retiring)
 
 
 # 把额外输入目录并入部署者给的 inputs（硬链接优先），返回供容器只读挂载的目录。

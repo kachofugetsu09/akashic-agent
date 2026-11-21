@@ -93,7 +93,7 @@ def load_deployment_plan(path: Path) -> tuple[str, str, list[dict[str, Any]], di
         raise ValueError("部署清单必须是普通文件")
     raw = path.read_bytes()
     document = json.loads(raw, object_pairs_hook=unique_pairs)
-    if not isinstance(document, dict) or set(document) - {"distribution_adoption"} != {"schema_version", "expected_root_ref", "targets"}:
+    if not isinstance(document, dict) or set(document) - {"distribution_adoption", "retire"} != {"schema_version", "expected_root_ref", "targets"}:
         raise ValueError("部署清单需要 schema_version、expected_root_ref、targets")
     if type(document["schema_version"]) is not int or document["schema_version"] != 1:
         raise ValueError("部署清单 schema_version 错误")
@@ -155,6 +155,16 @@ def _check_target_kind(item: dict[str, Any], *, bundled: bool) -> None:
         raise ValueError(f"target upstream 无效: {item.get('plugin_id')}")
     if not isinstance(images, list) or not all(isinstance(value, str) for value in images):
         raise ValueError(f"target images 无效: {item.get('plugin_id')}")
+
+
+# 清单里部署者确认要随新发行版消失的在用内置插件；缺省为空。
+def plan_retire_ids(path: Path) -> frozenset[str]:
+    value = json.loads(path.read_text(encoding="utf-8")).get("retire", [])
+    if (not isinstance(value, list) or not all(
+            isinstance(item, str) and item.count("@") == 1
+            and all(_PATH_SEGMENT.fullmatch(part) for part in item.split("@")) for item in value)):
+        raise ValueError("部署清单 retire 必须是插件身份数组")
+    return frozenset(value)
 
 
 def _external_path_syntax(relative: object) -> str:
@@ -853,6 +863,23 @@ def _distribution_candidate(
     return available, candidate
 
 
+# 在用的内置输入（选择里的发行版来源输入、仍被启用）若目标发行版不再提供、又没有被换来源，就会随这次发布消失。
+# 必须在清单里显式确认（retire）；手工清单或 --no-extra 漏掉时在预检拦住，不依赖宿主侧。
+def _require_inuse_covered(
+    *, selected: Mapping[str, tuple[str, Mapping[str, object], Path]], candidate: Mapping[str, ResolvedPluginSource],
+    workspace: Path, distribution: Path, acknowledged: frozenset[str],
+) -> None:
+    choices = plugin_choices(workspace, distribution)
+    names = {source.plugin_name for source in candidate.values()}
+    dropped = sorted(
+        plugin_id for plugin_id, (_, descriptor, _) in selected.items()
+        if is_distribution_owned(descriptor) and choices.get(plugin_id, False) and plugin_id not in candidate
+        and plugin_id.rpartition("@")[0] not in names and plugin_id not in acknowledged)
+    if dropped:
+        raise RuntimeError("在用的内置插件目标发行版不再提供，也没有换来源或被确认移除，发布后会消失: "
+                           + ", ".join(dropped) + "。从 extra 换来源，或在清单 retire 里（akashic-release install --allow-retire）确认")
+
+
 # preset 启用的行必须真正进入候选组合，首装和发布都不能静默少装；同名外置覆盖是用户的显式替换。
 def _require_preset_rows(
     *, candidate: Mapping[str, ResolvedPluginSource], workspace: Path, distribution: Path,
@@ -1128,6 +1155,8 @@ def publish_distribution(
                     candidate[plugin_id] = ResolvedPluginSource(code, "installed", marketplace, name,
                                                                load_static_plugin_manifest(code))
                 _require_preset_rows(candidate=candidate, workspace=workspace, distribution=distribution)
+                _require_inuse_covered(selected=selected, candidate=candidate, workspace=workspace,
+                                       distribution=distribution, acknowledged=plan_retire_ids(plan))
                 runner = MigrationRunner(repo_root=_SOURCE_ROOT, config_path=config_path,
                                      plugins_home=plugins_home, bundle_directory=distribution / "bundles",
                                          workspace=workspace, fixed_sources=migration_sources,
