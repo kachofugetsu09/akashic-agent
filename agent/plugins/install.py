@@ -15,6 +15,7 @@ from uuid import uuid4
 from agent.plugins.python_environment import ENVIRONMENT_FILE, OfflineWheels, PythonEnvironments
 from agent.plugins.reload_journal import ReloadJournal
 from agent.plugins.distribution_sources import distribution_plugin_sources, read_distribution_adoption
+from agent.plugins.extra_repo import same_origin as same_origin
 from agent.plugins.source_resolver import ResolvedPluginSource
 from agent.plugins.files import sync_directory
 from agent.plugins.input_preparation import check_plugin_source, read_initial_config
@@ -309,8 +310,7 @@ def is_same_source_upgrade(workspace: Path, plugin_id: str, source: str) -> bool
 
 # 来源地址比较：只去掉首尾空白和末尾斜杠，其余逐字比较。
 # x 与 x.git 在本地路径和 HTTP 服务上都可以是两个不同的仓库，不做会改变含义的归一化。
-def same_origin(left: str, right: str) -> bool:
-    return left.strip().rstrip("/") == right.strip().rstrip("/")
+
 
 
 def _clone_git_source(

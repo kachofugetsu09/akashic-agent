@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 from typing import Callable, Mapping
 
+from scripts.akashic_release.extra import ExtraOptions, ExtraResult, merge_inputs, prepare_extra_inputs
 from scripts.akashic_release.doctor import read_environment, release_health_timeout, verify_release
 from scripts.akashic_release.manifest import activation_receipt, atomic_write, read_json, write_json
 from scripts.akashic_release.model import ReleasePaths
@@ -381,6 +382,7 @@ def activate_release(
     unit_root: Path = Path("/etc/systemd/system"), cli_path: Path = Path.home() / ".local/bin/akashic-release",
     self_deploy: dict[str, object] | None = None,
     warmer: StateCacheWarmer | None = None,
+    extra: ExtraOptions | None = None,
 ) -> str:
     """按部署者清单停机发布；默认只更新 Core/Bridge，不执行待迁移。"""
 
@@ -397,6 +399,7 @@ def activate_release(
     root_ref = None if selected is None else selected["root_ref"]
     preflight: dict[str, object] | None = None
     attempt_path = paths.activation / f"deploy-{secrets.token_hex(12)}.json"
+    extra_report: dict[str, object] | None = None
     fixed_plan = attempt_path.with_suffix(".plan.json")
     if root_ref is None:
         if previous is not None or plan is not None:
@@ -404,13 +407,19 @@ def activate_release(
         if backup:
             raise ValueError("首次初始化的 state 备份请由部署者在安装前完成")
     else:
-        if plan is None:
-            write_json(fixed_plan, {"schema_version": 1, "expected_root_ref": root_ref,
-                                    "targets": []})
-        else:
-            if plan.is_symlink() or not plan.is_file():
-                raise ValueError("部署清单必须是普通文件")
-            atomic_write(fixed_plan, plan.read_text(encoding="utf-8"))
+        if plan is not None and (plan.is_symlink() or not plan.is_file()):
+            raise ValueError("部署清单必须是普通文件")
+        # 停机之前联网求 extra 包；任何一步失败都在这里抛错，旧服务不动。
+        found = (prepare_extra_inputs(workspace=paths.state / "workspace", plugins_home=paths.state / "plugin-home", checkout=paths.source(target),
+                                      mode=current.get("AKASHIC_PLUGIN_BUNDLE", "base"), root_ref=str(root_ref),
+                                      options=extra, out=attempt_path.with_suffix(".inputs"), run=run)
+                 if extra is not None and extra.enabled else ExtraResult((), ()))
+        plan_text = _merged_plan_text(plan, str(root_ref), found)
+        atomic_write(fixed_plan, plan_text)
+        if found.targets:
+            inputs = merge_inputs(inputs, attempt_path.with_suffix(".inputs"))
+        extra_report = {"targets": [{key: item[key] for key in ("plugin_id", "kind", "target_commit", "upstream")}
+                                    for item in found.targets], "skipped": [list(item) for item in found.skipped]}
         # 清单只含公开发布身份；保留部署者属主，让非 root 容器只读。
         fixed_plan.chmod(0o444)
         if inputs is None:
@@ -431,7 +440,7 @@ def activate_release(
     attempt.update(phase="waiting_for_turn" if self_deploy is not None else "stopping", imageId=manifest["imageId"],
                    attemptPath=str(attempt_path), publication=None,
                    backupDir=None if backup_dir is None else str(backup_dir),
-                   planPath=None if root_ref is None else str(fixed_plan),
+                   planPath=None if root_ref is None else str(fixed_plan), extra=extra_report,
                    rollback="eligible" if can_roll_back else "not_eligible",
                    previousActivationSha256=(hashlib.sha256((paths.activation / "active.json").read_bytes()).hexdigest()
                                              if (paths.activation / "active.json").exists() else None))
@@ -503,6 +512,24 @@ def activate_release(
                           attempt_path=attempt_path, attempt=attempt, error=error, run=run,
                           unit_root=unit_root, cli_path=cli_path)
     return "activated"
+
+
+# 部署者清单与 extra 目标合并；没有 extra 目标时原样保留清单字节，清单摘要不变。
+def _merged_plan_text(plan: Path | None, root_ref: str, found: ExtraResult) -> str:
+    if plan is None:
+        document: dict[str, object] = {"schema_version": 1, "expected_root_ref": root_ref, "targets": []}
+    else:
+        text = plan.read_text(encoding="utf-8")
+        if not found.targets:
+            return text
+        document = json.loads(text)
+    targets = document["targets"]
+    assert isinstance(targets, list)
+    taken = {item["plugin_id"] for item in targets}
+    if taken.intersection(item["plugin_id"] for item in found.targets):
+        raise ValueError("部署清单与 extra 目标重复指定同一插件")
+    targets.extend(found.targets)
+    return json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
 
 
 # A stopped publisher can fail after the selection CAS and before returning its receipt.
