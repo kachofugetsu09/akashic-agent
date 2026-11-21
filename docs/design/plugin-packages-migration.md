@@ -46,6 +46,8 @@ Phase 5 之前默认组合不变：新装实例仍然装齐今天 `bundles/base.
 
 哪些插件属于最小闭环是设计判断，不由门禁决定。R14 只证明这个划分下受支持的 Python import 方向成立：它覆盖模块级、函数内、相对 import 和字面参数的 `import_module`；不覆盖计算出来的模块名、前端模块之间的依赖、`bundles/*.toml` 里对插件的点名。这三类在每批迁移时人工核对。
 
+迁出的插件从 `[tiers].extra` 移到 `[tiers].external`（目录可以不存在，仍受 R14 约束）。extra 仓库自己的新插件不进 Core 的表：合成树根目录的 `extra_tiers.toml`（只有 `extra = [...]`）追加声明，只能追加 extra 层，不能改写 Core 的声明。
+
 core 的判定标准：裸核能独立跑完长程循环（账本、上下文、压缩、工具、文件与 shell、一个通用模型驱动）、提供 Web 宿主与投递、能装卸插件。`workloads`（`ui`、`mcp` 依赖）、`runtime_inspection`（`prompt` 依赖）、`content_view`（工具大输出回读）因此留在 core。
 
 | 依赖 | 现状 | 处理 |

@@ -19,6 +19,8 @@ R11 SQLite 只由中立宿主/迁移函数打开；Web 框架只在 web_shell。
 R12 UI 宿主不点名插件：宿主插件只导入基础设施合同，聊天前端与宿主不按插件 ID 取用功能。
 R14 分层：每个插件在 `plugin_boundary.toml` 的 [tiers] 声明 core 或 extra；
     core 层插件不得 import extra 层插件的任何模块（含 contract）。
+    已迁出 Core 的插件移到 [tiers].external（目录可以不存在，仍按 extra 层约束）；
+    extra 仓库合成树根目录的 `extra_tiers.toml` 只能追加 extra 层（`extra = [...]`）。
 
 比较 Git 基线时，公开模块清单与 Core 字面 key 声明只允许减少；
 不能通过扩大允许清单或登记新角色来绕过已有边界。
@@ -50,6 +52,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 POLICY_PATH = REPO_ROOT / "plugin_boundary.toml"
+EXTRA_TIERS_FILE = "extra_tiers.toml"
 BASELINE_PATH = REPO_ROOT / "plugin_boundary_baseline.toml"
 
 CORE_ROOTS = (
@@ -299,16 +302,28 @@ def check_core_imports_plugin(imports: list[Import]) -> list[Import]:
     ]
 
 
-# 读取 [tiers]：返回 (core 集合, extra 集合)，值为插件目录名。
+# 读取 [tiers] 的一个名单，值为插件目录名。
+def tier_names(policy: dict[str, object], key: str) -> set[str]:
+    table = policy.get("tiers")
+    names = table.get(key) if isinstance(table, dict) else None
+    return {str(name) for name in names} if isinstance(names, list) else set()
+
+
+# 读取 extra 仓库合成树根目录的 extra_tiers.toml：返回 (追加的 extra 名单, 格式错误)；文件不存在则为空。
+def load_extra_declared() -> tuple[set[str], list[str]]:
+    path = REPO_ROOT / EXTRA_TIERS_FILE
+    if not path.is_file():
+        return set(), []
+    data = tomllib.loads(path.read_text(encoding="utf-8"))
+    errors = [f"R14: {EXTRA_TIERS_FILE} 只能声明 extra，不允许键: {key}" for key in sorted(data) if key != "extra"]
+    return tier_names({"tiers": data}, "extra"), errors
+
+
+# 读取层级：返回 (core 集合, extra 集合)；extra 含 Core 的 extra、external 与 extra 仓库追加的名单。
 def load_tiers(policy: dict[str, object] | None = None) -> tuple[set[str], set[str]]:
-    table = (policy if policy is not None else load_policy()).get("tiers")
-    tiers = table if isinstance(table, dict) else {}
-    core = tiers.get("core")
-    extra = tiers.get("extra")
-    return (
-        {str(name) for name in core} if isinstance(core, list) else set(),
-        {str(name) for name in extra} if isinstance(extra, list) else set(),
-    )
+    policy = policy if policy is not None else load_policy()
+    declared, _ = load_extra_declared()
+    return tier_names(policy, "core"), tier_names(policy, "extra") | tier_names(policy, "external") | declared
 
 
 # R14：core 层插件 import extra 层插件（含 contract），物理迁出 extra 后会 ImportError。
@@ -325,16 +340,23 @@ def check_core_tier_imports_extra(imports: list[Import]) -> list[Import]:
     return violations
 
 
-# R14：每个插件目录必须且只能声明一个层级，声明的插件必须真实存在。
+# R14：每个插件目录必须且只能声明一个层级；在 Core 的 core/extra 与追加名单里声明的插件必须真实存在，external 可以不存在。
 def check_tier_table(policy: dict[str, object]) -> list[str]:
-    core, extra = load_tiers(policy)
+    core, listed = tier_names(policy, "core"), tier_names(policy, "extra")
+    external = tier_names(policy, "external")
+    declared, errors = load_extra_declared()
     present = {
         path.name for path in (REPO_ROOT / PLUGIN_ROOT).iterdir()
         if path.is_dir() and not path.name.startswith(("_", "."))
     }
-    errors = [f"R14: 插件 {name} 同时声明 core 与 extra" for name in sorted(core & extra)]
-    errors.extend(f"R14: 插件 {name} 未声明层级（plugin_boundary.toml [tiers]）" for name in sorted(present - core - extra))
-    errors.extend(f"R14: [tiers] 声明了不存在的插件: {name}" for name in sorted((core | extra) - present))
+    extra = listed | external | declared
+    errors.extend(f"R14: 插件 {name} 同时声明 core 与 extra（{EXTRA_TIERS_FILE} 不能改写 Core 的声明）" for name in sorted(core & extra))
+    errors.extend(
+        f"R14: 插件 {name} 未声明层级（Core 的 plugin_boundary.toml [tiers]，或 extra 仓库的 {EXTRA_TIERS_FILE}）"
+        for name in sorted(present - core - extra)
+    )
+    errors.extend(f"R14: [tiers] 声明了不存在的插件: {name}（已迁出 Core 的请移到 [tiers].external）" for name in sorted((core | listed) - present))
+    errors.extend(f"R14: {EXTRA_TIERS_FILE} 声明了不存在的插件: {name}" for name in sorted(declared - present))
     return errors
 
 
