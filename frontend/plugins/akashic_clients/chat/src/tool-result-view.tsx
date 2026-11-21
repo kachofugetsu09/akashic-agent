@@ -2,6 +2,7 @@ import { type ReactNode, type RefObject, type TransitionEvent, useCallback, useE
 import { ChevronDown } from "lucide-react";
 import { readToolData } from "@/message-rendering-policy";
 import { PluginUiSlot, pluginSlotAccepts, usePluginUiCatalogVersion } from "./plugin-ui-runtime";
+import { flipDisclosure, settle, watchHeight } from "./motion";
 
 const PREVIEW_LINES = 12;
 // 只多出几行时直接全显，避免“显示全部”只换来两三行。
@@ -39,20 +40,23 @@ export interface StickyDisclosure {
   open: boolean;
   sticky: boolean;
   rowRef: RefObject<HTMLDivElement | null>;
-  disclosureRef: RefObject<HTMLDivElement | null>;
   toggle: () => void;
   setOpen: (open: boolean) => void;
-  onTransitionEnd: (event: TransitionEvent<HTMLDivElement>) => void;
+  motion: DisclosureMotion;
 }
 
-// 展开项的标题行吸顶，读到哪里都能收起；收起期间继续走平滑高度过渡，同时在每帧布局后、绘制前
-// 经 ResizeObserver 把吸顶行留在原位，等过渡收完再卸掉吸顶定位，不会在吸顶时瞬间跳关或带走标题行。
+// 收起的两个时点：onCollapse 在布局收起后立刻调用（滚动修正，量终点时也会调用）；onSettled 在收起动画结束、落位之后。
+export interface DisclosureMotion {
+  onCollapse: () => void;
+  onSettled: () => void;
+}
+
+// 展开项的标题行吸顶，读到哪里都能收起；收起动画期间保持吸顶，落位时把吸住的标题行留在原来的视口位置。
 export function useStickyDisclosure(initial = false): StickyDisclosure {
   const [open, setOpenState] = useState(initial);
   const [closing, setClosing] = useState(false);
   const openRef = useRef(initial);
   const rowRef = useRef<HTMLDivElement>(null);
-  const disclosureRef = useRef<HTMLDivElement>(null);
   const collapseAnchorRef = useRef<number | null>(null);
 
   useLayoutEffect(() => {
@@ -72,7 +76,7 @@ export function useStickyDisclosure(initial = false): StickyDisclosure {
     const stuck = row !== null && row.parentElement !== null
       && row.getBoundingClientRect().top - row.parentElement.getBoundingClientRect().top > 1;
     collapseAnchorRef.current = stuck ? row.getBoundingClientRect().top : null;
-    setClosing(!prefersReducedMotion());
+    setClosing(true);
     setOpenState(false);
   }, []);
 
@@ -80,59 +84,80 @@ export function useStickyDisclosure(initial = false): StickyDisclosure {
     setOpen(!openRef.current);
   }, [setOpen]);
 
-  // 必要 effect：收起过渡期间用 rAF（紧接动画采样）与 ResizeObserver（绘制前兜底）锚住吸顶行。
-  useLayoutEffect(() => {
-    if (!closing) {
-      const anchor = collapseAnchorRef.current;
-      collapseAnchorRef.current = null;
-      if (anchor !== null) keepAt(rowRef.current, anchor);
-      return;
-    }
-    const anchor = () => {
+  const motion = useMemo<DisclosureMotion>(() => ({
+    onCollapse: () => {
       if (collapseAnchorRef.current !== null) keepAt(rowRef.current, collapseAnchorRef.current);
-    };
-    let frame = 0;
-    const tick = () => {
-      anchor();
-      frame = window.requestAnimationFrame(tick);
-    };
-    frame = window.requestAnimationFrame(tick);
-    const target = disclosureRef.current;
-    const observer = target ? new ResizeObserver(anchor) : null;
-    if (target && observer) observer.observe(target);
-    const timer = window.setTimeout(() => setClosing(false), COLLAPSE_FALLBACK_MS);
-    return () => {
-      window.cancelAnimationFrame(frame);
-      observer?.disconnect();
-      window.clearTimeout(timer);
-    };
-  }, [closing]);
-
-  const onTransitionEnd = useCallback((event: TransitionEvent<HTMLDivElement>) => {
-    if (event.target === event.currentTarget && event.propertyName === "grid-template-rows" && !open) {
+    },
+    onSettled: () => {
+      collapseAnchorRef.current = null;
       setClosing(false);
-    }
-  }, [open]);
+    },
+  }), []);
 
-  return { open, sticky: open || closing, rowRef, disclosureRef, toggle, setOpen, onTransitionEnd };
+  return { open, sticky: open || closing, rowRef, toggle, setOpen, motion };
 }
 
-// 展开区：grid 行 0fr ↔ 1fr 过渡高度，内层淡入并轻微位移；内层只用 overflow: clip，嵌套行的 sticky 仍对滚动容器生效。
-export function Disclosure({ open, children, disclosureRef, onTransitionEnd }: {
+// 消息区里会吸顶的元素：展开区开合时不能把 transform 加在吸住元素的祖先上。
+const PINNED = ".tool-step-sticky.is-open, .process-trigger-sticky, .code-block-header, .reading-code-stream-label";
+
+// 展开区：常驻 DOM，开合只切 open（grid 行 0fr / 1fr，不过渡）。class 由这里在布局效果里切，
+// 切之前才量得到起点；位移与透明度走 motion.ts 的 FLIP，收起先播动画、结束时再切 class。
+export function Disclosure({ open, children, motion }: {
   open: boolean;
   children: ReactNode;
-  disclosureRef?: RefObject<HTMLDivElement | null>;
-  onTransitionEnd?: (event: TransitionEvent<HTMLDivElement>) => void;
+  motion?: DisclosureMotion;
 }) {
+  const [initial] = useState(open);
+  const hostRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const shownRef = useRef(open);
+  const animationsRef = useRef<Animation[]>([]);
+  const motionRef = useRef(motion);
+  useLayoutEffect(() => {
+    motionRef.current = motion;
+  }, [motion]);
+
+  useLayoutEffect(() => {
+    const host = hostRef.current;
+    const content = contentRef.current;
+    if (!host || !content || shownRef.current === open) return;
+    shownRef.current = open;
+    const apply = (next: boolean) => {
+      host.classList.toggle("open", next);
+      if (!next) motionRef.current?.onCollapse();
+    };
+    const finish = () => {
+      apply(false);
+      settle(animationsRef.current);
+      animationsRef.current = [];
+      motionRef.current?.onSettled();
+    };
+    const boundary = host.closest<HTMLElement>(".conversation-scroll") ?? scrollParent(host);
+    const animations = boundary instanceof HTMLElement
+      ? flipDisclosure({ host, content, boundary, pinned: PINNED, open, apply }, animationsRef.current)
+      : (settle(animationsRef.current), apply(open), []);
+    animationsRef.current = animations;
+    const last = animations.at(-1);
+    if (open) {
+      // 展开播完就放掉这批动画的引用。
+      void last?.finished.then(() => { if (animationsRef.current === animations) animationsRef.current = []; }, () => undefined);
+      return;
+    }
+    if (!last) return finish();
+    void last.finished.then(() => { if (animationsRef.current === animations) finish(); }, () => undefined);
+    // 收起途中内容又变了高（流式追加、结果区重排）：终点已经不准，直接落位，不留跳位的末帧。
+    watchHeight(host, last, () => { if (animationsRef.current === animations) finish(); });
+  }, [open]);
+  useEffect(() => () => settle(animationsRef.current), []);
+
   return (
     <div
-      ref={disclosureRef}
-      className={`tool-step-disclosure${open ? " open" : ""}`}
+      ref={hostRef}
+      className={`tool-step-disclosure${initial ? " open" : ""}`}
       aria-hidden={!open}
       inert={!open ? true : undefined}
-      onTransitionEnd={onTransitionEnd}
     >
-      <div className="tool-step-disclosure-inner">{children}</div>
+      <div ref={contentRef} className="tool-step-disclosure-inner">{children}</div>
     </div>
   );
 }
