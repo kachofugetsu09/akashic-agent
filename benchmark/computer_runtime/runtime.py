@@ -23,7 +23,6 @@ def docker(*args: str) -> str:
 async def runtime(directory: Path, *, max_steps: int, endpoint: str, model: str, key_file: Path):
     """独占新状态；真实配置、接纳、回复、工具和账本均走现有 owner。"""
     from agent.plugin_composition.config_input import save_config
-    from agent.plugins.bundles import set_plugin_choice
     from bootstrap.init_workspace import init_workspace
     from plugins.host_execution.controller import WorkloadControllerServer
 
@@ -43,7 +42,6 @@ async def runtime(directory: Path, *, max_steps: int, endpoint: str, model: str,
         PYTHONPATH=os.pathsep.join((str(ROOT), str(ROOT / "sdk/python/src"))))
     os.environ.pop("AKASHIC_WEB_PORT", None)
     init_workspace(config_path=config, workspace=workspace)
-    set_plugin_choice(workspace, "subagent", enabled=False)
     data = workspace / "plugin-data"
     save_config(data / "reply-builtin", {"max_steps": max_steps})
     save_config(data / "akashic_clients-builtin", {"enabled": False, "web": {"enabled": False}})
