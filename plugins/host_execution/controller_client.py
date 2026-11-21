@@ -7,6 +7,7 @@ from typing import Protocol, cast
 
 from plugins.host_execution.contract import (
     WorkloadEffectUnknown,
+    WorkloadStartRejected,
     WorkloadEndpoint,
     WorkloadLease,
     WorkloadMode,
@@ -138,11 +139,10 @@ class UnixWorkloadController:
                     raise RuntimeError("Workload Controller 回执不是对象")
                 if result.get("ok") is not True:
                     error = result.get("error")
-                    raise RuntimeError(
-                        error
-                        if isinstance(error, str) and error
-                        else "Workload Controller 失败"
-                    )
+                    message = error if isinstance(error, str) and error else "Workload Controller 失败"
+                    if result.get("residual") == "none":
+                        raise WorkloadStartRejected(message)
+                    raise RuntimeError(message)
                 payload = result.get("body")
                 if not isinstance(payload, dict):
                     raise RuntimeError("Workload Controller 回执缺少 body")

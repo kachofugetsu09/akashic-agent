@@ -20,6 +20,7 @@ from .definitions import (
 )
 from plugins.host_execution.contract import (
     WorkloadEffectUnknown,
+    WorkloadStartRejected,
     WorkloadLease,
     WorkloadMode,
     WorkloadStartRequest,
@@ -163,7 +164,12 @@ class WorkloadGenerationHost:
                 generation.pending[name] = (binding, request)
                 # 普通错误也可能出现在 Controller 已创建容器之后；只有有效回执
                 # 才能把 pending 请求转为可执行 stop 的 lease，不能按异常类型丢弃责任。
-                receipt = await self._controller.start(request)
+                try:
+                    receipt = await self._controller.start(request)
+                except WorkloadStartRejected:
+                    # Controller 已核实没有容器也没有 lease：这次请求没有副作用，不保留 pending。
+                    generation.pending.pop(name, None)
+                    raise
                 endpoints = _check_start_receipt(request, receipt)
                 entry = _Entry(binding, receipt, endpoints)
                 generation.entries[name] = entry

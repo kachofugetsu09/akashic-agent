@@ -594,10 +594,19 @@ class PluginManager:
             or action.action in {"retry_generation_cleanup", "retry_runtime_recovery"}
         ))
         for action in recovery:
-            self._reload_journal.settle_boot(
-                action, committed=self._selection_transition_committed(action.tx_id, selection_ref),
-                cleanup_receipt=receipts.get(action.tx_id),
-            )
+            committed = self._selection_transition_committed(action.tx_id, selection_ref)
+            receipt = receipts.get(action.tx_id)
+            # 旧 boot 已确认回收：它名下纯运行期（不涉及选择切换）的代清理记录随进程结束而完成，
+            # 直接结算；否则这些记录永远停在 cleanup_failed，累积并阻塞之后的部署。
+            if (committed is None and receipt and action.runtime_owner_boot_id is not None
+                    and action.action == "retry_generation_cleanup"
+                    and action.failure_resource == f"generation-cleanup:{action.generation_id}"):
+                self._reload_journal.settle_generation_cleanup(
+                    tx_id=action.tx_id, plugin_id=action.plugin_id,
+                    generation_id=action.generation_id, receipt=receipt,
+                )
+                continue
+            self._reload_journal.settle_boot(action, committed=committed, cleanup_receipt=receipt)
         if selection_ref is not None:
             with measure("plugins.adopt"):
                 selection_ref = await self._adopt_installed_inputs(selection_ref, discovered)
@@ -799,10 +808,21 @@ class PluginManager:
             check_host_dependencies(root, runnable)
             with measure("plugins.mount", generations=len(runnable)):
                 for generation in runnable:
-                    await self._mount_generation_composition(root, generation)
+                    try:
+                        await self._mount_generation_composition(root, generation)
+                    except Exception as error:
+                        self._retain_boot_mount_failure(generation, error)
+            # 依赖方在提供方就绪时才激活，它的失败留在它自己的 Fiber 上；
+            # 其中清理也没完成、仍持有资源的，同样登记为失败并待清理。
+            for generation in runnable:
+                fiber = generation.fiber
+                if (generation.state != "failed" and fiber is not None and fiber.error is not None
+                        and fiber.state == FiberState.UNLOADING and isinstance(fiber.error, Exception)):
+                    self._retain_boot_mount_failure(generation, fiber.error)
             # Receipt readiness is diagnostic; each Fiber owns its local failure state.
             for generation in runnable:
-                generation.state = "active"
+                if generation.state != "failed":
+                    generation.state = "active"
             self._finish_recovered_config_updates()
             self._building_roots.pop(root, None)
         except BaseException:
@@ -876,6 +896,33 @@ class PluginManager:
             generation.load_error = error
             generation.state = "failed"
             raise
+
+    # 启动时一个插件挂载失败，且它自己的清理也没完成：内核已保留该 Fiber（继续持有资源、
+    # 名字和所依赖的服务），这里只登记失败和待清理责任，其余插件照常启动。
+    # 不能把它升级成整体退出：那样会拆掉所有已启动的插件，并在依赖方上连锁留下清理失败。
+    def _retain_boot_mount_failure(self, generation: PluginGeneration, error: Exception) -> None:
+        # 1. 失败必须属于这个插件自己的 Fiber；Root 级不变量破坏仍按原样整体失败。
+        fiber = generation.fiber
+        if fiber is None or fiber.runtime is None or fiber.runtime.generation_id != generation.generation_id:
+            raise error
+        generation.load_error = error
+        generation.state = "failed"
+        logger.error("插件启动失败，已隔离，其余插件继续启动: %s: %s", generation.plugin_id, error)
+        if fiber.state != FiberState.UNLOADING:
+            return
+        # 2. 资源仍由保留的 Fiber 持有：进入排空集合并持久登记，状态接口显示待清理，
+        #    退出时 terminate_all 会再次尝试关闭，下次启动也能从记录里结算。
+        tracked = self._draining_generations.setdefault(generation.plugin_id, [])
+        if not any(item is generation for item in tracked):
+            tracked.append(generation)
+        self._cleanup_failures.append(CleanupFailure(
+            resource=f"plugin:{generation.plugin_id}:generation:{generation.generation_id}",
+            error=str(error) or type(error).__name__,
+        ))
+        self._record_root_failure(
+            generation, error, resource="generation-cleanup",
+            formal_effects=("generation_runtime_cleanup_pending",),
+        )
 
     async def _retain_pre_fiber_failure(self, generation: PluginGeneration) -> None:
         """Retain one selected pre-Fiber failure after its physical cleanup attempt."""
@@ -1013,7 +1060,14 @@ class PluginManager:
         for action in actions:
             _reject_retired_owner_recovery(action)
         current_boot_id = os.environ.get("AKASHIC_BOOT_ID", "").strip()
-        if os.environ.get("AKASHIC_SUPERVISED") != "1" or not current_boot_id:
+        # 容器运行时每次启动都是一次新的容器进程（restart: "no"，入口 exec 单个 gateway），
+        # 旧 boot 的进程随上一次容器退出全部结束，与 supervisor 回收后的状态等价；
+        # 下面仍按旧 boot ID 扫描回收一次，再结算 journal。
+        supervised = (
+            os.environ.get("AKASHIC_SUPERVISED") == "1"
+            or os.environ.get("AKASHIC_DOCKER_RUNTIME") == "1"
+        )
+        if not supervised or not current_boot_id:
             raise RuntimeError("v3 runtime recovery 需要 supervised boot identity")
         from agent.background.boot_guardian import _cleanup_boot_processes
 

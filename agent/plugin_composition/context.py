@@ -2045,7 +2045,7 @@ class CompositionRoot:
         keys = tuple(
             key for key, provider in self._providers.items() if provider.owner is owner
         )
-        await self._reconcile_dependents(keys, exclude=owner)
+        await self._reconcile_dependents(keys, exclude=owner, isolate=True)
 
     async def _notify_provider_registered(self, registration: _Provider) -> None:
         """Reconcile only the exact live registration after ACTIVE publication."""
@@ -2059,6 +2059,7 @@ class CompositionRoot:
         await self._reconcile_dependents(
             (registration.key,),
             exclude=registration.owner,
+            isolate=True,
         )
 
     async def _owner_became_inactive(self, owner: Fiber) -> None:
@@ -2216,25 +2217,39 @@ class CompositionRoot:
                     f"{fiber.name} 的 Service {operation}不能等待该任务借用的生命周期",
                 )
 
+    # 服务变化只重新协调实际消费者。isolate=True 用于服务刚就绪的方向：
+    # 消费者自己激活失败（含清理失败而保留资源）只留在它自己的 Fiber 上，
+    # 不回滚已经就绪的提供方；服务撤销方向仍须等消费者放手，失败照常上抛。
     async def _reconcile_dependents(
         self,
         keys: tuple[ServiceKey[Any], ...],
         *,
         exclude: Fiber,
+        isolate: bool = False,
     ) -> None:
-        """服务变化只重新协调实际消费者。"""
-
         if not keys:
             return
         affected = self._dependent_fibers(keys, exclude=exclude)
-        if affected:
-            results = await asyncio.gather(
-                *(fiber.reconcile() for fiber in affected),
-                return_exceptions=True,
-            )
-            errors = [result for result in results if isinstance(result, BaseException)]
-            if errors:
-                raise BaseExceptionGroup("依赖 Fiber 协调失败", errors)
+        if not affected:
+            return
+        results = await asyncio.gather(
+            *(fiber.reconcile() for fiber in affected),
+            return_exceptions=True,
+        )
+        errors = [result for result in results if isinstance(result, BaseException)]
+        if not errors:
+            return
+        if not isolate:
+            raise BaseExceptionGroup("依赖 Fiber 协调失败", errors)
+        # 1. 取消不属于任何一个消费者，照常传播。
+        for error in errors:
+            if not isinstance(error, Exception):
+                raise error
+        # 2. 每个消费者的失败记在它自己身上；_load 已记录的同一错误不重复上报。
+        for fiber, result in zip(affected, results):
+            if isinstance(result, Exception) and fiber.error is not result:
+                fiber.error = result
+                self._record_error(fiber, result)
 
     def _new_health_entry(
         self,
