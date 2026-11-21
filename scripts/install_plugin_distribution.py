@@ -36,10 +36,10 @@ from agent.plugin_composition.config_input import CONFIG_INPUT, load_config, sav
 from agent.migrations.runner import initialize_empty_workspace
 from agent.plugins.artifacts import read_pointers, resolve_pointer
 from agent.plugins.manifest import workspace_plugin_data_dir, ensure_workspace_plugin_data_dir
-from agent.plugins.static_manifest import load_static_plugin_manifest
+from agent.plugins.static_manifest import PluginSourceCompileError, load_static_plugin_manifest
 from agent.plugins.python_environment import ENVIRONMENT_FILE, PythonEnvironments
 from agent.plugins.python_environment import OfflineWheels, preflight_offline_runtime, wheel_tree_sha256
-from agent.plugins.input_preparation import prepare_plugin_input, PLUGIN_INPUT_API
+from agent.plugins.input_preparation import prepare_plugin_input, PLUGIN_INPUT_API, PluginInitialConfigError
 from agent.plugins.reload_journal import ReloadJournal, PendingPublicationError, check_pending_publication
 from agent.plugins.selection import PluginSelection, SelectionConflictError
 from bootstrap.workspace_lock import PluginPublicationLock, WorkspaceMaintenanceLock
@@ -782,8 +782,13 @@ def _distribution_candidate(
         # preserved inputs: their old interpreter/code may be what is replaced.
         if descriptor["source_type"] == "installed" and plugin_id not in replacement_ids:
             current_artifact, _, _ = _current_artifact(workspace=workspace, plugins_home=plugins_home, plugin_id=plugin_id)
-            if current_artifact != Path(cast(str, descriptor["code"])):
-                raise SelectionConflictError(f"external selection/cache drift: {plugin_id}")
+            if current_artifact != code:
+                # The installer may have committed the new pointer before live activation failed.
+                base = plugins_home / "cache" / marketplace / name
+                with ReloadJournal.inspect_existing(workspace) as journal:
+                    if not journal.owns_installed_artifact(plugin_id, base, current_artifact):
+                        raise SelectionConflictError(f"external selection/cache drift: {plugin_id}")
+                code = current_artifact
         if (plugin_id not in replacement_ids and
             descriptor["runtime"] != {"python_tag": sys.implementation.cache_tag, "binding_api": PLUGIN_INPUT_API}):
             raise RuntimeError(f"preserved plugin runtime is incompatible with this Core: {plugin_id}; explicit reinstall required")
@@ -834,7 +839,7 @@ def _prepare_distribution_inputs(
     prepared: dict[str, str] = {}
     for plugin_id, source in candidate.items():
         old = selected.get(plugin_id)
-        if not source.distribution_source and old is not None:
+        if not source.distribution_source and old is not None and old[2] == source.plugin_root:
             prepared[plugin_id] = old[0]
             continue
         data_dir = workspace_plugin_data_dir(workspace, source.plugin_name, source.marketplace)
@@ -860,14 +865,21 @@ def _prepare_distribution_inputs(
                 prepared[plugin_id] = old[0]
                 timing.update(reused=True, ref=old[0])
                 continue
-            result = prepare_plugin_input(
-                {"name": source.plugin_name, "marketplace": source.marketplace,
-                 "plugin_root": str(code), "module_path": str(code / "plugin.py"),
-                 "manifest_digest": identity.identity_digest, "source_type": source.source_type,
-                 **({"distribution_source": source_commit, "wheel_tree_sha256": source.wheel_tree_sha256}
-                    if source.distribution_source else {})},
-                workspace=workspace, selection=selection, initial=old is None,
-            )
+            try:
+                result = prepare_plugin_input(
+                    {"name": source.plugin_name, "marketplace": source.marketplace,
+                     "plugin_root": str(code), "module_path": str(code / "plugin.py"),
+                     "manifest_digest": identity.identity_digest, "source_type": source.source_type,
+                     **({"distribution_source": source_commit, "wheel_tree_sha256": source.wheel_tree_sha256}
+                        if source.distribution_source else {})},
+                    workspace=workspace, selection=selection, initial=old is None,
+                )
+            except (PluginSourceCompileError, PluginInitialConfigError) as error:
+                if source.source_type != "installed":
+                    raise
+                # Existing bad artifacts stay installed and enabled for repair through the live manager.
+                print(f"外置插件无法准备输入: {plugin_id}: {error}", file=sys.stderr, flush=True)
+                continue
             timing.update(reused=False, ref=result.input_ref)
         # 停止期已结算配置 owner；读取迁移后的持久输入，也支持迁移成功后的发布重试。
         prepared[plugin_id] = result.input_ref
@@ -875,12 +887,18 @@ def _prepare_distribution_inputs(
     return tuple(ordered + [prepared[plugin_id] for plugin_id in sorted(prepared)])
 
 
-def _same_selected_sources(
+def _can_boot_for_recovery(
     selected: dict[str, tuple[str, Mapping[str, object], Path]],
     candidate: dict[str, ResolvedPluginSource],
+    choices: Mapping[str, bool],
 ) -> bool:
-    """Recovery may start exact existing inputs, never substitute new code or choices."""
-    if selected.keys() != candidate.keys():
+    """Let the existing runtime finish cleanup and honor an explicit disable."""
+    # The manager settles old owners first, then drops disabled installed inputs.
+    expected = {
+        plugin_id for plugin_id, (_, descriptor, _) in selected.items()
+        if descriptor["source_type"] != "installed" or choices.get(plugin_id) is not False
+    }
+    if expected != candidate.keys():
         return False
     for plugin_id, source in candidate.items():
         descriptor = selected[plugin_id][1]
@@ -935,10 +953,33 @@ def _prepare_distribution_environments(
     return prepared
 
 
+# Both publication locks are held and the host has verified that this exact boot exited.
+def _settle_closed_boot(workspace: Path, boot_id: str) -> None:
+    from bootstrap.runtime_readiness import read_closed_boot
+
+    _, required = read_closed_boot(workspace, boot_id)
+    journal = ReloadJournal(workspace)
+    pending = journal.pending_recovery()
+    receipt = f"release-closed:{boot_id}"
+    by_id = {action.tx_id: action for action in pending}
+    for tx_id in required:
+        action = by_id.get(tx_id)
+        if action is None:
+            # A stopped publish can be retried after it has already settled this receipt.
+            if any(event.details.get("cleanup_receipt") == receipt and
+                   event.details.get("event") == "generation_cleanup_settled" for event in journal.events(tx_id)):
+                continue
+        elif journal.is_boot_generation_cleanup(action, boot_id):
+            continue
+        raise PendingPublicationError("关闭回执所列事务不是该 boot 的纯运行期代清理")
+    for action in pending:
+        _ = journal.settle_exited_generation(action, boot_id, receipt)
+
+
 def publish_distribution(
     *, distribution: Path, workspace: Path, plugins_home: Path,
     config_path: Path, plan: Path, inputs: Path,
-    backup_dir: Path | None = None, preflight_only: bool = False,
+    backup_dir: Path | None = None, preflight_only: bool = False, closed_boot: str | None = None,
 ) -> dict[str, Any]:
     """更新内置 preset 和指定外置输入；先完成 Core 与内置迁移。"""
     digest, expected_root, requested, adoption = load_deployment_plan(plan)
@@ -1015,6 +1056,8 @@ def publish_distribution(
                 # Core 先更新自己的账本结构，业务 step 只由相应插件执行。
                 with measure("publish.migrations.run"):
                     runner.run_under_maintenance(maintenance, core_only=True)
+                    if closed_boot is not None:
+                        _settle_closed_boot(workspace, closed_boot)
                     check_pending_publication(workspace)
                     runner.run_under_maintenance(maintenance)
                 # 迁移可能改变声明输入；只按迁移后的选择提交，显式外置目标重新核对启停。
@@ -1127,6 +1170,8 @@ def ensure_bundle(
             with measure("inputs.migrations.core"):
                 pending = runner.check()
                 runner.run_under_maintenance(maintenance, core_only=True)
+            # Both installation locks are held. Finish interrupted pointer writes before comparing inputs.
+            _ = ReloadJournal(workspace).settle_orphaned_installs(plugins_home)
             with measure("inputs.candidate"):
                 available, candidate = _distribution_candidate(
                     distribution=distribution, workspace=workspace, plugins_home=plugins_home, selected=selected,
@@ -1138,7 +1183,9 @@ def ensure_bundle(
                 # The normal entrypoint must let the original runtime repair its
                 # committed config projection. Do not prepare from stale files or
                 # publish anything while that recovery owner is unsettled.
-                if pending or expected is None or not _same_selected_sources(selected, candidate):
+                if pending or expected is None or not _can_boot_for_recovery(
+                    selected, candidate, plugin_choices(workspace, distribution)
+                ):
                     raise
                 return {**receipt, "status": "existing", "new_root_ref": expected,
                         "recovery_pending": True}
@@ -1200,10 +1247,13 @@ def main() -> None:
     parser.add_argument("--plan", type=Path)
     parser.add_argument("--inputs", type=Path)
     parser.add_argument("--preflight-only", action="store_true")
+    parser.add_argument("--closed-boot", help=argparse.SUPPRESS)
     args = parser.parse_args()
 
     if sum((args.verify_only, args.ensure_bundle, args.publish)) > 1:
         parser.error("--verify-only、--ensure-bundle、--publish 互斥")
+    if args.closed_boot is not None and (not args.publish or args.preflight_only):
+        parser.error("--closed-boot 仅适用于停止后的发布")
     if args.publish:
         if args.config is None or args.plan is None or args.inputs is None:
             parser.error("--publish 需要 --config、--plan、--inputs")
@@ -1211,7 +1261,7 @@ def main() -> None:
             distribution=args.distribution, workspace=args.workspace,
             plugins_home=args.plugins_home, config_path=args.config,
             plan=args.plan, inputs=args.inputs, backup_dir=args.backup_dir,
-            preflight_only=args.preflight_only,
+            preflight_only=args.preflight_only, closed_boot=args.closed_boot,
         )
         print(json.dumps(result, ensure_ascii=False))
         return

@@ -296,6 +296,10 @@ Docker init 负责回收子进程，systemd 负责服务生命周期。原生直
 `activationAttempt` 引用既有发布回执。后续回合用 `akashic-release status <requestId>`
 及 `journalctl --user -u akashic-deploy-<requestId>.service` 读取实际结果；
 任务记录的 running 必须结合实际 unit 状态解释，worker 死亡不代表更新成功。
+目标发行版含待执行的 Core 或内置迁移时，worker 在预检后、排空前拒绝自部署，把迁移 ID 写入失败原因。原服务继续运行，由运维核对数据恢复点后通过普通 install 发布。
+排空后的 Core 如果仍有已登记的插件代清理，会在该 boot 的退出回执中写入 `generation_cleanup_pending` 和事务 ID。
+发布器核对同一 boot、Root、Core 容器退出、Controller 空租约及服务停止状态后，在发布锁内结算该 boot 的纯运行期代清理。
+涉及选择切换、未决安装或配置的事务仍阻止发布；已启用的外置插件在新版本重新加载，失败原因进入部署结果。
 宿主不自动重放失败任务。备份由本次部署者明确选择 `--backup`，默认不备份。
 
 正常关闭证据包括同一 boot/Root 的 Core receipt、同一 Controller 的租约清理 receipt、

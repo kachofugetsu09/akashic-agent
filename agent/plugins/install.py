@@ -16,6 +16,7 @@ from agent.plugins.python_environment import ENVIRONMENT_FILE, OfflineWheels, Py
 from agent.plugins.reload_journal import ReloadJournal
 from agent.plugins.distribution_sources import distribution_plugin_sources, read_distribution_adoption
 from agent.plugins.files import sync_directory
+from agent.plugins.input_preparation import check_plugin_source, read_initial_config
 
 from agent.plugins.artifacts import (
     ArtifactPointers,
@@ -183,6 +184,8 @@ def install_git_plugin(
         if re.fullmatch(r"[0-9a-f]{40}", source_revision) is None:
             raise RuntimeError(f"插件 Git HEAD 无效: {source_revision}")
         static_manifest = load_static_plugin_manifest(clone_root)
+        check_plugin_source(clone_root)
+        _ = read_initial_config(clone_root)
         plugin_name = _validate_path_segment(static_manifest.name, "插件 name")
         # 默认 preset 的身份不能被外置安装接管；克隆校验后、cache/data 写入前拒绝。
         reserved = set(reserved_ids)

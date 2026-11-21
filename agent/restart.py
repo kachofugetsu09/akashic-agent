@@ -97,6 +97,10 @@ class RestartGate:
         self._closed = True
 
     @property
+    def stop_prepared(self) -> bool:
+        return self._request_id is not None and self._permits == 0
+
+    @property
     def permit_count(self) -> int:
         return self._permits
 

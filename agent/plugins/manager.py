@@ -63,12 +63,14 @@ from agent.plugins.importer import FreshPluginImporter
 from agent.plugins.public_contracts import public_contracts
 from agent.plugins.input_preparation import (
     PLUGIN_INPUT_API,
+    PluginInitialConfigError,
     SOURCE_EXCLUDED_NAMES,
     _resolve_plugin_data_dir,
     _resolve_plugin_id,
     _source_revision,
     source_revisions,
     prepare_plugin_input,
+    read_initial_config,
 )
 from agent.plugins.install import (
     _split_installed_plugin_id,
@@ -86,6 +88,7 @@ from agent.plugins.bundles import plugin_choices, preset_plugin_ids, set_plugin_
 from agent.plugins.distribution_sources import DistributionSources
 from agent.plugins.python_environment import PythonEnvironments
 from agent.plugins.reload_journal import (
+    GenerationCleanupPending,
     RecoveryActionName,
     RecoveryTarget,
     ReloadJournal,
@@ -594,24 +597,22 @@ class PluginManager:
             or action.action in {"retry_generation_cleanup", "retry_runtime_recovery"}
         ))
         for action in recovery:
-            committed = self._selection_transition_committed(action.tx_id, selection_ref)
             receipt = receipts.get(action.tx_id)
-            # 旧 boot 已确认回收：它名下纯运行期（不涉及选择切换）的代清理记录随进程结束而完成，
-            # 直接结算；否则这些记录永远停在 cleanup_failed，累积并阻塞之后的部署。
-            if (committed is None and receipt and action.runtime_owner_boot_id is not None
-                    and action.action == "retry_generation_cleanup"
-                    and action.failure_resource == f"generation-cleanup:{action.generation_id}"):
-                self._reload_journal.settle_generation_cleanup(
-                    tx_id=action.tx_id, plugin_id=action.plugin_id,
-                    generation_id=action.generation_id, receipt=receipt,
-                )
+            if (receipt and action.runtime_owner_boot_id is not None and
+                    self._reload_journal.settle_exited_generation(action, action.runtime_owner_boot_id, receipt)):
                 continue
+            intent = self._reload_journal.selection_candidate(action.tx_id)
+            committed = self._selection.transition_committed(*intent) if intent is not None else None
             self._reload_journal.settle_boot(action, committed=committed, cleanup_receipt=receipt)
         if selection_ref is not None:
             with measure("plugins.adopt"):
                 selection_ref = await self._adopt_installed_inputs(selection_ref, discovered)
             components = self._selection_components(selection_ref)
-            await self._load_live_initial(components, expected_ref=selection_ref)
+            # A broken enabled guard still closes ingress even if its source could not form an input.
+            choices = plugin_choices(self._workspace, self._distribution.root)
+            guard_required = any(mod["ingress_guard"] == "true" and choices.get(_resolve_plugin_id(mod), False)
+                                 for mod in discovered)
+            await self._load_live_initial(components, expected_ref=selection_ref, guard_required=guard_required)
             return
         enabled = plugin_choices(self._workspace, self._distribution.root)
         selected = tuple(
@@ -706,9 +707,13 @@ class PluginManager:
                 mod, workspace=self._workspace, selection=self._selection, initial=initial,
             ))
         except PluginSourceContentError as error:
-            phase = "compile" if isinstance(error, PluginSourceCompileError) else "identity"
+            phase: Literal["compile", "source", "identity"] = "identity"
+            if isinstance(error, PluginSourceCompileError):
+                phase = "compile"
+            elif isinstance(error, PluginInitialConfigError):
+                phase = "source"
             self._remember_source_failures((self._source_failure_for_error(
-                mod, error, phase=phase, plugin_id=_resolve_plugin_id(mod) if phase == "compile" else None,
+                mod, error, phase=phase, plugin_id=_resolve_plugin_id(mod) if phase != "identity" else None,
             ),))
             return None
         return prepared.input_ref
@@ -744,10 +749,13 @@ class PluginManager:
         *,
         expected_ref: str | None,
         prepared: tuple[PluginGeneration, ...] = (),
+        guard_required: bool = False,
     ) -> None:
         """Build the single formal Root without compiling a snapshot or fallback Root."""
         generation_id = "plugins-live:" + secrets.token_hex(16)
         self._plan_writer = EndpointPlanWriter(self._workspace / "runtime/endpoints.json", generation_id)
+        if guard_required:
+            self._plan_writer.require(GUARD_PROTOCOL)
         root = CompositionRoot(generation_id, endpoint_publisher=self._plan_writer.publish)
         generations: tuple[PluginGeneration, ...] = prepared
         cleanup_generations: tuple[PluginGeneration, ...] = generations
@@ -784,12 +792,10 @@ class PluginManager:
             runnable_items: list[PluginGeneration] = []
             with measure("plugins.import", generations=len(generations)):
                 for generation in generations:
-                    if not (generation.data_dir / CONFIG_INPUT).exists() and generation.config_projection:
-                        save_config(generation.data_dir, generation.config_projection)
                     # 逐插件导入耗时；cpu 远小于 seconds 时是在等 I/O 或事件循环。
                     started, cpu = time.monotonic(), time.thread_time()
                     try:
-                        await self._load_live_generation(generation)
+                        await self._load_live_generation(generation, boot=True)
                     except Exception:
                         await self._retain_pre_fiber_failure(generation)
                         continue
@@ -878,12 +884,27 @@ class PluginManager:
                 and generation.static_manifest.ingress_guard):
             self._plan_writer.require(GUARD_PROTOCOL)
 
-    async def _load_live_generation(self, generation: PluginGeneration) -> None:
+    async def _load_live_generation(self, generation: PluginGeneration, *, boot: bool = False) -> None:
         """Record only live pre-Fiber load failures before normal retention."""
         # 运行中启用或换代守卫插件同样先登记要求；其 apply 失败时入口拒绝而非放行。
         self._require_ingress(generation)
         try:
-            await self._load_selected_generation(generation)
+            if boot and not (generation.data_dir / CONFIG_INPUT).exists():
+                defaults = read_initial_config(generation.code_dir)
+                if defaults is not None:
+                    generation.config_projection, generation.config_revision = defaults
+                if generation.config_projection:
+                    save_config(generation.data_dir, generation.config_projection)
+            try:
+                await self._load_selected_generation(generation)
+            except SystemExit as error:
+                raise RuntimeError(f"插件导入请求退出: {generation.plugin_id} (SystemExit {error.code})") from error
+            # Validate this plugin's path declarations before handing it to the live Root.
+            plugin = cast(ComposablePlugin, generation.instance)
+            for name in plugin.workspace_roots:
+                _ = resolve_declared_workspace_root(self._workspace, name)
+            for name in plugin.workspace_files:
+                _ = resolve_declared_workspace_file(self._workspace, name)
         except Exception as error:
             if generation.fiber is not None:
                 raise RuntimeError(
@@ -1041,14 +1062,6 @@ class PluginManager:
             ),
         )
 
-    def _selection_transition_committed(self, tx_id: str, current_ref: str | None) -> bool | None:
-        """按前驱和完整 refs 认定同一次转换；旧记录缺证据时明确未知。"""
-        intent = self._reload_journal.selection_candidate(tx_id)
-        if intent is None:
-            return None
-        base, components = intent
-        return self._selection.transition_committed(base, components)
-
     async def _prepare_boot_runtime_recovery(
         self,
         actions: tuple[ReloadRecoveryAction, ...],
@@ -1105,6 +1118,7 @@ class PluginManager:
         *,
         state: str,
         retain_selected_failed: bool = False,
+        hand_off_cleanup: bool = False,
     ) -> None:
         """成功后才解除 owner；失败或取消保留资源供显式关闭重试。"""
 
@@ -1151,6 +1165,9 @@ class PluginManager:
                 raise BaseExceptionGroup(
                     "generation 清理与持久失败记录均失败", [error, journal_error],
                 ) from None
+            if hand_off_cleanup and isinstance(error, Exception):
+                assert generation.reload_tx_id is not None
+                raise GenerationCleanupPending((generation.reload_tx_id,)) from error
             raise
 
         # 3. 所有资源确认关闭后才移除模块及排空 owner。
@@ -2230,14 +2247,6 @@ class PluginManager:
             if manifest.name != plugin_id.split("@", 1)[0]:
                 raise ValueError(f"已安装插件身份改变: {plugin_id}")
             projection, config_revision = load_config(data_dir)
-            defaults = code_dir / "initial_config.json"
-            if not (data_dir / CONFIG_INPUT).exists() and defaults.exists():
-                if defaults.is_symlink():
-                    raise ValueError("初始配置不能是符号链接")
-                projection = json.loads(defaults.read_bytes())
-                if not isinstance(projection, dict):
-                    raise ValueError("初始配置必须是映射")
-                config_revision = hashlib.sha256(config_bytes(projection)).hexdigest()
             generation = PluginGeneration(
                 plugin_id=plugin_id, generation_id=generation_id, module_path=module_path,
                 source_revision=revision, config_revision=config_revision,
@@ -2312,10 +2321,6 @@ class PluginManager:
 
         plugin = cast(ComposablePlugin, generation.instance)
         workspace = self._workspace
-        for name in plugin.workspace_roots:
-            _ = resolve_declared_workspace_root(workspace, name)
-        for name in plugin.workspace_files:
-            _ = resolve_declared_workspace_file(workspace, name)
         try:
             generation.fiber = await root._mount_module(  # pyright: ignore[reportPrivateUsage]
                 plugin.apply,
@@ -2524,19 +2529,34 @@ class PluginManager:
         self._restart_gate.close()
         _, externally_cancelled = await _complete_critical(self._plugin_tasks.drain())
         live_root = self._live_root
-        for generation in tuple(reversed(tuple(self._active_generations.values()))):
-            _, cancelled = await _complete_critical(
-                self._dispose_generation(generation, state="retired")
-            )
-            externally_cancelled = externally_cancelled or cancelled
-        for generations in tuple(self._draining_generations.values()):
-            for generation in tuple(generations):
+        exiting_boot = (self._restart_gate.boot_id if self._restart_gate.stop_prepared
+                        and os.environ.get("AKASHIC_DOCKER_RUNTIME") == "1" else None)
+        generations = list(reversed(tuple(self._active_generations.values())))
+        for tracked in self._draining_generations.values():
+            generations.extend(tracked)
+        # The same failed generation can be both selected and draining.
+        owners = {generation.generation_id: generation for generation in generations}
+        pending: list[str] = []
+        for generation in owners.values():
+            try:
                 _, cancelled = await _complete_critical(
-                    self._dispose_generation(generation, state="retired")
+                    self._dispose_generation(generation, state="retired", hand_off_cleanup=exiting_boot is not None)
                 )
                 externally_cancelled = externally_cancelled or cancelled
+            except GenerationCleanupPending as error:
+                pending.extend(error.transactions)
         _, cancelled = await _complete_critical(self._plugin_tasks.close())
         externally_cancelled = externally_cancelled or cancelled
+        if pending:
+            if externally_cancelled:
+                raise asyncio.CancelledError
+            assert exiting_boot is not None
+            eligible = {a.tx_id for a in self._reload_journal.pending_recovery()
+                        if self._reload_journal.is_boot_generation_cleanup(a, exiting_boot)}
+            if self._building_roots or not set(pending).issubset(eligible):
+                raise RuntimeError("插件关闭失败涉及未完成的 Root 或非本 boot 代清理")
+            # Keep the failed Fibers and their providers alive until the verified container exit.
+            raise GenerationCleanupPending(tuple(pending))
         if live_root is not None:
             _, cancelled = await _complete_critical(live_root.dispose())
             externally_cancelled = externally_cancelled or cancelled
