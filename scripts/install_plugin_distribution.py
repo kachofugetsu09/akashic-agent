@@ -887,12 +887,18 @@ def _prepare_distribution_inputs(
     return tuple(ordered + [prepared[plugin_id] for plugin_id in sorted(prepared)])
 
 
-def _same_selected_sources(
+def _can_boot_for_recovery(
     selected: dict[str, tuple[str, Mapping[str, object], Path]],
     candidate: dict[str, ResolvedPluginSource],
+    choices: Mapping[str, bool],
 ) -> bool:
-    """Recovery may start exact existing inputs, never substitute new code or choices."""
-    if selected.keys() != candidate.keys():
+    """Let the existing runtime finish cleanup and honor an explicit disable."""
+    # The manager settles old owners first, then drops disabled installed inputs.
+    expected = {
+        plugin_id for plugin_id, (_, descriptor, _) in selected.items()
+        if descriptor["source_type"] != "installed" or choices.get(plugin_id) is not False
+    }
+    if expected != candidate.keys():
         return False
     for plugin_id, source in candidate.items():
         descriptor = selected[plugin_id][1]
@@ -1152,7 +1158,9 @@ def ensure_bundle(
                 # The normal entrypoint must let the original runtime repair its
                 # committed config projection. Do not prepare from stale files or
                 # publish anything while that recovery owner is unsettled.
-                if pending or expected is None or not _same_selected_sources(selected, candidate):
+                if pending or expected is None or not _can_boot_for_recovery(
+                    selected, candidate, plugin_choices(workspace, distribution)
+                ):
                     raise
                 return {**receipt, "status": "existing", "new_root_ref": expected,
                         "recovery_pending": True}
