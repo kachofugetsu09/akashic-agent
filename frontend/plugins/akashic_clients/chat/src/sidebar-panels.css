@@ -78,6 +78,7 @@
   transform: translateY(-6px) scale(0.96, 0.92);
   filter: blur(3px);
   pointer-events: none;
+  /* motion-exempt: 桌面面板展开时的几何形变（top/left/width/height）只在桌面端发生，合成写法需要内容反向缩放，ADR 0166 已知限制 */
   transition:
     opacity var(--ak-sys-duration-snap, 120ms) var(--ak-sys-motion-standard),
     transform var(--ak-sys-duration-snap, 120ms) var(--ak-sys-motion-standard),
@@ -131,6 +132,7 @@
   padding-block-end: env(safe-area-inset-bottom, 0px);
   transform: translateY(16px);
   filter: none;
+  /* motion-exempt: 待迁移到合成线程写法，见 ADR 0166 */
   transition:
     opacity var(--ak-sys-duration-snap, 120ms) var(--ak-sys-motion-standard),
     transform var(--ak-sys-duration-snap, 120ms) var(--ak-sys-motion-emphasized),
@@ -199,6 +201,7 @@
   background: transparent;
   color: var(--chat-muted);
   cursor: pointer;
+  /* motion-exempt: 目标是 HTML 按钮不是 SVG，独立 scale 可以合成 */
   transition: background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard), color var(--ak-sys-duration-short) var(--ak-sys-motion-standard), scale var(--ak-sys-duration-instant) var(--ak-sys-motion-standard);
 }
 .sidebar-panels__icon:active:not(:disabled) { scale: 0.96; }

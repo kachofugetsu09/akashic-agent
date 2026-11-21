@@ -174,6 +174,7 @@ export function PreviewText({ text, tail, className }: { text: string; tail: boo
     pre.style.transition = "none";
     pre.style.maxHeight = `${before.height}px`;
     void pre.offsetHeight;
+    // motion-exempt: 工具结果预览的高度过渡：合成写法需要盖板与不透明底色，ADR 0166 已知限制
     pre.style.transition = `max-height ${before.expanding ? "var(--ak-sys-duration-expand)" : "var(--ak-sys-duration-snap)"} var(--ak-sys-motion-standard)`;
     pre.style.maxHeight = `${targetHeight}px`;
   }, [full, closing]);

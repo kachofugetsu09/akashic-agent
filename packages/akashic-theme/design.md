@@ -38,7 +38,7 @@ Akashic 的设计语言由六条轴组成：纸面、墨色、规则线、字体
 | 高度 | `--ak-elevation-*` | raised / float / overlay，见 2.2 |
 | 字体 | `--ak-type-*` | reading / technical |
 | 状态 | `--ak-color-status-*` / `--ak-sys-color-*` | success / warning / error / trace / info |
-| 动效 | `--ak-sys-motion-*` / `--ak-sys-duration-*` | 曲线与时长 |
+| 动效 | `--ak-sys-motion-*` / `--ak-sys-duration-*` | 曲线与时长，属性白名单见 2.3 |
 
 布局几何同样只有一个 owner：
 
@@ -93,6 +93,23 @@ Akashic 的设计语言由六条轴组成：纸面、墨色、规则线、字体
 - 确需例外时在声明前写 `/* token-exempt: 理由 */`，理由不能为空。
 
 已知范围：检查只覆盖本仓库的 CSS 声明。外置插件的仓库、JS 内联样式、裸颜色和裸字号不在其中；选择器伸进别人结构的情况只能靠评审。
+
+### 2.3 动效合同
+
+120Hz 屏每帧只有 8.3ms。主线程上的动画只要遇到一次 React 提交、样式重算或垃圾回收就会停帧，表现为卡顿或一下跳过一大段。所以动画只能落在合成线程能独立播放的属性上（[0166](../docs/decisions/0166-motion-runs-on-the-compositor.md)）。`npm run check:motion`（`scripts/check_motion.mjs`）检查入库的 CSS 过渡与关键帧、脚本里的 `style.transition` 和 `element.animate()`，CI 同样会跑。
+
+- 允许做动画的属性：`transform`、`translate`、`scale`、`rotate`、`opacity`。颜色类属性（`color`、`background-color`、各种 `*-color`、`fill`、`stroke`）只重绘、面积小，允许保留。`display`、`visibility` 的离散切换允许保留。
+- 不允许做动画的属性：
+  - 布局类：高度、宽度、位置、内外边距、`grid-template-*`、`flex-*`。
+  - 重绘类：`box-shadow`、`filter`、`background-position`、`stroke-dash*`、`mask`。
+  - 自定义属性，以及 `transition: all`。
+- 图标的旋转、位移用 `transform`。SVG 元素上的独立 `rotate`、`scale`、`translate` 属性无法合成。静态检查按选择器末段命名（svg、chevron、icon、lucide）提示；如果目标其实是 HTML 元素，写豁免说明。
+- 布局变化的写法是"布局一步到位，再用 transform 从旧位置过渡到新位置"（FLIP），内容只动 `opacity`。不要让高度逐帧变化。一个布局动画还会把同批启动、作用在它子孙上的 `opacity`、`transform` 一起拖回主线程。
+- 阴影、模糊的写法：叠一层画死的伪元素，只过渡它的 `opacity`；或者直接切换，不做过渡。
+- 时长与曲线：会移动的展开用 `--ak-sys-duration-open` 加 `--ak-sys-motion-open`，收起用 `--ak-sys-duration-close` 加 `--ak-sys-motion-close`。120Hz 下每帧推进不超过约 12%。卸载等动画结束（`finished`/`transitionend`），不用定时器去猜。
+- 确需例外时，CSS 在声明前写 `/* motion-exempt: 理由 */`，脚本在上一行写 `// motion-exempt: 理由`，理由不能为空。现存例外与原因列在 0166 的已知限制里。
+
+静态检查认不出运行时才知道的事：元素类型、同批拖累、滚动驱动的动画。动画改动用 `node scripts/motion-probe.mjs --url <页面> --scenario <剧本>` 在真实页面上验收。它从 Chrome trace 读出没上合成线程的动画及原因、各线程掉帧数，有问题时以非零码退出。
 
 ## 3. 布局与对齐合同
 
@@ -315,6 +332,7 @@ ReAct 中每段 assistant 正文都按正式回复的字号、墨色和 Markdown
 npm run typecheck
 npm run build:chat        # 改 chat 时
 npm run build:web-plugins # 改插件 UI 时
+npm run check:motion      # 改动画时，另用 scripts/motion-probe.mjs 在真实页面验收
 ```
 
 布局、断点或 token 变化另需在固定 Chromium 里做截图前后对比（`scripts/webui-performance/serve-desktop-fixture.mjs` 提供确定性桌面 fixture），窄屏行为变化跑 `check:narrow-ui`。截图保留在本地私有目录，不进 PR。

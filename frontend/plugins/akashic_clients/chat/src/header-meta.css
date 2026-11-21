@@ -34,6 +34,7 @@
   border-radius: var(--ak-radius-md); background: var(--ak-paper-canvas); box-shadow: 0 0 0 1px var(--ak-rule-subtle), var(--ak-elevation-float);
   color: var(--chat-muted); font-size: var(--chat-type-control, 0.875rem);
   opacity: 0; transform: translateY(-4px) scale(0.985); filter: blur(3px); pointer-events: none;
+  /* motion-exempt: 待迁移到合成线程写法，见 ADR 0166 */
   transition: opacity var(--ak-sys-duration-snap, 120ms) var(--ak-sys-motion-standard), transform var(--ak-sys-duration-snap, 120ms) var(--ak-sys-motion-standard), filter var(--ak-sys-duration-snap, 120ms) var(--ak-sys-motion-standard); }
 .header-meta-panel[data-state="open"] { opacity: 1; transform: none; filter: blur(0); pointer-events: auto;
   transition-duration: var(--ak-sys-duration-short, 150ms);

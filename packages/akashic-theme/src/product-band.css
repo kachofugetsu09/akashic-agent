@@ -155,6 +155,7 @@
   background: var(--ak-rule-focus);
   /* token-exempt: 顶栏归 shell_ui 所有，这份样式待迁出 theme */
   transform: translateX(var(--band-indicator-x, 0));
+  /* motion-exempt: 待迁移到合成线程写法，见 ADR 0166 */
   transition:
     transform var(--ak-sys-duration-medium) var(--ak-sys-motion-emphasized),
     width var(--ak-sys-duration-medium) var(--ak-sys-motion-emphasized);

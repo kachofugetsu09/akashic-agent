@@ -1727,6 +1727,7 @@ function FileManagerApp({
           <AnimatePresence initial={false}>
             {filterOpen && mode === "browse" && (
               <motion.div
+                // motion-exempt: 阅读器筛选栏、大纲面板展开时由 motion 库逐帧驱动高度，低频，ADR 0166 已知限制
                 initial={{ height: 0, opacity: 0 }}
                 animate={{ height: 41, opacity: 1 }}
                 exit={{ height: 0, opacity: 0 }}
@@ -1846,6 +1847,7 @@ function FileManagerApp({
               <AnimatePresence mode="popLayout" initial={false}>
                 <motion.div
                   key={viewKey}
+                  // motion-exempt: 待迁移到合成线程写法，见 ADR 0166
                   initial={{
                     opacity: 0,
                     filter: "blur(5px)",
@@ -2005,6 +2007,7 @@ function FileManagerApp({
                       <AnimatePresence initial={false}>
                         {outlineOpen && isMd && (
                           <motion.nav
+                            // motion-exempt: 阅读器筛选栏、大纲面板展开时由 motion 库逐帧驱动高度，低频，ADR 0166 已知限制
                             initial={{ height: 0, opacity: 0 }}
                             animate={{ height: "auto", opacity: 1 }}
                             exit={{ height: 0, opacity: 0 }}

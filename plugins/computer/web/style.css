@@ -180,6 +180,7 @@
   border-radius: var(--ak-radius-sm);
   color: var(--ak-ink-secondary);
   background: transparent;
+  /* motion-exempt: 待迁移到合成线程写法，见 ADR 0166 */
   transition: background-color 120ms var(--computer-ease), box-shadow 120ms var(--computer-ease);
 }
 
@@ -416,6 +417,7 @@
 
 /* 刷新图标每按一次多转一圈，角度由脚本累加 */
 .computer-bar .computer-icon {
+  /* motion-exempt: 待迁移到合成线程写法，见 ADR 0166 */
   transition: rotate 600ms var(--computer-ease);
 }
 
@@ -459,6 +461,7 @@
   inset: 0;
   content: "";
   pointer-events: none;
+  /* motion-exempt: 待迁移到合成线程写法，见 ADR 0166 */
   transition: box-shadow 160ms var(--computer-ease);
 }
 
@@ -764,6 +767,7 @@
   font-size: 0.75rem;
   line-height: 18px;
   white-space: nowrap;
+  /* motion-exempt: Agent 光标标签收拢成圆点，只在 Computer 面板出现，ADR 0166 已知限制 */
   transition-property: max-width, padding;
   transition-duration: 400ms;
   transition-timing-function: var(--computer-ease);

@@ -101,6 +101,9 @@ jobs:
       - name: Check CSS appearance contract
         run: npm run check:css-tokens
 
+      - name: Check motion contract
+        run: npm run check:motion
+
       - name: Run frontend typecheck
         run: npm run typecheck
 

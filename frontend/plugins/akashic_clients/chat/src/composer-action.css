@@ -19,6 +19,7 @@
   background: var(--ak-ink-primary);
   cursor: pointer;
   appearance: none;
+  /* motion-exempt: 待迁移到合成线程写法，见 ADR 0166 */
   transition-property: scale, color, background-color, box-shadow;
   /* 按下要立刻、回弹才慢慢来：进出两条时长与两条曲线分开写，索引与 transition-property 对齐。 */
   transition-duration: 180ms, var(--ak-sys-duration-short), var(--ak-sys-duration-short), var(--ak-sys-duration-short);
@@ -101,6 +102,8 @@
 .composer-action-button[data-mode="stop"][aria-disabled="true"] .composer-action-button__chase circle {
   animation-duration: 1.1s;
 }
+
+/* motion-exempt: 待迁移到合成线程写法，见 ADR 0166 */
 
 @keyframes composer-action-stopping {
   from { stroke-dashoffset: 0; }

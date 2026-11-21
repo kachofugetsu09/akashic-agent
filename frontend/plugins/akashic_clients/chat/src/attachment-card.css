@@ -33,6 +33,7 @@
   font: inherit;
   text-align: start;
   cursor: pointer;
+  /* motion-exempt: 待迁移到合成线程写法，见 ADR 0166 */
   transition: box-shadow var(--ak-sys-duration-short) var(--ak-sys-motion-standard), scale 60ms;
 }
 .ak-attachment__surface:active:not(:disabled) { scale: 0.98; }
@@ -177,6 +178,7 @@ video.ak-attachment__image { opacity: 1; }
   background: linear-gradient(100deg, transparent 30%, color-mix(in oklab, var(--ak-ink-primary) 7%, transparent) 50%, transparent 70%);
   background-size: 200% 100%; animation: ak-attachment-shimmer 1.2s linear infinite;
 }
+/* motion-exempt: 待迁移到合成线程写法，见 ADR 0166 */
 @keyframes ak-attachment-shimmer { from { background-position: 150% 0; } to { background-position: -50% 0; } }
 
 /* —— 已发送附件条：用户消息在气泡上方右对齐，回复里左对齐；媒体保持原比例，之后另起一行排文件卡 —— */

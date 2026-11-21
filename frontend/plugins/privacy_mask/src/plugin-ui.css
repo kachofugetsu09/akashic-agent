@@ -273,6 +273,7 @@ html[data-privacy-content="true"] :is(
 ):not(.privacy-shot *) {
   filter: blur(6px) !important;
   user-select: none !important;
+  /* motion-exempt: 待迁移到合成线程写法，见 ADR 0166 */
   transition: filter 180ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
@@ -508,7 +509,7 @@ html[data-privacy-content="true"] :is(
 }
 
 .privacy-shot-kinds summary::-webkit-details-marker { display: none; }
-.privacy-shot-kinds summary svg { transition: rotate var(--ak-sys-duration-short) var(--ak-sys-motion-standard); }
+.privacy-shot-kinds summary svg { /* motion-exempt: 待迁移到合成线程写法，见 ADR 0166 */ transition: rotate var(--ak-sys-duration-short) var(--ak-sys-motion-standard); }
 .privacy-shot-kinds[open] summary svg { rotate: 90deg; }
 .privacy-shot-kinds > div { display: flex; flex-wrap: wrap; gap: 8px; padding-block-end: 8px; }
 

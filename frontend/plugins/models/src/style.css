@@ -81,6 +81,7 @@
   font-size: var(--md-sys-typescale-label-large-size);
   font-weight: var(--md-sys-typescale-label-large-weight);
   cursor: pointer;
+  /* motion-exempt: 待迁移到合成线程写法，见 ADR 0166 */
   transition-property: color, background-color, box-shadow, scale;
   transition-duration: var(--ak-sys-duration-short);
   transition-timing-function: var(--ak-sys-motion-standard);
@@ -198,7 +199,7 @@
   cursor: pointer;
 }
 .settings-provider-parked button span { flex: 1 1 auto; }
-.settings-provider-parked button svg { transition: rotate var(--ak-sys-duration-short) var(--ak-sys-motion-standard); }
+.settings-provider-parked button svg { /* motion-exempt: 待迁移到合成线程写法，见 ADR 0166 */ transition: rotate var(--ak-sys-duration-short) var(--ak-sys-motion-standard); }
 .settings-provider-parked button[aria-expanded="true"] svg { rotate: 90deg; }
 @media (hover: hover) { .settings-provider-parked button:hover { color: var(--ak-ink-primary); background: color-mix(in oklab, var(--ak-ink-primary) 4%, transparent); } }
 .settings-provider-parked button:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: -2px; }
@@ -242,6 +243,7 @@
 .settings-provider-row > .lucide-chevron-right {
   color: var(--md-sys-color-on-surface-variant);
   pointer-events: none;
+  /* motion-exempt: 待迁移到合成线程写法，见 ADR 0166 */
   transition: rotate var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
 }
 .settings-provider-row:has(> .settings-provider-head:disabled) > .lucide-chevron-right { opacity: 0.35; }
