@@ -1,4 +1,4 @@
-import "./plugin-ui.css";
+import "./message-ui.css";
 import { mountMemoryBadge, mountMemoryField } from "./scope-ui.tsx";
 
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (character) => ({
