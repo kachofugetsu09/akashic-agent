@@ -17,6 +17,8 @@ JsonObject = dict[str, object]
 _PLUGIN_REF = re.compile(r"^([A-Za-z0-9_.-]+)@[A-Za-z0-9_.-]+$")
 # 迁移时会合法变化的来源字段；--ignore-source 时整体丢弃。
 _SOURCE_KEYS = frozenset({"marketplace", "builtin", "source", "source_id"})
+# 前端构建产物的哈希；构建方式变化（内置构建改为外置仓库构建）时会变，--ignore-build 时丢弃。
+_BUILD_KEYS = frozenset({"module_sha256", "stylesheet_sha256", "contract_digests"})
 _REF_KEYS = frozenset({"id", "owner"})
 # 每个列表段落及其条目身份字段。
 _SECTIONS: tuple[tuple[str, str], ...] = (
@@ -147,18 +149,18 @@ def encode(snapshot: JsonObject) -> str:
     return json.dumps(snapshot, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
 
 
-# 去掉来源字段并把 name@market 归一成 name；之后重新排序，使两侧同序。
-def strip_source(value: object) -> object:
+# 去掉指定字段；normalize_refs 时再把 name@market 归一成 name，使两侧同序。
+def strip_keys(value: object, dropped: frozenset[str], normalize_refs: bool) -> object:
     if isinstance(value, list):
-        return [strip_source(item) for item in cast(list[object], value)]
+        return [strip_keys(item, dropped, normalize_refs) for item in cast(list[object], value)]
     if not isinstance(value, dict):
         return value
     result: JsonObject = {}
     for key, item in cast(JsonObject, value).items():
-        if key in _SOURCE_KEYS:
+        if key in dropped:
             continue
-        match = _PLUGIN_REF.match(item) if key in _REF_KEYS and isinstance(item, str) else None
-        result[key] = match.group(1) if match else strip_source(item)
+        match = _PLUGIN_REF.match(item) if normalize_refs and key in _REF_KEYS and isinstance(item, str) else None
+        result[key] = match.group(1) if match else strip_keys(item, dropped, normalize_refs)
     return result
 
 
@@ -222,8 +224,10 @@ def run_export(args: argparse.Namespace) -> int:
 
 def run_diff(args: argparse.Namespace) -> int:
     old, new = _load(cast(str, args.old)), _load(cast(str, args.new))
-    if args.ignore_source:
-        old, new = cast(JsonObject, strip_source(old)), cast(JsonObject, strip_source(new))
+    dropped = (_SOURCE_KEYS if args.ignore_source else frozenset[str]()) | (_BUILD_KEYS if args.ignore_build else frozenset[str]())
+    if dropped:
+        old = cast(JsonObject, strip_keys(old, dropped, bool(args.ignore_source)))
+        new = cast(JsonObject, strip_keys(new, dropped, bool(args.ignore_source)))
     lines = diff_snapshots(old, new)
     print("\n".join(lines) if lines else "两份快照一致")
     return 1 if lines else 0
@@ -242,6 +246,7 @@ def main() -> int:
     _ = compare.add_argument("old")
     _ = compare.add_argument("new")
     _ = compare.add_argument("--ignore-source", action="store_true", help="忽略来源（市场、内置/外置、技能来源）的变化")
+    _ = compare.add_argument("--ignore-build", action="store_true", help="忽略前端构建产物哈希的变化，只比较模块是否存在及其合同")
     args = parser.parse_args()
     return run_export(args) if args.command == "export" else run_diff(args)
 
