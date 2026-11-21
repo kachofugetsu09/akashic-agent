@@ -6,12 +6,21 @@ export type MotionPhase = "open" | "close";
 // 跟随者在滑动期间盖住还没露出（或正在收起）的内容：不透明底色、层级高于展开区，由 CSS 按此类名给出。
 const COVER_CLASS = "is-motion-cover";
 
+// CSS 时长转毫秒：构建会把 240ms 压成 .24s，单位必须按 s/ms 换算。
+export function cssDurationMs(value: string): number {
+  const match = value.trim().match(/^(-?[\d.]+)(ms|s)$/);
+  if (!match) return 0;
+  const amount = Number.parseFloat(match[1]);
+  if (!Number.isFinite(amount)) return 0;
+  return match[2] === "s" ? amount * 1000 : amount;
+}
+
 // 读时长/曲线 token；减少动态效果时时长 token 为 0。
 export function motionTiming(element: Element, phase: MotionPhase): { duration: number; easing: string } {
   const styles = getComputedStyle(element);
-  const duration = Number.parseFloat(styles.getPropertyValue(`--ak-sys-duration-${phase}`));
+  const duration = cssDurationMs(styles.getPropertyValue(`--ak-sys-duration-${phase}`));
   const easing = styles.getPropertyValue(`--ak-sys-motion-${phase}`).trim();
-  return { duration: Number.isFinite(duration) ? duration : 0, easing: easing || "ease" };
+  return { duration, easing: easing || "ease" };
 }
 
 // host 之后、boundary 之内的元素：沿祖先链逐层收集后继兄弟，只留滑动途中会进入 boundary 可见区的（其余直接落位，看不见）。
