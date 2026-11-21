@@ -474,7 +474,7 @@ class _GenerationAkashicAdapter:
             self._socket_nodes.append((public_path, node.st_dev, node.st_ino))
 
         self._endpoint = await self._owner.endpoint("client", protocol="http+unix",
-            address=str(socket_path), routes=("/chat", "/settings", "/assets", "/api/chat", "/api/shell/state", "/ws"))
+            address=str(socket_path), routes=("/chat", "/settings", "/assets", "/api/chat", "/api/shell/state", "/api/client", "/ws"))
 
     def _close_socket_nodes(self) -> None:
         """listener 排空后只移除本次创建且身份未变的临时节点。"""

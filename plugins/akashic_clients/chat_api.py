@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from core.common.file_io import run_file_io
 
+from .client_diagnostics import register_client_diagnostics
 from .static import current_chat_build, current_runtime_commit, register_chat_assets
 from plugins.ui.contract import PluginUiSlot, PromptShutdownServer, accepts_gzip_header, read_message_rows, session_row
 from .navigation import NavigationPreferences, PinUpdate, session_pin_row
@@ -216,6 +217,7 @@ def create_chat_app(
 
     static_dir = Path(__file__).resolve().parent / "static/chat"
     register_chat_assets(app, static_dir)
+    register_client_diagnostics(app, workspace)
 
     @app.get("/api/shell/state")
     async def client_state() -> dict[str, object]:
