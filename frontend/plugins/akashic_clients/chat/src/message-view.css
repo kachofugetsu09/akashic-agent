@@ -1227,12 +1227,12 @@
   flex: none;
   width: 13px;
   color: var(--ak-color-text-secondary);
-  /* motion-exempt: 待迁移到合成线程写法，见 ADR 0166 */
-  transition: translate var(--ak-sys-duration-short) var(--ak-sys-motion-standard), transform var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+  transform: translateY(0) rotate(0deg);
+  transition: transform var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
 }
 
 .tool-group-caret.open {
-  transform: rotate(180deg);
+  transform: translateY(0) rotate(180deg);
 }
 
 /* 悬停或键盘聚焦时箭头与文字一起提到主墨色，表示这一整行可点。 */
@@ -1393,17 +1393,17 @@
 }
 
 /* 展开时长内容滚动期间 trigger 吸附在视口顶，随时可收起；纸面上只留底色与一根发丝线。
-   行高在收起与展开态保持一致，吸顶边框平滑淡入淡出。 */
+   行高在收起与展开态保持一致，吸顶发丝线直接切换。 */
 .process-trigger-sticky {
   display: flex;
   min-height: var(--tool-sticky-h, 28px);
   align-items: center;
+  /* 发丝线直接切换，不过渡（box-shadow 每帧重绘）。 */
   box-shadow: inset 0 -1px 0 transparent;
-  /* motion-exempt: 待迁移到合成线程写法，见 ADR 0166 */
+  /* motion-exempt: 窄屏阅读时顶栏收起，吸顶偏移跟着过渡；合成写法要逐个吸顶元素做 FLIP，ADR 0166 已知限制 */
   transition:
     top var(--ak-sys-duration-short) var(--ak-sys-motion-standard),
-    background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard),
-    box-shadow var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+    background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
 }
 
 .thinking-row:is([data-state="open"], [data-sticky="true"]) .process-trigger-sticky {
@@ -1427,13 +1427,16 @@
   flex: none;
 }
 
-.process-chevron {
-  /* motion-exempt: 待迁移到合成线程写法，见 ADR 0166 */
-  transition: translate var(--ak-sys-duration-short) var(--ak-sys-motion-standard), transform var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+/* 箭头是 lucide SVG：独立 translate 上不了合成线程，悬停位移与旋转写在同一条 transform 里（函数列表一致才能插值）。 */
+.process-chevron,
+.tool-step-chevron {
+  transform: translateY(0) rotate(0deg);
+  transition: transform var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
 }
 
-.process-chevron.open {
-  transform: rotate(180deg);
+.process-chevron.open,
+.tool-step-chevron.open {
+  transform: translateY(0) rotate(180deg);
 }
 
 /* 过程里每一步（思考、工具、上下文提示）都能展开，一列十个常驻箭头只是噪音（Codex 桌面版同样只在悬停时给）。
@@ -1443,15 +1446,18 @@
   .process-trigger:not(.inline-reply-notice > .process-trigger) .process-chevron:not(.open),
   .tool-step-summary:not(.turn-process-summary, .tool-group-summary) .tool-step-chevron:not(.open) {
     opacity: 0;
-    /* motion-exempt: 待迁移到合成线程写法，见 ADR 0166 */
-    transition: opacity var(--ak-sys-duration-short) var(--ak-sys-motion-standard), translate var(--ak-sys-duration-short) var(--ak-sys-motion-standard), transform var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+    transition: opacity var(--ak-sys-duration-short) var(--ak-sys-motion-standard), transform var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
   }
-  .context-notice[data-open="true"] > .process-trigger .process-chevron,
+  .context-notice[data-open="true"] > .process-trigger .process-chevron:not(.open),
   .process-trigger:is(:hover, :focus-visible) .process-chevron:not(.open),
   .tool-step-summary:is(:hover, :focus-visible) .tool-step-chevron:not(.open) {
     opacity: 1;
     /* 箭头先朝「将要打开」的方向挪 2px：点击之前，行就说清按下会发生什么。 */
-    translate: 0 2px;
+    transform: translateY(2px) rotate(0deg);
+  }
+  /* 展开着的上下文提示保留下挪 2px，同时朝上翻转（与改前的独立 translate + rotate 叠加一致）。 */
+  .context-notice[data-open="true"] > .process-trigger .process-chevron.open {
+    transform: translateY(2px) rotate(180deg);
   }
 }
 
@@ -1615,15 +1621,6 @@ button.tool-step-summary:active {
   white-space: nowrap;
 }
 
-.tool-step-chevron {
-  /* motion-exempt: 待迁移到合成线程写法，见 ADR 0166 */
-  transition: translate var(--ak-sys-duration-short) var(--ak-sys-motion-standard), transform var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
-}
-
-.tool-step-chevron.open {
-  transform: rotate(180deg);
-}
-
 .tool-step.active :is(.tool-step-state, .tool-step-chevron) {
   color: var(--ak-color-status-trace-text);
 }
@@ -1650,21 +1647,16 @@ button.tool-step-summary:active {
   }
 }
 
-/* 展开区：grid 行过渡高度，内层淡入并下移 4px。容器常驻 DOM，开合只切 class，首次点开也有过渡；
-   不加 @starting-style：它只会让“挂载即展开”的行（如历史里出错的工具步骤）在切会话时多播一次展开。
-   展开比收起慢：展开是「我要读」，用 --ak-sys-duration-expand（200ms）走完全程；
-   收起是「读完了」，用 --ak-sys-duration-snap（120ms）迅速让位，与桌面端同一不对称口径。
+/* 展开区：容器常驻 DOM，grid 行 0fr / 1fr 直接切换，不过渡高度。位移与透明度由 Disclosure（tool-result-view.tsx）
+   用 motion.ts 的 FLIP 驱动：下方元素带消息区底色从旧位置滑到新位置，内容只动 opacity；收起先播动画，结束时再切 class。
    内层只能用 overflow: clip，hidden 会建立滚动容器，让嵌套行的 sticky 失效。 */
 .tool-step-disclosure {
   display: grid;
   grid-template-rows: 0fr;
-  /* motion-exempt: 待迁移到合成线程写法，见 ADR 0166 */
-  transition: grid-template-rows var(--ak-sys-duration-snap) var(--ak-sys-motion-standard);
 }
 
 .tool-step-disclosure.open {
   grid-template-rows: 1fr;
-  transition-duration: var(--ak-sys-duration-expand);
 }
 
 /* grid 子项默认 min-width:auto 会被不折行的 diff 撑开（实测一行 1500 字撑到 1 万多像素）；归零后横滚留在结果区内。 */
@@ -1676,21 +1668,24 @@ button.tool-step-summary:active {
 .tool-step-disclosure-inner {
   min-height: 0;
   overflow: clip;
-  opacity: 0;
-  translate: 0 -4px;
-  transition-property: opacity, translate;
-  transition-duration: var(--ak-sys-duration-snap), var(--ak-sys-duration-snap);
-  transition-timing-function: ease-out, var(--ak-sys-motion-standard);
 }
 
-.tool-step-disclosure.open > .tool-step-disclosure-inner {
-  opacity: 1;
-  translate: 0 0;
-  transition-duration: var(--ak-sys-duration-expand), var(--ak-sys-duration-expand);
+/* 开合滑动中的跟随者：盖住还没露出或正在收起的内容；静态阴影向上补齐与上一个元素之间的缝（motion.ts 写入缝高）。
+   不改 position：跟随者可能是吸顶行。层叠靠文档序（跟随者在内容之后，transform 与 opacity 各自成层）。 */
+/* 缝高只给跟随者自己用：注册成不继承，写入时不连带整棵子树重算样式（大段回答上约 40ms，4x 降速）。 */
+@property --motion-cover-gap {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+
+.conversation-scroll .is-motion-cover {
+  background: var(--ak-color-bg-canvas);
+  box-shadow: 0 calc(-1 * var(--motion-cover-gap, 0px)) 0 var(--ak-color-bg-canvas);
 }
 
 /* 展开的工具行吸在消息列表顶部，读到哪都能收起；嵌在工具组里的行让出一行组标题的高度。
-   行高在收起与展开态保持固定，开关过程不跳行、发丝线平滑淡入淡出。 */
+   行高在收起与展开态保持固定，开关过程不跳行、发丝线直接切换。 */
 .process-trace,
 .turn-process {
   --tool-sticky-h: 28px;
@@ -1700,12 +1695,12 @@ button.tool-step-summary:active {
   display: flex;
   min-height: var(--tool-sticky-h);
   align-items: center;
+  /* 发丝线直接切换，不过渡（box-shadow 每帧重绘）。 */
   box-shadow: inset 0 -1px 0 transparent;
-  /* motion-exempt: 待迁移到合成线程写法，见 ADR 0166 */
+  /* motion-exempt: 窄屏阅读时顶栏收起，吸顶偏移跟着过渡；合成写法要逐个吸顶元素做 FLIP，ADR 0166 已知限制 */
   transition:
     top var(--ak-sys-duration-short) var(--ak-sys-motion-standard),
-    background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard),
-    box-shadow var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+    background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
 }
 
 /* --heading-cover：窄屏浮在滚动区上方的标题栏在场时的遮挡高度，吸顶行让到它下面。 */
@@ -2257,8 +2252,6 @@ button.tool-step-summary:active {
   .tool-step-summary,
   .tool-step-sticky,
   .tool-step-chevron,
-  .tool-step-disclosure,
-  .tool-step-disclosure-inner,
   .tool-result-nested__chevron,
   .timeline-details__chevron,
   .compaction-boundary__chevron,
