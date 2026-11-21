@@ -69,7 +69,8 @@ function coverGaps(host: Element, followers: HTMLElement[]): number[] {
 function coverWhile(element: HTMLElement, gap: number, animation: Animation): Animation {
   coverOwner.set(element, animation);
   element.classList.add(COVER_CLASS);
-  element.style.setProperty("--motion-cover-gap", `${Math.ceil(gap)}px`);
+  // 多盖 1px：滑动中位置落在亚像素上，缝边会有抗锯齿残影。
+  element.style.setProperty("--motion-cover-gap", `${gap > 0 ? Math.ceil(gap) + 1 : 0}px`);
   const release = () => {
     if (coverOwner.get(element) !== animation) return;
     coverOwner.delete(element);
