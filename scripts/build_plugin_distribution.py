@@ -171,7 +171,7 @@ def _run_web_command(
             )
 
 
-def _build_web_assets(
+def build_web_assets(
     repository: Path,
     commit: str,
     temporary: Path,
@@ -305,6 +305,29 @@ def _copy_runtime_wiring(
     return copied
 
 
+# 把固定提交的插件目录和同次构建的前端产物落到 package 目录；发行 bundle 与 release 分支共用。
+def stage_plugin_package(
+    repository: Path,
+    commit: str,
+    root: str,
+    package: Path,
+    generated_plugins_root: Path | None,
+) -> None:
+    archive = git(repository, "archive", "--format=tar", commit + ":" + root)
+    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as stream:
+        stream.extractall(package, filter="data")
+    if generated_plugins_root is None:
+        return
+    generated_plugin = generated_plugins_root / Path(root).name
+    for name in _GENERATED_PLUGIN_UI_FILES:
+        generated = generated_plugin / name
+        if generated.is_file():
+            (package / name).write_bytes(generated.read_bytes())
+    static = generated_plugin / "static"
+    if static.is_dir():
+        shutil.copytree(static, package / "static", dirs_exist_ok=True)
+
+
 def _bundle_plugin(
     repository: Path,
     commit: str,
@@ -316,19 +339,7 @@ def _bundle_plugin(
 ) -> dict[str, str]:
     with tempfile.TemporaryDirectory(prefix="akashic-plugin-source-") as directory:
         package = Path(directory)
-        archive = git(repository, "archive", "--format=tar", commit + ":" + root)
-        with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as stream:
-            stream.extractall(package, filter="data")
-        if generated_plugins_root is not None:
-            generated_plugin = generated_plugins_root / Path(root).name
-            for name in _GENERATED_PLUGIN_UI_FILES:
-                generated = generated_plugin / name
-                if generated.is_file():
-                    (package / name).write_bytes(generated.read_bytes())
-        if generated_plugins_root is not None:
-            static = generated_plugins_root / Path(root).name / "static"
-            if static.is_dir():
-                shutil.copytree(static, package / "static", dirs_exist_ok=True)
+        stage_plugin_package(repository, commit, root, package, generated_plugins_root)
         manifest = load_static_plugin_manifest(package)
         if manifest.name in names:
             raise ValueError(f"发布插件名称重复: {manifest.name}")
@@ -416,7 +427,7 @@ def build(repository: Path, revision: str, output: Path) -> dict[str, object]:
 
     # 2. Web 构建完全在临时源码副本执行；把生成的静态目录交给实际插件制品。
     with tempfile.TemporaryDirectory(prefix="akashic-distribution-web-") as directory:
-        asset_root, generated_plugins_root, web = _build_web_assets(
+        asset_root, generated_plugins_root, web = build_web_assets(
             repository, commit, Path(directory)
         )
         core = _append_bytes(
