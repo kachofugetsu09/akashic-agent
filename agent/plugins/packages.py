@@ -163,7 +163,8 @@ def sync_rows(workspace: Path, repo: str) -> list[SyncRow]:
     gaps = classify_gaps(
         enabled=[row.plugin for row in composition_rows(workspace) if not row.disabled],
         present=state.provided | state.installed, preset=preset,
-        heads=lambda: list_release_heads(repo), needs_switch=state.requires_switch)
+        heads=lambda: list_release_heads(repo), needs_switch=state.requires_switch,
+        in_use=frozenset(item.plugin_id for item in state.packages if item.source == "core" and item.selected))
     return [SyncRow(gap.plugin_id, gap.upstream, gap.action) for gap in gaps]
 
 
@@ -202,13 +203,17 @@ def _print_list(rows: list[ListRow], remote: bool, as_json: bool) -> None:
 
 def _print_sync(rows: list[SyncRow], repo: str, as_json: bool) -> None:
     groups = {action: [row for row in rows if row.action == action]
-              for action in ("install", "switch", "optional", "retired")}
+              for action in ("install", "switch", "retire", "optional", "retired")}
     if as_json:
-        keys = {"install": "to_install", "switch": "to_switch", "optional": "optional", "retired": "retired"}
-        print(json.dumps({"repo": repo, **{keys[a]: [asdict(row) for row in items] for a, items in groups.items()}},
+        keys = {"install": "to_install", "switch": "to_switch", "retire": "to_retire", "optional": "optional",
+                "retired": "retired"}
+        # to_retire 只在有在用的内置身份将因上游不存在而消失时才出现，其余输出与此前一致。
+        print(json.dumps({"repo": repo, **{keys[a]: [asdict(row) for row in items] for a, items in groups.items()
+                                           if items or a != "retire"}},
                          ensure_ascii=False, indent=2))
         return
     titles = {"install": "", "switch": "需要换来源（pkg sync 不处理，需专门的换来源操作）：",
+              "retire": "在用的内置插件发行版已不提供、上游也不存在（部署后会消失）：",
               "optional": "只在用户 patch 里启用、上游存在（不自动安装，需要请 pkg install）：",
               "retired": "已退役（只在用户 patch 里启用，上游已不存在，忽略）："}
     for action, items in groups.items():

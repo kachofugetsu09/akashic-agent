@@ -98,7 +98,8 @@ def install(args: argparse.Namespace, *, self_deploy: dict[str, object] | None =
                 self_deploy=self_deploy, warmer=warmer,
                 extra=ExtraOptions(enabled=not getattr(args, "no_extra", False),
                                    repo=getattr(args, "extra_repo", None),
-                                   inputs=getattr(args, "extra_inputs", None)),
+                                   inputs=getattr(args, "extra_inputs", None),
+                                   allow_retire=getattr(args, "allow_retire", False)),
             )
     # 降级的外置插件进入 install 结果，自部署 worker 的 status 也能看到。
     runtime_check = (read_json(paths.activation / "active.json").get("runtimeCheck")
@@ -184,6 +185,8 @@ def _parser() -> argparse.ArgumentParser:
     install_parser.add_argument("--extra-repo", help="extra 仓库地址，默认取 AKASHIC_EXTRA_REPO 或内置常量")
     install_parser.add_argument("--extra-inputs", type=Path,
                                 help="预先下载好的 extra 输入目录（此前联网部署留下的 .inputs 目录），不联网")
+    install_parser.add_argument("--allow-retire", action="store_true",
+                                help="确认让在用的内置插件随新发行版消失（发行版不再提供且 extra 上游也没有）；默认拒绝，自部署不传")
     install_parser.set_defaults(handler=install)
 
     doctor_parser = subparsers.add_parser("doctor")

@@ -8,7 +8,7 @@ import subprocess
 import time
 import sys
 from pathlib import Path
-from typing import Callable, Mapping
+from typing import Callable, Mapping, cast
 
 from scripts.akashic_release.extra import ExtraOptions, ExtraResult, merge_inputs, prepare_extra_inputs
 from scripts.akashic_release.doctor import read_environment, release_health_timeout, verify_release
@@ -527,7 +527,7 @@ def _merged_plan_text(plan: Path | None, root_ref: str, found: ExtraResult) -> s
         document: dict[str, object] = {"schema_version": 1, "expected_root_ref": root_ref, "targets": []}
     else:
         text = plan.read_text(encoding="utf-8")
-        if not found.targets:
+        if not found.targets and not found.retiring:
             return text
         document = json.loads(text)
     targets = document["targets"]
@@ -536,6 +536,8 @@ def _merged_plan_text(plan: Path | None, root_ref: str, found: ExtraResult) -> s
     if taken.intersection(item["plugin_id"] for item in found.targets):
         raise ValueError("部署清单与 extra 目标重复指定同一插件")
     targets.extend(found.targets)
+    if found.retiring:
+        document["retire"] = sorted({*cast(list[str], document.get("retire", [])), *found.retiring})
     return json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
 
 
