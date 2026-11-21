@@ -283,15 +283,10 @@ def is_same_source_upgrade(workspace: Path, plugin_id: str, source: str) -> bool
     return False
 
 
-# 来源地址比较：只去掉末尾斜杠；仅对 http(s) 地址再去掉末尾 .git。
-# 本地路径和 file:// 逐字比较，/a/x 与 /a/x.git 是两个不同的仓库。
+# 来源地址比较：只去掉首尾空白和末尾斜杠，其余逐字比较。
+# x 与 x.git 在本地路径和 HTTP 服务上都可以是两个不同的仓库，不做会改变含义的归一化。
 def same_origin(left: str, right: str) -> bool:
-    return _canonical_origin(left) == _canonical_origin(right)
-
-
-def _canonical_origin(url: str) -> str:
-    value = url.strip().rstrip("/")
-    return value.removesuffix(".git") if value.startswith(("http://", "https://")) else value
+    return left.strip().rstrip("/") == right.strip().rstrip("/")
 
 
 def _clone_git_source(
