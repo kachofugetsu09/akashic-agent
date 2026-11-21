@@ -29,9 +29,10 @@ from agent.plugins.manifest import (
     installed_plugin_ids,
     validate_workspace_plugin_data_path,
     plugins_root,
-    workspace_plugin_data_dir,
 )
-from agent.plugins.bundles import patch_rows, set_plugin_choice
+from agent.plugins.bundles import patch_rows, plugin_choices, set_plugin_choice
+from agent.plugins.data_dirs import read_recorded_data_dirs, recorded_data_dir, resolve_install_data_dir
+from agent.plugins.selection import PluginSelection
 from agent.plugins.static_manifest import (
     StaticPluginManifest,
     load_static_plugin_manifest,
@@ -103,7 +104,7 @@ def finalize_uninstall_plugin(
     home = plugins_home or plugins_root()
     plugin_name, marketplace = _split_installed_plugin_id(plugin_id)
     cache_path = home / "cache" / marketplace / plugin_name
-    data_path = workspace_plugin_data_dir(workspace, plugin_name, marketplace)
+    data_path = recorded_data_dir(workspace, plugin_id, read_recorded_data_dirs(PluginSelection(workspace)))
     if cache_path.exists():
         shutil.rmtree(cache_path)
     return cache_path, data_path
@@ -208,6 +209,18 @@ def install_git_plugin(
             "插件 version",
         )
         previous_enabled = choices.get(f"{plugin_name}@{marketplace}")
+        # 同逻辑名已由别的来源启用时，先显式停用它再装；停用并提交选择后，新来源继承它的数据目录。
+        configured_distribution = os.environ.get("AKASHIC_PLUGIN_DISTRIBUTION")
+        rivals = sorted(item for item, enabled in plugin_choices(
+            workspace, Path(configured_distribution) if configured_distribution else None).items()
+            if enabled and item.partition("@")[0] == plugin_name and item != f"{plugin_name}@{marketplace}")
+        if rivals:
+            raise ValueError(f"同名插件已由其他来源启用: {', '.join(rivals)}; 请先显式停用再安装 {plugin_name}@{marketplace}")
+        # 安装单个插件时才按磁盘解析数据目录：记录 > 同来源旧目录 > 唯一旧目录；歧义只让本次安装失败。
+        data_path = resolve_install_data_dir(
+            workspace, f"{plugin_name}@{marketplace}", read_recorded_data_dirs(PluginSelection(workspace)),
+            marketplaces=(marketplace,),
+        )
         activation = _activate_plugin_version(
             plugin_name=plugin_name,
             plugin_version=plugin_version,
@@ -215,7 +228,7 @@ def install_git_plugin(
             marketplace=marketplace,
             clone_root=clone_root,
             cache_root=cache_root,
-            data_root=workspace.resolve(strict=False) / "plugin-data",
+            data_path=data_path,
             workspace=workspace,
             source_revision=source_revision,
             refresh_existing_artifact=refresh_existing_artifact,
@@ -304,7 +317,7 @@ def _activate_plugin_version(
     marketplace: str,
     clone_root: Path,
     cache_root: Path,
-    data_root: Path,
+    data_path: Path,
     workspace: Path,
     source_revision: str,
     refresh_existing_artifact: bool,
@@ -314,7 +327,6 @@ def _activate_plugin_version(
     """Prepare one immutable artifact and publish its direct install pointer."""
 
     # 1. 校验正式数据身份，但在依赖 staging 成功前不创建它。
-    data_path = data_root / f"{plugin_name}-{marketplace}"
     validate_workspace_plugin_data_path(data_path, workspace)
     plugin_base = cache_root / plugin_name
     _ensure_directory(plugin_base)

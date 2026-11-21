@@ -1286,18 +1286,28 @@ def _plugin_data_root(workspace: Path, request: WorkloadStartRequest) -> Path:
         name, marketplace = request.plugin_id, "builtin"
     _safe_segment(name, "plugin name")
     _safe_segment(marketplace, "plugin marketplace")
-    dirname = f"{name}-{marketplace}"
     if request.mode == "formal":
-        return workspace / "plugin-data" / dirname
-    return (
-        workspace
-        / "runtime"
-        / "plugin-validation"
-        / request.transaction_id
-        / "workspace"
-        / "plugin-data"
-        / dirname
-    )
+        base = workspace
+    else:
+        base = workspace / "runtime" / "plugin-validation" / request.transaction_id / "workspace"
+    return base / "plugin-data" / _recorded_dirname(base, name, marketplace)
+
+
+# 以对应 workspace 的选择记录为准：自己的记录，其次同逻辑名的旧来源记录，否则该来源的默认目录名。
+def _recorded_dirname(base: Path, name: str, marketplace: str) -> str:
+    try:
+        document = json.loads((base / "runtime" / "plugin-stable.json").read_text(encoding="utf-8"))
+        records = [item for item in document["inputs"].values() if isinstance(item, dict)]
+        found = {str(item["plugin_id"]): str(item["data_dir"]) for item in records}
+    except (OSError, ValueError, KeyError, TypeError):
+        found = {}
+    plugin_id = name if marketplace == "builtin" and name in found else f"{name}@{marketplace}"
+    label = found.get(plugin_id) or next(
+        (value for key, value in found.items() if key.partition("@")[0] == name), None)
+    if label is not None and label.startswith("plugin-data/") and "/" not in label[len("plugin-data/"):]:
+        _safe_segment(label[len("plugin-data/"):], "plugin data dir")
+        return label[len("plugin-data/"):]
+    return f"{name}-{marketplace}"
 
 
 def _make_safe_dir(workspace: Path, target: Path, *, uid: int, gid: int) -> None:
