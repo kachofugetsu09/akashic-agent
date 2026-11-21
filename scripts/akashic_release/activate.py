@@ -413,6 +413,8 @@ def activate_release(
         digest = hashlib.sha256(fixed_plan.read_bytes()).hexdigest()
         preflight = _publish(paths=paths, candidate=candidate, plan=fixed_plan, inputs=inputs,
                              digest=digest, backup_dir=None, preflight=True, run=run)
+        if self_deploy is not None and preflight["migration_ids"]:
+            raise RuntimeError(f"目标版本有待执行迁移，需由运维发布；原服务继续运行: {preflight['migration_ids']}")
     rollback = _rollback_point(current=current, selected=selected, preflight=preflight,
                                snapshot=selection_path.read_text(encoding="utf-8")
                                if selection_path.exists() else None)
