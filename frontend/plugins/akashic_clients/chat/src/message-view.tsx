@@ -818,7 +818,7 @@ function formatTurnDuration(durationMs: number): string {
 // 摘要写做了哪几类事（最多两类）：「读取文件、搜索网页等 4 步」比「调用 4 个工具」多说了内容。
 function toolKindsLabel(tools: ToolBlock[]): string {
   const kinds = [...new Set(tools.map((block) => block.label ?? block.name))];
-  const head = kinds.slice(0, 2).join("、") + (kinds.length > 2 ? " 等" : "");
+  const head = kinds.slice(0, 2).join("、") + (kinds.length > 2 ? "等" : "");
   return tools.length === 1 ? head : `${head} ${tools.length} 步`;
 }
 
@@ -1692,7 +1692,7 @@ const ToolStep = memo(function ToolStep({
     : block.status === "output-unknown"
       ? "状态未知"
     : block.status === "output-error"
-      ? <>失败{failure ? <span className="tool-step-error"> · {failure}</span> : null}</>
+      ? <span className="tool-step-error">{failure ? `失败 · ${failure}` : "失败"}</span>
       : block.durationMs === undefined
         ? ""
         : formatToolDuration(block.durationMs);

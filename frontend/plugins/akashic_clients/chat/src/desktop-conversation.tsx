@@ -389,6 +389,25 @@ export const DesktopTimelineMessages = React.memo(function DesktopTimelineMessag
     }
     return starts;
   }, [messages]);
+  // 落定轮次的回想交给该轮首个收尾输出：有过程摘要时与摘要同一行。进行中、未同步与图文回复的轮次仍挂在输入下方。
+  const recallHosts = useMemo(() => {
+    const hosts = new Map<string, TimelineMessage>();
+    const waiting = new Map<string, TimelineMessage>();
+    for (const message of messages) {
+      const key = timelineSourceKey(message);
+      if (userInput(message)) { waiting.set(key, message); continue; }
+      const input = waiting.get(key);
+      if (!input || message.body.kind !== "output" || message.body.finish === "continue") continue;
+      if (groups.moved.has(message.id) || groups.unsettled.has(message.id) || groups.inline.outputs.has(message.id)) continue;
+      hosts.set(message.id, input);
+      waiting.delete(key);
+    }
+    return hosts;
+  }, [messages, groups]);
+  const hostedInputs = useMemo(() => new Set([...recallHosts.values()].map((input) => input.id)), [recallHosts]);
+  const recallSlot = (origin: TimelineMessage) => <PluginUiSlot name="turn.before_reasoning"
+    sessionId={origin.session_id} messageId={origin.id} block={{ source: origin.source }}
+    refreshToken={refreshTokens.get(timelineSourceKey(origin))} />;
   const onNavigate = useCallback((id: string, partIndex?: number) => {
     stopScroll();
     // 指向某一段或已并进别的轮次（没有自己的行）时，交给持有它的那一轮去定位并展开。
@@ -425,9 +444,8 @@ export const DesktopTimelineMessages = React.memo(function DesktopTimelineMessag
     <TimelineMessageView message={message} turnStartedAt={turnStarts.get(message.id)} hideBody={groups.hiddenBodies.has(message.id) || groups.moved.has(message.id)} processMessages={groups.completed.get(message.id)} turnOpen={groups.unsettled.has(message.id)}
       inlineReply={groups.inline.outputs.has(message.id)} leadingProcess={groups.inline.leading.get(message.id)}
       hideProcess={groups.moved.has(message.id)} lookupMessage={lookupMessage} toolResults={toolResults} onNavigate={onNavigate} onError={onError}
-      beforeReasoning={compactionBoundary ? undefined : (origin) => needsBeforeReasoningFallback(origin, inputStarts) ? <PluginUiSlot name="turn.before_reasoning"
-        sessionId={origin.session_id} messageId={origin.id} block={{ source: origin.source }}
-        refreshToken={refreshTokens.get(timelineSourceKey(origin))} /> : null}
+      beforeReasoning={compactionBoundary ? undefined : (origin) => recallHosts.has(message.id) ? recallSlot(recallHosts.get(message.id)!)
+        : needsBeforeReasoningFallback(origin, inputStarts) ? recallSlot(origin) : null}
       afterBody={compactionBoundary ? undefined
         : message.body.kind === "output" && message.body.finish === "complete" ? <PluginUiSlot
         name="turn.after_answer" sessionId={message.session_id} messageId={message.id} />
@@ -450,10 +468,8 @@ export const DesktopTimelineMessages = React.memo(function DesktopTimelineMessag
         extra={message.body.kind === "output" && message.body.finish === "complete" ? <PluginUiSlot
           name="message.actions" sessionId={message.session_id} messageId={message.id} quiet /> : null} />
     </div> : null}
-    {userInput(message) ? <div className="message-row agent-row">
-      <div className="agent-content"><PluginUiSlot name="turn.before_reasoning"
-        sessionId={message.session_id} messageId={message.id} block={{ source: message.source }}
-        refreshToken={refreshTokens.get(timelineSourceKey(message))} /></div>
+    {userInput(message) && !hostedInputs.has(message.id) ? <div className="message-row agent-row">
+      <div className="agent-content">{recallSlot(message)}</div>
     </div> : null}
   </div>
   </React.Fragment>;
