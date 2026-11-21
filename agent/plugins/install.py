@@ -253,7 +253,7 @@ def _reject_takeover(
         reserved.update(f"{item.plugin_name}@{item.marketplace}" for item in
                         distribution_plugin_sources(Path(configured)))
     # 2. 显式接管，或同源升级一个已是已安装来源的身份，跳过其余检查。
-    if plugin_id in takeover or (plugin_id not in reserved and _is_same_source_upgrade(workspace, plugin_id, source)):
+    if plugin_id in takeover or (plugin_id not in reserved and is_same_source_upgrade(workspace, plugin_id, source)):
         return
     # 3. 发行版回执：同 marketplace 拒绝；发行版自带或历史归属的身份拒绝。
     if receipt is not None and marketplace == receipt["marketplace"]:
@@ -263,8 +263,8 @@ def _reject_takeover(
 
 
 # 同源升级：当前选择里该身份已是 installed 输入，且已装 artifact 的 origin 与本次来源相同。
-# 调用方已确认该身份不在发行版自带与历史归属里。
-def _is_same_source_upgrade(workspace: Path, plugin_id: str, source: str) -> bool:
+# 调用方已确认该身份不在发行版自带与历史归属里；pkg 与安装器共用这一个判定。
+def is_same_source_upgrade(workspace: Path, plugin_id: str, source: str) -> bool:
     selection = PluginSelection(workspace)
     if not selection.path.exists():
         return False
@@ -279,12 +279,19 @@ def _is_same_source_upgrade(workspace: Path, plugin_id: str, source: str) -> boo
                 origin = _run_git(["config", "--get", "remote.origin.url"], cwd=code)
             except (RuntimeError, OSError):
                 return False
-            return _normalize_origin(origin) == _normalize_origin(source)
+            return same_origin(origin, source)
     return False
 
 
-def _normalize_origin(url: str) -> str:
-    return url.strip().rstrip("/").removesuffix(".git")
+# 来源地址比较：只去掉末尾斜杠；仅对 http(s) 地址再去掉末尾 .git。
+# 本地路径和 file:// 逐字比较，/a/x 与 /a/x.git 是两个不同的仓库。
+def same_origin(left: str, right: str) -> bool:
+    return _canonical_origin(left) == _canonical_origin(right)
+
+
+def _canonical_origin(url: str) -> str:
+    value = url.strip().rstrip("/")
+    return value.removesuffix(".git") if value.startswith(("http://", "https://")) else value
 
 
 def _clone_git_source(

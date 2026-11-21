@@ -12,6 +12,7 @@ from typing import cast
 
 from agent.plugins.bundles import composition_rows, preset_plugin_ids
 from agent.plugins.distribution_sources import distribution_sources
+from agent.plugins.install import is_same_source_upgrade, same_origin
 from agent.plugins.manifest import plugins_root
 from agent.plugins.selection import PluginSelection, SelectionFormatError
 from agent.plugins.source_resolver import ResolvedPluginSource, resolve_plugin_sources
@@ -57,11 +58,6 @@ def resolve_repo(option: str | None) -> str:
     return option or os.environ.get("AKASHIC_EXTRA_REPO", "").strip() or DEFAULT_EXTRA_REPO
 
 
-# 比较仓库地址时忽略末尾的斜杠和 .git。
-def _normalize_repo(url: str) -> str:
-    return url.strip().rstrip("/").removesuffix(".git")
-
-
 # 一次 ls-remote 取全部 release/<name> 分支，返回 name 到提交 SHA 的映射。
 def list_release_heads(repo: str) -> dict[str, str]:
     result = subprocess.run(
@@ -102,7 +98,7 @@ def _source_of(artifact: Path, builtin: bool, repo: str) -> str:
     origin = _git(artifact, "config", "--get", "remote.origin.url")
     if not origin:
         return "git:unknown"
-    return "extra" if _normalize_repo(origin) == _normalize_repo(repo) else f"git:{origin}"
+    return "extra" if same_origin(origin, repo) else f"git:{origin}"
 
 
 def _package(plugin_id: str, artifact: Path, builtin: bool, repo: str, selected: bool,
@@ -139,15 +135,18 @@ class PackageState:
     adopted: frozenset[str]
     marketplaces: frozenset[str]
     root: Path | None = None
+    workspace: Path = Path()
+    repo: str = ""
 
-    # 发行版自带、历史归属、旧选择里的内置输入，以及发行版命名空间里尚未成为已安装输入的身份，
-    # 只能经换来源操作处理；已是已安装输入的同命名空间身份可以正常升级。
+    # 发行版自带、历史归属、旧选择里的内置输入，以及发行版命名空间里不满足同源升级的身份，
+    # 只能经换来源操作处理；同源升级与安装器守卫共用 is_same_source_upgrade。
     def requires_switch(self, plugin_id: str) -> bool:
         builtin = {item.plugin_id for item in self.packages if item.source == "core"}
         if plugin_id in self.adopted or plugin_id in builtin or plugin_id in self.provided:
             return True
-        installed_input = any(item.plugin_id == plugin_id and item.selected for item in self.packages)
-        return plugin_id.partition("@")[2] in self.marketplaces and not installed_input
+        if plugin_id.partition("@")[2] not in self.marketplaces:
+            return False
+        return not is_same_source_upgrade(self.workspace, plugin_id, self.repo)
 
 
 # 已装包 = 当前选择里的输入，加上 cache 里尚未被选择引用的 artifact；
@@ -176,7 +175,8 @@ def read_state(workspace: Path, repo: str) -> PackageState:
             packages[plugin_id] = _package(plugin_id, source.plugin_root, False, repo, False)
     ordered = sorted(packages.values(), key=lambda item: item.plugin_id)
     marketplaces = frozenset(source.marketplace for source in distribution.sources if source.marketplace)
-    return PackageState(ordered, provided, frozenset(installed), distribution.legacy_ids, marketplaces, distribution.root)
+    return PackageState(ordered, provided, frozenset(installed), distribution.legacy_ids, marketplaces, distribution.root,
+                        workspace, repo)
 
 
 # 缺口分类：preset 启用的行才是"默认组合"的承诺，缺了就要装（或需要换来源）；
