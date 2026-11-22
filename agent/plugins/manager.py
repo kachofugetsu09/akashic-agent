@@ -1516,10 +1516,7 @@ class PluginManager:
             and generation is not None
             and generation.input_ref == input_ref
         )
-        if update.restart_required and selected:
-            # 已标记需要重启（合同或依赖环境变化）：重启前该输入不可能生效，加载失败只是这个原因的表象。
-            state = "restart_required"
-        elif exact_generation and generation is not None and generation.load_error is not None:
+        if exact_generation and generation is not None and generation.load_error is not None:
             readiness_error = (
                 str(generation.load_error)
                 or type(generation.load_error).__name__
@@ -1640,6 +1637,7 @@ class PluginManager:
             not in self._active_generations
             and plugin_id not in explicitly_disabled
             and (plugin_ids is None or plugin_id in plugin_ids)
+            and not dependency_paths.restart_pending(plugin_id.partition("@")[0])
         )
         restored = self._selected_generations(
             missing, self._live_root, workspace=self._workspace,
@@ -2464,8 +2462,11 @@ class PluginManager:
         except DependencyEnvironmentError:
             # 版本不匹配等错误留给加载阶段，只让该插件失败，不能中断本次批量操作。
             return False
-        return site is not None and dependency_paths.restart_needed(
-            source.plugin_name, site, self._installed_plugin_names())
+        if site is not None and dependency_paths.restart_needed(source.plugin_name, site, self._installed_plugin_names()):
+            # 进程内记一笔：本进程里对账不再重试加载它；只在内存里，重启后状态回到真实情况。
+            dependency_paths.mark_restart_pending(source.plugin_name)
+            return True
+        return False
 
     # 当前选择里所有已安装来源插件的名字；进程里挂着不在其中的依赖环境说明有已卸载插件的残留。
     def _installed_plugin_names(self) -> frozenset[str]:

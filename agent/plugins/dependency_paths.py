@@ -70,6 +70,7 @@ class DependencyPaths:
 
     def __init__(self) -> None:
         self._attached: dict[str, Path] = {}
+        self._restart_pending: set[str] = set()
 
     def _imported_from(self, directory: Path) -> bool:
         prefix = str(directory) + "/"
@@ -108,6 +109,13 @@ class DependencyPaths:
         if selected is not None and any(name not in selected for name in self._attached if name != plugin_name):
             return True
         return self._shadowed(site)
+
+    # 因残留依赖需要重启的插件名；只在进程内存里，重启即清空，对账据此不再重试加载它们。
+    def mark_restart_pending(self, plugin_name: str) -> None:
+        self._restart_pending.add(plugin_name)
+
+    def restart_pending(self, plugin_name: str) -> bool:
+        return plugin_name in self._restart_pending
 
     # 挂载到 sys.path 末尾；依赖环境没变不重复追加，旧环境无已导入模块时原位替换。
     def attach(self, plugin_name: str, site: Path) -> None:
