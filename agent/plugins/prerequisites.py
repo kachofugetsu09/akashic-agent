@@ -68,6 +68,11 @@ def describe(missing: Iterable[str]) -> str:
     return "需要" + "、".join(names)
 
 
+# 前置条件声明只有两种合法形式：docker、command:<命令>。
+def _valid_need(value: object) -> bool:
+    return isinstance(value, str) and (value == "docker" or (value.startswith("command:") and len(value) > len("command:")))
+
+
 # 读原因记录：返回 (有效条目, 问题说明)。文件不存在是正常（没有问题）；坏 JSON、顶层不是对象、条目不是
 # {needs: [字符串], reason: 字符串} 都算问题，条目按"未知"处理，不当作没有记录。
 def load_disabled(workspace: Path) -> tuple[dict[str, dict[str, object]], str | None]:
@@ -82,8 +87,9 @@ def load_disabled(workspace: Path) -> tuple[dict[str, dict[str, object]], str | 
         return {}, f"{path} 格式无效（顶层必须是对象）"
     rows: dict[str, dict[str, object]] = {}
     for plugin_id, row in cast(dict[str, object], value).items():
+        needs = cast(dict[str, object], row).get("needs") if isinstance(row, dict) else None
         if (isinstance(row, dict) and isinstance(cast(dict[str, object], row).get("reason"), str)
-                and isinstance(cast(dict[str, object], row).get("needs"), list)):
+                and isinstance(needs, list) and all(_valid_need(item) for item in cast(list[object], needs))):
             rows[plugin_id] = cast(dict[str, object], row)
         else:
             return rows, f"{path} 里 {plugin_id} 的条目无效"
@@ -146,18 +152,64 @@ def check_before_enable(workspace: Path, plugin_id: str) -> None:
     clear_disabled(workspace, plugin_id)
 
 
-# 启用声明了镜像的插件前，确认镜像在 docker 里：本机有 docker 命令就 inspect，缺的先 pull（都有进程级超时）；
-# 没有 docker 命令（正式 Core 容器形态）就无法确认镜像存在——Workload Controller 目前没有镜像查询/拉取接口，
-# 不能放行，明确拒绝并给出要在宿主上执行的确切命令。run 可注入（演练与验证用）。
+# 启用声明了镜像的插件前，确认镜像在 docker 里。三种执行端，按可用性选：
+#   1. Core 容器里：问 Workload Controller 的 image_ensure（本地有就成功，没有就拉取，控制器侧 600 秒上限）；
+#   2. 没有控制器、本机有 docker 命令：docker image inspect / pull，进程级超时；
+#   3. 都没有，或控制器是不支持该接口的旧版本：无法确认，明确拒绝并给出要在宿主执行的 docker pull 命令。
+# run 可注入（演练与验证用，只影响第 2 种）。
 INSPECT_TIMEOUT_S = 30.0
 PULL_TIMEOUT_S = 600.0
+CONTROLLER_TIMEOUT_S = 660.0
+
+
+class _ControllerUnsupported(Exception):
+    pass
+
+
+# 与 Workload Controller 的一行 JSON 协议（version=1）；失败回包里 error 是文字，旧版控制器对未知 action 报"action 无效"。
+def _controller_ensure(socket_path: Path, image: str, timeout: float = CONTROLLER_TIMEOUT_S) -> None:
+    request = json.dumps({"version": 1, "action": "image_ensure", "body": {"image": image}}, separators=(",", ":")).encode() + b"\n"
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as stream:
+        stream.settimeout(timeout)
+        stream.connect(str(socket_path))
+        stream.sendall(request)
+        raw = b""
+        while not raw.endswith(b"\n") and len(raw) < 1_048_576:
+            chunk = stream.recv(65536)
+            if not chunk:
+                break
+            raw += chunk
+    reply = json.loads(raw)
+    if isinstance(reply, dict) and reply.get("ok") is True:
+        return
+    error = str(reply.get("error", "")) if isinstance(reply, dict) else ""
+    if "action 无效" in error:
+        raise _ControllerUnsupported(error)
+    raise ValueError(f"镜像 {image} 在宿主上准备失败：{error or '控制器没有返回原因'}")
+
+
+def _host_commands(images: tuple[str, ...]) -> str:
+    return "；".join(f"docker pull {image}" for image in images)
 
 
 def ensure_images(images: Iterable[str], run: Callable[..., "subprocess.CompletedProcess[str]"] = subprocess.run) -> list[str]:
     pulled: list[str] = []
     images = tuple(images)
+    controller = os.environ.get("AKASHIC_WORKLOAD_SOCKET", "").strip()
+    if images and controller:
+        try:
+            for image in images:
+                _controller_ensure(Path(controller), image)
+            return pulled
+        except _ControllerUnsupported:
+            if shutil.which("docker") is None:
+                raise ValueError("宿主上的 Workload Controller 版本不支持确保镜像；请先在宿主上拉取后再启用：" + _host_commands(images)) from None
+        except (OSError, ValueError) as error:
+            if isinstance(error, ValueError):
+                raise
+            raise ValueError(f"无法联系 Workload Controller 确认镜像（{error}）；请在宿主上确认：" + _host_commands(images)) from error
     if images and shutil.which("docker") is None:
-        raise ValueError("当前环境没有 docker 命令，无法确认镜像已在宿主上；请先在宿主上拉取后再启用：" + "；".join(f"docker pull {image}" for image in images))
+        raise ValueError("当前环境没有 docker 命令，也没有可用的 Workload Controller，无法确认镜像已在宿主上；请先在宿主上拉取后再启用：" + _host_commands(images))
     for image in images:
         try:
             if run(["docker", "image", "inspect", image], capture_output=True, text=True, check=False, timeout=INSPECT_TIMEOUT_S).returncode == 0:

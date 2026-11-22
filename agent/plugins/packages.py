@@ -17,7 +17,7 @@ from agent.plugins.extra_repo import resolve_repo as resolve_repo
 from agent.plugins.install import is_official_fresh_install, is_same_source_upgrade, same_origin
 from agent.plugins.manifest import plugins_root
 from agent.plugins.package_index import PackageIndex, load_index
-from agent.plugins.prerequisites import read_disabled
+from agent.plugins.prerequisites import load_disabled
 from agent.plugins.python_environment import PythonEnvironments, environment_repair_reason
 from agent.plugins.resources import resource_repair_reason
 from agent.plugins.selection import PluginSelection, SelectionFormatError
@@ -55,6 +55,8 @@ class ListRow:
     resource_repair: str = ""
     # 已装但因外部前置条件未满足而保持关闭的原因（来自 runtime/disabled-reasons.json）；没有为空。
     disabled_reason: str = ""
+    # 前置条件原因记录损坏时的说明（所有行都带，空表示正常）：记录无法确认哪些包被关闭，需要修复或删除该文件。
+    disabled_problem: str = ""
 
 
 @dataclass(frozen=True)
@@ -205,7 +207,7 @@ def sync_rows(workspace: Path, repo: str) -> list[SyncRow]:
 
 # 本地列表；带 --remote 时只给 extra 来源的包标状态，其余标 "-"。
 def list_rows(packages: list[InstalledPackage], repo: str, remote: bool, workspace: Path | None = None) -> list[ListRow]:
-    disabled = {} if workspace is None else read_disabled(workspace)
+    disabled, problem = ({}, None) if workspace is None else load_disabled(workspace)
     heads = list_release_heads(repo) if remote else {}
     rows: list[ListRow] = []
     for item in packages:
@@ -217,7 +219,7 @@ def list_rows(packages: list[InstalledPackage], repo: str, remote: bool, workspa
                       else "upgradable" if remote_head != item.head or item.repair or item.resource_repair else "current")
         rows.append(ListRow(item.plugin_id, item.version, item.source, item.head, item.selected,
                             item.retired, status, remote_head, item.repair, item.resource_repair,
-                            str(disabled.get(item.plugin_id, {}).get("reason", ""))))
+                            str(disabled.get(item.plugin_id, {}).get("reason", "")), problem or ""))
     return rows
 
 
@@ -229,6 +231,8 @@ def _print_list(rows: list[ListRow], remote: bool, as_json: bool) -> None:
     if as_json:
         print(json.dumps([asdict(row) for row in rows], ensure_ascii=False, indent=2))
         return
+    if rows and rows[0].disabled_problem:
+        print(f"注意：前置条件原因记录损坏，列表里的未启用原因可能缺失：{rows[0].disabled_problem}", file=sys.stderr)
     for row in rows:
         line = f"{row.plugin_id:<32} {row.version:<10} {row.source:<10} {_short(row.head)}"
         if remote:
