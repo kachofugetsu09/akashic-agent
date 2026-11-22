@@ -59,6 +59,7 @@ plugins/**/.data/
 !/docs/projectneed.md
 !/docs/NOW.md
 !/docs/writing-rules.md
+!/docs/user-guide.md
 !/docs/decisions/
 !/docs/decisions/**
 !/docs/design/
