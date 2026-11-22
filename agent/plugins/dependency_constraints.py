@@ -15,6 +15,7 @@ from agent.plugins.selection import PluginSelection
 
 _PIN = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)==([^\s\;]+)", re.MULTILINE)
 _REQUESTED = re.compile(r"^\s*The user requested \(constraint\) ([A-Za-z0-9][A-Za-z0-9._-]*)==(\S+)", re.MULTILINE)
+_NO_DISTRIBUTION = re.compile(r"no matching distributions available for your environment:\n((?:[ \t]+\S+\n)+)")
 CORE_ORIGIN = "Core 锁定版本"
 _CORE_LOCK = Path("/opt/akashic/distribution/requirements.lock")
 
@@ -164,10 +165,22 @@ def environment_matches(site: Path, constraints: Constraints) -> bool:
 def explain_failure(output: str, constraints: Constraints) -> DependencyConflict | None:
     if "ResolutionImpossible" not in output and "conflicting dependencies" not in output:
         return None
+    # 有包没有可用 wheel（只有源码包）时 pip 也报成"冲突"，先点破真正原因：不现编，要在插件 wheels/ 里放 wheel。
+    missing = _NO_DISTRIBUTION.search(output)
+    if missing is not None:
+        names = " ".join(missing.group(1).split())
+        return DependencyConflict(
+            f"依赖 {names} 没有可用的 wheel（只有源码包）：进程内依赖不现编源码包；"
+            "请换用有 wheel 的版本，或在插件根的 wheels/ 目录里放一个 py3-none-any wheel")
     caused = _REQUESTED.findall(output)
     if not caused:
         return None
     name, version = caused[0]
+    # 新旧 pip 的输出不同：没有"Additionally"段时，用户要求的恰好就是约束钉的同一个版本却仍然无解，只能是该版本没有 wheel。
+    if re.search(rf"^\s*The user requested {re.escape(name)}=={re.escape(version)}\s*$", output, re.MULTILINE):
+        return DependencyConflict(
+            f"依赖 {name}=={version} 没有可用的 wheel（只有源码包或不适配当前 Python）：进程内依赖不现编源码包；"
+            "请换用有 wheel 的版本，或在插件根的 wheels/ 目录里放一个 py3-none-any wheel")
     origin = constraints.origins.get(normalize(name), CORE_ORIGIN)
     detail = next((line.strip() for line in output.splitlines() if line.startswith("ERROR: Cannot install")), "")
     return DependencyConflict(

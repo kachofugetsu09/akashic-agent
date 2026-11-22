@@ -17,6 +17,7 @@ from uuid import uuid4
 from utils.timing import measure
 
 from agent.plugins.files import encode_tree, sync_directory, tree_entries
+from agent.plugins.requirements_check import BUNDLED_WHEELS_DIR, check_bundled_wheels
 from agent.plugins.static_manifest import StaticPluginManifest, StaticPythonRuntime
 
 if TYPE_CHECKING:
@@ -282,11 +283,20 @@ class PythonEnvironments:
                     _ = shutil.copytree(source, build_source, symlinks=True,
                                         ignore=shutil.ignore_patterns(".git", ".venv", "node_modules", "__pycache__", ENVIRONMENT_FILE))
                     requirements_path = build_source / runtime.requirements
-                    command = [
-                        str(venv / "bin/python"), "-E", "-s", "-m", "pip",
-                        "--disable-pip-version-check", "install", "-r", str(requirements_path),
-                        *_constraint_options(constraints, constrained),
-                    ]
+                    if isinstance(runtime, InprocessRuntime):
+                        # 进程内依赖与部署路径一致：只装 wheel（不现编源码包），pip 选项与环境变量不能改写行为，
+                        # 插件自带的纯 Python wheel 由 Core 拼成 --find-links。
+                        command = [
+                            str(venv / "bin/python"), "-I", "-m", "pip", "--isolated", "--disable-pip-version-check",
+                            "install", "--only-binary=:all:", "--no-input", "-r", str(requirements_path),
+                            *_constraint_options(constraints, constrained), *_bundled_options(build_source),
+                        ]
+                    else:
+                        command = [
+                            str(venv / "bin/python"), "-E", "-s", "-m", "pip",
+                            "--disable-pip-version-check", "install", "-r", str(requirements_path),
+                            *_constraint_options(constraints, constrained),
+                        ]
                 else:
                     _ = _verify_offline_wheels(offline_wheels)
                     command = [
@@ -298,7 +308,7 @@ class PythonEnvironments:
                     ]
                 with measure("plugin.pip", plugin=code.name, runtime=runtime.runtime_root):
                     if constrained:
-                        _run_pip(command, build_source, constraints)
+                        _run_pip(command, build_source, constraints, isolated=isinstance(runtime, InprocessRuntime))
                     else:
                         _run(command, build_source)
             with measure("plugin.environment.sync", plugin=code.name):
@@ -382,6 +392,13 @@ def _environment_input(code: Path, runtime: StaticPythonRuntime, wheel_digest: s
         ))).hexdigest()
     if wheel_digest:
         value["wheel_tree_sha256"] = wheel_digest
+    if isinstance(runtime, InprocessRuntime):
+        # 自带 wheel 的内容进入环境键：同样的 requirements 配不同（或没有）自带 wheel，不能互相复用环境；
+        # 同时每次准备都校验 wheels/（含复用路径），不合格的目录一律拒绝。
+        bundled = check_bundled_wheels(code / BUNDLED_WHEELS_DIR)
+        if bundled:
+            value["bundled_wheels_sha256"] = hashlib.sha256("".join(
+                f"{wheel.name}\0{hashlib.sha256(wheel.read_bytes()).hexdigest()}\n" for wheel in bundled).encode()).hexdigest()
     return value
 
 
@@ -442,6 +459,11 @@ def read_environment_refs(code: Path, manifest: StaticPluginManifest) -> dict[st
     return cast(dict[str, str], value)
 
 
+# 插件根的 wheels/（校验后）作为 --find-links；没有则不加。
+def _bundled_options(source: Path) -> list[str]:
+    return ["--find-links", str(source / BUNDLED_WHEELS_DIR)] if check_bundled_wheels(source / BUNDLED_WHEELS_DIR) else []
+
+
 def _constraint_options(constraints: Constraints | None, constrained: bool) -> list[str]:
     if constraints is None or not constrained:
         return []
@@ -460,10 +482,12 @@ def _matches(environment: Path, constraints: Constraints) -> bool:
 
 
 # pip 失败时保留输出：版本冲突翻译成可操作的说明，其他失败带上 pip 输出末尾（均为 ValueError，网关会传回原文）。
-def _run_pip(command: list[str], cwd: Path, constraints: Constraints | None) -> None:
+def _run_pip(command: list[str], cwd: Path, constraints: Constraints | None, *, isolated: bool = False) -> None:
     from agent.plugins.dependency_constraints import explain_failure
 
-    result = subprocess.run(command, cwd=cwd, check=False, capture_output=True, text=True)
+    # 隔离时清掉继承来的 PIP_*（PIP_NO_BINARY、PIP_INDEX_URL 等不能改写安装行为）；代理变量保留。
+    environment = {key: value for key, value in os.environ.items() if not key.startswith("PIP_")} if isolated else None
+    result = subprocess.run(command, cwd=cwd, check=False, capture_output=True, text=True, env=environment)
     if result.returncode == 0:
         return
     output = result.stdout + result.stderr

@@ -6,6 +6,7 @@ requirements 文件里可以写 pip 选项行（--no-binary、--index-url、-r�
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 _NAME = r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?"
 _SPEC = r"(?:===|==|!=|<=|>=|~=|<|>)\s*[A-Za-z0-9.*+!_-]+"
@@ -52,3 +53,34 @@ def _reject_reason(line: str) -> str | None:
     if _REQUIREMENT.fullmatch(line) is None:
         return "不是合法的 PEP 508 普通包要求"
     return None
+
+
+# 插件自带的 wheel 目录：只收纯 Python wheel（py3-none-any）。自带 wheel 与插件自身代码同等受信（都是进程内任意代码），
+# 限定纯 Python 是为了避免平台/ABI 问题，也让内容可以被人直接读懂；安装 wheel 不执行 setup.py，所以仍然不现编源码包。
+BUNDLED_WHEELS_DIR = "wheels"
+_BUNDLED_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.]*-[A-Za-z0-9_.!+]+-py3-none-any\.whl$")
+_MAX_BUNDLED_FILES = 32
+_MAX_BUNDLED_BYTES = 256 * 1024 * 1024
+
+
+# 校验并列出 wheels/ 里的文件；目录不存在返回空元组。名字不合格、不是普通文件、数量或体积超限都点名拒绝。
+def check_bundled_wheels(directory: Path) -> tuple[Path, ...]:
+    if directory.is_symlink():
+        raise ValueError(f"{directory.name}/ 不能是符号链接")
+    if not directory.exists():
+        return ()
+    if not directory.is_dir():
+        raise ValueError(f"{directory.name} 必须是目录")
+    entries = sorted(directory.iterdir(), key=lambda item: item.name)
+    if len(entries) > _MAX_BUNDLED_FILES:
+        raise ValueError(f"{directory.name}/ 文件过多（上限 {_MAX_BUNDLED_FILES}）")
+    total = 0
+    for entry in entries:
+        if entry.is_symlink() or not entry.is_file():
+            raise ValueError(f"{directory.name}/{entry.name} 不是普通文件")
+        if _BUNDLED_NAME.fullmatch(entry.name) is None:
+            raise ValueError(f"{directory.name}/{entry.name} 不是纯 Python wheel（只收 *-py3-none-any.whl）")
+        total += entry.stat().st_size
+    if total > _MAX_BUNDLED_BYTES:
+        raise ValueError(f"{directory.name}/ 总体积超过上限 {_MAX_BUNDLED_BYTES // (1024 * 1024)}MB")
+    return tuple(entries)
