@@ -226,7 +226,7 @@ _MAX_SECONDS = 1800.0
 
 
 # 整个取回（含全部重试与重定向）共用的尽力期限：只在请求之间、块之间与成功出口检查，并把每次请求的 socket 超时收紧到剩余时间；
-# 不能打断单次阻塞 I/O（最坏多等一个 socket 超时）。需要硬上限的调用方应在进程层面加超时（见 stage_archives）。
+# 不能打断 DNS、连接或单次阻塞读（慢速滴流时可能远超期限），健康复用与解压落盘阶段也不检查。需要硬上限的调用方应在进程层面加超时。
 class _Deadline:
     def __init__(self, seconds: float) -> None:
         self.seconds = seconds
@@ -374,7 +374,7 @@ def _freeze(stage: Path) -> None:
 # 取回并发布一个资源，返回发布目录。已发布且可用则直接复用；同一资源并发取回由文件锁串行化，后到者复用先到者的结果。
 # 网络类错误（连接、超时、大小不符）最多重试 attempts 次；哈希不符、路径穿越、超限等内容问题不重试。
 # timeout 是单次 socket 阻塞操作的超时；max_seconds 是整个取回（含重试与重定向）的尽力期限，只在请求之间、块之间和成功出口检查，
-# 不能打断单次阻塞 I/O（最坏多等一个 socket 超时）；需要硬上限的调用方自行在进程层面加超时。
+# 不能打断 DNS、连接或单次阻塞读；需要硬上限的调用方自行在进程层面加超时。
 def fetch_resource(
     resource: Resource, root: Path, *, opener: Opener | None = None, timeout: float = 60.0, attempts: int = 3,
     max_download: int = DEFAULT_MAX_DOWNLOAD, max_extracted: int = DEFAULT_MAX_EXTRACTED, max_files: int = DEFAULT_MAX_FILES,
