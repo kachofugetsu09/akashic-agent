@@ -105,9 +105,10 @@ def _other_pins(
             continue
         try:
             site = site_packages(environments.open(ref))
-        except (OSError, ValueError, RuntimeError) as error:
-            raise DependencyConstraintUnavailable(
-                f"无法读取已装插件 {plugin_id} 的依赖环境（{error}），不能确认版本约束；请先重新安装或卸载该插件") from error
+        except (OSError, ValueError, RuntimeError):
+            # 环境已损坏的已装插件现在无法加载，没有生效的依赖版本可约束；它由 environment_repair_reason 标为需重建，
+            # 重建时会带着本批的结果作为约束，冲突在那时被拒绝。不能因为它让别的插件（含修复同一个共用环境的兄弟包）装不上。
+            continue
         for name, version in installed_pins(site).items():
             if name not in core and name not in pins:
                 pins[name], origins[name] = version, plugin_id

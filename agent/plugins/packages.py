@@ -5,7 +5,7 @@ import argparse
 import json
 import subprocess
 import sys
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import cast
 
@@ -156,6 +156,12 @@ def read_state(workspace: Path, repo: str) -> PackageState:
         # 发行版已不提供的旧内置输入让位给 cache 里的新安装。
         if plugin_id not in packages or packages[plugin_id].retired:
             packages[plugin_id] = _package(plugin_id, source.plugin_root, False, repo, False, workspace=workspace)
+        elif packages[plugin_id].repair:
+            # 选择里的 artifact 环境需要重建，但 cache 指针已指向重建好的 artifact（离线 pkg upgrade 写的，下次启动进选择）：
+            # 不再重复重建。
+            rebuilt = _package(plugin_id, source.plugin_root, False, repo, False, workspace=workspace)
+            if not rebuilt.repair and rebuilt.head == packages[plugin_id].head:
+                packages[plugin_id] = replace(packages[plugin_id], repair="")
         # 官方命名空间里只有来源是 extra 仓库的 artifact 才算"已装"，旧内置遗留制品不能掩盖缺口；
         # 其他 marketplace（github、local 等）的 artifact 照常算已装。
         official = plugin_id.partition("@")[2] in marketplaces

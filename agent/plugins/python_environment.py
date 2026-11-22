@@ -242,16 +242,23 @@ class PythonEnvironments:
         # 绝不改写已有指针（别的安装正在引用它）；按约束摘要另存一个候选指针。
         alt_pointer = (self.path / f"{base_pointer.stem}.{constraints.digest}.ref"
                        if constraints is not None and constrained else base_pointer)
+        stale: list[Path] = []
+        running_python: Callable[[], tuple[int, int]] = lambda: (sys.version_info.major, sys.version_info.minor)
         for candidate in dict.fromkeys((alt_pointer, base_pointer)):
             if not candidate.exists():
                 continue
             if candidate.is_symlink():
                 raise ValueError("Python 环境引用不能是符号链接")
             ref = candidate.read_text()
-            reused = self.open(ref)
-            if constraints is None or not constrained or _matches(reused, constraints):
+            # 不可用的候选（目录缺失、元数据坏、缺 site-packages、Python 版本不符）不能复用，也不能让安装失败：跳过并新建。
+            if environment_unusable_reason(self, ref, running_python, inprocess=isinstance(runtime, InprocessRuntime)) is not None:
+                stale.append(candidate)
+                continue
+            if constraints is None or not constrained or _matches(self.open(ref), constraints):
                 return ref, True
-        pointer = base_pointer if not base_pointer.exists() else alt_pointer
+        # 候选指针只是查找优化，已装 artifact 按自己记录里的引用直接找环境，不经过它；所以指向不可用环境的指针可以被替换
+        # （没有任何已装版本能靠它加载），之后的安装不会再先撞到它。指向可用环境但约束不符的指针仍只新增不改写。
+        pointer = stale[0] if stale else base_pointer if not base_pointer.exists() else alt_pointer
 
         # 2. 不 rename venv；脚本 shebang 与 .pth 中的绝对路径从创建起就有效。
         location = uuid4().hex + uuid4().hex
@@ -334,15 +341,24 @@ class PythonEnvironments:
                     stream.flush()
                     os.fsync(stream.fileno())
                 try:
-                    os.link(pending, pointer)
+                    if pointer in stale:
+                        os.replace(pending, pointer)
+                    else:
+                        os.link(pending, pointer)
                 except FileExistsError:
                     if pointer.is_symlink():
                         raise ValueError("Python 环境引用不能是符号链接")
-                    ref = pointer.read_text()
+                    other = pointer.read_text()
+                    # 并发安装先发布了指针：只有它可用才采用，否则保留自己新建的环境并替换这个不可用的指针。
+                    if environment_unusable_reason(self, other, running_python, inprocess=isinstance(runtime, InprocessRuntime)) is None:
+                        ref = other
+                    else:
+                        os.replace(pending, pointer)
                 sync_directory(self.path)
             finally:
                 pending.unlink(missing_ok=True)
-            _ = self.open(ref)
+            if (problem := environment_unusable_reason(self, ref, running_python, inprocess=isinstance(runtime, InprocessRuntime))) is not None:
+                raise RuntimeError(f"新建的依赖环境不可用: {problem}")
             return ref, False
         finally:
             if not published:
@@ -434,6 +450,27 @@ def inprocess_site_dirs(root: Path) -> list[Path]:
     return sorted((root / _INPROCESS_DIR / ".venv" / "lib").glob("python*/site-packages"))
 
 
+# 环境引用能否使用的唯一判定（repair 判定与 _prepare 的候选复用共用）：返回不可用原因，可用返回 None。
+# 目录缺失、元数据损坏、（进程内环境）缺 site-packages、或创建环境的 Python 主.次版本与目标解释器不同都不可用。
+# python 是函数：只有走到版本比较才求值（目标在镜像里时求值要起容器）。
+def environment_unusable_reason(
+    environments: PythonEnvironments, ref: str, python: Callable[[], tuple[int, int]], *, inprocess: bool,
+) -> str | None:
+    try:
+        root = environments.open(ref)
+        created = environment_python(root)
+    except FileNotFoundError:
+        return f"依赖环境目录缺失（{ref[:12]}）"
+    except (OSError, ValueError) as error:
+        return f"依赖环境元数据损坏: {error}"
+    if inprocess and len(inprocess_site_dirs(root)) != 1:
+        return f"依赖环境缺少 site-packages（{ref[:12]}）"
+    target = python()
+    if created != target:
+        return f"依赖环境由 Python {created[0]}.{created[1]} 创建，目标解释器是 {target[0]}.{target[1]}"
+    return None
+
+
 # 已装 artifact 的进程内环境是否需要重建，部署、启动补装和 pkg 共用的唯一判定；返回原因，不需要返回 None。
 # 声明了非空 requirements.inprocess.txt，但：安装记录没有 "inprocess/" 引用、引用指向的环境目录缺失或元数据损坏、
 # 环境缺 site-packages，或创建环境的 Python 主.次版本与 python() 给出的目标解释器不同。
@@ -450,21 +487,8 @@ def environment_repair_reason(
         return f"安装记录无法读取: {error}"
     if ref is None:
         return "安装记录里没有进程内依赖环境引用"
-    # 2. 引用必须指向可用的环境：目录、元数据、site-packages。
-    try:
-        root = environments.open(ref)
-        created = environment_python(root)
-    except FileNotFoundError:
-        return f"依赖环境目录缺失（{ref[:12]}）"
-    except (OSError, ValueError) as error:
-        return f"依赖环境元数据损坏: {error}"
-    if len(inprocess_site_dirs(root)) != 1:
-        return f"依赖环境缺少 site-packages（{ref[:12]}）"
-    # 3. 创建环境的解释器要与目标解释器同一主.次版本（原生扩展 ABI）。
-    target = python()
-    if created != target:
-        return f"依赖环境由 Python {created[0]}.{created[1]} 创建，目标解释器是 {target[0]}.{target[1]}"
-    return None
+    # 2. 引用必须指向可用的环境。
+    return environment_unusable_reason(environments, ref, python, inprocess=True)
 
 
 def read_environment_refs(code: Path, manifest: StaticPluginManifest) -> dict[str, str]:

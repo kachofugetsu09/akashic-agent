@@ -77,7 +77,8 @@ def target_python(image: str | None, run: Run, resolver: Resolver | None) -> Cal
                            check=False, capture_output=True, text=True)
                 major, _, minor = (done.stdout or "").strip().partition(".")
                 if done.returncode != 0 or not (major.isdigit() and minor.isdigit()):
-                    raise RuntimeError(f"无法读取目标镜像的 Python 版本（退出码 {done.returncode}）：{(done.stderr or '').strip()[-300:]}")
+                    raise RuntimeError(f"无法读取目标镜像 {image} 的 Python 版本（退出码 {done.returncode}）：{(done.stderr or '').strip()[-300:]}；"
+                                   "该版本用来判断已装插件的依赖环境是否需要重建，请确认镜像已拉取、docker 可用后重试（部署尚未停机）")
                 known.append((int(major), int(minor)))
         return known[0]
 
