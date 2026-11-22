@@ -181,7 +181,7 @@ def register(app: FastAPI, context: DashboardContext) -> None:
 
     @app.get("/api/dashboard/plugins/install")
     async def install_status() -> Row:
-        return context.require(INVENTORY).installer.status()
+        return await context.require(INVENTORY).installer.status()
 
     @app.post("/api/dashboard/plugins/install")
     async def install(request: InstallRequest) -> Row:

@@ -3,7 +3,7 @@ import type { WebHostContextV1 } from "@akashic/web-ui-v1";
 
 interface Package { name: string; desc: string; requires: string[]; needs: string[]; size_bytes: number }
 interface Group { id: string; title: string; description: string; packages: Package[] }
-interface Task { name: string; state: "running" | "succeeded" | "failed"; exit_code: number | null; tail: string[] }
+interface Task { name: string; state: "running" | "succeeded" | "failed" | "unknown"; exit_code: number | null; outcome: string | null; tail: string[] }
 type Http = WebHostContextV1["http"];
 
 const UNMET = "已安装但未启用";
@@ -17,13 +17,15 @@ async function call<T>(http: Http, path: string, init?: RequestInit): Promise<T>
   return body as T;
 }
 
-// 安装结果：成功时若输出带“已安装但未启用：原因”就把原因说出来；失败给输出尾部。
+// 安装结果：成功时说明未启用原因或需要重启；仍在进行和结果未知不按失败显示；失败给输出尾部。
 function Result({ task }: { task: Task }): React.ReactElement {
   const held = task.tail.find((line) => line.includes(UNMET));
+  const note = (text: string) => <p className="shell-installable-note" role="status">{text}</p>;
+  if (task.state === "unknown") return note(`${task.name}：结果未知，请查看已装列表。`);
+  if (task.state === "failed" && task.outcome === "in-progress") return note(`${task.name}：仍在进行，稍后查看已装列表。`);
   if (task.state === "succeeded") {
-    return <p className="shell-installable-note" role="status">
-      {held ? `${task.name}：${held.slice(held.indexOf(UNMET))}。满足条件后在上方启用。` : `${task.name} 已安装，在上方列表里。`}
-    </p>;
+    if (task.outcome === "restart-required") return note(`${task.name} 已安装，需要重启实例后生效。`);
+    return note(held ? `${task.name}：${held.slice(held.indexOf(UNMET))}。满足条件后在上方启用。` : `${task.name} 已安装，在上方列表里。`);
   }
   return <div role="alert"><p className="shell-inventory-error">{task.name} 安装失败（退出码 {task.exit_code ?? "无"}）</p>
     <pre className="shell-installable-log">{task.tail.join("\n")}</pre></div>;
