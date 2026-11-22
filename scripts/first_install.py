@@ -7,11 +7,10 @@ from __future__ import annotations
 import json
 import os
 import sys
-import re
 import tempfile
 import tomllib
 from collections.abc import Callable, Iterable
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TextIO, cast
 
@@ -33,8 +32,6 @@ class Choice:
     # 自选时因依赖自动带上的包：(包, 需要它的包)；只用于提示。
     added: tuple[tuple[str, str], ...] = ()
     groups: tuple[str, ...] = ()
-    # 首装自己写进 bundle.patch.toml 的行：(行键, 插件身份, disabled)；重跑只替换这些行，其余（用户手写的、用户改过的）原样保留。
-    written: tuple[tuple[str, str, bool], ...] = ()
 
 
 def _megabytes(size: int) -> str:
@@ -147,79 +144,50 @@ def desired_rows(choice: Choice, preset_rows: dict[str, str]) -> dict[str, tuple
     return rows
 
 
+BLOCK_BEGIN = "# >>> akashic 首次安装（自动生成；首装完成前每次重跑会整块重写，要自定义请写在块外）"
+BLOCK_END = "# <<< akashic 首次安装"
+
+
 def _row_text(key: str, plugin: str, disabled: bool) -> str:
     return f'[rows."{key}"]\nplugin = "{plugin}"\ndisabled = {"true" if disabled else "false"}\n'
 
 
-def _current_rows(text: str, path: Path) -> dict[str, dict[str, object]]:
+# 把文本按标记块切成 (块前, 块后)；没有块时整段是块前。起止标记缺一个、重复或次序反了就报错让人手工整理，不猜。
+def _split_block(text: str, path: Path) -> tuple[str, str]:
+    lines = text.splitlines(keepends=True)
+    begins = [i for i, line in enumerate(lines) if line.startswith("# >>> akashic 首次安装")]
+    ends = [i for i, line in enumerate(lines) if line.startswith("# <<< akashic 首次安装")]
+    if not begins and not ends:
+        return text, ""
+    if len(begins) != 1 or len(ends) != 1 or begins[0] > ends[0]:
+        raise RuntimeError(f"{path} 里首次安装的标记块不完整或重复（需要恰好一对 '# >>> akashic 首次安装' 与 '# <<< akashic 首次安装'）；手工整理后重试")
+    return "".join(lines[:begins[0]]), "".join(lines[ends[0] + 1:])
+
+
+# 按意图整块重新生成首装写入的内容（块外文本一字不动）：块外已定义的 row 键，块里跳过（用户的定义优先，也避免重复表）。
+def render_block(choice: Choice, preset_rows: dict[str, str], outside: str, path: Path, out: TextIO) -> str:
     try:
-        rows = tomllib.loads(text).get("rows", {})
+        defined = set(cast(dict[str, object], tomllib.loads(outside).get("rows", {})))
     except tomllib.TOMLDecodeError as error:
         raise RuntimeError(f"{path} 不是有效的 TOML（{error}）；修正后重试，首装没有改动它") from error
-    return cast(dict[str, dict[str, object]], rows) if isinstance(rows, dict) else {}
+    wanted = {row: (preset_rows[row], True) for row in choice.disable_rows}
+    wanted.update({identity: (identity, False) for identity in choice.enable_ids})
+    for key in sorted(defined & set(wanted)):
+        print(f"  {path.name} 里已有你定义的 {key}，首次安装的同名设置跳过", file=out)
+    rows = [_row_text(key, *value) for key, value in wanted.items() if key not in defined]
+    return "\n".join([BLOCK_BEGIN + "\n", *rows, BLOCK_END + "\n"])
 
 
-# 删掉 [rows."键"] 表（到下一个表头为止）；只认首装自己写的这种写法。表头前紧挨着的注释属于下一张表，保留。
-def _drop_tables(text: str, keys: set[str]) -> str:
-    kept: list[str] = []
-    held: list[str] = []
-    dropping = False
-    for line in text.splitlines(keepends=True):
-        header = re.match(r'^\s*\[(.*)\]\s*$', line)
-        if header is not None:
-            match = re.fullmatch(r'rows\."(.*)"', header.group(1))
-            dropping = match is not None and match.group(1) in keys
-            if not dropping:
-                kept.extend(held)
-            held = []
-        elif dropping and (line.strip() == "" or line.lstrip().startswith("#")):
-            held.append(line)
-            continue
-        else:
-            held = []
-        if not dropping:
-            kept.append(line)
-    return "".join(kept)
-
-
-# 合并写：只替换"首装上次写的、且内容没被改过"的行；用户手写的行、被用户改过的首装行都保留并提示；
-# 返回新文本与这次真正由首装拥有的行。
-def merge_patch(existing: str | None, choice: Choice, preset_rows: dict[str, str], path: Path, out: TextIO) -> tuple[str, tuple[tuple[str, str, bool], ...]]:
-    wanted = desired_rows(choice, preset_rows)
-    previous = {key: (plugin, disabled) for key, plugin, disabled in choice.written}
-    current = _current_rows(existing, path) if existing else {}
-    replace_keys: set[str] = set()
-    for key, value in previous.items():
-        row = current.get(key)
-        if row is None:
-            print(f"  {path.name} 里的 {key} 已被你删除，保留你的修改", file=out)
-        elif (row.get("plugin"), row.get("disabled")) == value and set(row) <= {"plugin", "disabled"}:
-            replace_keys.add(key)
-        else:
-            print(f"  {path.name} 里的 {key} 已被你修改，保留你的版本", file=out)
-    mine = {key: value for key, value in wanted.items() if key in replace_keys or (key not in previous and key not in current)}
-    for key, value in wanted.items():
-        if key not in previous and key in current and (current[key].get("plugin"), current[key].get("disabled")) != value:
-            print(f"  {path.name} 里已有你手写的 {key}，保留你的版本", file=out)
-    text = (existing or "schema_version = 1\n")
-    text = _drop_tables(text, replace_keys)
-    text += ("\n" if text and not text.endswith("\n\n") else "") + "\n".join(_row_text(key, *value) for key, value in mine.items())
-    left = _current_rows(text, path)
-    if any(key in left for key in replace_keys - set(mine)):
-        raise RuntimeError(f"{path} 里首装写的行格式被改动，无法安全替换；手工整理 {', '.join(sorted(replace_keys))} 后重试")
-    return text, tuple((key, *value) for key, value in mine.items())
-
-
-# 按意图写 patch（start 与 release 共用）：合并写入，并把"首装拥有的行"记回意图记录。返回新的意图。
-def write_patch(state: Path, choice: Choice, preset_rows: dict[str, str], patch: Path, out: TextIO = sys.stdout) -> Choice:
-    existing = patch.read_text(encoding="utf-8") if patch.exists() else None
-    text, written = merge_patch(existing, choice, preset_rows, patch, out)
+# 按意图写 patch（start 与 release 共用，临时与落盘 patch 同一规则）。
+def write_patch(choice: Choice, preset_rows: dict[str, str], patch: Path, out: TextIO = sys.stdout) -> None:
+    existing = patch.read_text(encoding="utf-8") if patch.exists() else "schema_version = 1\n"
+    before, after = _split_block(existing, patch)
+    block = render_block(choice, preset_rows, before + after, patch, out)
+    before = before + ("\n" if before and not before.endswith("\n\n") else "")
+    text = before + block + ("\n" + after.lstrip("\n") if after.strip() else "")
     temporary = patch.with_name(patch.name + ".tmp")
     _ = temporary.write_text(text, encoding="utf-8")
     os.replace(temporary, patch)
-    updated = replace(choice, written=written)
-    save_intent(state, updated)
-    return updated
 
 
 # 清单：先列包、数量与总大小；每包一行；自选时自动带上的依赖单独提示。
@@ -265,8 +233,7 @@ def load_intent(state: Path) -> Choice | None:
         raw = cast(dict[str, object], json.loads(path.read_text(encoding="utf-8")))
         return Choice(str(raw["profile"]), tuple(cast(list[str], raw["install"])), tuple(cast(list[str], raw["disable_rows"])),
                       tuple(cast(list[str], raw["enable_ids"])), tuple((a, b) for a, b in cast(list[list[str]], raw.get("added", []))),
-                      tuple(cast(list[str], raw.get("groups", []))),
-                      tuple((str(a), str(b), bool(c)) for a, b, c in cast(list[list[object]], raw.get("written", []))))
+                      tuple(cast(list[str], raw.get("groups", []))))
     except (OSError, ValueError, KeyError, TypeError) as error:
         raise RuntimeError(f"首装意图记录 {path} 无法读取（{error}）；确认没有安装在进行后删除它，重新选择") from error
 
@@ -315,8 +282,6 @@ def choose(
         else:
             profile = "full"
     choice = decide(index, preset_rows, profile, groups, absorbed)
-    if pending is not None:
-        choice = replace(choice, written=pending.written)
     print_listing(index, choice, out)
     if asked and choice.install and ask("继续？[Y/n] ").strip().lower() in ("n", "no"):
         raise RuntimeError("已取消，未做任何改动")

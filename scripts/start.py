@@ -215,7 +215,7 @@ def _first_install_pending(state: Path, workspace: Path, receipt: Path) -> bool:
     return True
 
 
-# 提问（或沿用上次的意图）并把选择写成 patch：只替换首装上次写的行，用户手写或改过的行原样保留（见 first_install.write_patch）。
+# 提问（或沿用上次的意图）并把选择写成 patch：首装的内容放在标记块里，每次重跑整块重写，块外原样保留（见 first_install.write_patch）。
 # 返回要装的扩展包。
 def _choose_first_install(state: Path, workspace: Path, distribution: Path, plugin_home: Path, extra_repo: str,
                           profile: str | None, groups: list[str], assume_yes: bool, reselect: bool) -> tuple[str, ...]:
@@ -225,7 +225,18 @@ def _choose_first_install(state: Path, workspace: Path, distribution: Path, plug
     rows = preset_extra_rows(distribution, os.environ.get("AKASHIC_PLUGIN_BUNDLE", "base"))
     choice = choose(repo=extra_repo, home=plugin_home, preset_rows=rows, profile=profile, groups=groups, assume_yes=assume_yes,
                     state=state, reselect=reselect, absorbed=frozenset(item.partition("@")[0] for item in read_absorbed(distribution)))
-    return write_patch(state, choice, rows, workspace / "bundle.patch.toml").install
+    write_patch(choice, rows, workspace / "bundle.patch.toml")
+    return choice.install
+
+
+# 重跑时 init 会读 patch：用户在块外新定义了与块内同名的 row 会让它重复而失败，所以 init 之前先按上次的意图整块重写一遍。
+def _refresh_patch(state: Path, workspace: Path, distribution: Path) -> None:
+    from scripts.first_install import load_intent, preset_extra_rows, write_patch
+
+    intent = load_intent(state)
+    patch = workspace / "bundle.patch.toml"
+    if intent is not None and patch.exists():
+        write_patch(intent, preset_extra_rows(distribution, os.environ.get("AKASHIC_PLUGIN_BUNDLE", "base")), patch)
 
 
 def prepare_install(preparation: Preparation, core: Path, distribution: Path,
@@ -264,6 +275,8 @@ def prepare_install(preparation: Preparation, core: Path, distribution: Path,
             os.close(directory)
     # 是否首次安装必须在提问与写任何文件之前定下来，与 ensure 的拒绝条件同一个判定：有选择记录而回执缺失就直接报错退出。
     first = _first_install_pending(state, workspace, receipt)
+    if first:
+        _refresh_patch(state, workspace, distribution)
     if not receipt.exists():
         preparation.step("准备数据目录")
         preparation.run([str(python), str(core / "main.py"), "init", "--config", str(config),

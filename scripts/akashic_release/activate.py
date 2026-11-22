@@ -429,7 +429,7 @@ def _first_install_extra(*, paths: ReleasePaths, target: str, current: Mapping[s
                     absorbed=frozenset(item.partition("@")[0] for item in read_absorbed(paths.source(target))))
     workspace_patch = paths.state / "workspace/bundle.patch.toml"
     patch = workspace_patch if workspace_patch.exists() else inputs_dir / "profile.patch.toml"
-    choice = write_patch(paths.state, choice, rows, patch)
+    write_patch(choice, rows, patch)
     _ = prepare_extra_inputs(workspace=paths.state / "workspace", plugins_home=paths.state / "plugin-home",
                              source=paths.source(target), mode=mode, root_ref=None,
                              options=replace(extra, image=candidate["AKASHIC_IMAGE"], gaps_only=True, record_needs=True,
