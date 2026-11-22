@@ -12,6 +12,7 @@ from collections.abc import Mapping
 from typing import cast
 from uuid import uuid4
 
+from agent.plugins.dependency_constraints import build_constraints
 from agent.plugins.python_environment import (
     ENVIRONMENT_FILE, INPROCESS_KEY, INPROCESS_REQUIREMENTS, OfflineWheels, PythonEnvironments, inprocess_runtime,
 )
@@ -683,7 +684,10 @@ def _prepare_static_python_runtimes(
     if inprocess is not None:
         if offline_wheels is not None:
             raise ValueError(f"{INPROCESS_REQUIREMENTS} 暂不支持离线 wheel 安装")
-        refs[INPROCESS_KEY] = environments.prepare(plugin_root, inprocess)
+        # 约束只作用于进程内环境；临时约束文件在整个准备期间保持存在。
+        with tempfile.TemporaryDirectory(prefix="akashic-constraints-") as scratch:
+            constraints = build_constraints(workspace, manifest.name, environments, Path(scratch))
+            refs[INPROCESS_KEY] = environments.prepare(plugin_root, inprocess, constraints=constraints)
     # 2. 根与子目录 requirements.txt 的子进程 runtime，行为不变。
     if manifest.python:
         used_offline_wheels = False

@@ -11,12 +11,15 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 from uuid import uuid4
 from utils.timing import measure
 
 from agent.plugins.files import encode_tree, sync_directory, tree_entries
 from agent.plugins.static_manifest import StaticPluginManifest, StaticPythonRuntime
+
+if TYPE_CHECKING:
+    from agent.plugins.dependency_constraints import Constraints
 
 ENVIRONMENT_FILE = ".akashic-python-environment"
 # 显式声明"这些依赖要进主进程"的文件；存在且非空才有进程内环境，根 requirements.txt 仍只是子进程 runtime。
@@ -164,17 +167,17 @@ class PythonEnvironments:
 
     def prepare(
         self, code: Path, runtime: StaticPythonRuntime, *,
-        offline_wheels: OfflineWheels | None = None,
+        offline_wheels: OfflineWheels | None = None, constraints: Constraints | None = None,
     ) -> str:
         """Measure dependency preparation, including cache reuse."""
         with measure("plugin.environment", plugin=code.name, runtime=runtime.runtime_root) as timing:
-            ref, reused = self._prepare(code, runtime, offline_wheels=offline_wheels)
+            ref, reused = self._prepare(code, runtime, offline_wheels=offline_wheels, constraints=constraints)
             timing.update(ref=ref, reused=reused)
             return ref
 
     def _prepare(
         self, code: Path, runtime: StaticPythonRuntime, *,
-        offline_wheels: OfflineWheels | None = None,
+        offline_wheels: OfflineWheels | None = None, constraints: Constraints | None = None,
     ) -> tuple[str, bool]:
         """安装 owner 首次解析依赖；环境始终留在创建时的最终目录。"""
         wheel_digest = None
@@ -190,13 +193,25 @@ class PythonEnvironments:
             / f"python{sys.version_info.major}.{sys.version_info.minor}"
         ).resolve(strict=True)
         input_value = _environment_input(source, runtime, wheel_digest or "")
-        pointer = self.path / (_input_key(input_value, runtime) + ".ref")
-        if pointer.exists():
-            if pointer.is_symlink():
+        # 只有显式声明的进程内环境带约束；其余 runtime 的路径与改动前完全相同。
+        constrained = constraints is not None and isinstance(runtime, InprocessRuntime)
+        if constrained:
+            _check_offline_requirements(source / runtime.requirements)
+        base_pointer = self.path / (_input_key(input_value, runtime) + ".ref")
+        # 指针只是"可复用候选"的查找优化：候选必须仍满足当前约束才复用，不满足就新建另一个环境，
+        # 绝不改写已有指针（别的安装正在引用它）；按约束摘要另存一个候选指针。
+        alt_pointer = (self.path / f"{base_pointer.stem}.{constraints.digest}.ref"
+                       if constraints is not None and constrained else base_pointer)
+        for candidate in dict.fromkeys((alt_pointer, base_pointer)):
+            if not candidate.exists():
+                continue
+            if candidate.is_symlink():
                 raise ValueError("Python 环境引用不能是符号链接")
-            ref = pointer.read_text()
-            _ = self.open(ref)
-            return ref, True
+            ref = candidate.read_text()
+            reused = self.open(ref)
+            if constraints is None or not constrained or _matches(reused, constraints):
+                return ref, True
+        pointer = base_pointer if not base_pointer.exists() else alt_pointer
 
         # 2. 不 rename venv；脚本 shebang 与 .pth 中的绝对路径从创建起就有效。
         location = uuid4().hex + uuid4().hex
@@ -231,6 +246,7 @@ class PythonEnvironments:
                     command = [
                         str(venv / "bin/python"), "-E", "-s", "-m", "pip",
                         "--disable-pip-version-check", "install", "-r", str(requirements_path),
+                        *_constraint_options(constraints, constrained),
                     ]
                 else:
                     _ = _verify_offline_wheels(offline_wheels)
@@ -239,9 +255,13 @@ class PythonEnvironments:
                         "--disable-pip-version-check", "install", "--no-index",
                         f"--find-links={offline_wheels.directory}", "--only-binary=:all:",
                         "--no-cache-dir", "--no-input", "-r", str(requirements_path),
+                        *_constraint_options(constraints, constrained),
                     ]
                 with measure("plugin.pip", plugin=code.name, runtime=runtime.runtime_root):
-                    _run(command, build_source)
+                    if constrained:
+                        _run_pip(command, build_source, constraints)
+                    else:
+                        _run(command, build_source)
             with measure("plugin.environment.sync", plugin=code.name):
                 for current, _, files in os.walk(root, topdown=False):
                     for name in files:
@@ -283,7 +303,7 @@ class PythonEnvironments:
                     ref = pointer.read_text()
                 sync_directory(self.path)
             finally:
-                pending.unlink()
+                pending.unlink(missing_ok=True)
             _ = self.open(ref)
             return ref, False
         finally:
@@ -383,6 +403,37 @@ def read_environment_refs(code: Path, manifest: StaticPluginManifest) -> dict[st
     ):
         raise ValueError("Python 环境引用身份无效")
     return cast(dict[str, str], value)
+
+
+def _constraint_options(constraints: Constraints | None, constrained: bool) -> list[str]:
+    if constraints is None or not constrained:
+        return []
+    return [item for file in constraints.files for item in ("-c", str(file))]
+
+
+# 复用前的核对；环境无法挂载（如 Python 版本已变）按"不一致"处理，走重建而不是报错。
+def _matches(environment: Path, constraints: Constraints) -> bool:
+    from agent.plugins.dependency_constraints import environment_matches
+    from agent.plugins.dependency_paths import DependencyEnvironmentError, site_packages
+
+    try:
+        return environment_matches(site_packages(environment), constraints)
+    except DependencyEnvironmentError:
+        return False
+
+
+# pip 失败时保留输出：版本冲突翻译成可操作的说明，其他失败带上 pip 输出末尾（均为 ValueError，网关会传回原文）。
+def _run_pip(command: list[str], cwd: Path, constraints: Constraints | None) -> None:
+    from agent.plugins.dependency_constraints import explain_failure
+
+    result = subprocess.run(command, cwd=cwd, check=False, capture_output=True, text=True)
+    if result.returncode == 0:
+        return
+    output = result.stdout + result.stderr
+    conflict = None if constraints is None else explain_failure(output, constraints)
+    if conflict is not None:
+        raise conflict
+    raise ValueError("pip 安装依赖失败: " + " ".join(output.strip().splitlines()[-6:]))
 
 
 def _run(command: list[str], cwd: Path) -> None:

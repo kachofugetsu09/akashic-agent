@@ -1516,7 +1516,10 @@ class PluginManager:
             and generation is not None
             and generation.input_ref == input_ref
         )
-        if exact_generation and generation is not None and generation.load_error is not None:
+        if update.restart_required and selected:
+            # 已标记需要重启（合同或依赖环境变化）：重启前该输入不可能生效，加载失败只是这个原因的表象。
+            state = "restart_required"
+        elif exact_generation and generation is not None and generation.load_error is not None:
             readiness_error = (
                 str(generation.load_error)
                 or type(generation.load_error).__name__
@@ -2461,7 +2464,17 @@ class PluginManager:
         except DependencyEnvironmentError:
             # 版本不匹配等错误留给加载阶段，只让该插件失败，不能中断本次批量操作。
             return False
-        return site is not None and dependency_paths.restart_needed(source.plugin_name, site)
+        return site is not None and dependency_paths.restart_needed(
+            source.plugin_name, site, self._installed_plugin_names())
+
+    # 当前选择里所有已安装来源插件的名字；进程里挂着不在其中的依赖环境说明有已卸载插件的残留。
+    def _installed_plugin_names(self) -> frozenset[str]:
+        reference = self._selection.read()
+        if reference is None:
+            return frozenset()
+        records = [self._selection.read_input(ref) for ref in self._selection_components(reference)]
+        return frozenset(str(item["plugin_id"]).partition("@")[0] for item in records
+                         if item["source_type"] == "installed")
 
     # 只对已安装来源、且插件根 requirements.txt 有环境的插件；其余插件的加载路径不变。
     def _dependency_site(self, code: Path, source_type: str) -> Path | None:
