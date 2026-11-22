@@ -186,12 +186,13 @@ function renderCreate(host, props) {
   form.elements.thinkingFormat.value = defaults.thinkingFormat ?? "none";
   const manualBox = host.querySelector("[data-manual-box]");
   const manualToggle = host.querySelector("[data-manual]");
-  manualToggle.addEventListener("click", () => {
+  const revealManual = () => {
     manualBox.hidden = false;
     manualToggle.hidden = true;
     form.elements.manualModel.required = true;
     form.elements.manualModel.focus();
-  });
+  };
+  manualToggle.addEventListener("click", revealManual);
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     // 1. 名称和地址在「高级」里也必须有效；无效时展开让用户看到。
@@ -208,15 +209,29 @@ function renderCreate(host, props) {
       credential: {driver: "api_key", access_token: String(data.get("apiKey"))},
       driverConfig: {format_version: 1, catalog_provider_id: String(data.get("provider")), thinking_format: String(data.get("thinkingFormat")), allow_unverified_manual: true},
     };
-    // 2. 手填型号走旧的单模型验证；否则读目录、全部收进来。
+    // 2. 手填型号走旧的单模型验证；否则读目录、全部收进来，读不到就转去手填型号。
     const manual = manualBox.hidden ? "" : String(data.get("manualModel")).trim();
     const work = manual
       ? props.actions.createManual({...connection, model: modelInput({model: manual}, true)})
-      : props.actions.createConnection({...connection, catalogMode: "all", modelHint: defaults.modelHint ?? ""});
+      : props.actions.createConnection({...connection, catalogMode: "all", modelHint: defaults.modelHint ?? ""})
+        .catch((reason) => { throw catalogMiss(reason, revealManual); });
     submit(form, work.then(() => props.changed(`${name || "连接"} 已添加`)), "添加");
   });
-  queueMicrotask(() => form.elements.apiKey.focus());
+  // 打开时连同底部「添加」一起露出来：嵌在引导等有底栏的界面里，按钮不能停在可视区外。
+  queueMicrotask(() => {
+    form.elements.apiKey.focus();
+    form.querySelector(".settings-dialog-footer").scrollIntoView({block: "nearest"});
+  });
   return () => host.replaceChildren();
+}
+
+// 密钥、额度、限流类失败换个型号也过不去，原样报告；其余读目录失败改为引导手填一个型号。
+const CREDENTIAL_FAILURES = new Set([401, 402, 403, 429]);
+function catalogMiss(reason, revealManual) {
+  const status = reason instanceof Error ? reason.status : undefined;
+  if (typeof status !== "number" || CREDENTIAL_FAILURES.has(status)) return reason;
+  revealManual();
+  return new Error(`没读到可用的模型列表：${reason.message.replace(/[。.]?$/u, "。")}请在上方填一个型号，再点「添加」；添加前会向它发一条短消息验证。`);
 }
 
 function keyField(placeholder, required) {
@@ -319,6 +334,9 @@ function submit(form, work, label) {
   work.catch((reason) => {
     error.textContent = reason instanceof Error ? reason.message : String(reason);
     error.hidden = false;
+    // 原因和重试按钮都要看得到；有自己的底栏时连底栏一起露出。
+    const footer = form.querySelector(".settings-dialog-footer");
+    (footer?.getClientRects().length ? footer : error).scrollIntoView({block: "nearest"});
   }).finally(() => {
     button.disabled = false;
     button.textContent = label;

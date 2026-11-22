@@ -826,6 +826,9 @@ dialog.settings-scrim::backdrop { background: transparent; }
 .settings-page--embedded .settings-shell { width: 100%; padding: 0; }
 .settings-page--embedded .settings-header { display: none; }
 .settings-page--embedded .settings-section { margin-top: 0; }
+/* 内嵌在设置工作区或新手引导里时，提示贴着滚动区底边，不盖住宿主自己的底栏按钮。 */
+.settings-page--embedded .settings-toast-region { position: sticky; inset: auto 0 1rem; display: flex; justify-content: flex-end; margin-block-start: 1rem; }
+.settings-page--embedded .settings-toast-region:empty { display: none; }
 
 .embedding-form { display: grid; grid-template-rows: none; gap: 18px; padding: 28px; max-width: 520px; overflow: auto; }
 .embedding-form h2,.embedding-form p { margin: 0; }

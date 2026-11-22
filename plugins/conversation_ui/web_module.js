@@ -1433,8 +1433,12 @@ function renderConversation(host, view, props) {
     if (records.some((record) => record.isIntersecting)) chat.handle.shown();
   });
   visibility.observe(chatHost);
+  // 设置面板盖住聊天又关上时视口交叉没变，观察器不会再报；按同一信号处理，例如引导里刚连好的模型。
+  const settingsClosed = () => { if (chatHost.getClientRects().length) chat.handle.shown(); };
+  window.addEventListener("akashic:settings-closed", settingsClosed);
   workbench?.start();
   return () => {
+    window.removeEventListener("akashic:settings-closed", settingsClosed);
     visibility.disconnect();
     workbench?.dispose();
     chat.handle.dispose();

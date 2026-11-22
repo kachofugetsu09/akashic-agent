@@ -389,6 +389,8 @@ function Shell({ pages, railActions, settings, settingsPlugins, http, inventory 
       dialog.close();
       if (lost) settingsReturnFocus.current?.focus();
       settingsReturnFocus.current = null;
+      // 设置面板盖在页面上，关上时页面并没有离开视口：通知页面重新显示了，好重读在设置里改过的数据。
+      window.dispatchEvent(new CustomEvent("akashic:settings-closed"));
     }
     if (!settingsOpen) return;
     // 焦点可能因内容重渲染落回 body：和原生模态一样在文档层收按键，不要求焦点在面板里。

@@ -1748,7 +1748,7 @@ function registerModels(ctx, mount, catalogResource) {
         };
         activeEditor = editor;
         const finish = (message) => {
-          showNotice(message);
+          if (message) showNotice(message);
           closeActiveEditor(true);
           // 新建成功回到连接列表并展开新连接；取消新建则留在目录里继续挑。
           if (session.kind !== "create") return;
@@ -1828,7 +1828,8 @@ function registerModels(ctx, mount, catalogResource) {
             const form = dialogHost.querySelector("form");
             if (providerDirty && form) { form.requestSubmit(); return; }
             actions.selectModels()
-              .then((saved) => finish(saved ? `${connection.name} 的修改已保存` : "没有需要保存的修改"))
+              // 没有改动时保存就是收起卡片，不再弹一条与下一步无关的提示。
+              .then((saved) => finish(saved ? `${connection.name} 的修改已保存` : ""))
               .catch((reason) => modelManager.showError(reason));
           };
           const snapshotRemovalState = () => JSON.stringify({
