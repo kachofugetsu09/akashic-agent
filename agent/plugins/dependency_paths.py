@@ -6,7 +6,7 @@ import json
 import sys
 from pathlib import Path
 
-from agent.plugins.python_environment import PythonEnvironments, inprocess_runtime
+from agent.plugins.python_environment import PythonEnvironments, inprocess_ref, inprocess_runtime
 
 _ROOT_RUNTIME = ".inprocess"
 
@@ -15,24 +15,32 @@ class DependencyEnvironmentError(RuntimeError):
     """依赖环境无法挂进当前进程；只让该插件加载失败，错误信息带可执行的修复动作。"""
 
 
-# 插件根显式声明 requirements.inprocess.txt 才有进程内环境；声明了但环境缺失（未安装或 Python 小版本变化后失效）报错。
+# 进程内环境读安装时固定的引用（artifact 里的环境记录），不查任何可变指针；
+# 缺记录、缺环境目录、元数据损坏、版本不匹配都转成带区分信息的 DependencyEnvironmentError。
 def root_environment(code: Path, environments: PythonEnvironments) -> Path | None:
     if inprocess_runtime(code) is None:
         return None
-    environment = environments.inprocess_environment(code)
-    if environment is None:
+    ref = inprocess_ref(code)
+    if ref is None:
         raise DependencyEnvironmentError(
-            "插件声明了 requirements.inprocess.txt，但对应的依赖环境不存在或已失效（Python 版本变化？）；"
-            "请重新安装该插件（pkg upgrade 或 plugin-install）以重建依赖环境")
-    return environment
+            "插件声明了 requirements.inprocess.txt，但安装记录里没有对应的依赖环境引用；请重新安装该插件")
+    try:
+        return environments.open(ref)
+    except FileNotFoundError as error:
+        raise DependencyEnvironmentError(f"插件的依赖环境目录缺失（{ref[:12]}…）；请重新安装该插件以重建") from error
+    except (OSError, ValueError) as error:
+        raise DependencyEnvironmentError(f"插件的依赖环境元数据损坏：{error}；请重新安装该插件以重建") from error
 
 
 # 环境创建时的 Python 主.次版本，取自环境元数据里已有的 input.base.version。
 def _environment_python(root: Path) -> tuple[int, int]:
-    record = json.loads((root / "environment.json").read_text())
-    version = str(record["input"]["base"]["version"]).split(" ", 1)[0]
-    major, minor = version.split(".")[:2]
-    return int(major), int(minor)
+    try:
+        record = json.loads((root / "environment.json").read_text())
+        version = str(record["input"]["base"]["version"]).split(" ", 1)[0]
+        major, minor = version.split(".")[:2]
+        return int(major), int(minor)
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise DependencyEnvironmentError(f"插件的依赖环境元数据损坏：{error}；请重新安装该插件以重建") from error
 
 
 # 环境的 site-packages；Python 主.次版本与当前解释器不同则拒绝挂载（原生扩展 ABI 不兼容）。

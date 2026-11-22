@@ -22,7 +22,7 @@ from agent.plugins.manifest import (
     validate_workspace_plugin_data_path,
     workspace_plugin_data_dir,
 )
-from agent.plugins.python_environment import ENVIRONMENT_FILE, PythonEnvironments, read_environment_refs
+from agent.plugins.python_environment import ENVIRONMENT_FILE, PythonEnvironments, inprocess_runtime, read_environment_refs
 from agent.plugins.static_manifest import (
     PluginSourceCompileError,
     PluginSourceContentError,
@@ -129,7 +129,7 @@ def prepare_plugin_input(
 
     # 3. 准备当前选择的元数据；代码字段只表示实际安装路径。
     environments: dict[str, str] = {}
-    if identity.python:
+    if identity.python or inprocess_runtime(plugin_dir) is not None:
         if (plugin_dir / ENVIRONMENT_FILE).exists():
             environments = read_environment_refs(plugin_dir, identity)
         elif mod["source_type"] == "installed":
