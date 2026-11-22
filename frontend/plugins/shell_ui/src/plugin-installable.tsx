@@ -43,11 +43,16 @@ export function InstallablePackages({ http, active, onInstalled }: {
   const [failure, setFailure] = useState("");
   const running = task?.state === "running";
   const seen = useRef(running);
+  // 每次读状态或提交安装都领一个序号，只采用最新的回包：发起早、回来晚的状态读取不能覆盖刚提交的任务。
+  const sequence = useRef(0);
 
   const load = useCallback(() => call<{ groups: Group[] }>(http, "/api/dashboard/plugins/installable")
     .then((body) => { setGroups(body.groups); setError(""); }, (reason: unknown) => setError(reason instanceof Error ? reason.message : String(reason))), [http]);
-  const poll = useCallback(() => call<{ task: Task | null }>(http, "/api/dashboard/plugins/install")
-    .then((body) => setTask(body.task), () => undefined), [http]);
+  const poll = useCallback(() => {
+    const ticket = ++sequence.current;
+    return call<{ task: Task | null }>(http, "/api/dashboard/plugins/install")
+      .then((body) => { if (ticket === sequence.current) setTask(body.task); }, () => undefined);
+  }, [http]);
 
   // 列表读取较慢，只在变为可见时读一次；同时接上页面重开前已在进行的安装。
   useEffect(() => { if (active) { void load(); void poll(); } }, [active, load, poll]);
@@ -64,9 +69,13 @@ export function InstallablePackages({ http, active, onInstalled }: {
 
   const install = async (name: string) => {
     setFailure("");
-    try { setTask(await call<Task>(http, "/api/dashboard/plugins/install", {
-      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name }),
-    })); } catch (reason) { setFailure(reason instanceof Error ? reason.message : String(reason)); }
+    const ticket = ++sequence.current;
+    try {
+      const started = await call<Task>(http, "/api/dashboard/plugins/install", {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name }),
+      });
+      if (ticket === sequence.current) setTask(started);
+    } catch (reason) { setFailure(reason instanceof Error ? reason.message : String(reason)); }
   };
 
   if (error) return <section className="shell-inventory-group"><h4>可安装</h4>

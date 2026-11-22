@@ -54,13 +54,17 @@ def uninstalled_groups(index: Row) -> list[Row]:
     return groups
 
 
+# 进程是否还在：以 kill(pid, 0) 为准；有 /proc（Linux）时再排除僵尸，没有（macOS）不当作已死。
 def _alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
-        return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] != "Z"
-    except (ProcessLookupError, FileNotFoundError, IndexError):
+    except ProcessLookupError:
         return False
     except PermissionError:
+        return True
+    try:
+        return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] != "Z"
+    except (OSError, IndexError):
         return True
 
 
@@ -130,7 +134,8 @@ class PackageInstaller:
         await run_file_io(self._prune)
         return await run_file_io(lambda: self._snapshot(record))
 
-    # 只在超时才杀进程组；本代被换掉（取消）时不动正在装的进程，状态仍可由新一代从磁盘读到。
+    # 只有持有 Process 的这一代在超时时杀进程组（进程未被回收，PID 不会被复用）；本代被换掉（取消）时
+    # 不动正在装的进程，状态仍可由新一代从磁盘读到。
     async def _watch(self, task_id: str, process: asyncio.subprocess.Process) -> None:
         try:
             _ = await asyncio.wait_for(process.wait(), INSTALL_TIMEOUT)
@@ -158,15 +163,15 @@ class PackageInstaller:
         return record if record is not None and self._snapshot(record)["state"] == "running" else None
 
     # 磁盘记录加进程存活判断：有退出码就是终态；进程不在又没退出码，是换代等原因丢了结果。
+    # 超过寿命仍无退出码只报 unknown、不发信号：磁盘记录里的 PID 可能已被无关进程复用；
+    # pkg 自己带 --timeout，正常会在寿命内结束。
     def _snapshot(self, record: Row) -> Row:
         base = self._dir() / cast(str, record["id"])
         code = base.with_suffix(".exit").read_text().strip() if base.with_suffix(".exit").exists() else None
         pid = cast(int, record["pid"])
         elapsed = time.time() - cast(float, record["started_at"])
-        if code is None and _alive(pid) and elapsed > INSTALL_TIMEOUT:
-            self._expire(cast(str, record["id"]), pid)
-            code = "timeout"
-        state = "running" if code is None and _alive(pid) else "unknown" if code is None else (
+        live = code is None and elapsed <= INSTALL_TIMEOUT and _alive(pid)
+        state = "running" if live else "unknown" if code is None else (
             "succeeded" if code == "0" else "failed")
         tail = deque(base.with_suffix(".log").read_text(errors="replace").splitlines(), maxlen=TAIL_LINES)
         if code == "timeout":
