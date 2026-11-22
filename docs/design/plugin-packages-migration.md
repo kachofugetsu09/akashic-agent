@@ -131,6 +131,16 @@ Core 侧一个 PR，extra 侧先行或同时：
 - **只在基准里配置的插件名。** `benchmark/computer_runtime/runtime.py` 的 `prompt_sources` 仍点名 `markdown_memory`；该基准直接从 Core 的 `plugins/` 目录装配，迁出后需要给它提供 extra 仓库的检出目录（`AKASHIC_EXTRA_PLUGIN_DIRS`），这次没有处理。
 - **能力快照差异要排除同一分支里先前批次的影响。** 叠栈分支上，前一批迁出的插件（本来就没启用）会在 diff 里显示"少了"，只看当前批次的插件即可。
 
+模型驱动、容器、目录名与 manifest 名不一致的插件（批 D）再补：
+
+- **目录名与 manifest 名不一致**（`opencode_go` 的 manifest 名是 `opencode-go`；Core 里的 `conversation_ui`、`openai_compatible`、`shell_ui`、`web_auth` 同理）：安装器要求 `release/<name>` 的分支名等于 manifest 名，插件身份、cache 路径、`data_dir`、bundles 的行都用 manifest 名（`opencode-go@release`、`plugin-data/opencode-go-release`）；而 `plugin_boundary.toml` 的 `[tiers]` 与源码目录用目录名。所以 `scripts/pkg_fixture_repo.py` 改成：参数是目录名，分支、提交说明和返回行取 manifest 名，不再因两者不同而报错。extra 的 `extra_ci.py` 不用改。
+- **模型驱动插件。** 搜 models、onboarding、plugin_settings、前端模型页对驱动名的点名：本批只有 `plugins/models/modelsdev_capabilities.py` 里的服务商别名表（驱动名到 models.dev 的 id，静态数据，不依赖插件存在）。裸核仍有通用驱动 `openai-compatible`（core 层）。驱动缺席时，Core 里已有的连接显示 `driver_unavailable`，模型页与引导不报错，连接、凭据和模型记录留在 Core 的 `model-registry.sqlite3`，换来源前后表内容不变（只有 meta 行的计数随启动递增）。
+- **声明容器镜像的插件**（`images`）：release 分支里 `plugin.py` 原样带着；用 Core 的 `load_static_plugin_manifest` 读 release 分支确认 `images` 完整。镜像由 Core 的 `docker/computer` 与 `.github/workflows/computer-image.yml` 构建发布，仍留在 Core；镜像摘要变了要在 extra 仓库改 `plugin.py`。
+- **自带评测/工具脚本的插件。** `plugins/computer/bench/` 以 `parents[3]` 找仓库根并 import `benchmark.computer_runtime`；`benchmark/computer_runtime`、`benchmark/computer_driver` 直接从 Core 的 `plugins/` 装配或读 `plugins/computer/skills`。迁出后它们只能在合成目录里运行（`extra_ci.py compose` 的输出），不在任何 CI 里跑。
+- **Core 构建脚本里按插件名的特例。** `scripts/build-web-plugins.mjs` 里 `plugin === "computer" ? "es2022"` 仍在 Core，构建时对合成目录里的同名插件生效；不要为迁出改它，否则前端产物会变。
+- **进程内导入第三方包的插件**（`telegram_sender`：`aiohttp`、`telegramify_markdown`）：Core 镜像继续带着这些包就能迁；只列出，不删 `requirements.txt` 与 `docker/host-runtime/requirements.lock` 里的条目。
+- **没有 docker 的验证环境。** 能验证插件加载、active 与配置保留；容器启动与镜像预拉验证不到，要如实写明。
+
 ### Phase 3：批量迁纯 Python 插件
 
 每批一个 PR，顺序以门禁结果为准：
