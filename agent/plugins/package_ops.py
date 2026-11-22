@@ -18,7 +18,7 @@ from agent.plugins.distribution_sources import distribution_sources
 from agent.plugins.install import PluginInstallResult, finalize_uninstall_plugin, fetch_sha_shallow, install_git_plugin
 from agent.plugins.manifest import plugins_root
 from agent.plugins.package_index import expand, load_index
-from agent.plugins.prerequisites import clear_disabled, describe, record_declared, record_disabled, unmet
+from agent.plugins.prerequisites import clear_disabled, describe, read_disabled, record_declared, record_disabled, unmet
 from agent.plugins.packages import InstalledPackage, PackageState, list_release_heads, read_state, sync_rows
 from agent.plugins.resources import ResourceError, repair_resources
 from agent.plugins.selection import PluginSelection
@@ -134,6 +134,9 @@ def _healthy(ctx: Context, package: InstalledPackage) -> str:
     enabled = {row.plugin: not row.disabled for row in composition_rows(ctx.workspace)}
     if not enabled.get(package.plugin_id, False):
         return "已安装但未启用"
+    # 前置条件不满足的原因在停用之前就记下了：仍开着却有记录，说明上次停用没做完，要重走收尾。
+    if package.plugin_id in read_disabled(ctx.workspace):
+        return "前置条件收尾未完成"
     view = _live_view(ctx, package.plugin_id)
     if ctx.online and (view is None or view.get("state") is None or view.get("load_error")):
         return f"加载异常: {None if view is None else view.get('load_error')}"
