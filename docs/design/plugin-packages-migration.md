@@ -210,6 +210,19 @@ Core 侧一个 PR，extra 侧先行或同时：
 - 前提：(1) 两个插件的新版本在生产运行且带进程内环境；(2) 用去掉 playwright 的 Core 解释器启动并真实渲染（已演练）；(3) 插件环境里的 playwright 版本与浏览器构建号一致——删之前由插件自己持有"playwright 版本 + 浏览器"的配对；(4) 目标镜像里求 wheel 通过；(5) Core 之后升级 playwright 必须与插件的钉死版本同步：先放宽插件声明（例如 `>=1.59.0,<1.61`）发布，再升 Core。
 - 浏览器定位：两个插件默认用 `PLAYWRIGHT_BROWSERS_PATH`（镜像里是 `/opt/playwright`，本机默认缓存）；`visuals` 的设置里本来就有"预检浏览器路径"；extra 仓库这一步新增环境变量 `AKASHIC_BROWSER_EXECUTABLE`（两个插件都认，设置优先于环境变量），并把找不到浏览器的 Playwright 原始提示整理成一行原因加修复办法。接已有 CDP 端点（对标 DSH：核心不拥有浏览器）只给方案：`chromium.connect_over_cdp(endpoint)` 替代 `launch`，设计的无头页面依赖独立 context 与 `--site-per-process` 启动参数，连外部浏览器时这些参数不可用，需要单独验证后再做。
 
+#### Phase 4 进展：`akasha`（记忆核心；进程内依赖 numpy、numba、jieba、threadpoolctl）
+
+- 迁出：`akasha` 进 extra 仓库并保持 `akasha@release` 身份，`[tiers].extra` → `external`（extra 层至此清空），preset 行保留。Core 里没有对它的 import、服务键或宿主前端点名：`wake` 已不存在；bundles 里只有 preset 行，`context`、`prompt`、`compaction` 的配置没有点名 akasha；宿主聊天前端没有 akasha 的字面量（回想浮层与召回卡片走 `message.actions` 等通用插槽，由 akasha 自己的 `message_ui.js` 贡献），仅 `vite.harness.config.ts` 的本地开发开关引用 `plugins/akasha/message_ui.css`（只在 `AKASHIC_LOCAL_PLUGIN_UI=akasha` 时用，需要合成目录）。`scripts/`、`docker/debug` 里没有 akasha 场景脚本。
+- 测试：`test_akasha_execution`、`test_akasha_graphs`、`test_akasha_learning`、`test_interest_execution` 随插件搬到 extra 的 `tests/akasha/`（路径深度改为 `parents[2]`，`test_interest_execution` 的 import 指向新位置）。`WorkerGate`、`loop_turn` 是 Core 其他测试（`test_storage_read_execution`、`test_conversation_source`）也在用的通用夹具，抽到 `tests/support/worker_gate.py`，两处 import 改过去；extra 的 `tests/subagent` 改为从 `tests.akasha.test_akasha_execution` 取。
+- 依赖声明：`jieba==0.42.1`（精确：切分缓存键含版本）、`numba>=0.68.1,<1`、`numpy>=2.4.0,<3`、`threadpoolctl>=3.6.0,<4`；`pydantic`、`yoyo-migrations` 是 Core 永久依赖，不声明。与 Core 锁（jieba 0.42.1、numba 0.68.1、llvmlite 0.50.0、numpy 2.5.2、threadpoolctl 3.6.0）兼容，插件环境解析出的版本与锁逐一相同（约束把 numba 的 llvmlite 与 numpy 也钉在锁上），环境约 420 MB。
+- jieba 没有 wheel：由插件根的 `wheels/jieba-0.42.1-py3-none-any.whl` 提供（#2196 的纯 Python wheel 目录）。该 wheel 直接提交进 extra 仓库，`wheels.lock.json` 记录 sdist 的 URL 与 sha256、固定的 `SOURCE_DATE_EPOCH` 与构建后端版本、wheel 的 sha256，`scripts/bundled_wheels.py check` 在 CI 里从 sdist 重建并要求逐字节一致（不一致时再比对 wheel 内容并如实报告）。
+- 迁移：`migration.catalog.toml` 与 6 个迁移脚本随插件走；存量库不重跑（`_yoyo_migration`、`_yoyo_log` 行数迁出前后都是 24），全新库在安装时执行全部 akasha 迁移并建出 18 张表。
+
+**之后从 Core 删除这些依赖的清单（单独一步）**
+
+- `requirements.txt`：`jieba>=0.42.1`（第 9 行）、`numba>=0.68.1`（第 12 行）、`numpy>=2.4.0`（第 13 行）、`threadpoolctl>=3.6.0`（第 14 行）；`docker/host-runtime/requirements.lock` 重新生成后少掉 `jieba`、`numba`、`llvmlite`、`numpy`、`threadpoolctl`（Core 里没有任何这些包的 import）。
+- 前提：(1) akasha 新版本在生产运行，`pkg list` 显示来源 extra 且带进程内环境；(2) 用去掉这些包的 Core 解释器启动并真实召回（已演练）；(3) 目标镜像里求 wheel 通过（numpy、numba、llvmlite、threadpoolctl 都要有 manylinux wheel，jieba 走 `wheels/`）；(4) 在线升级 akasha 默认走部署（环境 420 MB，依赖变化需重启）；(5) Python 小版本变化时环境必须在同一个停机窗口里重建（#2194 与后续）；(6) 记下 `numpy` 与 Core 其他可能的 numpy 使用（目前没有）。
+
 ### Phase 5：新用户体验
 
 先做：包组与默认组合；Web 首次引导里按场景选装。

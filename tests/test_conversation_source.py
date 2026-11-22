@@ -78,7 +78,7 @@ async def test_source_commit_drains_before_cancel_and_rejects_late_start(tmp_pat
     from contextlib import closing as close_connection
     from agent.plugin_composition.tasks import TaskServiceClosed
     from plugins.sources.session import check_source
-    from tests.test_akasha_execution import WorkerGate, loop_turn
+    from tests.support.worker_gate import WorkerGate, loop_turn
 
     changed = []
     started = asyncio.Event()
