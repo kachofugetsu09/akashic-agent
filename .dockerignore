@@ -9,5 +9,4 @@ node_modules
 frontend/**/node_modules
 docker/debug/profiles
 docker/debug/reports
-private_runtime
 static
