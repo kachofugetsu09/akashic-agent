@@ -492,10 +492,10 @@ def _download_in_subprocess(code: Path, destination: Path, names: list[str], sec
         done = subprocess.run(command, cwd=_REPO_ROOT, capture_output=True, text=True, timeout=seconds, check=False,
                               env={**os.environ, "PYTHONPATH": str(_REPO_ROOT)})
     except subprocess.TimeoutExpired as error:
-        _clear_partials(destination)
+        _clear_partials_if_idle(destination)
         raise ResourceError(f"资源归档下载超过硬上限 {seconds:.0f} 秒，已终止下载进程") from error
     if done.returncode != 0:
-        _clear_partials(destination)
+        _clear_partials_if_idle(destination)
         raise ResourceError(f"资源归档下载失败: {(done.stderr or done.stdout).strip()[-400:]}")
 
 
@@ -548,26 +548,61 @@ def _main(arguments: list[str]) -> int:
         return 2
 
 
-# 清掉 dest 里下载中断留下的临时文件（.partial-*）；正式归档只通过校验后的原子改名出现。
+_PARTIAL = re.compile(r"^\.partial-[0-9a-f]{64}$")
+
+
+# 同一个 --dest 的下载互斥：跨进程文件锁覆盖"清理 -> 下载 -> 校验 -> 改名"整段，父进程的清理遵循同一把锁。
+# 锁文件放在 dest 旁边（不进归档目录，不会被"无多余文件"检查或拷贝带走）。blocking=False 时拿不到锁返回 None（有人持有）。
+@contextmanager
+def _dest_lock(dest: Path, *, blocking: bool) -> Generator[bool]:
+    with (dest.parent / f".{dest.name}.lock").open("a+") as stream:
+        try:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+        except BlockingIOError:
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+
+
+# 清掉 dest 里下载中断留下的临时文件（只匹配 .partial-<64 位十六进制>）；调用方必须持有 dest 的锁。
 def _clear_partials(dest: Path) -> None:
-    for path in dest.glob(".partial-*"):
-        path.unlink(missing_ok=True)
+    for path in dest.iterdir():
+        if _PARTIAL.fullmatch(path.name):
+            path.unlink(missing_ok=True)
+
+
+# 父进程在子进程超时或失败后的清理：拿得到锁（没有活着的下载者）才清，拿不到说明有人在下载，由它自己清。
+def _clear_partials_if_idle(dest: Path) -> None:
+    with _dest_lock(dest, blocking=False) as held:
+        if held:
+            _clear_partials(dest)
 
 
 # download：只下载并校验归档到 dest（<sha256>.zip，按唯一 sha256），不解压、不发布；整个命令共用一个期限。
-# 先写 .partial-<sha256>，校验通过后原子改名；失败或被杀留下的临时文件由下次运行（或父进程）清掉。
+# 全程持有 dest 的锁：先清残留，再逐个写 .partial-<sha256>，校验通过后原子改名；同一归档已完好存在则跳过。
 def _run_download(items: list[Resource], dest: Path, seconds: float) -> int:
     dest.mkdir(parents=True, exist_ok=True)
-    _clear_partials(dest)
     deadline = _Deadline(seconds)
     unique = unique_archives(tuple(items))
-    for item in unique:
-        partial = dest / f".partial-{item.sha256}"
-        try:
-            _ = download_archive(item, partial, deadline=deadline)
-            os.replace(partial, dest / f"{item.sha256}.zip")
-        finally:
-            partial.unlink(missing_ok=True)
+    with _dest_lock(dest, blocking=True):
+        _clear_partials(dest)
+        for item in unique:
+            final = dest / f"{item.sha256}.zip"
+            if final.is_file():
+                try:
+                    check_archive(item, final)
+                    continue
+                except ResourceError:
+                    final.unlink()
+            partial = dest / f".partial-{item.sha256}"
+            try:
+                _ = download_archive(item, partial, deadline=deadline)
+                os.replace(partial, final)
+            finally:
+                partial.unlink(missing_ok=True)
     print(json.dumps([{"name": item.name, "sha256": item.sha256} for item in unique]))
     return 0
 
