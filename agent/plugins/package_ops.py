@@ -202,7 +202,9 @@ def install_many(ctx: Context, plugin_ids: list[str], heads: dict[str, str] | No
         name = plugin_id.partition("@")[0]
         sha = heads.get(name)
         package = here.get(plugin_id)
-        if sha is None:
+        if (provider := absorbed_plugin_ids().get(plugin_id)) is not None:
+            outcomes.append(Outcome(name, "failed", f"{plugin_id} 已并入 Core 的 {provider} 插件，不再作为扩展包安装"))
+        elif sha is None:
             outcomes.append(Outcome(name, "failed", f"远端没有 release/{name}"))
         elif package is not None and package.head == sha and not package.repair and not _healthy(ctx, package):
             outcomes.append(Outcome(name, "current", "已是该版本，已启用"))

@@ -18,6 +18,7 @@ from collections.abc import Mapping
 from typing import Callable, Iterator, cast
 
 from utils.timing import measure
+from agent.plugins.absorbed import read_absorbed
 from agent.plugins.extra_repo import (
     ExtraAction,
     SelectedPackage,
@@ -105,15 +106,6 @@ def _read_rows(path: Path) -> dict[str, dict[str, object]]:
 # preset 行（base 加 mode）叠加用户 patch，语义同 Core 的 load_bundles：patch 行先按 id、再按同插件找到 preset 行；
 # 同一插件时按字段继承（只覆盖 disabled），不同插件（同 id 换 provider）则整行替换。
 # 返回 (实际生效的启用身份, preset 里出现的身份)，与 pkg sync 口径一致。
-# 已被 Core 吸收的身份到提供者（随发行版的 bundles/absorbed.toml）；没有该文件为空。
-def read_absorbed(checkout: Path) -> dict[str, str]:
-    path = checkout / "bundles/absorbed.toml"
-    if not path.is_file():
-        return {}
-    rows = tomllib.loads(path.read_text(encoding="utf-8")).get("absorbed", {})
-    return {identity: str(row.get("provider", "")) for identity, row in rows.items()}
-
-
 def composition_ids(checkout: Path, mode: str, patch: Path) -> tuple[frozenset[str], frozenset[str], frozenset[str]]:
     rows = _read_rows(checkout / "bundles/base.toml")
     if mode != "base":

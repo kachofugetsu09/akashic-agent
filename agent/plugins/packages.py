@@ -9,7 +9,7 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import cast
 
-from agent.plugins.bundles import composition_rows, preset_plugin_ids
+from agent.plugins.bundles import absorbed_plugin_ids, composition_rows, preset_plugin_ids
 from agent.plugins.distribution_sources import distribution_sources
 from agent.plugins.extra_repo import DEFAULT_EXTRA_REPO as DEFAULT_EXTRA_REPO
 from agent.plugins.extra_repo import classify_gaps, list_release_heads as list_release_heads
@@ -179,7 +179,7 @@ def sync_rows(workspace: Path, repo: str) -> list[SyncRow]:
     state = read_state(workspace, repo)
     preset: frozenset[str] = preset_plugin_ids(state.root) if state.root is not None else frozenset[str]()
     gaps = classify_gaps(
-        enabled=[row.plugin for row in composition_rows(workspace) if not row.disabled],
+        enabled=[row.plugin for row in composition_rows(workspace) if not row.disabled and row.plugin not in absorbed_plugin_ids()],
         present=state.provided | state.installed, preset=preset,
         heads=lambda: list_release_heads(repo), needs_switch=state.requires_switch,
         in_use=frozenset(item.plugin_id for item in state.packages if item.source == "core" and item.selected))
