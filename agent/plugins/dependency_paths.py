@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib
+import importlib.metadata
 import json
 import sys
 from pathlib import Path
@@ -69,15 +70,52 @@ class DependencyPaths:
 
     def __init__(self) -> None:
         self._attached: dict[str, Path] = {}
+        self._restart_pending: set[str] = set()
 
-    # 旧目录里已有模块被导入时，换成另一个环境只能重启进程。
-    def restart_needed(self, plugin_name: str, site: Path) -> bool:
-        previous = self._attached.get(plugin_name)
-        if previous is None or previous == site:
-            return False
-        prefix = str(previous) + "/"
+    def _imported_from(self, directory: Path) -> bool:
+        prefix = str(directory) + "/"
         return any(str(getattr(module, "__file__", None) or "").startswith(prefix)
                    for module in tuple(sys.modules.values()))
+
+    # 该环境里的某个顶层包已经从另一个已挂载的插件环境（例如已卸载插件留下的）以不同版本导入。
+    # Core 自带包的版本一致性由安装期的约束保证，这里只看插件环境之间的残留。
+    def _shadowed(self, site: Path) -> bool:
+        others = tuple(str(path) + "/" for path in self._attached.values() if path != site)
+        for dist in importlib.metadata.distributions(path=[str(site)]):
+            tops = (dist.read_text("top_level.txt") or "").split() or [dist.metadata["Name"].replace("-", "_")]
+            for top in tops:
+                origin = str(getattr(sys.modules.get(top), "__file__", None) or "")
+                if origin.startswith(others) and self._loaded_version(origin, dist.metadata["Name"]) != dist.version:
+                    return True
+        return False
+
+    # 已导入的那份包的版本：读它所在环境里的 dist-info。
+    @staticmethod
+    def _loaded_version(origin: str, name: str) -> str | None:
+        site = origin.split("/site-packages/", 1)[0] + "/site-packages"
+        for dist in importlib.metadata.distributions(path=[site]):
+            if dist.metadata["Name"].lower().replace("_", "-") == name.lower().replace("_", "-"):
+                return dist.version
+        return None
+
+    # 需要重启才能让该插件拿到自己的依赖：同插件旧环境的模块已导入；或（给出当前选择时）进程里还挂着
+    # 不属于当前选择的环境；或它环境里的包已从别处以不同版本导入。
+    def restart_needed(self, plugin_name: str, site: Path, selected: frozenset[str] | None = None) -> bool:
+        previous = self._attached.get(plugin_name)
+        if previous == site:
+            return False
+        if previous is not None and self._imported_from(previous):
+            return True
+        if selected is not None and any(name not in selected for name in self._attached if name != plugin_name):
+            return True
+        return self._shadowed(site)
+
+    # 因残留依赖需要重启的插件名；只在进程内存里，重启即清空，对账据此不再重试加载它们。
+    def mark_restart_pending(self, plugin_name: str) -> None:
+        self._restart_pending.add(plugin_name)
+
+    def restart_pending(self, plugin_name: str) -> bool:
+        return plugin_name in self._restart_pending
 
     # 挂载到 sys.path 末尾；依赖环境没变不重复追加，旧环境无已导入模块时原位替换。
     def attach(self, plugin_name: str, site: Path) -> None:
@@ -85,7 +123,7 @@ class DependencyPaths:
         if previous == site:
             return
         if self.restart_needed(plugin_name, site):
-            raise DependencyEnvironmentError(f"插件 {plugin_name} 的依赖环境已变化且旧环境的模块已导入，需要重启进程")
+            raise DependencyEnvironmentError(f"插件 {plugin_name} 的依赖环境与进程里已导入的版本冲突，需要重启进程")
         if previous is not None and str(previous) in sys.path:
             sys.path.remove(str(previous))
         sys.path.append(str(site))
