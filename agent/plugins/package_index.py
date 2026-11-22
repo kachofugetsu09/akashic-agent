@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import re
 import subprocess
 import tempfile
 from dataclasses import dataclass, replace
@@ -44,53 +46,169 @@ class PackageIndex:
     note: str = ""
 
 
+class IndexFormatError(RuntimeError):
+    """远端 index 内容不合格（不是网络问题）：不回落旧缓存，也不当作联网失败报告。"""
+
+
+# 对 index 一律按不受信输入处理：先限大小再解析，字段类型、名字字符集、引用完整性、依赖环都在边界检查。
+MAX_INDEX_BYTES = 1 << 20
+_MAX_GROUPS = 100
+_MAX_PACKAGES = 500
+_MAX_TEXT = 500
+_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
+
+
+def _bad(where: str, why: str) -> IndexFormatError:
+    return IndexFormatError(f"远端 index 格式无效（{where}）：{why}")
+
+
+def _mapping(value: object, where: str) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise _bad(where, "必须是对象")
+    return cast(dict[str, object], value)
+
+
+def _text(value: object, where: str) -> str:
+    if not isinstance(value, str) or len(value) > _MAX_TEXT:
+        raise _bad(where, f"必须是不超过 {_MAX_TEXT} 字符的字符串")
+    return value
+
+
+def _names(value: object, where: str) -> tuple[str, ...]:
+    if not isinstance(value, list) or len(cast(list[object], value)) > _MAX_PACKAGES:
+        raise _bad(where, "必须是名字数组")
+    items = tuple(_text(item, where) for item in cast(list[object], value))
+    if any(_NAME.fullmatch(item) is None for item in items):
+        raise _bad(where, "名字只能含字母、数字、_、.、-")
+    return items
+
+
 def _strings(value: object, where: str) -> tuple[str, ...]:
-    if not isinstance(value, list) or not all(isinstance(item, str) for item in cast(list[object], value)):
-        raise RuntimeError(f"index 格式无效: {where}")
-    return tuple(cast(list[str], value))
+    if not isinstance(value, list) or len(cast(list[object], value)) > 50:
+        raise _bad(where, "必须是字符串数组")
+    return tuple(_text(item, where) for item in cast(list[object], value))
 
 
-# 解析 index.json 文本；结构不对一律报错，不猜。
+def _group(group_id: str, value: object) -> IndexGroup:
+    row = _mapping(value, f"groups.{group_id}")
+    required = row.get("required")
+    if not isinstance(required, bool):
+        raise _bad(f"groups.{group_id}.required", "必须是布尔值")
+    members = _names(row.get("members"), f"groups.{group_id}.members")
+    if len(set(members)) != len(members):
+        raise _bad(f"groups.{group_id}.members", "有重复成员")
+    return IndexGroup(group_id, _text(row.get("title"), f"groups.{group_id}.title"),
+                      _text(row.get("description"), f"groups.{group_id}.description"), required, members)
+
+
+def _package(name: str, value: object) -> IndexPackage:
+    row = _mapping(value, f"packages.{name}")
+    size = row.get("size_bytes")
+    if not isinstance(size, int) or isinstance(size, bool) or size < 0:
+        raise _bad(f"packages.{name}.size_bytes", "必须是非负整数")
+    group = _text(row.get("group"), f"packages.{name}.group")
+    return IndexPackage(name, _text(row.get("desc"), f"packages.{name}.desc"), group, _names(row.get("requires"), f"packages.{name}.requires"),
+                        _strings(row.get("needs"), f"packages.{name}.needs"), _strings(row.get("images"), f"packages.{name}.images"), size)
+
+
+# 引用完整性：成员与 requires 指向存在的包，包的 group 与组成员互相一致，依赖无环。
+def _check_links(groups: dict[str, IndexGroup], packages: dict[str, IndexPackage]) -> None:
+    owner: dict[str, str] = {}
+    for group in groups.values():
+        for member in group.members:
+            if member not in packages:
+                raise _bad(f"groups.{group.id}.members", f"成员 {member} 不在 packages 里")
+            if member in owner:
+                raise _bad(f"groups.{group.id}.members", f"{member} 同时属于组 {owner[member]}")
+            owner[member] = group.id
+    for package in packages.values():
+        if owner.get(package.name) != package.group:
+            raise _bad(f"packages.{package.name}.group", "与组的成员列表不一致")
+        for dependency in package.requires:
+            if dependency not in packages or dependency == package.name:
+                raise _bad(f"packages.{package.name}.requires", f"依赖 {dependency} 不存在或指向自己")
+    for name in packages:
+        try:
+            _ = closure_of(packages, [name])
+        except RuntimeError as error:
+            raise _bad("packages", str(error)) from error
+
+
+# 解析 index.json 文本；任何不合格都抛 IndexFormatError，不让别的异常逃出。
 def parse_index(text: str, sha: str) -> PackageIndex:
+    if len(text.encode("utf-8")) > MAX_INDEX_BYTES:
+        raise _bad("文件", f"超过 {MAX_INDEX_BYTES} 字节")
     try:
-        document = cast(dict[str, object], json.loads(text))
-        if document.get("schema_version") != SCHEMA_VERSION:
-            raise RuntimeError(f"index schema_version 不是 {SCHEMA_VERSION}，请升级 Core")
-        groups = {gid: IndexGroup(gid, str(row["title"]), str(row["description"]), bool(row["required"]),
-                                  _strings(row["members"], f"groups.{gid}.members"))
-                  for gid, row in cast(dict[str, dict[str, object]], document["groups"]).items()}
-        packages = {name: IndexPackage(name, str(row["desc"]), str(row["group"]), _strings(row["requires"], f"{name}.requires"),
-                                       _strings(row["needs"], f"{name}.needs"), _strings(row["images"], f"{name}.images"),
-                                       int(cast(int, row["size_bytes"])))
-                    for name, row in cast(dict[str, dict[str, object]], document["packages"]).items()}
-    except (ValueError, KeyError, TypeError) as error:
-        raise RuntimeError(f"index 格式无效: {error}") from error
+        document = _mapping(json.loads(text), "顶层")
+    except ValueError as error:
+        raise _bad("顶层", f"不是合法 JSON: {error}") from error
+    if document.get("schema_version") != SCHEMA_VERSION or isinstance(document.get("schema_version"), bool):
+        raise IndexFormatError(f"远端 index 的 schema_version 不是 {SCHEMA_VERSION}，请升级 Core")
+    raw_groups, raw_packages = _mapping(document.get("groups"), "groups"), _mapping(document.get("packages"), "packages")
+    if len(raw_groups) > _MAX_GROUPS or len(raw_packages) > _MAX_PACKAGES:
+        raise _bad("groups/packages", "条目过多")
+    for key in (*raw_groups, *raw_packages):
+        if _NAME.fullmatch(key) is None:
+            raise _bad("名字", f"{key!r} 含不允许的字符")
+    groups = {key: _group(key, value) for key, value in raw_groups.items()}
+    packages = {key: _package(key, value) for key, value in raw_packages.items()}
+    _check_links(groups, packages)
     return PackageIndex(sha, groups, packages)
 
 
-# 浅取 index 提交并读出 index.json。
+# 浅取 index 提交并读出 index.json：提交的树只能有这一个文件，先看大小再读内容。
 def _fetch_text(repo: str, sha: str) -> str:
     with tempfile.TemporaryDirectory(prefix="akashic-index-") as directory:
         work = Path(directory)
-        for command in (["git", "init", "--quiet"], ["git", "fetch", "--quiet", "--depth=1", "--no-tags", "--", repo, sha],
-                        ["git", "show", f"{sha}:index.json"]):
-            result = subprocess.run(command, cwd=work, capture_output=True, text=True, check=False, timeout=_TIMEOUT_S, env=git_env())
+
+        def git(*command: str) -> str:
+            result = subprocess.run(["git", *command], cwd=work, capture_output=True, text=True, check=False, timeout=_TIMEOUT_S, env=git_env())
             if result.returncode != 0:
-                raise RuntimeError(f"取 index 失败（{command[1]}）: {result.stderr.strip().splitlines()[-1] if result.stderr.strip() else result.returncode}")
-        return result.stdout
+                raise RuntimeError(f"取 index 失败（{command[0]}）: {result.stderr.strip().splitlines()[-1] if result.stderr.strip() else result.returncode}")
+            return result.stdout
+
+        _ = git("init", "--quiet")
+        _ = git("fetch", "--quiet", "--depth=1", "--no-tags", "--", repo, sha)
+        if git("ls-tree", "--name-only", sha).split() != ["index.json"]:
+            raise _bad("提交", "树里不是只有 index.json")
+        if int(git("cat-file", "-s", f"{sha}:index.json").strip()) > MAX_INDEX_BYTES:
+            raise _bad("文件", f"超过 {MAX_INDEX_BYTES} 字节")
+        return git("show", f"{sha}:index.json")
 
 
 def _cache_path(home: Path, repo: str) -> Path:
     return home / "index-cache" / (hashlib.sha256(repo.strip().rstrip("/").encode()).hexdigest()[:16] + ".json")
 
 
-# 读取 index：远端 SHA 与缓存相同直接用缓存；不同则取新的并写缓存；联网失败回落到缓存并带说明；都没有则报错。
+# 读缓存：超限、损坏或内容不合格都当没有缓存。
+def _read_cache(path: Path) -> tuple[str, str] | None:
+    try:
+        if not path.is_file() or path.stat().st_size > 2 * MAX_INDEX_BYTES:
+            return None
+        record = cast(dict[str, str], json.loads(path.read_text(encoding="utf-8")))
+        _ = parse_index(record["text"], record["sha"])
+        return record["sha"], record["text"]
+    except (OSError, ValueError, KeyError, TypeError, IndexFormatError):
+        return None
+
+
+# 唯一临时文件加原子替换：并行的 pkg 命令互不踩。
+def _write_cache(path: Path, sha: str, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, name = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            _ = stream.write(json.dumps({"sha": sha, "text": text}))
+        os.replace(name, path)
+    finally:
+        Path(name).unlink(missing_ok=True)
+
+
+# 读取 index：远端 SHA 与缓存相同直接用缓存；不同则取新的并写缓存；联网失败回落到缓存并带说明；
+# 远端 index 内容不合格是另一类错误：直接报，不回落旧缓存。
 def load_index(repo: str, home: Path) -> PackageIndex:
     path = _cache_path(home, repo)
-    cached: tuple[str, str] | None = None
-    if path.is_file():
-        record = cast(dict[str, str], json.loads(path.read_text(encoding="utf-8")))
-        cached = (record["sha"], record["text"])
+    cached = _read_cache(path)
     try:
         _, sha = list_heads(repo)
         if not sha:
@@ -98,21 +216,24 @@ def load_index(repo: str, home: Path) -> PackageIndex:
         if cached is not None and cached[0] == sha:
             return parse_index(cached[1], sha)
         text = _fetch_text(repo, sha)
-        index = parse_index(text, sha)
+    except IndexFormatError:
+        raise
     except (RuntimeError, OSError, subprocess.TimeoutExpired) as error:
         if cached is None:
             raise RuntimeError(f"无法读取包组信息（{str(error).splitlines()[0]}），本机也没有缓存") from error
         return replace(parse_index(cached[1], cached[0]),
                        note=f"联网失败（{str(error).splitlines()[0]}），使用本机缓存的包组信息")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + ".tmp")
-    _ = temporary.write_text(json.dumps({"sha": sha, "text": text}), encoding="utf-8")
-    temporary.replace(path)
+    index = parse_index(text, sha)
+    _write_cache(path, sha, text)
     return index
 
 
 # 依赖闭包：给定包名加上它们（传递地）requires 的包，按"依赖在前"排序；未知名字抛 KeyError 由调用方转成明确报错。
 def closure(index: PackageIndex, names: list[str]) -> list[str]:
+    return closure_of(index.packages, names)
+
+
+def closure_of(packages: dict[str, IndexPackage], names: list[str]) -> list[str]:
     ordered: list[str] = []
     visiting: set[str] = set()
 
@@ -122,7 +243,7 @@ def closure(index: PackageIndex, names: list[str]) -> list[str]:
         if name in visiting:
             raise RuntimeError(f"index 里的包依赖成环: {name}")
         visiting.add(name)
-        for dependency in index.packages[name].requires:
+        for dependency in packages[name].requires:
             visit(dependency)
         visiting.discard(name)
         ordered.append(name)

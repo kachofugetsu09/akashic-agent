@@ -173,9 +173,18 @@ def install_named(ctx: Context, names: list[str]) -> list[Outcome]:
 def _expand_groups(ctx: Context, names: list[str]) -> list[str]:
     if not any(name.startswith("@") for name in names):
         return names
-    full, added = expand(load_index(ctx.repo, plugins_root()), names)
+    index = load_index(ctx.repo, plugins_root())
+    if index.note:
+        print(index.note, file=sys.stderr)
+    full, added = expand(index, names)
     if added:
         print(f"自动带上依赖: {', '.join(added)}", file=sys.stderr)
+    # index 可能过期（缓存回落，或 extra 发布时 release 先于 index 前进）：展开的每个包都要在远端真实存在，
+    # 否则整体失败、不安装任何包。不带 @ 的多包安装不走这里，保持逐个处理的既有语义。
+    heads = list_release_heads(ctx.repo)
+    missing = [name for name in full if name not in heads]
+    if missing:
+        raise RuntimeError("这些包在远端已不存在（index 可能已过期），未安装任何包: " + ", ".join(missing))
     return full
 
 
