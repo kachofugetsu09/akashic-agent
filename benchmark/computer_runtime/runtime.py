@@ -22,6 +22,9 @@ def docker(*args: str) -> str:
 @asynccontextmanager
 async def runtime(directory: Path, *, max_steps: int, endpoint: str, model: str, key_file: Path):
     """独占新状态；真实配置、接纳、回复、工具和账本均走现有 owner。"""
+    # computer 与 markdown_memory 已迁到 extra 仓库：这里直接读 ROOT/plugins，必须在 extra_ci.py compose 的合成目录里运行。
+    if not (ROOT / "plugins/computer/plugin.py").is_file():
+        raise RuntimeError("plugins/computer 不在本目录：该基准需要 extra 仓库的合成目录，用 `python scripts/extra_ci.py compose --core <Core 检出> --synth <目录>`（在 extra 仓库里）生成后，从合成目录运行")
     from agent.plugin_composition.config_input import save_config
     from bootstrap.init_workspace import init_workspace
     from plugins.host_execution.controller import WorkloadControllerServer
