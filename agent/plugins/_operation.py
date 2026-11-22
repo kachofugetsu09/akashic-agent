@@ -34,6 +34,8 @@ class ManagerOperation:
     revoked: bool = False
     committed: object | None = None
     candidate_shared: bool = False
+    # 给排队等待的调用方看的操作说明（如“安装插件（release，abc123）”“启用 x@release”）。
+    label: str = ""
 
     def revoke(self, *, cancel: bool = True) -> None:
         """先永久撤销许可；最多向操作任务发送一次取消。"""
