@@ -44,6 +44,7 @@ CORE_PATHS = (
     "scripts/install_plugin_distribution.py",
     "scripts/distribution_runtime.py",
     "scripts/start.py",
+    "scripts/first_install.py",
     "scripts/akashic_release/__init__.py",
     "scripts/akashic_release/extra.py",
     "scripts/akashic_release/manifest.py",
