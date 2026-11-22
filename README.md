@@ -19,7 +19,9 @@ docker compose up -d --wait
 docker compose exec akashic python main.py web-login
 ```
 
-第一次启动要下载和安装，大约需要 10 分钟。最后一条命令会打印一个登录链接，在浏览器里打开它就能进入。
+第一次启动要下载和安装，大约需要 10 分钟，期间终端只显示等待；想看进度，另开一个终端运行 `docker compose logs -f`。最后一条命令会打印一个登录链接，在浏览器里打开它就能进入。
+
+如果报错 `address already in use`，说明 2236 端口被别的程序占了：在同一目录创建 `.env` 文件，写一行 `AKASHIC_PORT=2237`，再运行一次 `docker compose up -d --wait`。
 
 ### 方式二：不用 Docker（Linux 或 WSL2）
 

@@ -63,7 +63,6 @@ docker compose exec akashic python main.py pkg upgrade         # 全部升级
   ./start --login                                       # 不用 Docker（在 akashic-agent 目录里）
   docker compose exec akashic python main.py web-login  # Docker（在 akashic 目录里）
   ```
-- **初始密码**：首次启动时会随机生成，只写在启动日志里（Docker 可以用 `docker compose logs akashic | grep 初始密码` 查看），不会发到任何聊天渠道。首次登录后需要改成自己的密码。
 - **记住设备**：默认 90 天内免登录。在别人的电脑上登录时，请取消勾选“记住这台设备”。
 - **忘记密码**：用上面的一次性登录链接进入即可。Docker 也可以运行 `docker compose exec akashic python main.py web-passwd`，密码会重置为临时密码，所有设备都会退出登录。还可以在 Telegram 或 QQ 里让 Akashic 帮你重置。
 

@@ -380,7 +380,8 @@ def run_service(preparation: Preparation, core: Path, python: Path,
                     pass
             # 2. Present the product only after its plugin gateway can serve the UI.
             if container:
-                preparation.step("WebUI 已就绪。请打开 Compose 映射的本机地址（默认 http://localhost:2236）。")
+                public = os.environ.get("AKASHIC_PUBLIC_PORT", "2236")
+                preparation.step(f"WebUI 已就绪：http://localhost:{public}。登录链接用 docker compose exec akashic python main.py web-login 获取。")
             else:
                 preparation.step(f"WebUI 已就绪：{url}")
                 if open_browser:

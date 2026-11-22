@@ -18,7 +18,9 @@ def _auth(workspace: Path) -> OwnerAuth:
 async def login_main(arguments: tuple[str, ...], *, workspace: Path, config_path: Path) -> int:
     """打印一条一次性登录链接；首次进入后仍需设置自己的密码。"""
     parser = argparse.ArgumentParser(prog="web-login", description=login_main.__doc__)
-    parser.add_argument("--url", default=f"http://localhost:{os.environ.get('AKASHIC_WEB_PORT', '2236')}",
+    # Docker 里容器端口固定，AKASHIC_PUBLIC_PORT 是本机映射出来的端口。
+    port = os.environ.get("AKASHIC_PUBLIC_PORT") or os.environ.get("AKASHIC_WEB_PORT", "2236")
+    parser.add_argument("--url", default=f"http://localhost:{port}",
                         help="浏览器访问 Akashic 的地址")
     options = parser.parse_args(arguments)
     ticket = _auth(workspace).issue_ticket()
