@@ -248,6 +248,8 @@ async def management(arguments: tuple[str, ...], *, workspace: Path, config_path
 
 # 在线启停：返回 0 成功、1 被拒绝（原因已打印）、3 没有运行中的实例（调用方回落到只写 patch）。
 NO_INSTANCE = 3
+# 运行中的 Core 不认识这个方法（比磁盘上的命令旧），调用方可以退回本地检测。
+UNSUPPORTED = 4
 
 
 async def set_enabled_main(arguments: tuple[str, ...], *, workspace: Path, config_path: Path) -> int:
@@ -269,7 +271,10 @@ async def prerequisites_main(arguments: tuple[str, ...], *, workspace: Path, con
         result = await request(workspace, "plugin/prerequisites", {"needs": list(arguments)})
     except (ConnectionError, OSError):
         return NO_INSTANCE
-    except (RemoteError, ValueError, RuntimeError) as error:
+    except RemoteError as error:
+        print(str(error), file=sys.stderr)
+        return UNSUPPORTED if error.code == -32601 else 1
+    except (ValueError, RuntimeError) as error:
         print(str(error), file=sys.stderr)
         return 1
     print(json.dumps({"unmet": result.get("unmet", [])}, ensure_ascii=False))

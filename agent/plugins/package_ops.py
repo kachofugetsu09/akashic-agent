@@ -197,15 +197,22 @@ def _declare(ctx: Context, name: str, plugin_id: str, sha: str) -> list[str] | N
 
 
 # 前置条件以将来运行插件的 Core 为准：在线时问 Core（pkg 可能跑在 PATH 不同的宿主 Shell 里），
-# 离线时本进程就是将要启动的运行环境；问不到 Core（旧版本没有这个命令等）时退回本进程检测并说明。
+# 离线时本进程就是将要启动的运行环境。只有实例已不在线（退出码 3）或运行中的 Core 不认识
+# 这个方法（4）才退回本进程检测；Core 明确报错时安装失败，不拿调用者的环境顶替。
+# RPC 每次最多 32 项，按批询问同一个 Core。
 def _unmet_in_core(ctx: Context, needs: list[str]) -> list[str]:
     if not needs or not ctx.online:
         return unmet(needs)
-    done = _main(ctx, "plugin-prerequisites", *needs)
-    if done.returncode == 0:
-        return [str(item) for item in cast(list[object], _json_of(done).get("unmet", []))]
-    print(f"没能在运行中的实例里检测前置条件，改为在当前环境检测: {done.stderr.strip() or done.returncode}", file=sys.stderr)
-    return unmet(needs)
+    missing: list[str] = []
+    for start in range(0, len(needs), 32):
+        done = _main(ctx, "plugin-prerequisites", *needs[start:start + 32])
+        if done.returncode in (3, 4):
+            print(f"运行中的实例没法检测前置条件，改为在当前环境检测: {done.stderr.strip() or done.returncode}", file=sys.stderr)
+            return unmet(needs)
+        if done.returncode != 0:
+            raise RuntimeError(f"运行中的实例检测前置条件失败: {done.stderr.strip() or done.returncode}")
+        missing.extend(str(item) for item in cast(list[object], _json_of(done).get("unmet", [])))
+    return missing
 
 
 # 装完后：包声明了外部前置条件而本机不满足，包照装但保持关闭并记录原因（返回说明）。
