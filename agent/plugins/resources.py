@@ -55,7 +55,7 @@ class _ShortRead(OSError):
     """下载被截断或大小不符：网络类错误，可重试。"""
 
 
-class ResourceError(RuntimeError):
+class ResourceError(ValueError):
     """资源声明无效，或取回、校验、解压失败；失败时不留下半成品。"""
 
 
@@ -414,6 +414,38 @@ def fetch_resource(
             _remove_tree(stage)
             raise
     return target
+
+
+# ---- 与插件安装记录的接口 ----
+# 安装记录（.akashic-python-environment）里资源的键；值是 sha256，与环境引用同处一份记录，随 artifact 与选择一起回退。
+RESOURCE_KEY_PREFIX = "resource/"
+RESOURCES_ROOT = "plugin-resources"
+
+
+# 持久根：与 plugin-python-environments 平级；内容寻址，不随插件版本删除，回退后旧版本仍能找到自己的资源。
+def resource_root(workspace: Path) -> Path:
+    return workspace / "runtime" / RESOURCES_ROOT
+
+
+# 声明对应的记录条目（不碰文件系统）；没有 resources.json 返回空映射。
+def declared_refs(code: Path) -> dict[str, str]:
+    return {f"{RESOURCE_KEY_PREFIX}{item.name}": item.sha256 for item in read_manifest(code)}
+
+
+def _file_opener(path: Path) -> Opener:
+    def opener(url: str, timeout: float) -> IO[bytes]:
+        return path.open("rb")
+    return opener
+
+
+# 取回并发布插件声明的全部资源，返回要记进安装记录的引用。archives 是预先取好的归档目录（<sha256>.zip，部署的离线路径），
+# 没有就联网取；已发布且完好的资源两种路径都直接复用。没有 resources.json 时什么都不做。
+def ensure_resources(code: Path, workspace: Path, *, archives: Path | None = None) -> dict[str, str]:
+    root = resource_root(workspace)
+    for item in read_manifest(code):
+        opener = None if archives is None else _file_opener(archives / f"{item.sha256}.zip")
+        _ = fetch_resource(item, root, opener=opener, attempts=1 if archives is not None else 3)
+    return declared_refs(code)
 
 
 def _main(arguments: list[str]) -> int:

@@ -13,6 +13,7 @@ from typing import cast
 from uuid import uuid4
 
 from agent.plugins.dependency_constraints import DependencyBatch, build_constraints
+from agent.plugins.resources import ensure_resources
 from agent.plugins.python_environment import (
     ENVIRONMENT_FILE, INPROCESS_KEY, OfflineWheels, PythonEnvironments, inprocess_runtime,
 )
@@ -701,6 +702,8 @@ def _prepare_static_python_runtimes(
                 refs[runtime.runtime_root] = environments.prepare(plugin_root, runtime)
         if offline_wheels is not None and not used_offline_wheels and inprocess is None:
             raise ValueError("没有非空 Python requirements，不能提供离线 wheel")
+    # 3. 声明了资源（resources.json）的插件：取回并发布，引用记在同一份安装记录里；没有声明时不产生任何键。
+    refs.update(ensure_resources(plugin_root, workspace))
     if refs:
         with (plugin_root / ENVIRONMENT_FILE).open("w") as stream:
             _ = stream.write(json.dumps(refs, sort_keys=True))
