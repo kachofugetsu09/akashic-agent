@@ -25,8 +25,9 @@ from agent.plugins.extra_repo import (
     resolve_repo,
     upgrade_actions,
 )
+from agent.plugins.python_environment import PythonEnvironments, environment_repair_reason
 from scripts.akashic_release.wheels import (
-    Resolver, docker_resolver, installed_pins, local_resolver, resolve_package_wheels, tree_sha256,
+    Resolver, target_python, docker_resolver, installed_pins, local_resolver, resolve_package_wheels, tree_sha256,
 )
 
 Run = Callable[..., subprocess.CompletedProcess[str]]
@@ -65,7 +66,9 @@ def _git(*args: str, cwd: Path | None = None) -> str:
 
 
 # 旧选择里的包：来源由 artifact 的 origin 与 HEAD 推导，选择文件是普通 JSON。
-def read_selected(workspace: Path) -> tuple[str | None, dict[str, SelectedPackage]]:
+def read_selected(
+    workspace: Path, target_python: Callable[[], tuple[int, int]],
+) -> tuple[str | None, dict[str, SelectedPackage]]:
     path = workspace / "runtime/plugin-stable.json"
     if not path.exists():
         return None, {}
@@ -74,11 +77,12 @@ def read_selected(workspace: Path) -> tuple[str | None, dict[str, SelectedPackag
     for record in document["inputs"].values():
         builtin = record["source_type"] == "builtin"
         code = Path(record["code"])
-        origin = head = ""
+        origin = head = repair = ""
         if not builtin and (code / ".git").exists():
             origin = _git("config", "--get", "remote.origin.url", cwd=code)
             head = _git("rev-parse", "HEAD", cwd=code)
-        selected[record["plugin_id"]] = SelectedPackage(record["plugin_id"], builtin, origin, head)
+            repair = environment_repair_reason(code, PythonEnvironments(workspace), target_python) or ""
+        selected[record["plugin_id"]] = SelectedPackage(record["plugin_id"], builtin, origin, head, repair)
     return document["root_ref"], selected
 
 
@@ -208,7 +212,12 @@ def _produce(
     bundle = out / _BUNDLE.format(name=name)
     sidecar: dict[str, object] = {}
     if options.inputs is not None:
-        sidecar = json.loads((options.inputs / _SIDECAR.format(name=name)).read_text(encoding="utf-8"))
+        sidecar_path = options.inputs / _SIDECAR.format(name=name)
+        if not sidecar_path.is_file():
+            raise RuntimeError(f"离线输入目录里没有 {name} 的输入（extra-{name}.json）；该包需要处理，请补齐输入")
+        sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+        if sidecar["target_commit"] != action.commit:
+            raise RuntimeError(f"离线输入里 {name} 的提交是 {str(sidecar['target_commit'])[:12]}，需要的是 {action.commit[:12]}")
         repo = str(sidecar["upstream"])
         source = options.inputs / _BUNDLE.format(name=name)
         if source.resolve() != bundle.resolve():
@@ -248,7 +257,7 @@ def prepare_extra_inputs(
     out: Path, run: Run,
 ) -> ExtraResult:
     # 1. 旧选择、目标发行版自带集合、preset 与 patch 的启用集合。
-    current_root, selected = read_selected(workspace)
+    current_root, selected = read_selected(workspace, target_python(options.image, run, options.wheel_resolver))
     if current_root != root_ref:
         raise RuntimeError("选择在读取期间改变，停止部署")
     enabled, preset = composition_ids(source, mode, workspace / "bundle.patch.toml")
@@ -259,8 +268,9 @@ def prepare_extra_inputs(
         workspace, plugins_home)
     missing = sorted(enabled - provided_ids(source) - installed)
     in_use = frozenset(pid for pid, package in selected.items() if package.builtin)
-    # 启动补装只为 preset 要求的缺口和在用的内置插件联网；只在 patch 里启用而没在用的行不是启动的前置条件。
-    if options.gaps_only and not set(missing) & (preset | in_use):
+    repairs = any(package.repair and not package.builtin for package in selected.values())
+    # 启动补装只为 preset 要求的缺口、在用的内置插件和需要重建环境的已装包联网；只在 patch 里启用而没在用的行不是启动的前置条件。
+    if options.gaps_only and not repairs and not set(missing) & (preset | in_use):
         return ExtraResult((), ())
 
     def heads() -> dict[str, str]:
@@ -281,8 +291,7 @@ def prepare_extra_inputs(
                 raise RuntimeError(f"preset 启用的插件目标发行版不再自带，extra 上游也没有: {gap.plugin_id}")
             kind = "switch" if gap.plugin_id in selected else "install"
             actions.append(ExtraAction(kind, gap.plugin_id, heads()[gap.plugin_id.partition("@")[0]]))
-    if not options.gaps_only:
-        actions.extend(upgrade_actions(selected, heads(), repo))
+    actions.extend(upgrade_actions(selected, heads, repo, gaps_only=options.gaps_only))
     retiring = tuple(gap.plugin_id for gap in gaps if gap.action == "retire")
     if retiring and not options.allow_retire:
         raise RuntimeError("以下在用的内置插件目标发行版不再提供、extra 上游也没有，部署后会消失: "

@@ -179,14 +179,14 @@ def install_many(ctx: Context, plugin_ids: list[str]) -> list[Outcome]:
         package = here.get(plugin_id)
         if sha is None:
             outcomes.append(Outcome(name, "failed", f"远端没有 release/{name}"))
-        elif package is not None and package.head == sha and not _healthy(ctx, package):
+        elif package is not None and package.head == sha and not package.repair and not _healthy(ctx, package):
             outcomes.append(Outcome(name, "current", "已是该版本，已启用"))
         else:
             outcomes.append(install_one(ctx, state, plugin_id, sha))
     return outcomes
 
 
-# 来源是配置的 extra 仓库的已装包才参与升级；HEAD 相同且正常才报已是最新。
+# 来源是配置的 extra 仓库的已装包才参与升级；HEAD 相同、环境完好且正常才报已是最新。
 def upgrade_many(ctx: Context, names: list[str]) -> list[Outcome]:
     state = read_state(ctx.workspace, ctx.repo)
     installed = {item.name: item for item in state.packages if item.source == "extra"}
@@ -200,7 +200,8 @@ def upgrade_many(ctx: Context, names: list[str]) -> list[Outcome]:
             outcomes.append(Outcome(name, "failed", detail))
         elif name not in heads:
             outcomes.append(Outcome(name, "failed", "上游已移除 release 分支"))
-        elif heads[name] != package.head:
+        elif heads[name] != package.head or package.repair:
+            # 提交没变但依赖环境需要重建（旧 Core 装的、Python 小版本变了等）：同一提交重装，建出环境。
             outcomes.append(install_one(ctx, state, package.plugin_id, heads[name], upgrade=True))
         elif problem := _healthy(ctx, package):
             outcomes.append(Outcome(name, "inactive", f"版本已是最新，但{problem}；用 pkg install {name} 重试"))

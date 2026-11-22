@@ -33,6 +33,8 @@ class SelectedPackage:
     builtin: bool
     origin: str
     head: str
+    # 进程内依赖环境需要重建的原因（environment_repair_reason）；不需要为空。
+    repair: str = ""
 
 
 @dataclass(frozen=True)
@@ -126,12 +128,17 @@ def classify_gaps(
 
 # 已装且来源就是 extra 仓库、远端有新提交的包（升级）。
 def upgrade_actions(
-    selected: Mapping[str, SelectedPackage], heads: Mapping[str, str], repo: str,
+    selected: Mapping[str, SelectedPackage], heads: Callable[[], Mapping[str, str]], repo: str, *, gaps_only: bool = False,
 ) -> list[ExtraAction]:
     actions: list[ExtraAction] = []
     for plugin_id, package in sorted(selected.items()):
-        remote = heads.get(plugin_id.partition("@")[0], "")
-        if (not package.builtin and remote and remote != package.head
-                and same_origin(package.origin, repo)):
+        if package.builtin or not same_origin(package.origin, repo):
+            continue
+        # 1. 提交落后：升级到上游新提交（新提交自带环境）；启动补装不升级。
+        remote = "" if gaps_only else heads().get(plugin_id.partition("@")[0], "")
+        if remote and remote != package.head:
             actions.append(ExtraAction("upgrade", plugin_id, remote))
+        # 2. 提交没变但进程内环境需要重建（旧 Core 装的、Python 小版本变了等）：同一提交重装，kind 仍是 upgrade。
+        elif package.repair and package.head:
+            actions.append(ExtraAction("upgrade", plugin_id, package.head))
     return actions

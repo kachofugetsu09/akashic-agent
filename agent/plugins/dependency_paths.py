@@ -3,13 +3,12 @@ from __future__ import annotations
 
 import importlib
 import importlib.metadata
-import json
 import sys
 from pathlib import Path
 
-from agent.plugins.python_environment import PythonEnvironments, inprocess_ref, inprocess_runtime
-
-_ROOT_RUNTIME = ".inprocess"
+from agent.plugins.python_environment import (
+    PythonEnvironments, environment_python, inprocess_ref, inprocess_runtime, inprocess_site_dirs,
+)
 
 
 class DependencyEnvironmentError(RuntimeError):
@@ -40,26 +39,18 @@ def root_environment(code: Path, environments: PythonEnvironments) -> Path | Non
         raise DependencyEnvironmentError(f"插件的依赖环境元数据损坏：{error}；请重新安装该插件以重建") from error
 
 
-# 环境创建时的 Python 主.次版本，取自环境元数据里已有的 input.base.version。
-def _environment_python(root: Path) -> tuple[int, int]:
-    try:
-        record = json.loads((root / "environment.json").read_text())
-        version = str(record["input"]["base"]["version"]).split(" ", 1)[0]
-        major, minor = version.split(".")[:2]
-        return int(major), int(minor)
-    except (OSError, ValueError, KeyError, TypeError) as error:
-        raise DependencyEnvironmentError(f"插件的依赖环境元数据损坏：{error}；请重新安装该插件以重建") from error
-
-
 # 环境的 site-packages；Python 主.次版本与当前解释器不同则拒绝挂载（原生扩展 ABI 不兼容）。
 def site_packages(root: Path) -> Path:
-    created = _environment_python(root)
+    try:
+        created = environment_python(root)
+    except ValueError as error:
+        raise DependencyEnvironmentError(f"插件的依赖环境元数据损坏：{error}；请重新安装该插件以重建") from error
     current = (sys.version_info.major, sys.version_info.minor)
     if created != current:
         raise DependencyEnvironmentError(
             f"插件依赖环境由 Python {created[0]}.{created[1]} 创建，当前解释器是 {current[0]}.{current[1]}；"
             "请重新安装该插件（pkg upgrade 或 plugin-install）以重建依赖环境")
-    found = sorted((root / _ROOT_RUNTIME / ".venv" / "lib").glob("python*/site-packages"))
+    found = inprocess_site_dirs(root)
     if len(found) != 1:
         raise DependencyEnvironmentError(f"插件依赖环境缺少 site-packages: {root}")
     return found[0]

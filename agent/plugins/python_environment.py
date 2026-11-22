@@ -12,6 +12,7 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Callable
 from typing import TYPE_CHECKING, cast
 from uuid import uuid4
 from utils.timing import measure
@@ -416,6 +417,54 @@ def inprocess_ref(code: Path) -> str | None:
     if not isinstance(ref, str) or len(ref) not in {32, 64} or any(char not in "0123456789abcdef" for char in ref):
         raise ValueError(f"{ENVIRONMENT_FILE} 里的进程内环境引用无效")
     return ref
+
+
+# 环境创建时的 Python 主.次版本，取自环境元数据里已有的 input.base.version；元数据读不出来抛 ValueError。
+def environment_python(root: Path) -> tuple[int, int]:
+    try:
+        record = json.loads((root / "environment.json").read_text())
+        major, minor = str(record["input"]["base"]["version"]).split(" ", 1)[0].split(".")[:2]
+        return int(major), int(minor)
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise ValueError(f"环境元数据无法读取: {error}") from error
+
+
+# 进程内环境的 site-packages 候选（可能为空）。
+def inprocess_site_dirs(root: Path) -> list[Path]:
+    return sorted((root / _INPROCESS_DIR / ".venv" / "lib").glob("python*/site-packages"))
+
+
+# 已装 artifact 的进程内环境是否需要重建，部署、启动补装和 pkg 共用的唯一判定；返回原因，不需要返回 None。
+# 声明了非空 requirements.inprocess.txt，但：安装记录没有 "inprocess/" 引用、引用指向的环境目录缺失或元数据损坏、
+# 环境缺 site-packages，或创建环境的 Python 主.次版本与 python() 给出的目标解释器不同。
+# python 是函数：只有走到版本比较才求值（目标在镜像里时求值要起容器）。
+def environment_repair_reason(
+    code: Path, environments: PythonEnvironments, python: Callable[[], tuple[int, int]],
+) -> str | None:
+    # 1. 没声明进程内依赖就没有这类环境。
+    try:
+        if inprocess_runtime(code) is None:
+            return None
+        ref = inprocess_ref(code)
+    except (OSError, ValueError) as error:
+        return f"安装记录无法读取: {error}"
+    if ref is None:
+        return "安装记录里没有进程内依赖环境引用"
+    # 2. 引用必须指向可用的环境：目录、元数据、site-packages。
+    try:
+        root = environments.open(ref)
+        created = environment_python(root)
+    except FileNotFoundError:
+        return f"依赖环境目录缺失（{ref[:12]}）"
+    except (OSError, ValueError) as error:
+        return f"依赖环境元数据损坏: {error}"
+    if len(inprocess_site_dirs(root)) != 1:
+        return f"依赖环境缺少 site-packages（{ref[:12]}）"
+    # 3. 创建环境的解释器要与目标解释器同一主.次版本（原生扩展 ABI）。
+    target = python()
+    if created != target:
+        return f"依赖环境由 Python {created[0]}.{created[1]} 创建，目标解释器是 {target[0]}.{target[1]}"
+    return None
 
 
 def read_environment_refs(code: Path, manifest: StaticPluginManifest) -> dict[str, str]:
