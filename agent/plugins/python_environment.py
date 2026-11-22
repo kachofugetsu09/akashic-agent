@@ -19,6 +19,7 @@ from utils.timing import measure
 
 from agent.plugins.files import encode_tree, sync_directory, tree_entries
 from agent.plugins.requirements_check import BUNDLED_WHEELS_DIR, check_bundled_wheels
+from agent.plugins.resources import declared_refs
 from agent.plugins.static_manifest import StaticPluginManifest, StaticPythonRuntime
 
 if TYPE_CHECKING:
@@ -520,6 +521,7 @@ def read_environment_refs(code: Path, manifest: StaticPluginManifest) -> dict[st
     expected = {item.runtime_root for item in manifest.python}
     if inprocess_runtime(code) is not None:
         expected.add(INPROCESS_KEY)
+    expected.update(declared_refs(code))
     if set(refs) != expected:
         raise ValueError("Python 环境引用与 manifest 不一致")
     if any(
