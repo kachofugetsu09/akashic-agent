@@ -19,6 +19,9 @@ from agent.plugins.files import encode_tree, sync_directory, tree_entries
 from agent.plugins.static_manifest import StaticPluginManifest, StaticPythonRuntime
 
 ENVIRONMENT_FILE = ".akashic-python-environment"
+# 显式声明"这些依赖要进主进程"的文件；存在且非空才有进程内环境，根 requirements.txt 仍只是子进程 runtime。
+INPROCESS_REQUIREMENTS = "requirements.inprocess.txt"
+INPROCESS_ROOT = ".inprocess"
 
 
 @dataclass(frozen=True)
@@ -152,6 +155,17 @@ class PythonEnvironments:
         self.open(ref)
         return ref
 
+    def inprocess_environment(self, code: Path) -> Path | None:
+        """按声明文件内容找到已准备的进程内环境；没有声明或尚未准备返回 None。"""
+        runtime = inprocess_runtime(code)
+        if runtime is None:
+            return None
+        value = _environment_input(code.resolve(strict=True), runtime, "")
+        pointer = self.path / (_input_key(value, runtime) + ".ref")
+        if pointer.is_symlink() or not pointer.is_file():
+            return None
+        return self.open(pointer.read_text())
+
     def prepare(
         self, code: Path, runtime: StaticPythonRuntime, *,
         offline_wheels: OfflineWheels | None = None,
@@ -180,10 +194,7 @@ class PythonEnvironments:
             / f"python{sys.version_info.major}.{sys.version_info.minor}"
         ).resolve(strict=True)
         input_value = _environment_input(source, runtime, wheel_digest or "")
-        input_id = hashlib.sha256(
-            json.dumps(input_value, sort_keys=True).encode()
-        ).hexdigest()
-        pointer = self.path / (input_id + ".ref")
+        pointer = self.path / (_input_key(input_value, runtime) + ".ref")
         if pointer.exists():
             if pointer.is_symlink():
                 raise ValueError("Python 环境引用不能是符号链接")
@@ -310,7 +321,7 @@ def _environment_input(code: Path, runtime: StaticPythonRuntime, wheel_digest: s
                  "version": sys.version},
         "runtime_root": runtime.runtime_root,
     }
-    if wheel_digest or not requirements.strip():
+    if wheel_digest or runtime.runtime_root == INPROCESS_ROOT or not requirements.strip():
         value["requirements_sha256"] = hashlib.sha256(requirements).hexdigest()
     else:
         value["code"] = hashlib.sha256(encode_tree(tree_entries(
@@ -319,6 +330,22 @@ def _environment_input(code: Path, runtime: StaticPythonRuntime, wheel_digest: s
     if wheel_digest:
         value["wheel_tree_sha256"] = wheel_digest
     return value
+
+
+# 环境引用键；进程内环境只看 requirements 与 Python 主.次版本，补丁升级和只改代码的升级都复用同一个环境。
+def _input_key(value: dict[str, object], runtime: StaticPythonRuntime) -> str:
+    keyed = dict(value)
+    if runtime.runtime_root == INPROCESS_ROOT:
+        keyed["base"] = {"python": f"{sys.version_info.major}.{sys.version_info.minor}"}
+    return hashlib.sha256(json.dumps(keyed, sort_keys=True).encode()).hexdigest()
+
+
+# 插件根声明了 requirements.inprocess.txt 才有进程内环境；用一个合成 runtime，不进 manifest。
+def inprocess_runtime(code: Path) -> StaticPythonRuntime | None:
+    path = code / INPROCESS_REQUIREMENTS
+    if path.is_symlink() or not path.is_file() or not path.read_text(encoding="utf-8").strip():
+        return None
+    return StaticPythonRuntime(requirements=INPROCESS_REQUIREMENTS, runtime_root=INPROCESS_ROOT)
 
 
 def read_environment_refs(code: Path, manifest: StaticPluginManifest) -> dict[str, str]:

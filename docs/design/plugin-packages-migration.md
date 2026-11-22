@@ -37,6 +37,7 @@ Phase 5 之前默认组合不变：新装实例仍然装齐今天 `bundles/base.
 - extra 仓库：公开的 `kachofugetsu09/akashic-plugins`。
 - 插件来源：Core 镜像不带 extra 插件，也没有 lock。安装或 `pkg upgrade` 时联网拉取 extra 仓库当前最新版。
 - 重依赖：插件声明自己的依赖，装进插件自己的环境并挂进主进程；安装时检查与已装插件的包版本冲突。
+- 进程内依赖必须**显式声明**：插件根放 `requirements.inprocess.txt`（存在且非空才算），它是主进程依赖的全部清单，装进独立的环境（与根 `requirements.txt` 的子进程 runtime 各自独立，两者可并存）。只有它参与挂载（`sys.path` 末尾，Core 的包优先）、版本约束（Core 锁 + 其他插件的进程内环境）和按 requirements 复用环境。根 `requirements.txt` 语义不变：只给子进程命令，不挂载、不加约束。理由：生产上已装的外置插件有根 `requirements.txt` 但从不在主进程用，隐式约定会让它们的包变得可 import，并让钉了不同版本（如 `numpy==2.4.4`）的插件被拒。不改 manifest schema 与内容摘要。
 - 数据目录：统一成 `plugin-data/<name>`。归一化是显式命令，不在启动流程里；遗留的非在用目录原地不动。
 - Phase 5 先做包组和 Web 首次引导，其余做完后再定。
 
