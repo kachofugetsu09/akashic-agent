@@ -1321,13 +1321,15 @@ def publish_distribution(
 
 
 # 启动补装的暂存目录放在状态盘：服务容器的 /tmp 是 256MB 内存盘，放不下依赖 wheel 的下载与暂存两份副本。
-def _extra_staging_root(workspace: Path) -> Path:
-    parent = workspace / "runtime"
-    parent.mkdir(parents=True, exist_ok=True)
-    # 调用方持有 workspace 维护锁；上次被强杀留下的暂存目录在这里回收。
-    for stale in parent.glob("extra-staging-*"):
+# 放在插件目录而不是 workspace：补装期间默认临时目录指向这里，而 journal 预检要求临时副本不在 workspace 内。
+def _extra_staging_root(workspace: Path, plugins_home: Path) -> Path | None:
+    if plugins_home.resolve().is_relative_to(workspace.resolve()):
+        return None
+    plugins_home.mkdir(parents=True, exist_ok=True)
+    # 调用方持有插件目录的发布锁；上次被强杀留下的暂存目录在这里回收。
+    for stale in plugins_home.glob(".extra-staging-*"):
         shutil.rmtree(stale, ignore_errors=True)
-    return Path(tempfile.mkdtemp(prefix="extra-staging-", dir=parent))
+    return Path(tempfile.mkdtemp(prefix=".extra-staging-", dir=plugins_home))
 
 
 def ensure_bundle(
@@ -1366,15 +1368,21 @@ def ensure_bundle(
     maintenance = WorkspaceMaintenanceLock(workspace)
     publication = PluginPublicationLock(plugins_home)
     maintenance.acquire()
-    extra_root = _extra_staging_root(workspace)
-    # 本进程与它启动的 pip、git 子进程的临时文件都落在暂存目录里，结束时一并删除并复原。
     previous_tmp = (os.environ.get("TMPDIR"), tempfile.tempdir)
-    scratch = extra_root / "tmp"
-    scratch.mkdir()
-    os.environ["TMPDIR"] = tempfile.tempdir = str(scratch)
+    extra_root: Path | None = None
     try:
         publication.acquire()
         try:
+            # 暂存目录在插件目录的发布锁内创建并回收遗留：多个 workspace 共用一个插件目录时，
+            # 回收只会发生在没有别的进程持有发布锁、也就没有别的进程在用暂存目录的时候。
+            # 本进程与它启动的 pip、git 子进程的临时文件都落在暂存目录里，结束时一并删除并复原。
+            # 插件目录在 workspace 内时没有合适的状态盘位置，退回系统临时目录。
+            staging = _extra_staging_root(workspace, plugins_home)
+            extra_root = staging or Path(tempfile.mkdtemp(prefix="akashic-extra-"))
+            if staging is not None:
+                scratch = staging / "tmp"
+                scratch.mkdir()
+                os.environ["TMPDIR"] = tempfile.tempdir = str(scratch)
             _recover_extra_install(workspace)
             if not receipt_path.exists():
                 current = PluginSelection(workspace)
@@ -1474,7 +1482,8 @@ def ensure_bundle(
             _ = os.environ.pop("TMPDIR", None)
         else:
             os.environ["TMPDIR"] = previous_tmp[0]
-        shutil.rmtree(extra_root, ignore_errors=True)
+        if extra_root is not None:
+            shutil.rmtree(extra_root, ignore_errors=True)
         maintenance.release()
 
 
