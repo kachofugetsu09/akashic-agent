@@ -61,6 +61,18 @@ R = TypeVar("R")
 F = TypeVar("F", bound=Callable[..., object])
 PluginApply = Callable[["Context"], object]
 _CALL_DRAIN_TIMEOUT = 300.0
+# 有期限的宿主操作给排空设的截止时刻（事件循环时钟）；到点卸载失败、保留在途调用，由宿主在后台续接。
+drain_deadline: contextvars.ContextVar[float | None] = contextvars.ContextVar(
+    "plugin_drain_deadline", default=None,
+)
+
+
+# 本次排空最多等多久：固定上限与当前操作截止时刻取较早者。
+def _drain_timeout() -> float:
+    deadline = drain_deadline.get()
+    if deadline is None:
+        return _CALL_DRAIN_TIMEOUT
+    return max(0.0, min(_CALL_DRAIN_TIMEOUT, deadline - asyncio.get_running_loop().time()))
 
 
 _lifecycle_binding: contextvars.ContextVar[
@@ -1137,6 +1149,15 @@ class Fiber:
             )
         self._in_flight_calls[call] = current
 
+    # 持有本 activation 在途许可的 Task（同一调用的嵌套许可算一个）；宿主据此报告排空还在等多少调用。
+    @property
+    def in_flight_tasks(self) -> frozenset[asyncio.Task[object]]:
+        return frozenset(self._in_flight_calls.values())
+
+    # 等已接纳的调用全部释放，不改变任何状态；只用于已停止接纳的 owner。
+    async def wait_calls_idle(self) -> None:
+        _ = await self._calls_idle.wait()
+
     def _end_call(self, call: OwnerCall) -> None:
         if self._in_flight_calls.pop(call, None) is None:
             raise CompositionError(
@@ -1355,14 +1376,15 @@ class Fiber:
         # 3. 依赖方先退出；本 owner 已接纳的实际调用结束后再释放资源。
         #    超时只结束卸载，仍保留在途许可和资源供显式重试。
         if self._in_flight_calls:
+            timeout = _drain_timeout()
             try:
                 await _await_critical(asyncio.create_task(asyncio.wait_for(
-                    self._calls_idle.wait(), _CALL_DRAIN_TIMEOUT,
+                    self._calls_idle.wait(), timeout,
                 )))
             except TimeoutError as error:
                 raise CompositionError(
                     "OWNER_CALL_DRAIN_TIMEOUT",
-                    f"{self.name} 的在途调用超过 {_CALL_DRAIN_TIMEOUT:g} 秒仍未结束；"
+                    f"{self.name} 的在途调用超过 {timeout:g} 秒仍未结束；"
                     "卸载失败，资源和调用保留，请在调用结束后显式重试清理",
                 ) from error
 
@@ -1740,6 +1762,22 @@ class CompositionRoot:
                 ):
                     affected.add(candidate)
                     changed = True
+        return tuple(fiber for fiber in self._fibers.values() if fiber in affected - initial)
+
+    # 上游闭包：owner 固定持有的提供方及其父作用域；它们卸载时要等这些 owner 先关闭。
+    def providers(self, owners: Iterable[Fiber]) -> tuple[Fiber, ...]:
+        initial = set(owners)
+        affected = set(initial)
+        queue = list(initial)
+        while queue:
+            fiber = queue.pop()
+            linked = [provider.owner for provider in fiber.dependency_store.values()]
+            if fiber.parent is not None:
+                linked.append(fiber.parent)
+            for candidate in linked:
+                if candidate not in affected and candidate.state != FiberState.DISPOSED:
+                    affected.add(candidate)
+                    queue.append(candidate)
         return tuple(fiber for fiber in self._fibers.values() if fiber in affected - initial)
 
     def require_ready(self, fibers: Iterable[Fiber]) -> None:
