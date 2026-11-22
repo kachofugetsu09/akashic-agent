@@ -17,7 +17,7 @@ from agent.plugins.extra_repo import is_official_repo, official_marketplace
 from agent.plugins.distribution_sources import distribution_sources
 from agent.plugins.install import PluginInstallResult, finalize_uninstall_plugin, fetch_sha_shallow, install_git_plugin
 from agent.plugins.manifest import plugins_root
-from agent.plugins.package_index import expand, load_index
+from agent.plugins.package_index import closure, expand, load_index
 from agent.plugins.prerequisites import clear_disabled, describe, read_disabled, record_declared, record_disabled, unmet
 from agent.plugins.packages import InstalledPackage, PackageState, list_release_heads, read_state, sync_rows
 from agent.plugins.resources import ResourceError, repair_resources
@@ -259,7 +259,7 @@ def install_named(ctx: Context, names: list[str]) -> list[Outcome]:
 # 参数里出现 @组 时读 index，展开成成员并补上依赖闭包（依赖在前）；没有 @ 参数不读 index，行为与此前相同。
 def _expand_groups(ctx: Context, names: list[str]) -> tuple[list[str], dict[str, str] | None]:
     if not any(name.startswith("@") for name in names):
-        return names, None
+        return _with_missing_dependencies(ctx, names), None
     index = load_index(ctx.repo, plugins_root())
     if index.note:
         print(index.note, file=sys.stderr)
@@ -273,6 +273,24 @@ def _expand_groups(ctx: Context, names: list[str]) -> tuple[list[str], dict[str,
     if missing:
         raise RuntimeError("这些包在远端已不存在（index 可能已过期），未安装任何包: " + ", ".join(missing))
     return full, heads
+
+
+# 不带 @ 的安装也补上还没装的依赖（依赖在前），像 pacman 一样；已装且被选择的依赖不重复处理。
+# index 只用来找依赖：取不到、或名字不在 index 里时照旧只装点名的包（逐个处理的既有语义不变）。
+def _with_missing_dependencies(ctx: Context, names: list[str]) -> list[str]:
+    try:
+        index = load_index(ctx.repo, plugins_root())
+    except (OSError, RuntimeError, ValueError) as error:
+        print(f"读不到包组信息，不检查依赖: {error}", file=sys.stderr)
+        return names
+    known = [name.partition("@")[0] for name in names if name.partition("@")[0] in index.packages]
+    if not known:
+        return names
+    selected = {item.name for item in read_state(ctx.workspace, ctx.repo).packages if item.selected}
+    missing = [name for name in closure(index, known) if name not in known and name not in selected]
+    if missing:
+        print(f"自动带上依赖: {', '.join(missing)}", file=sys.stderr)
+    return missing + names
 
 
 # 逐个安装；只有已被选择、启用且正常的同版本才跳过，其余走安装路径（可复用已有 artifact）。
