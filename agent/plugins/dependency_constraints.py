@@ -99,15 +99,15 @@ def _other_pins(workspace: Path, plugin_name: str, core: Mapping[str, str], envi
     return pins, origins
 
 
-# 生成本次安装的约束：Core 锁文件去掉哈希后作为 -c（带哈希的文件会让 pip 进入哈希校验模式），
-# 其他插件的版本写成另一个临时约束文件。缺 Core 锁时失败：不能把"没做检查"当成"检查通过"。
-def build_constraints(workspace: Path, plugin_name: str, environments: EnvironmentOpener, scratch: Path) -> Constraints:
+# 由 Core 锁与给定的"其他插件版本"写出约束文件：Core 锁文件去掉哈希后作为 -c（带哈希的文件会让 pip 进入哈希校验模式）。
+# 缺 Core 锁时失败：不能把"没做检查"当成"检查通过"。
+def constraints_from_pins(plugin_name: str, scratch: Path, others: Mapping[str, str], origins: Mapping[str, str]) -> Constraints:
     lock, expected = core_lock()
     if lock is None:
         raise DependencyConstraintUnavailable(
             "找不到 Core 锁文件，无法检查依赖版本冲突；期望路径：" + "、".join(str(path) for path in expected))
     core = _parse_pins(lock.read_text(encoding="utf-8"))
-    others, origins = _other_pins(workspace, plugin_name, core, environments)
+    others = {name: version for name, version in others.items() if name not in core}
     files: list[Path] = []
     for label, pins in (("core-lock", core), ("other-plugins", others)):
         if pins:
@@ -115,6 +115,14 @@ def build_constraints(workspace: Path, plugin_name: str, environments: Environme
             _ = target.write_text("".join(f"{name}=={version}\n" for name, version in sorted(pins.items())), encoding="utf-8")
             files.append(target)
     return Constraints(plugin_name, tuple(files), {**core, **others}, {**{name: CORE_ORIGIN for name in core}, **origins})
+
+
+# 生成本次安装的约束：Core 锁 + 选择里其他已装插件的进程内环境版本。
+def build_constraints(workspace: Path, plugin_name: str, environments: EnvironmentOpener, scratch: Path) -> Constraints:
+    lock, _ = core_lock()
+    core = _parse_pins(lock.read_text(encoding="utf-8")) if lock is not None else {}
+    others, origins = _other_pins(workspace, plugin_name, core, environments)
+    return constraints_from_pins(plugin_name, scratch, others, origins)
 
 
 # 已有环境是否仍满足约束：重名的包版本必须相同。

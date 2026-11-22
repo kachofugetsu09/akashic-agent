@@ -14,7 +14,7 @@ from uuid import uuid4
 
 from agent.plugins.dependency_constraints import build_constraints
 from agent.plugins.python_environment import (
-    ENVIRONMENT_FILE, INPROCESS_KEY, INPROCESS_REQUIREMENTS, OfflineWheels, PythonEnvironments, inprocess_runtime,
+    ENVIRONMENT_FILE, INPROCESS_KEY, OfflineWheels, PythonEnvironments, inprocess_runtime,
 )
 from agent.plugins.reload_journal import ReloadJournal
 from agent.plugins.distribution_sources import distribution_plugin_sources, read_distribution_adoption
@@ -682,12 +682,11 @@ def _prepare_static_python_runtimes(
     # 1. 显式声明的进程内依赖独立成环境，引用与子进程 runtime 记在同一份安装记录里。
     inprocess = inprocess_runtime(plugin_root)
     if inprocess is not None:
-        if offline_wheels is not None:
-            raise ValueError(f"{INPROCESS_REQUIREMENTS} 暂不支持离线 wheel 安装")
-        # 约束只作用于进程内环境；临时约束文件在整个准备期间保持存在。
+        # 约束只作用于进程内环境；临时约束文件在整个准备期间保持存在。离线（部署）与在线路径用同一份约束。
         with tempfile.TemporaryDirectory(prefix="akashic-constraints-") as scratch:
             constraints = build_constraints(workspace, manifest.name, environments, Path(scratch))
-            refs[INPROCESS_KEY] = environments.prepare(plugin_root, inprocess, constraints=constraints)
+            refs[INPROCESS_KEY] = environments.prepare(
+                plugin_root, inprocess, constraints=constraints, offline_wheels=offline_wheels)
     # 2. 根与子目录 requirements.txt 的子进程 runtime，行为不变。
     if manifest.python:
         used_offline_wheels = False
@@ -700,7 +699,7 @@ def _prepare_static_python_runtimes(
                 used_offline_wheels = True
             else:
                 refs[runtime.runtime_root] = environments.prepare(plugin_root, runtime)
-        if offline_wheels is not None and not used_offline_wheels:
+        if offline_wheels is not None and not used_offline_wheels and inprocess is None:
             raise ValueError("没有非空 Python requirements，不能提供离线 wheel")
     if refs:
         with (plugin_root / ENVIRONMENT_FILE).open("w") as stream:

@@ -37,7 +37,8 @@ from agent.migrations.runner import initialize_empty_workspace
 from agent.plugins.artifacts import read_pointers, resolve_pointer
 from agent.plugins.manifest import workspace_plugin_data_dir, ensure_workspace_plugin_data_dir
 from agent.plugins.static_manifest import PluginSourceCompileError, load_static_plugin_manifest
-from agent.plugins.python_environment import ENVIRONMENT_FILE, PythonEnvironments
+from agent.plugins.dependency_constraints import core_lock
+from agent.plugins.python_environment import ENVIRONMENT_FILE, PythonEnvironments, inprocess_runtime
 from agent.plugins.python_environment import OfflineWheels, preflight_offline_runtime, wheel_tree_sha256
 from agent.plugins.input_preparation import prepare_plugin_input, PLUGIN_INPUT_API, PluginInitialConfigError
 from agent.plugins.input_preparation import check_plugin_source, read_initial_config
@@ -46,6 +47,7 @@ from agent.plugins.selection import PluginSelection, SelectionConflictError, Sel
 from bootstrap.workspace_lock import PluginPublicationLock, WorkspaceMaintenanceLock
 from scripts.akashic_release.manifest import write_json
 from scripts.akashic_release.snapshot import capture_state, restore_state
+from scripts.akashic_release.wheels import WheelResolutionFailure
 from utils.timing import measure
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -113,7 +115,7 @@ def load_deployment_plan(path: Path) -> tuple[str, str, list[dict[str, Any]], di
             or plugin_id in seen):
             raise ValueError(f"plugin_id 重复或无效: {plugin_id}")
         seen.add(plugin_id)
-        fields = set(item) - {"offline_wheels", "kind", "upstream", "images"}
+        fields = set(item) - {"offline_wheels", "kind", "upstream", "images", "core_lock_sha256"}
         _check_target_kind(item, bundled="bundled" in item)
         if fields == {"plugin_id", "bundled"}:
             if item["bundled"] is not True:
@@ -246,7 +248,9 @@ def _stage_deployment_targets(
             raise ValueError(f"external target 镜像声明与宿主预拉清单不一致: {plugin_id}")
         check_plugin_source(code)
         _ = read_initial_config(code)
-        required = any((code / runtime.requirements).read_text(encoding="utf-8").strip() for runtime in identity.python)
+        inprocess = inprocess_runtime(code)
+        required = inprocess is not None or any(
+            (code / runtime.requirements).read_text(encoding="utf-8").strip() for runtime in identity.python)
         wheels_spec = target.get("offline_wheels")
         if required != (wheels_spec is not None):
             raise ValueError(f"external target wheel 输入与 requirements 不匹配: {plugin_id}")
@@ -263,7 +267,13 @@ def _stage_deployment_targets(
             wheels = OfflineWheels(copied, wheels_spec["tree_sha256"])
             if wheel_tree_sha256(copied) != wheels.tree_sha256:
                 raise ValueError(f"staged external wheel digest 不一致: {plugin_id}")
-            for runtime_index, runtime in enumerate(identity.python):
+            # 宿主解析 wheel 时用的 Core 锁必须就是这份镜像里的锁；进程内依赖在预检里同样验证闭包完整。
+            lock, _ = core_lock()
+            recorded = target.get("core_lock_sha256")
+            if inprocess is not None and recorded is not None and (
+                    lock is None or hashlib.sha256(lock.read_bytes()).hexdigest() != recorded):
+                raise ValueError(f"external target 的 wheel 是按另一份 Core 锁解析的: {plugin_id}")
+            for runtime_index, runtime in enumerate((*identity.python, *(() if inprocess is None else (inprocess,)))):
                 if not (code / runtime.requirements).read_text(encoding="utf-8").strip():
                     continue
                 destination = staged / f"external-{index}-download-{runtime_index}"
@@ -1423,6 +1433,8 @@ def _stage_missing_from_extra(
         found = prepare_extra_inputs(workspace=workspace, plugins_home=plugins_home, source=distribution,
                                      mode=os.environ.get("AKASHIC_PLUGIN_BUNDLE", "base"), root_ref=expected,
                                      options=options, out=root / "inputs", run=subprocess.run)
+    except WheelResolutionFailure:
+        raise
     except (RuntimeError, OSError, subprocess.SubprocessError) as error:
         if "--allow-retire" in str(error):
             raise RuntimeError(str(error)) from error

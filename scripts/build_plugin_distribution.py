@@ -49,6 +49,7 @@ CORE_PATHS = (
     "scripts/akashic_release/manifest.py",
     "scripts/akashic_release/model.py",
     "scripts/akashic_release/snapshot.py",
+    "scripts/akashic_release/wheels.py",
     "docker/host-runtime",
 )
 

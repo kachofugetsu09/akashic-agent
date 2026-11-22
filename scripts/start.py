@@ -195,7 +195,7 @@ def prepare_install(preparation: Preparation, core: Path, distribution: Path,
     except RuntimeError as error:
         # 子进程的原因在日志里；补装失败时把"缺哪些包、怎么办"带到终端。
         lines = [line for line in preparation.log.read_text(encoding="utf-8", errors="replace").splitlines()
-                 if "无法取得 preset" in line or "preset 启用的插件没有进入选择" in line or "在用的内置插件" in line]
+                 if "无法取得 preset" in line or "preset 启用的插件没有进入选择" in line or "在用的内置插件" in line or "依赖" in line and "wheel" in line or "依赖冲突" in line]
         raise RuntimeError(f"{error} {lines[-1]}" if lines else str(error)) from error
 
 

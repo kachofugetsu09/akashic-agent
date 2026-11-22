@@ -11,9 +11,10 @@ import shutil
 import subprocess
 import tempfile
 import tomllib
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterator, cast
 
 from agent.plugins.extra_repo import (
     ExtraAction,
@@ -22,6 +23,9 @@ from agent.plugins.extra_repo import (
     list_release_heads,
     resolve_repo,
     upgrade_actions,
+)
+from scripts.akashic_release.wheels import (
+    Resolver, docker_resolver, installed_pins, local_resolver, resolve_package_wheels, tree_sha256,
 )
 
 Run = Callable[..., subprocess.CompletedProcess[str]]
@@ -39,6 +43,9 @@ class ExtraOptions:
     pull_images: bool = True
     gaps_only: bool = False
     allow_retire: bool = False
+    # 带第三方依赖的包在哪里求 wheel：显式的执行点优先；否则有目标镜像就在镜像里（docker），都没有就用本机 Core 解释器。
+    image: str | None = None
+    wheel_resolver: Resolver | None = None
 
 
 @dataclass(frozen=True)
@@ -164,18 +171,21 @@ def fetch_bundle(repo: str, name: str, commit: str, destination: Path) -> None:
         _git("bundle", "create", str(destination), ref, cwd=work)
 
 
-# 校验 bundle 里的代码：身份、api_version、不带第三方依赖；返回声明的镜像。
-def check_bundle(bundle: Path, name: str, commit: str) -> tuple[str, ...]:
+# 把 bundle 检出到临时目录；调用方在目录里校验并求依赖 wheel。
+@contextmanager
+def _checkout(bundle: Path, commit: str) -> Iterator[Path]:
     with tempfile.TemporaryDirectory(prefix="akashic-extra-check-") as directory:
         code = Path(directory) / "code"
         _git("clone", "--quiet", "--no-local", "--no-checkout", str(bundle), str(code))
         _git("checkout", "--quiet", "--detach", commit, cwd=code)
-        found, api_version, images = read_literals(code / "plugin.py")
-        if found != name or api_version != _API_VERSION:
-            raise RuntimeError(f"extra 包 {name} 身份或 api_version 不兼容: name={found} api_version={api_version}")
-        names = ("requirements.txt", "requirements.inprocess.txt")
-        if any(path.read_text(encoding="utf-8").strip() for name in names for path in code.rglob(name)):
-            raise RuntimeError(f"extra 包 {name} 带第三方依赖，当前部署流程不支持")
+        yield code
+
+
+# 校验代码：身份与 api_version；返回声明的镜像。依赖声明由 resolve_package_wheels 处理。
+def check_code(code: Path, name: str) -> tuple[str, ...]:
+    found, api_version, images = read_literals(code / "plugin.py")
+    if found != name or api_version != _API_VERSION:
+        raise RuntimeError(f"extra 包 {name} 身份或 api_version 不兼容: name={found} api_version={api_version}")
     return images
 
 
@@ -190,9 +200,13 @@ def _offline_heads(directory: Path) -> dict[str, str]:
 
 
 # 为一个动作产出 bundle 与清单条目：联网取代码或取离线输入，校验，预拉镜像。
-def _produce(action: ExtraAction, repo: str, options: ExtraOptions, out: Path, run: Run) -> dict[str, object]:
+def _produce(
+    action: ExtraAction, repo: str, options: ExtraOptions, out: Path, run: Run, *, workspace: Path,
+    pins: dict[str, tuple[str, str]], resolver: Resolver,
+) -> dict[str, object]:
     name = action.plugin_id.partition("@")[0]
     bundle = out / _BUNDLE.format(name=name)
+    sidecar: dict[str, object] = {}
     if options.inputs is not None:
         sidecar = json.loads((options.inputs / _SIDECAR.format(name=name)).read_text(encoding="utf-8"))
         repo = str(sidecar["upstream"])
@@ -201,12 +215,25 @@ def _produce(action: ExtraAction, repo: str, options: ExtraOptions, out: Path, r
             shutil.copyfile(source, bundle)
     else:
         fetch_bundle(repo, name, action.commit, bundle)
-    images = check_bundle(bundle, name, action.commit)
+    wheels: dict[str, object] | None = None
+    with _checkout(bundle, action.commit) as code:
+        images = check_code(code, name)
+        if options.inputs is not None and "offline_wheels" in sidecar:
+            # 离线输入目录已带 wheel：原样复用，并核对树哈希。
+            offline = cast(dict[str, str], sidecar["offline_wheels"])
+            shutil.copytree(options.inputs / offline["relative_path"], out / offline["relative_path"], dirs_exist_ok=True)
+            if tree_sha256(out / offline["relative_path"]) != offline["tree_sha256"]:
+                raise RuntimeError(f"离线输入里 {name} 的 wheel 摘要与旁注不一致")
+            wheels = {"offline_wheels": offline, "core_lock_sha256": sidecar.get("core_lock_sha256")}
+        else:
+            wheels = resolve_package_wheels(code=code, plugin_id=action.plugin_id, workspace=workspace, pins=pins,
+                                            resolver=resolver, out=out)
     for image in images if options.pull_images else ():
         run(["docker", "pull", image], check=True, capture_output=True, text=True)
     target: dict[str, object] = {
         "plugin_id": action.plugin_id, "kind": action.kind, "bundle_relative_path": bundle.name,
         "bundle_sha256": _sha256(bundle), "target_commit": action.commit, "upstream": repo, "images": list(images),
+        **(wheels or {}),
     }
     (out / _SIDECAR.format(name=name)).write_text(json.dumps(target, sort_keys=True), encoding="utf-8")
     return target
@@ -263,7 +290,11 @@ def prepare_extra_inputs(
         return ExtraResult((), skipped, retiring)
     # 3. 逐个产出输入。
     out.mkdir(parents=True, exist_ok=True)
-    targets = tuple(_produce(action, repo, options, out, run) for action in actions)
+    resolver = options.wheel_resolver or (docker_resolver(options.image, run) if options.image is not None
+                                          else local_resolver(Path(__file__).resolve().parents[2]))
+    pins = installed_pins(workspace)
+    targets = tuple(_produce(action, repo, options, out, run, workspace=workspace, pins=pins, resolver=resolver)
+                    for action in actions)
     return ExtraResult(targets, skipped, retiring)
 
 
