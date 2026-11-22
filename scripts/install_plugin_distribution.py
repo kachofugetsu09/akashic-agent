@@ -37,7 +37,11 @@ from agent.migrations.runner import initialize_empty_workspace
 from agent.plugins.artifacts import read_pointers, resolve_pointer
 from agent.plugins.manifest import workspace_plugin_data_dir, ensure_workspace_plugin_data_dir
 from agent.plugins.static_manifest import PluginSourceCompileError, load_static_plugin_manifest
-from agent.plugins.python_environment import ENVIRONMENT_FILE, PythonEnvironments
+from agent.plugins.dependency_constraints import (
+    DependencyBatch, build_constraints, core_lock, installed_pins, normalize, verify_selected_environments,
+)
+from agent.plugins.dependency_paths import site_packages
+from agent.plugins.python_environment import ENVIRONMENT_FILE, INPROCESS_KEY, PythonEnvironments, inprocess_runtime
 from agent.plugins.python_environment import OfflineWheels, preflight_offline_runtime, wheel_tree_sha256
 from agent.plugins.input_preparation import prepare_plugin_input, PLUGIN_INPUT_API, PluginInitialConfigError
 from agent.plugins.input_preparation import check_plugin_source, read_initial_config
@@ -46,6 +50,7 @@ from agent.plugins.selection import PluginSelection, SelectionConflictError, Sel
 from bootstrap.workspace_lock import PluginPublicationLock, WorkspaceMaintenanceLock
 from scripts.akashic_release.manifest import write_json
 from scripts.akashic_release.snapshot import capture_state, restore_state
+from scripts.akashic_release.wheels import WheelResolutionFailure
 from utils.timing import measure
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -113,7 +118,7 @@ def load_deployment_plan(path: Path) -> tuple[str, str, list[dict[str, Any]], di
             or plugin_id in seen):
             raise ValueError(f"plugin_id 重复或无效: {plugin_id}")
         seen.add(plugin_id)
-        fields = set(item) - {"offline_wheels", "kind", "upstream", "images"}
+        fields = set(item) - {"offline_wheels", "kind", "upstream", "images", "core_lock_sha256", "inprocess_pins"}
         _check_target_kind(item, bundled="bundled" in item)
         if fields == {"plugin_id", "bundled"}:
             if item["bundled"] is not True:
@@ -187,6 +192,8 @@ def _stage_deployment_targets(
     # 1. Require each target to own a coherent selected installed input.
     report = verify_distribution(distribution)
     bundled = {row["name"]: row for row in report["plugins"]}
+    # 同一份批次事实：本批每个包的进程内解析结果；宿主求 wheel、预检与停机窗口内的安装都基于它。
+    batch = _dependency_batch(targets)
     selected = ({} if expected_root_ref is None
                 else _selected_components(selection, expected_root_ref, replacing_distribution=True)[1])
     provided = {f"{row['name']}@{report['marketplace']}" for row in report["plugins"]}
@@ -246,7 +253,9 @@ def _stage_deployment_targets(
             raise ValueError(f"external target 镜像声明与宿主预拉清单不一致: {plugin_id}")
         check_plugin_source(code)
         _ = read_initial_config(code)
-        required = any((code / runtime.requirements).read_text(encoding="utf-8").strip() for runtime in identity.python)
+        inprocess = inprocess_runtime(code)
+        required = inprocess is not None or any(
+            (code / runtime.requirements).read_text(encoding="utf-8").strip() for runtime in identity.python)
         wheels_spec = target.get("offline_wheels")
         if required != (wheels_spec is not None):
             raise ValueError(f"external target wheel 输入与 requirements 不匹配: {plugin_id}")
@@ -263,16 +272,52 @@ def _stage_deployment_targets(
             wheels = OfflineWheels(copied, wheels_spec["tree_sha256"])
             if wheel_tree_sha256(copied) != wheels.tree_sha256:
                 raise ValueError(f"staged external wheel digest 不一致: {plugin_id}")
-            for runtime_index, runtime in enumerate(identity.python):
+            # 进程内依赖：Core 锁摘要与解析结果必须齐全，且就是这份镜像里的锁、这批 wheel（缺失即拒绝）。
+            constraints = None
+            if inprocess is not None:
+                _check_inprocess_entry(target, wheels.directory, plugin_id)
+                constraints = build_constraints(workspace, identity.name, PythonEnvironments(workspace),
+                                                _scratch(staged, f"external-{index}-constraints"), batch)
+            for runtime_index, runtime in enumerate((*identity.python, *(() if inprocess is None else (inprocess,)))):
                 if not (code / runtime.requirements).read_text(encoding="utf-8").strip():
                     continue
                 destination = staged / f"external-{index}-download-{runtime_index}"
                 destination.mkdir()
-                preflight_offline_runtime(code, runtime, wheels, destination)
+                # 预检用与安装期相同的约束：预检通过就意味着停机窗口内的约束安装也能通过。
+                preflight_offline_runtime(code, runtime, wheels, destination,
+                                          constraints if runtime is inprocess else None)
         result.append({"plugin_id": plugin_id, "old_ref": old_ref, "bundle": local,
-                       "commit": commit, "code": code, "kind": kind, "upstream": target.get("upstream"),
+                       "commit": commit, "code": code, "kind": kind, "upstream": target.get("upstream"), "inprocess_pins": target.get("inprocess_pins"),
                        "wheels": wheels, "bundle_sha256": bundle_digest})
     return result
+
+
+# 本批每个目标的新状态：带进程内依赖的是它的解析结果，不带的（升级后去掉依赖、首装无依赖）是空映射——
+# 它们都替换盘上旧选择里的 pin，旧 pin 不能作为"不在本批的已装包"留在约束里。
+def _dependency_batch(targets: list[dict[str, Any]]) -> DependencyBatch:
+    return DependencyBatch({str(item["plugin_id"]).partition("@")[0]: item.get("inprocess_pins") or {} for item in targets})
+
+
+def _scratch(root: Path, name: str) -> Path:
+    path = root / name
+    path.mkdir()
+    return path
+
+
+# 进程内依赖条目的完整性：有效的 Core 锁摘要（且等于这份镜像里的锁）、解析结果是 {包: 版本} 且与 wheel 目录一致。
+def _check_inprocess_entry(target: dict[str, Any], wheels: Path, plugin_id: str) -> None:
+    recorded, pins = target.get("core_lock_sha256"), target.get("inprocess_pins")
+    lock, _ = core_lock()
+    if not isinstance(recorded, str) or _SHA256.fullmatch(recorded) is None:
+        raise ValueError(f"external target 带进程内依赖但缺少有效的 core_lock_sha256: {plugin_id}")
+    if lock is None or hashlib.sha256(lock.read_bytes()).hexdigest() != recorded:
+        raise ValueError(f"external target 的 wheel 是按另一份 Core 锁解析的: {plugin_id}")
+    if not isinstance(pins, dict) or not pins or not all(isinstance(k, str) and isinstance(v, str) for k, v in pins.items()):
+        raise ValueError(f"external target 缺少进程内依赖解析结果 inprocess_pins: {plugin_id}")
+    # 同一个目录可能合法地含同名不同版本（进程内与子进程 runtime 各自解析）：按 (名字, 版本) 对核对，与目录顺序无关。
+    present = {(normalize(parts[0]), parts[1]) for parts in (item.name.split("-") for item in wheels.glob("*.whl"))}
+    if any((normalize(name), version) not in present for name, version in pins.items()):
+        raise ValueError(f"external target 的 inprocess_pins 与 wheel 目录不一致: {plugin_id}")
 
 
 # 首装与换来源的前提：目标发行版不再自带该身份；换来源要求旧选择是内置输入，首装要求选择里没有。
@@ -1062,6 +1107,7 @@ def _install_targets(
     targets: list[dict[str, Any]], *, workspace: Path, plugins_home: Path, selection: PluginSelection,
     selected: dict[str, tuple[str, Mapping[str, object], Path]], candidate: dict[str, ResolvedPluginSource],
 ) -> None:
+    batch = _dependency_batch(targets)
     for target in targets:
         plugin_id = target["plugin_id"]
         name, marketplace = plugin_id.split("@")
@@ -1071,7 +1117,7 @@ def _install_targets(
             workspace=workspace, source=str(target["bundle"]), marketplace=marketplace,
             ref_name=target["commit"], plugins_home=plugins_home,
             refresh_existing_artifact=False, offline_wheels=target["wheels"],
-            takeover=frozenset({plugin_id}),
+            takeover=frozenset({plugin_id}), dependency_batch=batch,
         )
         artifact = installed.installed_path
         if target["upstream"]:
@@ -1088,6 +1134,13 @@ def _install_targets(
         selected[plugin_id] = (prepared.input_ref, selection.read_input(prepared.input_ref), prepared.code_dir)
         candidate[plugin_id] = ResolvedPluginSource(prepared.code_dir, "installed", marketplace, name,
                                                    load_static_plugin_manifest(prepared.code_dir))
+    # 提交选择前整体核对一次：新选择里所有进程内环境，同一个包不能有两个版本。
+    if any(batch.pins.values()):
+        environments = PythonEnvironments(workspace)
+        verify_selected_environments({
+            pid: installed_pins(site_packages(environments.open(ref)))
+            for pid, (_, record, _) in selected.items()
+            if (ref := cast(Mapping[str, str], record["python_environments"]).get(INPROCESS_KEY)) is not None})
 
 
 # 最终提交的归属凭证：部署清单自带的转换凭证原样提交；否则从已提交凭证里去掉本次首装或换来源的身份
@@ -1411,7 +1464,9 @@ def _commit_selection(
 
 
 # 首装与启动时补装的第一步：preset 启用、发行版不再自带的插件从 extra 取代码并核对（只补缺口，不升级）。
-# 只在 root 下固定 bundle 与代码，不写 cache、选择或 patch；联网失败直接停止，并说明怎么用预先下载好的输入目录。
+# 只在 root 下固定 bundle 与代码、求依赖 wheel，不写 cache、选择或 patch；联网失败直接停止，并说明怎么用预先下载好的输入目录。
+# 失败发生时，此前的初始化、内置安装、receipt 与 Core 迁移已经发生：它们都是幂等的，所以修好后重试成立；
+# 本次 extra 包的安装（指针、环境、选择）不会半途生效。
 def _stage_missing_from_extra(
     *, distribution: Path, workspace: Path, plugins_home: Path, selection: PluginSelection, expected: str | None,
     repo: str | None, inputs: Path | None, root: Path, allow_retire: bool = False,
@@ -1423,6 +1478,8 @@ def _stage_missing_from_extra(
         found = prepare_extra_inputs(workspace=workspace, plugins_home=plugins_home, source=distribution,
                                      mode=os.environ.get("AKASHIC_PLUGIN_BUNDLE", "base"), root_ref=expected,
                                      options=options, out=root / "inputs", run=subprocess.run)
+    except WheelResolutionFailure:
+        raise
     except (RuntimeError, OSError, subprocess.SubprocessError) as error:
         if "--allow-retire" in str(error):
             raise RuntimeError(str(error)) from error

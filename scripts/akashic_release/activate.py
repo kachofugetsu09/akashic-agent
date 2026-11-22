@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import replace
 import json
 import os
 import secrets
@@ -413,7 +414,7 @@ def activate_release(
         # 停机之前联网求 extra 包；任何一步失败都在这里抛错，旧服务不动。
         found = (prepare_extra_inputs(workspace=paths.state / "workspace", plugins_home=paths.state / "plugin-home", source=paths.source(target),
                                       mode=current.get("AKASHIC_PLUGIN_BUNDLE", "base"), root_ref=str(root_ref),
-                                      options=extra, out=attempt_path.with_suffix(".inputs"), run=run)
+                                      options=replace(extra, image=candidate["AKASHIC_IMAGE"]), out=attempt_path.with_suffix(".inputs"), run=run)
                  if extra is not None and extra.enabled else ExtraResult((), ()))
         plan_text = _merged_plan_text(plan, str(root_ref), found)
         atomic_write(fixed_plan, plan_text)

@@ -12,9 +12,9 @@ from collections.abc import Mapping
 from typing import cast
 from uuid import uuid4
 
-from agent.plugins.dependency_constraints import build_constraints
+from agent.plugins.dependency_constraints import DependencyBatch, build_constraints
 from agent.plugins.python_environment import (
-    ENVIRONMENT_FILE, INPROCESS_KEY, INPROCESS_REQUIREMENTS, OfflineWheels, PythonEnvironments, inprocess_runtime,
+    ENVIRONMENT_FILE, INPROCESS_KEY, OfflineWheels, PythonEnvironments, inprocess_runtime,
 )
 from agent.plugins.reload_journal import ReloadJournal
 from agent.plugins.distribution_sources import distribution_plugin_sources, read_distribution_adoption
@@ -142,6 +142,7 @@ def install_git_plugin(
     reserved_ids: frozenset[str] = frozenset(),
     takeover: frozenset[str] = frozenset(),
     reject_pending_migrations: bool = False,
+    dependency_batch: DependencyBatch | None = None,
 ) -> PluginInstallResult:
     home = (plugins_home or plugins_root()).resolve(strict=False)
     journal = ReloadJournal(workspace)
@@ -225,6 +226,7 @@ def install_git_plugin(
             journal=journal, update_id=update_id,
             previous_enabled=previous_enabled,
             offline_wheels=offline_wheels,
+            dependency_batch=dependency_batch,
         )
         plugin_id = f"{plugin_name}@{marketplace}"
         try:
@@ -428,6 +430,7 @@ def _activate_plugin_version(
     refresh_existing_artifact: bool,
     journal: ReloadJournal, update_id: str, previous_enabled: bool | None,
     offline_wheels: OfflineWheels | None,
+    dependency_batch: DependencyBatch | None = None,
 ) -> _CacheActivation:
     """Prepare one immutable artifact and publish its direct install pointer."""
 
@@ -469,15 +472,10 @@ def _activate_plugin_version(
     try:
         # 2. 在不可发现的 staging 目录复制代码并准备依赖，旧版本保持可见
         _ = shutil.copytree(clone_root, staging_root, dirs_exist_ok=True)
-        if offline_wheels is None:
-            _prepare_static_python_runtimes(
-                staging_root, static_manifest, workspace=workspace
-            )
-        else:
-            _prepare_static_python_runtimes(
-                staging_root, static_manifest, workspace=workspace,
-                offline_wheels=offline_wheels,
-            )
+        _prepare_static_python_runtimes(
+            staging_root, static_manifest, workspace=workspace,
+            offline_wheels=offline_wheels, dependency_batch=dependency_batch,
+        )
 
         # 3. 先落完整 artifact，再原子切换 stable/latest 指针对。
         if target_root.exists():
@@ -675,6 +673,7 @@ def _prepare_static_python_runtimes(
     *,
     workspace: Path,
     offline_wheels: OfflineWheels | None = None,
+    dependency_batch: DependencyBatch | None = None,
 ) -> None:
     """在最终耐久路径准备环境；安装 cache 只保存不可变引用。"""
     environments = PythonEnvironments(workspace)
@@ -682,12 +681,11 @@ def _prepare_static_python_runtimes(
     # 1. 显式声明的进程内依赖独立成环境，引用与子进程 runtime 记在同一份安装记录里。
     inprocess = inprocess_runtime(plugin_root)
     if inprocess is not None:
-        if offline_wheels is not None:
-            raise ValueError(f"{INPROCESS_REQUIREMENTS} 暂不支持离线 wheel 安装")
-        # 约束只作用于进程内环境；临时约束文件在整个准备期间保持存在。
+        # 约束只作用于进程内环境；临时约束文件在整个准备期间保持存在。离线（部署）与在线路径用同一份约束。
         with tempfile.TemporaryDirectory(prefix="akashic-constraints-") as scratch:
-            constraints = build_constraints(workspace, manifest.name, environments, Path(scratch))
-            refs[INPROCESS_KEY] = environments.prepare(plugin_root, inprocess, constraints=constraints)
+            constraints = build_constraints(workspace, manifest.name, environments, Path(scratch), dependency_batch)
+            refs[INPROCESS_KEY] = environments.prepare(
+                plugin_root, inprocess, constraints=constraints, offline_wheels=offline_wheels)
     # 2. 根与子目录 requirements.txt 的子进程 runtime，行为不变。
     if manifest.python:
         used_offline_wheels = False
@@ -700,7 +698,7 @@ def _prepare_static_python_runtimes(
                 used_offline_wheels = True
             else:
                 refs[runtime.runtime_root] = environments.prepare(plugin_root, runtime)
-        if offline_wheels is not None and not used_offline_wheels:
+        if offline_wheels is not None and not used_offline_wheels and inprocess is None:
             raise ValueError("没有非空 Python requirements，不能提供离线 wheel")
     if refs:
         with (plugin_root / ENVIRONMENT_FILE).open("w") as stream:
