@@ -182,6 +182,19 @@ Core 侧一个 PR，extra 侧先行或同时：
 
 先实现“插件自带依赖挂进主进程”和安装时的版本冲突检查，再依次迁 `telegram_channel`、`visuals`、`design`、`akasha`。之后才从 Core 镜像删除对应依赖，并实测镜像体积与内存。
 
+#### Phase 4 进展：`telegram_channel`（第一个带进程内依赖的迁出）
+
+- 迁出：`telegram_channel` 进 extra 仓库并保持 `@release` 身份，`[tiers].extra` → `external`，preset 行保留。Core 里没有对它的 import、服务键、前端或技能引用；Core 里只有"渠道名是 telegram"的字符串（提示词的渲染限制、压缩页的标签），不是插件依赖。持久数据只有 `plugin-data/telegram_channel-release/` 的配置与凭据（`config.input.json`），迁出前后逐字相同；没有 `owner_records`。
+- 依赖声明：`telegram_channel` 与 `telegram_sender`（已迁出，仍靠 Core 镜像带着依赖）各自新增 `requirements.inprocess.txt`，只列直接 import 的第三方包：`aiohttp>=3.14.3,<4`、`python-telegram-bot>=22.7,<23`（仅 channel）、`telegramify-markdown>=1.2.0,<2`。下界取 Core 的 `requirements.txt`，上界取下一个主版本：此刻与 Core 锁（aiohttp 3.14.3、python-telegram-bot 22.8、telegramify-markdown 1.2.0）兼容，Core 在同一主版本内升级也不会让安装被拒，Core 删掉依赖后插件环境按范围解析出可用版本。不钉死 `==`：Core 每次升锁都会让钉死的插件安装被拒。`pydantic`、`httpx` 是 Core 永久依赖，不声明。`telegram_channel` 原来的根 `requirements.txt`（`httpx[socks]`，没有任何子进程命令使用）随迁出删除。
+- 此刻主进程实际用的仍是 Core 的版本（Core 的包优先）；插件环境是备份。
+
+**之后从 Core 删除依赖的清单（单独一步，不在迁出里做）**
+
+- `requirements.txt`：`aiohttp>=3.14.3`（第 1 行）、`python-telegram-bot>=22.7`（第 23 行）、`telegramify-markdown`（第 27 行）。
+- `docker/host-runtime/requirements.lock` 重新生成后应少掉：`aiohttp`、`python-telegram-bot`、`telegramify-markdown`，以及只由它们带来的 `pyromark`、`aiohappyeyeballs`、`aiosignal`、`frozenlist`、`multidict`、`propcache`、`yarl`（`attrs` 还被 `jsonschema`/`referencing` 需要，保留）。
+- 不用动：`docker/host-runtime/requirements.production.in`（只引用 `requirements.txt`）、`benchmark/computer_driver/*.lock`（评测自己的环境）；Core 里没有任何 `aiohttp`/`telegram`/`telegramify_markdown`/`pyromark` 的 Python import（评测脚本除外）。
+- 删之前必须满足：(1) `telegram_channel` 与 `telegram_sender` 的新版本都已在生产运行（`pkg list` 显示来源 extra、带进程内环境引用）；(2) 本机用"去掉这些包的 Core 解释器"启动同一实例，两个插件仍 active、原生扩展来自插件环境（已演练，见 #本 PR 说明）；(3) 在目标镜像里重新求 wheel 通过（部署的 `pip download --only-binary` 不失败）；(4) 确认没有其他已装插件依赖这些包（`grep` 其源码与 extra 仓库 CI 的 `check_inprocess.py --hints`）；(5) 删除作为独立 PR，随后用 `pkg upgrade` 之外的完整部署演练一次回退。
+
 ### Phase 5：新用户体验
 
 先做：包组与默认组合；Web 首次引导里按场景选装。
