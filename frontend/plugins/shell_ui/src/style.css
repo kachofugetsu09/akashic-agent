@@ -492,6 +492,18 @@
   .shell-disclosure.open > .shell-disclosure__inner { opacity: 1; translate: 0 0; transition-duration: var(--ak-sys-duration-expand, 200ms), var(--ak-sys-duration-expand, 200ms); }
   .shell-disclosure.is-instant,
   .shell-disclosure.is-instant > .shell-disclosure__inner { transition: none; }
+  .shell-installable-group + .shell-installable-group { margin-block-start: 16px; }
+  .shell-installable-group h5 { display: grid; gap: 2px; margin: 0 0 6px; font-size: 13px; font-weight: 600; color: var(--ak-ink-secondary); }
+  .shell-installable-group h5 small { font-weight: 400; line-height: 18px; color: var(--ak-ink-muted); text-wrap: pretty; }
+  .shell-installable-row { display: flex; align-items: center; gap: 12px; padding: 4px 16px; }
+  .shell-installable-row + .shell-installable-row { border-block-start: 1px solid var(--ak-rule-subtle); }
+  .shell-installable-row .shell-inventory-name small { white-space: normal; text-wrap: pretty; overflow-wrap: anywhere; }
+  .shell-installable-row button { flex: 0 0 auto; min-height: 32px; padding: 0 14px; font: inherit; font-size: 13px; border: 1px solid var(--ak-rule-default); border-radius: var(--ak-radius-sm); background: transparent; color: var(--ak-ink-primary); cursor: pointer; white-space: nowrap; }
+  .shell-installable-row button:disabled { opacity: 0.5; cursor: default; }
+  .shell-installable-row button[aria-busy="true"] { opacity: 1; cursor: progress; color: var(--ak-ink-muted); }
+  .shell-installable-row button:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 2px; }
+  .shell-installable-note { margin: 0; font-size: 13px; text-wrap: pretty; color: var(--ak-ink-secondary); }
+  .shell-installable-log { max-height: 240px; margin: 6px 0 0; padding: 10px 12px; overflow: auto; font-size: 12px; line-height: 18px; white-space: pre-wrap; overflow-wrap: anywhere; border: 1px solid var(--ak-rule-subtle); border-radius: var(--ak-radius-sm); background: var(--ak-paper-sheet); color: var(--ak-ink-secondary); }
   .shell-inventory-empty { display: grid; justify-items: start; gap: 4px; font-size: 13px; color: var(--ak-ink-muted); }
   .shell-inventory-empty p { margin: 0; }
 
@@ -679,6 +691,8 @@
     min-height: 44px;
     font-size: 16px;
   }
+
+  .shell-installable-row button { min-height: 44px; }
 
   .shell-inventory-filter button,
   .shell-inventory-empty button {

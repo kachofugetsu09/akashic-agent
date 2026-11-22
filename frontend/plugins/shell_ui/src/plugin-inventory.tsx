@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { WebHostContextV1, WebResource } from "@akashic/web-ui-v1";
 import { markup } from "./brand";
+import { InstallablePackages } from "./plugin-installable";
 
 type Phase = "active" | "pending" | "failed" | "disabled" | "stopping" | "loading";
 
@@ -136,6 +137,7 @@ export function PluginInventory({ http, inventory, active }: {
       <h4>外置插件 <span>{external.length}</span></h4>
       {list(external)}
     </section>}
+    <InstallablePackages http={http} active={active} onInstalled={load} />
     {visible.length === 0 && <div className="shell-inventory-empty">
       <p>{query.trim() ? `没有匹配“${query.trim()}”的插件` : "没有需要处理的插件"}</p>
       <button type="button" onClick={() => { setQuery(""); setFilter("all"); }}>显示全部插件</button>

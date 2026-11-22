@@ -15,6 +15,7 @@ from agent.plugin_composition.runtime_catalog import RUNTIME_CATALOG
 from core.common.file_io import run_file_io
 from plugins.host_execution.contract import HOST_STATUS
 from .deploy_status import read_deploy_snapshot
+from .installable import InstallBusy, PackageInstaller
 
 _STARTED_AT = datetime.now(UTC).isoformat()
 
@@ -30,9 +31,15 @@ class PluginInventory:
     read: Callable[[], Row]
     set_enabled: Callable[[str, bool], Awaitable[Row]]
     read_runtime_version: Callable[[], Awaitable[Row]]
+    installer: PackageInstaller
 
 
 INVENTORY = ServiceKey[PluginInventory]("shell-ui.plugin_inventory")
+
+
+class InstallRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    name: str
 
 
 class EnabledRequest(BaseModel):
@@ -69,7 +76,7 @@ def bind(ctx: Context) -> PluginInventory:
         )
         return {"bridge": bridge, **snapshot}
 
-    return PluginInventory(ctx.entrypoint(read), ctx.entrypoint(set_enabled), ctx.entrypoint(read_runtime_version))
+    return PluginInventory(ctx.entrypoint(read), ctx.entrypoint(set_enabled), ctx.entrypoint(read_runtime_version), PackageInstaller())
 
 
 # 合并宿主选择与运行目录：一行一个插件，只保留列表需要的事实。
@@ -156,3 +163,25 @@ def register(app: FastAPI, context: DashboardContext) -> None:
             raise HTTPException(403, str(error)) from error
         except (RuntimeError, ValueError) as error:
             raise HTTPException(409, str(error)) from error
+
+    @app.get("/api/dashboard/plugins/installable")
+    async def installable() -> Row:
+        try:
+            return await context.require(INVENTORY).installer.available()
+        except (RuntimeError, ValueError, OSError) as error:
+            raise HTTPException(502, str(error)) from error
+
+    @app.get("/api/dashboard/plugins/install")
+    async def install_status() -> Row:
+        return context.require(INVENTORY).installer.status()
+
+    @app.post("/api/dashboard/plugins/install")
+    async def install(request: InstallRequest) -> Row:
+        try:
+            return await context.require(INVENTORY).installer.start(request.name)
+        except InstallBusy as error:
+            raise HTTPException(409, str(error)) from error
+        except LookupError as error:
+            raise HTTPException(404, str(error)) from error
+        except (RuntimeError, ValueError, OSError) as error:
+            raise HTTPException(502, str(error)) from error
