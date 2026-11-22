@@ -822,11 +822,12 @@ dialog.settings-scrim::backdrop { background: transparent; }
   .settings-sheet { border-inline: 0; border-block-end: 0; border-radius: var(--ak-radius-lg) var(--ak-radius-lg) 0 0; align-self: end; }
 }
 
-.settings-page--embedded { min-height: 0; padding: 0; background: transparent; }
+/* 内嵌时由宿主的容器滚动；本页不再自成滚动容器，贴底的提示才跟得上宿主的滚动。 */
+.settings-page--embedded { height: auto; min-height: 0; overflow: visible; padding: 0; background: transparent; }
 .settings-page--embedded .settings-shell { width: 100%; padding: 0; }
 .settings-page--embedded .settings-header { display: none; }
 .settings-page--embedded .settings-section { margin-top: 0; }
-/* 内嵌在设置工作区或新手引导里时，提示贴着滚动区底边，不盖住宿主自己的底栏按钮。 */
+/* 提示贴着宿主滚动区的底边，不盖住宿主自己的底栏按钮（例如新手引导的「继续」）。 */
 .settings-page--embedded .settings-toast-region { position: sticky; inset: auto 0 1rem; display: flex; justify-content: flex-end; margin-block-start: 1rem; }
 .settings-page--embedded .settings-toast-region:empty { display: none; }
 
