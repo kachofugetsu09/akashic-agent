@@ -1507,7 +1507,7 @@ def _repair_resources_best_effort(workspace: Path) -> None:
         print(f"警告: 已装包的资源修复步骤失败，已跳过: {error}", file=sys.stderr, flush=True)
         return
     for name, reason in failures:
-        print(f"警告: {name}: 资源修复失败，保留现有安装；服务照常启动，该资源在用到时报 RESOURCE_UNAVAILABLE（{reason}）",
+        print(f"警告: {name}: 资源修复失败，保留现有安装；服务照常启动，该资源在用到时报 RESOURCE_UNAVAILABLE，可执行 `akashic pkg upgrade {name.split('@', 1)[0]}` 修复（{reason}）",
               file=sys.stderr, flush=True)
 
 

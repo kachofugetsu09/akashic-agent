@@ -556,8 +556,11 @@ def resource_repair_reason(code: Path, workspace: Path) -> str | None:
 # ---- 已装包的资源修复：直接对已装 artifact 自己的 resources.json 取回，不取代码、不求 wheel、不碰选择与安装记录 ----
 # 按内容寻址，天然幂等：健康的资源直接复用，损坏或缺失的重新下载并发布；失败等于没做过。
 # 在子进程里跑本模块的 fetch 入口，父进程用硬超时兜底（期限检查只是尽力，不能打断阻塞 I/O）。
+# pkg upgrade 单包修复的期限（人为操作，不受启动健康检查约束）。
 REPAIR_PACKAGE_SECONDS = 300.0
-REPAIR_TOTAL_SECONDS = 600.0
+# 启动补装之后的修复只是快速尝试：它算在服务启动健康检查的期限里（默认 120 秒），总预算必须远小于它。
+# 下不完就放弃并警告，由 pkg upgrade <包> 修复；正常部署在停机前由宿主侧取好资源，不依赖这一步。
+STARTUP_REPAIR_SECONDS = 60.0
 
 
 # 取回一个已装 artifact 声明的全部资源；失败抛 ResourceError。
@@ -576,7 +579,7 @@ def repair_resources(code: Path, workspace: Path, *, seconds: float = REPAIR_PAC
 # 启动补装之后的尽力而为步骤：逐个已装包（名字, artifact 目录）检查，资源缺失或损坏的取回；每个包独立，失败只返回警告。
 # 总期限 total 用完后剩下的包直接放弃并警告，不让下载拖住启动。返回 [(名字, 原因)]。
 def repair_installed_resources(
-    packages: list[tuple[str, Path]], workspace: Path, *, per_package: float = REPAIR_PACKAGE_SECONDS, total: float = REPAIR_TOTAL_SECONDS,
+    packages: list[tuple[str, Path]], workspace: Path, *, per_package: float = STARTUP_REPAIR_SECONDS, total: float = STARTUP_REPAIR_SECONDS,
 ) -> list[tuple[str, str]]:
     failures: list[tuple[str, str]] = []
     end = time.monotonic() + total
