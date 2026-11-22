@@ -521,6 +521,26 @@ def check_archive_dir(code: Path, directory: Path, expected: object) -> tuple[Re
     return items
 
 
+# 加载时提供给插件的入口路径（名字 -> 绝对路径）：只由 artifact 自己的 resources.json 决定，回退到旧版本时自然指向旧资源；
+# 不检查文件是否存在（缺失在用到时由 PluginRuntime.resource 报错，插件本身照常加载）。声明无效时按没有资源处理，安装期已拒绝过。
+def entry_paths(code: Path, workspace: Path) -> dict[str, Path]:
+    try:
+        items = read_manifest(code)
+    except (ResourceError, OSError):
+        return {}
+    root = resource_root(workspace)
+    return {item.name: entry_path(item, root) for item in items}
+
+
+# 已装 artifact 的资源是否需要重新取回（与进程内环境的自愈判定同一形状）：返回第一个不可用资源的原因，全部可用返回 None。
+def resource_repair_reason(code: Path, workspace: Path) -> str | None:
+    root = resource_root(workspace)
+    for item in read_manifest(code):
+        if (reason := verify_resource(item, root)) is not None:
+            return f"资源 {item.name} 不可用: {reason}"
+    return None
+
+
 def _main(arguments: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="python -m agent.plugins.resources")
     commands = parser.add_subparsers(dest="command", required=True)

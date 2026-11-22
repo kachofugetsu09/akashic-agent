@@ -100,6 +100,7 @@ from agent.plugins.reload_journal import (
 from agent.plugins.scope import CleanupFailure, PluginScope
 from agent.plugins.distribution_sources import is_distribution_input
 from agent.plugins.installed_adoption import plan_installed_adoption
+from agent.plugins.resources import entry_paths
 from agent.plugins.selection import PluginSelection, SelectionConflictError
 from agent.plugins.source_resolver import (
     PluginSourceFailure,
@@ -2346,6 +2347,7 @@ class PluginManager:
                     config=copy.deepcopy(generation.config_projection),
                     workspace_roots=plugin.workspace_roots,
                     workspace_files=plugin.workspace_files,
+                    resources=entry_paths(generation.code_dir, workspace),
                 ),
             )
         except BaseException:
