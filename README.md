@@ -19,7 +19,7 @@ docker compose up -d --wait
 docker compose exec akashic python main.py web-login
 ```
 
-第一次启动要下载和安装，大约需要几分钟。最后一条命令会打印一个登录链接，在浏览器里打开它就能进入。
+第一次启动要下载和安装，大约需要 10 分钟。最后一条命令会打印一个登录链接，在浏览器里打开它就能进入。
 
 ### 方式二：不用 Docker（Linux 或 WSL2）
 
@@ -31,12 +31,12 @@ cd akashic-agent
 ./start
 ```
 
-第一次运行会安装依赖，需要几分钟。装好后浏览器会自动打开，并且已经登录。按 Ctrl+C 停止。
+第一次运行会安装依赖，大约需要 10 分钟。装好后浏览器会自动打开，并且已经登录。按 Ctrl+C 停止。
 
 ## 第一次打开
 
 1. **设置密码**：页面会让你设置一个自己的密码，至少 10 个字符。以后在其他设备上登录时使用。
-2. **连接模型**：页面会引导你连接一个对话模型，填入模型服务的 API Key 即可。内置 DeepSeek、智谱 GLM 等预设；其他兼容 OpenAI 接口的服务，选“自定义 API”。
+2. **跟着引导走**：只有“连接模型”是必须的。选一个模型服务，填入它的 API Key：内置 DeepSeek、智谱 GLM 等预设；其他兼容 OpenAI 接口的服务选“自定义 API”，再填地址。聊天软件、记忆等后面几步都可以先跳过，以后在“功能设置”里随时开。
 3. **开始对话**。
 
 想要更多功能，可以直接对 Akashic 说“帮我装上某某功能”，也可以在“功能设置”→“插件”里安装。
@@ -48,7 +48,7 @@ cd akashic-agent
 | 停止 | `docker compose stop` | 按 Ctrl+C |
 | 再次启动 | `docker compose up -d --wait` | `./start` |
 | 看日志 | `docker compose logs --tail=200` | 终端里会显示日志文件的位置 |
-| 重新登录 | `docker compose exec akashic python main.py web-login` | `./start` 会自动登录 |
+| 拿登录链接 | `docker compose exec akashic python main.py web-login` | `./start --login` |
 
 **不要运行 `docker compose down -v`**，它会删除你的全部数据。
 
@@ -70,7 +70,7 @@ cd akashic-agent
 - **源码**：运行 `./start --no-browser --yes`。
   - `--yes` 表示首次安装不提问，装上全部默认功能。
   - 看到 “WebUI 已就绪” 就表示完成。进程会一直运行，需要放到后台。
-  - 登录链接用 `python main.py web-login` 获取。
+  - 登录链接用 `./start --login` 获取，交给用户。
 - **换端口**：
   - Docker：在 `compose.yaml` 同目录创建 `.env`，写入 `AKASHIC_PORT=2237`。
   - 源码：运行 `./start --port 2237`。

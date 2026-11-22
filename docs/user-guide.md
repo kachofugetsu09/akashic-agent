@@ -43,11 +43,9 @@ git checkout <新版本号，例如 v0.3.0>
 功能插件单独更新，不需要更新整个程序。可以直接对 Akashic 说“检查一下插件更新”，也可以在“功能设置”→“插件”里操作。命令行用法：
 
 ```bash
-python main.py pkg list --remote   # 看哪些可以升级
-python main.py pkg upgrade         # 全部升级
+docker compose exec akashic python main.py pkg list --remote   # 看哪些可以升级
+docker compose exec akashic python main.py pkg upgrade         # 全部升级
 ```
-
-使用 Docker 时，在命令前加 `docker compose exec akashic`。
 
 ## 换端口
 
@@ -62,12 +60,12 @@ python main.py pkg upgrade         # 全部升级
 
 - **一次性登录链接**：在运行 Akashic 的机器上执行下面的命令，会得到一条 2 分钟内有效、只能用一次的登录链接。
   ```bash
-  python main.py web-login                              # 不用 Docker
-  docker compose exec akashic python main.py web-login  # Docker
+  ./start --login                                       # 不用 Docker（在 akashic-agent 目录里）
+  docker compose exec akashic python main.py web-login  # Docker（在 akashic 目录里）
   ```
 - **初始密码**：首次启动时会随机生成，只写在启动日志里（Docker 可以用 `docker compose logs akashic | grep 初始密码` 查看），不会发到任何聊天渠道。首次登录后需要改成自己的密码。
 - **记住设备**：默认 90 天内免登录。在别人的电脑上登录时，请取消勾选“记住这台设备”。
-- **忘记密码**：运行 `python main.py web-passwd`（Docker 在前面加 `docker compose exec akashic`），密码会重置为临时密码，所有设备都会退出登录。也可以在 Telegram 或 QQ 里让 Akashic 帮你执行。
+- **忘记密码**：用上面的一次性登录链接进入即可。Docker 也可以运行 `docker compose exec akashic python main.py web-passwd`，密码会重置为临时密码，所有设备都会退出登录。还可以在 Telegram 或 QQ 里让 Akashic 帮你重置。
 
 SDK、CLI 等程序调用走本机 unix socket，不经过登录门。
 

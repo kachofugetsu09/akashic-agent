@@ -322,6 +322,22 @@ def _login_url(core: Path, python: Path, state: Path, url: str) -> str:
     return lines[-1] if result.returncode == 0 and lines and "/_auth/login#t=" in lines[-1] else url
 
 
+# ./start --login：用本源码提交已准备好的环境要一条登录链接；服务在不在运行都可以。
+def print_login(cache: Path, state: Path, url: str) -> int:
+    revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+    ready = cache / revision
+    if not (ready / "complete").is_file() or not (state / "config.toml").is_file():
+        print("还没有安装完成。先运行 ./start，装好后再用 ./start --login。", file=sys.stderr)
+        return 1
+    ready = ready.resolve()
+    link = _login_url(ready / "core", ready / "env/bin/python", state, url)
+    if "/_auth/login#t=" not in link:
+        print("没能生成登录链接：网页登录插件可能没有启用。直接打开 " + url, file=sys.stderr)
+        return 1
+    print(link)
+    return 0
+
+
 def run_service(preparation: Preparation, core: Path, python: Path,
                 state: Path, port: int, container: bool, open_browser: bool,
                 distribution: Path, host: str = "127.0.0.1") -> int:
@@ -399,6 +415,7 @@ def main() -> int:
     parser.add_argument("--profile", choices=("full", "minimal", "custom"), help="首次安装的扩展包选择；不给且有终端就提问，没有终端等于 full")
     parser.add_argument("--groups", default="", help="自选的包组（逗号分隔，隐含 custom）")
     parser.add_argument("--yes", action="store_true", help="首次安装不提问不确认")
+    parser.add_argument("--login", action="store_true", help="只打印一条一次性登录链接（2 分钟内有效）后退出，不启动服务")
     parser.add_argument("--reselect", action="store_true", help="首次安装失败后重跑时重新选择（默认沿用上次的选择，不再提问）")
     parser.add_argument("--allow-retire", action="store_true",
                         help="确认让在用而发行版不再提供、extra 上游也没有的内置插件消失；默认启动失败并列出它们")
@@ -410,6 +427,8 @@ def main() -> int:
     if not 1 <= args.port <= 65535:
         parser.error("--port 必须在 1 到 65535 之间")
     state = args.state.expanduser().resolve()
+    if args.login:
+        return print_login(args.cache.expanduser().resolve(), state, f"http://{args.host}:{args.port}")
     os.umask(0o077)
     # Existing direct-runtime owners also block preparation, even on another port.
     for name in (".supervisor.lock", ".instance.lock"):

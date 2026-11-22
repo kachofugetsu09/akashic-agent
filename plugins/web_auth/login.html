@@ -51,9 +51,9 @@ pre { margin: 8px 0; max-width: 100%; padding: 8px 10px; border-radius: 7px; bac
   <details>
     <summary>第一次使用或忘记密码？</summary>
     <p>第一次使用时，初始密码在启动日志里。也可以在服务器上运行下面的命令，免密进入或重置：</p>
-    <pre>python main.py web-login      # 打印一次性登录链接
-python main.py web-passwd     # 重置为临时密码，所有设备退出
-docker compose exec akashic python main.py web-login</pre>
+    <pre>./start --login                                       # 源码安装：打印一次性登录链接
+docker compose exec akashic python main.py web-login  # Docker：打印一次性登录链接
+docker compose exec akashic python main.py web-passwd # Docker：重置为临时密码，所有设备退出</pre>
     <p>也可以在 Telegram/QQ 里让 Akashic 帮你重置网页密码。</p>
   </details>
 </form>
