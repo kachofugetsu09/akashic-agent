@@ -277,7 +277,7 @@ def _stage_deployment_targets(
             if inprocess is not None:
                 _check_inprocess_entry(target, wheels.directory, plugin_id)
                 constraints = build_constraints(workspace, identity.name, PythonEnvironments(workspace),
-                                                _scratch(staged, f"external-{index}-constraints"), batch)
+                                                _scratch(staged, f"external-{index}-constraints"), batch, plugins_home)
             for runtime_index, runtime in enumerate((*identity.python, *(() if inprocess is None else (inprocess,)))):
                 if not (code / runtime.requirements).read_text(encoding="utf-8").strip():
                     continue
@@ -1484,7 +1484,7 @@ def _stage_missing_from_extra(
         if "--allow-retire" in str(error):
             raise RuntimeError(str(error)) from error
         raise RuntimeError(
-            f"无法取得 preset 启用但发行版已不再自带的插件（{str(error).splitlines()[0] if str(error) else type(error).__name__}）。请检查网络与 extra 仓库地址"
+            f"无法取得 preset 启用但发行版已不再自带、或需要重建依赖环境的插件（{str(error).splitlines()[0] if str(error) else type(error).__name__}）。请检查网络与 extra 仓库地址"
             "（AKASHIC_EXTRA_REPO），或用 --extra-inputs 指向预先下载好的输入目录后重试") from error
     if not found.targets:
         return []

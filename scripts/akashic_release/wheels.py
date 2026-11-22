@@ -62,6 +62,29 @@ def local_resolver(core_root: Path) -> Resolver:
     return resolve
 
 
+# 目标解释器的 Python 主.次版本，惰性求值并记住：目标在镜像里就问镜像（起一次容器），否则是本机解释器。
+# 显式给了 wheel_resolver 的调用方（本机验证）按本机解释器算。
+def target_python(image: str | None, run: Run, resolver: Resolver | None) -> Callable[[], tuple[int, int]]:
+    known: list[tuple[int, int]] = []
+
+    def probe() -> tuple[int, int]:
+        if not known:
+            if image is None or resolver is not None:
+                known.append((sys.version_info.major, sys.version_info.minor))
+            else:
+                code = "import sys;print('%d.%d' % sys.version_info[:2])"
+                done = run(["docker", "run", "--rm", "--network", "none", "--entrypoint", "/opt/venv/bin/python", image, "-c", code],
+                           check=False, capture_output=True, text=True)
+                major, _, minor = (done.stdout or "").strip().partition(".")
+                if done.returncode != 0 or not (major.isdigit() and minor.isdigit()):
+                    raise RuntimeError(f"无法读取目标镜像 {image} 的 Python 版本（退出码 {done.returncode}）：{(done.stderr or '').strip()[-300:]}；"
+                                   "该版本用来判断已装插件的依赖环境是否需要重建，请确认镜像已拉取、docker 可用后重试（部署尚未停机）")
+                known.append((int(major), int(minor)))
+        return known[0]
+
+    return probe
+
+
 def _read_result(work: Path, done: subprocess.CompletedProcess[str]) -> dict[str, object]:
     path = work / "result.json"
     if not path.exists():

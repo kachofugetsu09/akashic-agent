@@ -5,7 +5,7 @@ import argparse
 import json
 import subprocess
 import sys
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import cast
 
@@ -16,6 +16,7 @@ from agent.plugins.extra_repo import classify_gaps, list_release_heads as list_r
 from agent.plugins.extra_repo import resolve_repo as resolve_repo
 from agent.plugins.install import is_official_fresh_install, is_same_source_upgrade, same_origin
 from agent.plugins.manifest import plugins_root
+from agent.plugins.python_environment import PythonEnvironments, environment_repair_reason
 from agent.plugins.selection import PluginSelection, SelectionFormatError
 from agent.plugins.source_resolver import ResolvedPluginSource, resolve_plugin_sources
 from agent.plugins.static_manifest import load_static_plugin_manifest, read_only_manifest_facts
@@ -30,6 +31,8 @@ class InstalledPackage:
     head: str
     selected: bool
     retired: bool = False
+    # 进程内依赖环境需要重建的原因；pkg upgrade 会重建，不需要为空。
+    repair: str = ""
 
 
 @dataclass(frozen=True)
@@ -42,6 +45,7 @@ class ListRow:
     retired: bool
     status: str
     remote_head: str
+    repair: str = ""
 
 
 @dataclass(frozen=True)
@@ -78,10 +82,12 @@ def _source_of(artifact: Path, builtin: bool, repo: str) -> str:
 
 
 def _package(plugin_id: str, artifact: Path, builtin: bool, repo: str, selected: bool,
-             retired: bool = False) -> InstalledPackage:
+             retired: bool = False, *, workspace: Path) -> InstalledPackage:
+    repair = "" if builtin else environment_repair_reason(
+        artifact, PythonEnvironments(workspace), lambda: (sys.version_info.major, sys.version_info.minor)) or ""
     return InstalledPackage(plugin_id, plugin_id.partition("@")[0], _version_of(artifact),
                             _source_of(artifact, builtin, repo), _git(artifact, "rev-parse", "HEAD") or "-",
-                            selected, retired)
+                            selected, retired, repair)
 
 
 # 选择文件缺失（从未启动过的 workspace）等同空选择。
@@ -140,7 +146,7 @@ def read_state(workspace: Path, repo: str) -> PackageState:
         plugin_id = cast(str, record["plugin_id"])
         builtin = record["source_type"] == "builtin"
         retired = builtin and bool(distribution.sources) and plugin_id not in provided
-        packages[plugin_id] = _package(plugin_id, Path(cast(str, record["code"])), builtin, repo, True, retired)
+        packages[plugin_id] = _package(plugin_id, Path(cast(str, record["code"])), builtin, repo, True, retired, workspace=workspace)
     marketplaces = frozenset(source.marketplace for source in distribution.sources if source.marketplace)
     installed: set[str] = set()
     for source in resolve_plugin_sources(installed_cache_root=home / "cache"):
@@ -149,7 +155,13 @@ def read_state(workspace: Path, repo: str) -> PackageState:
         plugin_id = _source_id(source)
         # 发行版已不提供的旧内置输入让位给 cache 里的新安装。
         if plugin_id not in packages or packages[plugin_id].retired:
-            packages[plugin_id] = _package(plugin_id, source.plugin_root, False, repo, False)
+            packages[plugin_id] = _package(plugin_id, source.plugin_root, False, repo, False, workspace=workspace)
+        elif packages[plugin_id].repair:
+            # 选择里的 artifact 环境需要重建，但 cache 指针已指向重建好的 artifact（离线 pkg upgrade 写的，下次启动进选择）：
+            # 不再重复重建。
+            rebuilt = _package(plugin_id, source.plugin_root, False, repo, False, workspace=workspace)
+            if not rebuilt.repair and rebuilt.head == packages[plugin_id].head:
+                packages[plugin_id] = replace(packages[plugin_id], repair="")
         # 官方命名空间里只有来源是 extra 仓库的 artifact 才算"已装"，旧内置遗留制品不能掩盖缺口；
         # 其他 marketplace（github、local 等）的 artifact 照常算已装。
         official = plugin_id.partition("@")[2] in marketplaces
@@ -181,10 +193,11 @@ def list_rows(packages: list[InstalledPackage], repo: str, remote: bool) -> list
         status, remote_head = "-", ""
         if remote and item.source == "extra":
             remote_head = heads.get(item.name, "")
+            # 提交已是最新但依赖环境需要重建的包也是 upgradable：pkg upgrade 会重建。
             status = ("removed-upstream" if not remote_head
-                      else "current" if remote_head == item.head else "upgradable")
+                      else "upgradable" if remote_head != item.head or item.repair else "current")
         rows.append(ListRow(item.plugin_id, item.version, item.source, item.head, item.selected,
-                            item.retired, status, remote_head))
+                            item.retired, status, remote_head, item.repair))
     return rows
 
 
@@ -200,7 +213,8 @@ def _print_list(rows: list[ListRow], remote: bool, as_json: bool) -> None:
         line = f"{row.plugin_id:<32} {row.version:<10} {row.source:<10} {_short(row.head)}"
         if remote:
             line += f"  {row.status} {_short(row.remote_head)}"
-        marks = ("" if row.selected else "  [已装，未进选择]") + ("  [发行版已不提供]" if row.retired else "")
+        marks = ("" if row.selected else "  [已装，未进选择]") + ("  [发行版已不提供]" if row.retired else "") + (
+            f"  [依赖环境需重建: {row.repair}]" if row.repair else "")
         print(line + marks)
     if not rows:
         print("没有已装的包")
