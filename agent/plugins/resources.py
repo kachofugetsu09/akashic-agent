@@ -417,7 +417,8 @@ def fetch_resource(
 
 
 # ---- 与插件安装记录的接口 ----
-# 安装记录（.akashic-python-environment）里资源的键；值是 sha256，与环境引用同处一份记录，随 artifact 与选择一起回退。
+# 安装记录（.akashic-python-environment）里资源的键 resource/<name>/；值是 sha256，与环境引用同处一份记录，随 artifact 与选择一起回退。
+# 带尾斜杠：磁盘发现的子进程 runtime_root（如 resource/<name>）不会以斜杠结尾，所以不可能与资源键相交（与 "inprocess/" 同一思路）。
 RESOURCE_KEY_PREFIX = "resource/"
 RESOURCES_ROOT = "plugin-resources"
 
@@ -429,7 +430,7 @@ def resource_root(workspace: Path) -> Path:
 
 # 声明对应的记录条目（不碰文件系统）；没有 resources.json 返回空映射。
 def declared_refs(code: Path) -> dict[str, str]:
-    return {f"{RESOURCE_KEY_PREFIX}{item.name}": item.sha256 for item in read_manifest(code)}
+    return {f"{RESOURCE_KEY_PREFIX}{item.name}/": item.sha256 for item in read_manifest(code)}
 
 
 def _file_opener(path: Path) -> Opener:
