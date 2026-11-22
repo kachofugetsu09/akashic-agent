@@ -217,8 +217,14 @@ def upgrade_many(ctx: Context, names: list[str]) -> list[Outcome]:
     installed = {item.name: item for item in state.packages if item.source == "extra"}
     heads = list_release_heads(ctx.repo)
     outcomes: list[Outcome] = []
+    absorbed = absorbed_plugin_ids()
     for name in names or sorted(installed):
         package = installed.get(name)
+        # 已并入 Core 的身份不升级：不带名字的 pkg upgrade 直接略过遗留包，点名时明确说明。
+        if package is not None and package.plugin_id in absorbed:
+            if names:
+                outcomes.append(Outcome(name, "failed", f"{package.plugin_id} 已并入 Core 的 {absorbed[package.plugin_id]} 插件，不再升级"))
+            continue
         if package is None:
             other = next((item for item in state.packages if item.name == name), None)
             detail = "未安装" if other is None else f"来源不同（{other.source}，目标 {ctx.repo}），不能升级"
