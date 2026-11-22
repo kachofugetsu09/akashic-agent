@@ -85,7 +85,9 @@ async def test_cancelled_source_preparation_drains_before_manager_reuse(tmp_path
             with pytest.raises(asyncio.CancelledError):
                 await observer
             assert not operation.task.done()
-            with pytest.raises(manager_module.OperationBusyError):
+            # 新操作排队等前一个退出；排队上限到了仍报忙，且没有做任何改动。
+            manager.ADMISSION_WAIT_SECONDS = 0.1
+            with pytest.raises(manager_module.OperationBusyError, match="没有开始"):
                 await manager.reconcile_changed()
             assert manager._selection.read() == before
             assert manager.generation("slow") is old

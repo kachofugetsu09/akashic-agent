@@ -11,7 +11,8 @@ import secrets
 import stat
 import sys
 import time
-from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Mapping
+from contextlib import asynccontextmanager
 from contextvars import Context as TaskContext
 from pathlib import Path
 from typing import Literal, TypeVar, cast
@@ -152,6 +153,8 @@ class PluginManager:
     POST_PUBLISH_TIMEOUT_SECONDS = 300.0
     # 冷启动还须归档全部安装输入并挂载完整组合，规模随安装数增长。
     BOOT_COMMIT_TIMEOUT_SECONDS = 7200.0
+    # 新操作等前一个操作退出的上限（对标 DSH 插件写锁的等待）；超过就报出占用者，本次没有开始、可以重试。
+    ADMISSION_WAIT_SECONDS = 120.0
 
     def __init__(
         self,
@@ -184,6 +187,8 @@ class PluginManager:
         # Failed Root builds retain their module and data owners until cleanup succeeds.
         self._building_roots: dict[CompositionRoot, tuple[PluginGeneration, ...]] = {}
         self._operation: ManagerOperation | None = None
+        # 按到达顺序排队进入操作；持有者在 _start_operation 返回前释放，不跨操作执行期持有。
+        self._admission = asyncio.Lock()
         self._stopping = False
         self._draining_generations: dict[str, list[PluginGeneration]] = {}
         # The formal local runtime has one Root and one live generation owner map.
@@ -264,8 +269,40 @@ class PluginManager:
         operation.settle_accepted(OperationTimeoutError(operation))
         operation.revoke()
 
+    # 排队等前一个插件操作退出：多个会话同时安装、启停、改配置时依次进行，不再立即拒绝。
+    # 等到上限仍未轮到就报出占用者；进入后到 _start_operation 之间只做同步准备。
+    @asynccontextmanager
+    async def _admitted(self, label: str) -> AsyncIterator[None]:
+        # 操作自己的任务里再发起操作只会等到超时，直接拒绝。
+        if self._operation is not None and current_operation.get() is self._operation:
+            raise OperationBusyError(f"{label}不能在插件操作内部发起")
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self.ADMISSION_WAIT_SECONDS
+        try:
+            await asyncio.wait_for(self._admission.acquire(), self.ADMISSION_WAIT_SECONDS)
+        except TimeoutError:
+            raise OperationBusyError(self._busy_text(label)) from None
+        try:
+            current = self._operation
+            if current is not None and not current.task.done():
+                _ = await asyncio.wait({current.task}, timeout=max(0.0, deadline - loop.time()))
+                if not current.task.done():
+                    raise OperationBusyError(self._busy_text(label))
+            yield
+        finally:
+            self._admission.release()
+
+    # 排队超时的说明：谁占着，以及是否在等旧版本排空（排空要等别的会话里进行中的调用结束）。
+    def _busy_text(self, label: str) -> str:
+        current = self._operation
+        holder = "另一个插件操作" if current is None or not current.label else f"“{current.label}”"
+        draining = sorted(plugin_id for plugin_id, items in self._draining_generations.items() if items)
+        waiting = f"，它还在等这些插件的旧版本排空（要等用到它们的调用结束）: {', '.join(draining)}" if draining else ""
+        return (f"{label}没有开始：排队 {self.ADMISSION_WAIT_SECONDS:g} 秒后{holder}仍在进行{waiting}。"
+                "本次没有做任何改动，可以稍后重试")
+
     def _start_operation(
-        self, work: Callable[[], Awaitable[U]], *, background: bool = False,
+        self, work: Callable[[], Awaitable[U]], *, label: str = "", background: bool = False,
         commit_timeout: float | None = None, update_id: str | None = None,
         accepted: AcceptedFuture | None = None,
     ) -> ManagerOperation:
@@ -276,7 +313,7 @@ class PluginManager:
             commit_timeout = self.POST_PUBLISH_TIMEOUT_SECONDS
         loop = asyncio.get_running_loop()
         operation = ManagerOperation(
-            loop.time() + commit_timeout, update_id=update_id, accepted=accepted,
+            loop.time() + commit_timeout, update_id=update_id, accepted=accepted, label=label,
         )
         self._operation = operation
 
@@ -290,13 +327,14 @@ class PluginManager:
         return operation
 
     async def _run_operation(
-        self, work: Callable[[], Awaitable[U]], *,
+        self, work: Callable[[], Awaitable[U]], *, label: str,
         commit_timeout: float | None = None,
     ) -> U:
         """公开入口有限观察同一任务；退出观察不释放仍在工作的 owner。"""
-        operation = self._start_operation(
-            work, background=True, commit_timeout=commit_timeout,
-        )
+        async with self._admitted(label):
+            operation = self._start_operation(
+                work, label=label, background=True, commit_timeout=commit_timeout,
+            )
         try:
             return cast(U, await observe_operation(operation, deadline=operation.deadline))
         finally:
@@ -583,7 +621,7 @@ class PluginManager:
 
     async def load_all(self) -> None:
         await self._run_operation(
-            self._load_all, commit_timeout=self.BOOT_COMMIT_TIMEOUT_SECONDS,
+            self._load_all, label="启动时加载插件", commit_timeout=self.BOOT_COMMIT_TIMEOUT_SECONDS,
         )
 
     async def _load_all(self) -> None:
@@ -1202,7 +1240,7 @@ class PluginManager:
         self, *, plugin_ids: frozenset[str] | None = None,
     ) -> list[dict[str, object]]:
         """应用指定的变化输入；显式全量请求仍检查当前已选来源。"""
-        return await self._run_operation(lambda: self._reconcile_changed(plugin_ids))
+        return await self._run_operation(lambda: self._reconcile_changed(plugin_ids), label="重新加载插件")
 
 
     def read_config_input(self, plugin_id: str) -> dict[str, object]:
@@ -1227,24 +1265,25 @@ class PluginManager:
             if previous_request["config_revision"] != revision:
                 raise ValueError("同一请求 ID 不允许修改配置")
             return self.read_config_update(plugin_id, request_id)
+        label = f"保存 {plugin_id} 的配置"
         try:
-            self._require_operation_idle()
+            async with self._admitted(label):
+                generation = self._active_generations[plugin_id]
+                if generation.input_ref != expected_input:
+                    raise ValueError("配置已更新，请刷新后重试")
+                for ref in config_refs(config):
+                    path = _credential_path(generation.data_dir, ref)
+                    if path.is_symlink() or path.with_suffix(".revoked").exists() or hashlib.sha256(path.read_bytes()).hexdigest() != ref.path[1]:
+                        raise ValueError("凭据版本无效或不属于当前插件")
+                # 2. 固定同一制品的新输入，不先改可见配置文件。
+                record = dict(self._selection.read_input(expected_input))
+                record.update(config_revision=revision)
+                input_ref = self._selection.prepare(record)
+                self._reload_journal.create_config_update(request_id, plugin_id, expected_input, input_ref,
+                                                         revision, json.dumps(encode_config(config), ensure_ascii=False, allow_nan=False))
+                self._start_operation(lambda: self._apply_config_update(request_id), label=label, background=True)
         except OperationBusyError as error:
-            raise ValueError("另一个配置或插件操作正在完成，请稍后重试") from error
-        generation = self._active_generations[plugin_id]
-        if generation.input_ref != expected_input:
-            raise ValueError("配置已更新，请刷新后重试")
-        for ref in config_refs(config):
-            path = _credential_path(generation.data_dir, ref)
-            if path.is_symlink() or path.with_suffix(".revoked").exists() or hashlib.sha256(path.read_bytes()).hexdigest() != ref.path[1]:
-                raise ValueError("凭据版本无效或不属于当前插件")
-        # 2. 固定同一制品的新输入，不先改可见配置文件。
-        record = dict(self._selection.read_input(expected_input))
-        record.update(config_revision=revision)
-        input_ref = self._selection.prepare(record)
-        self._reload_journal.create_config_update(request_id, plugin_id, expected_input, input_ref,
-                                                 revision, json.dumps(encode_config(config), ensure_ascii=False, allow_nan=False))
-        self._start_operation(lambda: self._apply_config_update(request_id), background=True)
+            raise ValueError(str(error)) from error
         return self.read_config_update(plugin_id, request_id)
 
     def read_config_update(self, plugin_id: str, request_id: str) -> dict[str, object]:
@@ -1348,13 +1387,15 @@ class PluginManager:
         else:
             raise RuntimeError("已有插件更新请求只能查询，不能重跑安装")
         accepted: asyncio.Future[UpdateStatus] = asyncio.get_running_loop().create_future()
-        self._start_operation(
-            lambda: self._install_public(
-                source=source, marketplace=marketplace, ref_name=ref_name,
-                sparse_paths=sparse_paths, update_id=update_id, accepted=accepted,
-            ),
-            background=True, update_id=update_id, accepted=accepted,
-        )
+        label = f"安装插件（{marketplace}，{ref_name[:12] or source}）"
+        async with self._admitted(label):
+            self._start_operation(
+                lambda: self._install_public(
+                    source=source, marketplace=marketplace, ref_name=ref_name,
+                    sparse_paths=sparse_paths, update_id=update_id, accepted=accepted,
+                ),
+                label=label, background=True, update_id=update_id, accepted=accepted,
+            )
         # 调用方取消只结束等待；宿主任务继续负责安装与排空。
         return await asyncio.shield(accepted)
 
@@ -1364,11 +1405,13 @@ class PluginManager:
             raise ValueError("插件 ID 必须是非空且无首尾空白的字符串")
         _ = _split_installed_plugin_id(plugin_id)
         accepted: asyncio.Future[dict[str, object]] = asyncio.get_running_loop().create_future()
-        _ = self._start_operation(
-            lambda: self._uninstall_public(plugin_id, accepted=accepted),
-            background=True,
-            accepted=accepted,
-        )
+        async with self._admitted(f"卸载 {plugin_id}"):
+            _ = self._start_operation(
+                lambda: self._uninstall_public(plugin_id, accepted=accepted),
+                label=f"卸载 {plugin_id}",
+                background=True,
+                accepted=accepted,
+            )
         # 调用方取消只结束等待；宿主任务继续负责物理清理。
         return await asyncio.shield(accepted)
 
@@ -1896,7 +1939,8 @@ class PluginManager:
         return True
 
     async def set_plugin_enabled(self, plugin_id: str, enabled: bool) -> dict[str, object]:
-        return await self._run_operation(lambda: self._set_plugin_enabled(plugin_id, enabled))
+        return await self._run_operation(lambda: self._set_plugin_enabled(plugin_id, enabled),
+                                         label=f"{'启用' if enabled else '停用'} {plugin_id}")
 
     # 用户启停：写入持久选择后在同一 live Root 内生效，公开合同变化才留到重启。
     async def _set_plugin_enabled(self, plugin_id: str, enabled: bool) -> dict[str, object]:
@@ -1947,7 +1991,7 @@ class PluginManager:
         return await self._update_live_generation(generation, None, expected_ref=expected_ref)
 
     async def reconcile_disabled_and_drain(self, plugin_id: str) -> None:
-        await self._run_operation(lambda: self._reconcile_disabled_and_drain(plugin_id))
+        await self._run_operation(lambda: self._reconcile_disabled_and_drain(plugin_id), label=f"停用并排空 {plugin_id}")
 
     async def _reconcile_disabled_and_drain(self, plugin_id: str) -> None:
         manifest = plugin_choices(self._workspace, self._distribution.root)
@@ -1997,7 +2041,7 @@ class PluginManager:
 
 
     async def retry_runtime_recovery(self, plugin_id: str) -> dict[str, object]:
-        return await self._run_operation(lambda: self._retry_runtime_recovery(plugin_id))
+        return await self._run_operation(lambda: self._retry_runtime_recovery(plugin_id), label=f"恢复 {plugin_id}")
 
     async def _retry_runtime_recovery(self, plugin_id: str) -> dict[str, object]:
         """关闭保留的局部 owner 后重新加载当前已选安装模块。"""
