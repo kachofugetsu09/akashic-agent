@@ -18,6 +18,7 @@ import os
 import re
 import shutil
 import string
+import subprocess
 import stat
 import sys
 import tempfile
@@ -449,6 +450,77 @@ def ensure_resources(code: Path, workspace: Path, *, archives: Path | None = Non
     return declared_refs(code)
 
 
+# ---- 部署：宿主侧停机前取回归档，停机窗口内离线发布 ----
+# 宿主直接下载（不起目标镜像）：归档是与平台无关的 zip，内容由 sha256 钉死，目标镜像不参与下载就没有"镜像里是否有网络"的问题；
+# 代理沿用进程环境变量（urllib 与 git、pip 同一套）。下载后随部署清单带入，目标镜像里 --network none 发布。
+# 部署流程里这一步没有外层超时，而下载期限只是尽力检查（不能打断阻塞 I/O），所以在子进程里跑本模块的 download 入口，
+# 父进程用 subprocess 的硬超时兜底：超时即杀子进程并失败，发生在停机之前。
+ARCHIVE_SECONDS = 900.0
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+# 按 sha256 去重（归档文件是 <sha256>.zip，同一份归档可被多个资源以不同入口使用）：每个 sha256 取第一个声明。
+def unique_archives(items: tuple[Resource, ...]) -> list[Resource]:
+    return list({item.sha256: item for item in reversed(items)}.values())[::-1]
+
+
+# 把声明的归档下载到 destination（<sha256>.zip，每个唯一 sha256 一份），返回部署清单条目；没有 resources.json 返回 None。
+def stage_archives(code: Path, destination: Path, *, reuse: Path | None = None, seconds: float = ARCHIVE_SECONDS) -> dict[str, object] | None:
+    items = unique_archives(read_manifest(code))
+    if not items:
+        return None
+    destination.mkdir(parents=True, exist_ok=True)
+    missing: list[Resource] = []
+    for item in items:
+        target = destination / f"{item.sha256}.zip"
+        if reuse is not None and (reuse / target.name).is_file():
+            shutil.copyfile(reuse / target.name, target)
+        if not target.is_file():
+            missing.append(item)
+    if missing:
+        _download_in_subprocess(code, destination, [item.name for item in missing], seconds)
+    for item in items:
+        check_archive(item, destination / f"{item.sha256}.zip")
+    return {"relative_path": destination.name, "sha256": sorted(item.sha256 for item in items)}
+
+
+# 子进程下载：硬超时到了杀掉子进程；失败信息原样带回。
+def _download_in_subprocess(code: Path, destination: Path, names: list[str], seconds: float) -> None:
+    command = [sys.executable, "-B", "-m", "agent.plugins.resources", "download", "--manifest", str(code / RESOURCES_FILE),
+               "--dest", str(destination), "--max-seconds", str(seconds - 30), *[arg for name in names for arg in ("--name", name)]]
+    try:
+        done = subprocess.run(command, cwd=_REPO_ROOT, capture_output=True, text=True, timeout=seconds, check=False,
+                              env={**os.environ, "PYTHONPATH": str(_REPO_ROOT)})
+    except subprocess.TimeoutExpired as error:
+        _clear_partials_if_idle(destination)
+        raise ResourceError(f"资源归档下载超过硬上限 {seconds:.0f} 秒，已终止下载进程") from error
+    if done.returncode != 0:
+        _clear_partials_if_idle(destination)
+        raise ResourceError(f"资源归档下载失败: {(done.stderr or done.stdout).strip()[-400:]}")
+
+
+# 归档文件的哈希必须等于声明（预检与发布都调用）。
+def check_archive(resource: Resource, path: Path) -> None:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        while chunk := stream.read(_CHUNK):
+            digest.update(chunk)
+    if digest.hexdigest() != resource.sha256:
+        raise ResourceError(f"资源 {resource.name} 的归档哈希与声明不一致: {path.name}")
+
+
+# 归档目录必须恰好是声明的那几份，每份哈希都对得上；返回声明条目。
+def check_archive_dir(code: Path, directory: Path, expected: object) -> tuple[Resource, ...]:
+    items = read_manifest(code)
+    unique = unique_archives(items)
+    names = sorted(path.name for path in directory.iterdir())
+    if names != sorted(f"{item.sha256}.zip" for item in unique) or expected != sorted(item.sha256 for item in unique):
+        raise ResourceError(f"资源归档目录与 resources.json 声明不一致: {names}")
+    for item in unique:
+        check_archive(item, directory / f"{item.sha256}.zip")
+    return items
+
+
 def _main(arguments: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="python -m agent.plugins.resources")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -457,25 +529,97 @@ def _main(arguments: list[str]) -> int:
         _ = command.add_argument("--manifest", type=Path, required=True)
         _ = command.add_argument("--root", type=Path, required=True)
         _ = command.add_argument("--name")
+    fetch_only = commands.add_parser("download")
+    _ = fetch_only.add_argument("--manifest", type=Path, required=True)
+    _ = fetch_only.add_argument("--dest", type=Path, required=True)
+    _ = fetch_only.add_argument("--name", action="append", default=[])
+    _ = fetch_only.add_argument("--max-seconds", type=float, default=_MAX_SECONDS)
     options = parser.parse_args(arguments)
     try:
+        raw = cast("str | list[str] | None", options.name)
+        names = [raw] if isinstance(raw, str) else (raw or [])
         selected = [item for item in parse_manifest(cast(Path, options.manifest).read_text(encoding="utf-8"))
-                    if options.name in (None, item.name)]
-        if options.name is not None and not selected:
-            raise ResourceError(f"声明里没有资源 {options.name}")
-        report: list[dict[str, object]] = []
-        for item in selected:
-            root = cast(Path, options.root)
-            reason = verify_resource(item, root) if options.command == "verify" else None
-            if options.command == "fetch":
-                _ = fetch_resource(item, root)
-            report.append({"name": item.name, "sha256": item.sha256, "path": str(entry_path(item, root)),
-                           "usable": reason is None, **({"reason": reason} if reason else {})})
-        print(json.dumps(report))
-        return 0 if all(entry["usable"] for entry in report) else 1
+                    if not names or item.name in names]
+        if options.command == "download":
+            return _run_download(selected, cast(Path, options.dest), float(options.max_seconds))
+        return _run_publish(selected, options.command, cast(Path, options.root), cast("str | None", raw if isinstance(raw, str) else None))
     except (ResourceError, OSError) as error:
         print(json.dumps({"error": str(error)}), file=sys.stderr)
         return 2
+
+
+_PARTIAL = re.compile(r"^\.partial-[0-9a-f]{64}$")
+
+
+# 同一个 --dest 的下载互斥：跨进程文件锁覆盖"清理 -> 下载 -> 校验 -> 改名"整段，父进程的清理遵循同一把锁。
+# 锁文件放在 dest 旁边（不进归档目录，不会被"无多余文件"检查或拷贝带走）。blocking=False 时拿不到锁返回 None（有人持有）。
+@contextmanager
+def _dest_lock(dest: Path, *, blocking: bool) -> Generator[bool]:
+    with (dest.parent / f".{dest.name}.lock").open("a+") as stream:
+        try:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+        except BlockingIOError:
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+
+
+# 清掉 dest 里下载中断留下的临时文件（只匹配 .partial-<64 位十六进制>）；调用方必须持有 dest 的锁。
+def _clear_partials(dest: Path) -> None:
+    for path in dest.iterdir():
+        if _PARTIAL.fullmatch(path.name):
+            path.unlink(missing_ok=True)
+
+
+# 父进程在子进程超时或失败后的清理：拿得到锁（没有活着的下载者）才清，拿不到说明有人在下载，由它自己清。
+def _clear_partials_if_idle(dest: Path) -> None:
+    with _dest_lock(dest, blocking=False) as held:
+        if held:
+            _clear_partials(dest)
+
+
+# download：只下载并校验归档到 dest（<sha256>.zip，按唯一 sha256），不解压、不发布；整个命令共用一个期限。
+# 全程持有 dest 的锁：先清残留，再逐个写 .partial-<sha256>，校验通过后原子改名；同一归档已完好存在则跳过。
+def _run_download(items: list[Resource], dest: Path, seconds: float) -> int:
+    dest.mkdir(parents=True, exist_ok=True)
+    deadline = _Deadline(seconds)
+    unique = unique_archives(tuple(items))
+    with _dest_lock(dest, blocking=True):
+        _clear_partials(dest)
+        for item in unique:
+            final = dest / f"{item.sha256}.zip"
+            if final.is_file():
+                try:
+                    check_archive(item, final)
+                    continue
+                except ResourceError:
+                    final.unlink()
+            partial = dest / f".partial-{item.sha256}"
+            try:
+                _ = download_archive(item, partial, deadline=deadline)
+                os.replace(partial, final)
+            finally:
+                partial.unlink(missing_ok=True)
+    print(json.dumps([{"name": item.name, "sha256": item.sha256} for item in unique]))
+    return 0
+
+
+# fetch / verify：取回并发布，或只检查已发布内容；退出码 0 可用、1 不可用、2 错误。
+def _run_publish(items: list[Resource], command: str, root: Path, name: str | None) -> int:
+    if name is not None and not items:
+        raise ResourceError(f"声明里没有资源 {name}")
+    report: list[dict[str, object]] = []
+    for item in items:
+        reason = verify_resource(item, root) if command == "verify" else None
+        if command == "fetch":
+            _ = fetch_resource(item, root)
+        report.append({"name": item.name, "sha256": item.sha256, "path": str(entry_path(item, root)),
+                       "usable": reason is None, **({"reason": reason} if reason else {})})
+    print(json.dumps(report))
+    return 0 if all(entry["usable"] for entry in report) else 1
 
 
 if __name__ == "__main__":

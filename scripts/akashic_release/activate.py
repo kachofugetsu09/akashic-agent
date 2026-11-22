@@ -238,7 +238,7 @@ def _publish(
     if preflight:
         workspace = Path(candidate["AKASHIC_WORKSPACE"])
         owner = workspace.stat()
-        for name in ("plugin-python-environments",):
+        for name in ("plugin-python-environments", "plugin-resources"):
             cache = workspace / "runtime" / name
             current = paths.state
             for part in cache.relative_to(paths.state).parts:

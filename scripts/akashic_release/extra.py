@@ -19,6 +19,7 @@ from typing import Callable, Iterator, cast
 
 from utils.timing import measure
 from agent.plugins.absorbed import read_absorbed
+from agent.plugins.resources import stage_archives
 from agent.plugins.extra_repo import (
     ExtraAction,
     SelectedPackage,
@@ -269,12 +270,16 @@ def _produce(
             with measure("extra.wheels", plugin=name):
                 wheels = resolve_package_wheels(code=code, plugin_id=action.plugin_id, workspace=workspace, pins=pins,
                                                 resolver=resolver, out=out)
+        # 资源归档（resources.json）：与求 wheel 同属停机前宿主侧准备；离线输入目录里已有的原样复用。
+        with measure("extra.resources", plugin=name):
+            resources = stage_archives(code, out / f"extra-{name}-resources",
+                                       reuse=None if options.inputs is None else options.inputs / f"extra-{name}-resources")
     for image in images if options.pull_images else ():
         run(["docker", "pull", image], check=True, capture_output=True, text=True)
     target: dict[str, object] = {
         "plugin_id": action.plugin_id, "kind": action.kind, "bundle_relative_path": bundle.name,
         "bundle_sha256": _sha256(bundle), "target_commit": action.commit, "upstream": repo, "images": list(images),
-        **(wheels or {}),
+        **(wheels or {}), **({"offline_resources": resources} if resources is not None else {}),
     }
     (out / _SIDECAR.format(name=name)).write_text(json.dumps(target, sort_keys=True), encoding="utf-8")
     return target

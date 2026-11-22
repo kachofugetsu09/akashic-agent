@@ -41,6 +41,7 @@ from agent.plugins.dependency_constraints import (
     DependencyBatch, build_constraints, core_lock, installed_pins, normalize, verify_selected_environments,
 )
 from agent.plugins.dependency_paths import site_packages
+from agent.plugins.resources import check_archive_dir, ensure_resources, read_manifest
 from agent.plugins.python_environment import ENVIRONMENT_FILE, INPROCESS_KEY, PythonEnvironments, inprocess_runtime
 from agent.plugins.python_environment import OfflineWheels, preflight_offline_runtime, wheel_tree_sha256
 from agent.plugins.input_preparation import prepare_plugin_input, PLUGIN_INPUT_API, PluginInitialConfigError
@@ -118,7 +119,7 @@ def load_deployment_plan(path: Path) -> tuple[str, str, list[dict[str, Any]], di
             or plugin_id in seen):
             raise ValueError(f"plugin_id 重复或无效: {plugin_id}")
         seen.add(plugin_id)
-        fields = set(item) - {"offline_wheels", "kind", "upstream", "images", "core_lock_sha256", "inprocess_pins"}
+        fields = set(item) - {"offline_wheels", "kind", "upstream", "images", "core_lock_sha256", "inprocess_pins", "offline_resources"}
         _check_target_kind(item, bundled="bundled" in item)
         if fields == {"plugin_id", "bundled"}:
             if item["bundled"] is not True:
@@ -138,6 +139,13 @@ def load_deployment_plan(path: Path) -> tuple[str, str, list[dict[str, Any]], di
                 or _SHA256.fullmatch(wheels["tree_sha256"]) is None):
                 raise ValueError(f"offline_wheels 无效: {plugin_id}")
             _external_path_syntax(wheels["relative_path"])
+        if "offline_resources" in item:
+            resources = item["offline_resources"]
+            if (not isinstance(resources, dict) or set(resources) != {"relative_path", "sha256"}
+                or not isinstance(resources["sha256"], list)
+                or any(not isinstance(value, str) or _SHA256.fullmatch(value) is None for value in resources["sha256"])):
+                raise ValueError(f"offline_resources 无效: {plugin_id}")
+            _external_path_syntax(resources["relative_path"])
     digest = hashlib.sha256(raw).hexdigest()
     adoption = None
     if "distribution_adoption" in document:
@@ -287,6 +295,7 @@ def _stage_deployment_targets(
                 # 预检用与安装期相同的约束：预检通过就意味着停机窗口内的约束安装也能通过。
                 preflight_offline_runtime(code, runtime, wheels, destination,
                                           constraints if runtime is inprocess else None)
+        _publish_target_resources(code, target, inputs, staged, index, workspace, plugin_id)
         result.append({"plugin_id": plugin_id, "old_ref": old_ref, "bundle": local,
                        "commit": commit, "code": code, "kind": kind, "upstream": target.get("upstream"), "inprocess_pins": target.get("inprocess_pins"),
                        "wheels": wheels, "bundle_sha256": bundle_digest})
@@ -303,6 +312,22 @@ def _scratch(root: Path, name: str) -> Path:
     path = root / name
     path.mkdir()
     return path
+
+
+# 声明了资源的目标：清单必须带归档目录，每份哈希与声明一致；在预检里就发布到持久根（停机窗口内复用，不再需要网络）。
+def _publish_target_resources(
+    code: Path, target: dict[str, Any], inputs: Path, staged: Path, index: int, workspace: Path, plugin_id: str,
+) -> None:
+    spec = target.get("offline_resources")
+    if bool(read_manifest(code)) != (spec is not None):
+        raise ValueError(f"external target 资源输入与 resources.json 不匹配: {plugin_id}")
+    if spec is None:
+        return
+    source = _external_path(inputs, spec["relative_path"], directory=True)
+    copied = staged / f"external-{index}-resources"
+    shutil.copytree(source, copied)
+    _ = check_archive_dir(code, copied, spec["sha256"])
+    _ = ensure_resources(code, workspace, archives=copied)
 
 
 # 进程内依赖条目的完整性：有效的 Core 锁摘要（且等于这份镜像里的锁）、解析结果是 {包: 版本} 且与 wheel 目录一致。
