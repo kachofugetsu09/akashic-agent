@@ -158,15 +158,17 @@ def install_one(ctx: Context, state: PackageState, plugin_id: str, sha: str, upg
             # 只转换一种失败：目标已确认落地（新 artifact 已发布、指针指向它），且本机前置条件确实不满足导致激活失败
             # （如缺 Workload Controller）。其余失败（下载、校验、依赖、旧 artifact 未换成目标）保持真实失败，不动正在用的旧包。
             if result == "installed" or (result == "failed" and _landed(ctx, name, plugin_id, sha)):
-                held = _hold_closed(ctx, name, plugin_id)
+                held = _hold_closed(ctx, name, plugin_id, sha)
                 if held:
                     result, detail = "installed", held
+            elif result == "restart-required":
+                _ = _declare(ctx, name, plugin_id, sha)
             return Outcome(name, "upgraded" if upgrade and result == "installed" else result,
                            detail or sha[:12])
         _ = _install_offline(ctx, plugin_id, sha)
     except (RuntimeError, ValueError, OSError, subprocess.CalledProcessError) as error:
         return Outcome(name, "failed", _last_line(error))
-    return Outcome(name, "upgraded" if upgrade else "installed", _hold_closed(ctx, name, plugin_id) or sha[:12])
+    return Outcome(name, "upgraded" if upgrade else "installed", _hold_closed(ctx, name, plugin_id, sha) or sha[:12])
 
 
 # 目标提交已落地：stable 指针指向的 artifact 就是 sha（失败安装会回滚指针，回滚后不算落地）。
@@ -183,14 +185,23 @@ def _landed(ctx: Context, name: str, plugin_id: str, sha: str) -> bool:
     return head == sha
 
 
-# 装完后：index 声明了外部前置条件而本机不满足，包照装但保持关闭并记录原因（返回说明）；index 取不到不影响安装。
-# 在线时经 Gateway 热停用（plugin-disable），离线直接写 patch。
-def _hold_closed(ctx: Context, name: str, plugin_id: str) -> str:
+# 所有安装与升级的成功路径（installed、restart-required、失败但目标已落地）都经这一个入口写"包声明的 needs"，
+# 绑定目标提交；index 取不到时不写（旧声明因提交不一致自然失效）。返回声明的 needs，没有 index 返回 None。
+def _declare(ctx: Context, name: str, plugin_id: str, sha: str) -> list[str] | None:
     try:
-        needs = load_index(ctx.repo, plugins_root()).packages[name].needs
+        needs = list(load_index(ctx.repo, plugins_root()).packages[name].needs)
     except (RuntimeError, KeyError):
+        return None
+    record_declared(ctx.workspace, plugin_id, needs, sha)
+    return needs
+
+
+# 装完后：包声明了外部前置条件而本机不满足，包照装但保持关闭并记录原因（返回说明）。
+# 在线时经 Gateway 热停用（plugin-disable），离线直接写 patch。
+def _hold_closed(ctx: Context, name: str, plugin_id: str, sha: str) -> str:
+    needs = _declare(ctx, name, plugin_id, sha)
+    if needs is None:
         return ""
-    record_declared(ctx.workspace, plugin_id, list(needs))
     missing = unmet(needs)
     if not missing:
         clear_disabled(ctx.workspace, plugin_id)

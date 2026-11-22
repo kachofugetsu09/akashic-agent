@@ -148,9 +148,8 @@ def clear_disabled(workspace: Path, plugin_id: str) -> None:
     _update(workspace, lambda rows: rows.pop(plugin_id, None) is not None)
 
 
-# 启用前的统一检查：有记录且条件仍不满足就拒绝并说明；满足了清掉记录放行。
-# 包声明的前置条件（安装时随包记下：index 或首装旁注的 needs），不依赖联网；启用检查以它为准，原因记录只用于展示。
-def load_declared(workspace: Path) -> tuple[dict[str, list[str]], str | None]:
+# 读包声明的前置条件：{插件 id: (needs, 声明时的 artifact 提交)}；任一条目格式不对都算损坏。
+def load_declared(workspace: Path) -> tuple[dict[str, tuple[list[str], str]], str | None]:
     path = workspace / _DECLARED
     if not path.exists():
         return {}, None
@@ -158,12 +157,20 @@ def load_declared(workspace: Path) -> tuple[dict[str, list[str]], str | None]:
         value = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(value, dict):
             raise ValueError("顶层必须是对象")
-        return {key: parse_needs(item, key) for key, item in cast(dict[str, object], value).items()}, None
+        rows: dict[str, tuple[list[str], str]] = {}
+        for key, item in cast(dict[str, object], value).items():
+            if not isinstance(item, dict) or not isinstance(cast(dict[str, object], item).get("head"), str):
+                raise ValueError(f"{key} 的条目必须是 {{needs, head}}")
+            row = cast(dict[str, object], item)
+            rows[key] = (parse_needs(row.get("needs"), key), cast(str, row["head"]))
+        return rows, None
     except (OSError, ValueError) as error:
         return {}, f"{path} 无法读取或格式无效（{error}）"
 
 
-def record_declared(workspace: Path, plugin_id: str, needs: list[str]) -> None:
+# 声明绑定写入时的 artifact 提交（head）：读取时与当前已装提交不一致就当没有声明（退回原因记录），
+# 所以旧 Core 改过包、卸载后以别的方式重装，都不会拿陈旧声明当事实。
+def record_declared(workspace: Path, plugin_id: str, needs: list[str], head: str) -> None:
     path = workspace / _DECLARED
     path.parent.mkdir(parents=True, exist_ok=True)
     with (path.parent / (path.name + ".lock")).open("a") as lock:
@@ -171,27 +178,64 @@ def record_declared(workspace: Path, plugin_id: str, needs: list[str]) -> None:
         declared, problem = load_declared(workspace)
         if problem is not None:
             raise ValueError(f"前置条件声明记录损坏，未改动：{problem}；修复或删除该文件后重试")
+        parse_needs(needs, plugin_id)
         if needs:
-            declared[plugin_id] = needs
+            declared[plugin_id] = (needs, head)
         elif declared.pop(plugin_id, None) is None:
             return
         descriptor, name = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=path.parent)
         try:
             with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-                _ = stream.write(json.dumps(declared, ensure_ascii=False, indent=1, sort_keys=True))
+                _ = stream.write(json.dumps({key: {"needs": value[0], "head": value[1]} for key, value in declared.items()},
+                                            ensure_ascii=False, indent=1, sort_keys=True))
             os.replace(name, path)
         finally:
             Path(name).unlink(missing_ok=True)
 
 
-# 启用前的统一检查：以包声明的 needs 为准（没有声明时退回原因记录里的 needs，都没有就放行）；
+# 卸载时清掉该插件在两份记录里的条目（损坏的记录文件不动，留给人处理）。
+def forget_plugin(workspace: Path, plugin_id: str) -> None:
+    clear_disabled_safe(workspace, plugin_id)
+    declared, problem = load_declared(workspace)
+    if problem is None and plugin_id in declared:
+        record_declared(workspace, plugin_id, [], "")
+
+
+def clear_disabled_safe(workspace: Path, plugin_id: str) -> None:
+    rows, problem = load_disabled(workspace)
+    if problem is None and plugin_id in rows:
+        clear_disabled(workspace, plugin_id)
+
+
+# artifact 目录的 git HEAD；读不到返回空串。
+def artifact_head(artifact: Path) -> str:
+    try:
+        done = subprocess.run(["git", "-C", str(artifact), "rev-parse", "HEAD"], capture_output=True, text=True, check=False, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return done.stdout.strip() if done.returncode == 0 else ""
+
+
+# 已装 artifact 的提交：stable 指针指向的 artifact 的 HEAD；读不到返回空串。
+def installed_head(plugins_home: Path, plugin_id: str) -> str:
+    name, _, marketplace = plugin_id.partition("@")
+    base = plugins_home / "cache" / marketplace / name
+    try:
+        relative = json.loads((base / ".pointers.json").read_text(encoding="utf-8")).get("stable")
+    except (OSError, ValueError):
+        return ""
+    return artifact_head(base / relative) if isinstance(relative, str) else ""
+
+
+# 启用前的统一检查：以包声明的 needs 为准（声明绑定当前已装提交；没有或不一致时退回原因记录里的 needs，都没有就放行）；
 # 仍不满足就拒绝并说明，满足了清掉展示用的原因记录；任一记录文件损坏都拒绝（无法确认条件）。
-def check_before_enable(workspace: Path, plugin_id: str) -> None:
+def check_before_enable(workspace: Path, plugin_id: str, head: str = "") -> None:
     declared, declared_problem = load_declared(workspace)
     rows, problem = load_disabled(workspace)
     if declared_problem is not None or problem is not None:
         raise ValueError(f"{plugin_id} 不能启用：前置条件记录损坏，无法确认条件是否满足（{declared_problem or problem}）；修复或删除该文件后重试")
-    needs = declared.get(plugin_id)
+    entry = declared.get(plugin_id)
+    needs: list[str] | None = entry[0] if entry is not None and head and entry[1] == head else None
     if needs is None and plugin_id in rows:
         needs = cast(list[str], rows[plugin_id]["needs"])
     if not needs:

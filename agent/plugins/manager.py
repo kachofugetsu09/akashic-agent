@@ -54,7 +54,7 @@ from agent.plugins._operation import (
 from agent.plugin_composition.config_input import decode_config, encode_config
 from agent.plugins.bundles import absorbed_plugin_ids
 from agent.plugins.channel_credentials import CoreProviderClientFactory
-from agent.plugins.prerequisites import check_before_enable, ensure_images, load_disabled
+from agent.plugins.prerequisites import check_before_enable, ensure_images, installed_head, load_disabled
 from agent.plugins.composable import ComposablePlugin
 from agent.plugins.generation import PluginGeneration
 from agent.plugins.host import (
@@ -1904,7 +1904,7 @@ class PluginManager:
         self.require_installed_plugin(plugin_id)
         # 外部前置条件（docker、命令行工具）曾未满足而被关闭的插件，启用前重新检测。
         if enabled:
-            await run_file_io(lambda: check_before_enable(self._workspace, plugin_id))
+            await run_file_io(lambda: check_before_enable(self._workspace, plugin_id, installed_head(self.installed_plugins_home, plugin_id)))
             images = self._plugin_images(plugin_id)
             if images:
                 _ = await run_file_io(lambda: ensure_images(images))

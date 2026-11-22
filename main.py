@@ -703,12 +703,13 @@ if __name__ == "__main__":
         if online != 3:
             sys.exit(online)
         from agent.plugins.install import set_installed_plugin_enabled
-        from agent.plugins.prerequisites import check_before_enable
+        from agent.plugins.manifest import plugins_root
+        from agent.plugins.prerequisites import check_before_enable, installed_head
 
         # 离线回落（没有运行中的实例）启用时同样检测外部前置条件，与在线路径一致；停用不检查。
         if enabled:
             try:
-                check_before_enable(workspace, plugin_id)
+                check_before_enable(workspace, plugin_id, installed_head(plugins_root(), plugin_id))
             except ValueError as exc:
                 print(str(exc))
                 sys.exit(1)
