@@ -9,8 +9,9 @@ import json
 import os
 import shutil
 import socket
+import subprocess
 import tempfile
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import cast
 
@@ -95,3 +96,19 @@ def check_before_enable(workspace: Path, plugin_id: str) -> None:
     if still:
         raise ValueError(f"{plugin_id} 不能启用：{describe(still)}；补齐后再启用")
     clear_disabled(workspace, plugin_id)
+
+
+# 启用声明了镜像的插件前，本地没有的镜像先拉取（否则会重演"镜像不在本地导致启动失败"）。
+# run 可注入（演练与验证用）；本机没有 docker 命令时跳过（容器里的 Core 由宿主侧部署预拉镜像），拉取失败就拒绝启用。
+def ensure_images(images: Iterable[str], run: Callable[..., "subprocess.CompletedProcess[str]"] = subprocess.run) -> list[str]:
+    pulled: list[str] = []
+    if shutil.which("docker") is None:
+        return pulled
+    for image in images:
+        if run(["docker", "image", "inspect", image], capture_output=True, text=True, check=False).returncode == 0:
+            continue
+        done = run(["docker", "pull", image], capture_output=True, text=True, check=False)
+        if done.returncode != 0:
+            raise ValueError(f"镜像 {image} 拉取失败：{(done.stderr or '').strip().splitlines()[-1:] or done.returncode}")
+        pulled.append(image)
+    return pulled

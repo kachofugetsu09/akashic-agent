@@ -54,7 +54,7 @@ from agent.plugins._operation import (
 from agent.plugin_composition.config_input import decode_config, encode_config
 from agent.plugins.bundles import absorbed_plugin_ids
 from agent.plugins.channel_credentials import CoreProviderClientFactory
-from agent.plugins.prerequisites import check_before_enable, read_disabled
+from agent.plugins.prerequisites import check_before_enable, ensure_images, read_disabled
 from agent.plugins.composable import ComposablePlugin
 from agent.plugins.generation import PluginGeneration
 from agent.plugins.host import (
@@ -1596,6 +1596,17 @@ class PluginManager:
         if plugin_id not in self._installed_ids():
             raise RuntimeError(f"插件未安装: {plugin_id}")
 
+    # 插件静态声明的镜像（读已装 artifact 的 manifest）；读不到当作没有。
+    def _plugin_images(self, plugin_id: str) -> tuple[str, ...]:
+        mods, _failures = self._discover_modules(record_source_failures=False)
+        mod = next((item for item in mods if _resolve_plugin_id(item) == plugin_id), None)
+        if mod is None:
+            return ()
+        try:
+            return tuple(load_static_plugin_manifest(Path(mod["plugin_root"])).images)
+        except (OSError, ValueError):
+            return ()
+
     def _installed_ids(self) -> frozenset[str]:
         return installed_plugin_ids(self.installed_plugins_home) | frozenset(
             f"{source.plugin_name}@{source.marketplace}" for source in self._distribution.sources)
@@ -1894,6 +1905,9 @@ class PluginManager:
         # 外部前置条件（docker、命令行工具）曾未满足而被关闭的插件，启用前重新检测。
         if enabled:
             check_before_enable(self._workspace, plugin_id)
+            images = self._plugin_images(plugin_id)
+            if images:
+                _ = await run_file_io(lambda: ensure_images(images))
         _ = set_plugin_choice(self._workspace, plugin_id, enabled=enabled, distribution=self._distribution.root)
         # 2. 停用沿用排空路径，依赖它的插件由组合图转入等待。
         if not enabled:
