@@ -24,7 +24,7 @@ _SOURCE_ROOT = Path(__file__).resolve().parents[1]
 if str(_SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(_SOURCE_ROOT))
 
-from agent.plugins.bundles import composition_rows, plugin_choices, preset_plugin_ids
+from agent.plugins.bundles import absorbed_plugin_ids, composition_rows, plugin_choices, preset_plugin_ids
 from agent.plugins.install import install_git_plugin, set_artifact_origin
 from agent.migrations.release_backup import backup_release_state
 from agent.migrations.runner import MigrationRunner
@@ -195,7 +195,8 @@ def _stage_deployment_targets(
     # 同一份批次事实：本批每个包的进程内解析结果；宿主求 wheel、预检与停机窗口内的安装都基于它。
     batch = _dependency_batch(targets)
     selected = ({} if expected_root_ref is None
-                else _selected_components(selection, expected_root_ref, replacing_distribution=True)[1])
+                else _selected_components(selection, expected_root_ref, replacing_distribution=True,
+                                       absorbed=frozenset(absorbed_plugin_ids(distribution)))[1])
     provided = {f"{row['name']}@{report['marketplace']}" for row in report["plugins"]}
     result: list[dict[str, Any]] = []
     for index, target in enumerate(targets):
@@ -788,8 +789,10 @@ def _validate_receipt_state(
         result_owners.add(owner)
 
 
-def _selected_components(selection: PluginSelection, root_ref: str, *, replacing_distribution: bool = False) -> tuple[tuple[str, ...], dict[str, tuple[str, Mapping[str, object], Path]]]:
-    """外置输入检查实际目录；被替换的镜像输入只读原选择身份。"""
+def _selected_components(
+    selection: PluginSelection, root_ref: str, *, replacing_distribution: bool = False, absorbed: frozenset[str] = frozenset(),
+) -> tuple[tuple[str, ...], dict[str, tuple[str, Mapping[str, object], Path]]]:
+    """外置输入检查实际目录；被替换的镜像输入只读原选择身份；已被 Core 吸收的外置身份在最早处剔除，不做任何校验。"""
     components = selection.components(root_ref)
     if not isinstance(components, tuple):
         raise ValueError("stable 完整记录格式无效")
@@ -802,6 +805,11 @@ def _selected_components(selection: PluginSelection, root_ref: str, *, replacing
         plugin_id, code_ref = record["plugin_id"], record["code"]
         if record["version"] not in {5, 6} or not isinstance(plugin_id, str) or not isinstance(code_ref, str):
             raise ValueError(f"selected descriptor 格式无效: {ref}")
+        # 已吸收的外置身份本来就要被移出：它的 runtime、artifact、静态身份都不再校验（旧 Python 或 binding_api 下也一样）。
+        # ref 仍留在返回的 components 里，新旧选择比较时才会发现它被移出并提交；它不进入 found，后面的候选、迁移、环境引用都看不到它。
+        if record.get("source_type") == "installed" and plugin_id in absorbed:
+            checked_refs.append(ref)
+            continue
         if plugin_id in found:
             raise ValueError(f"stable 重复插件身份: {plugin_id}")
         replacing = replacing_distribution and is_distribution_owned(record)
@@ -1186,7 +1194,8 @@ def publish_distribution(
                     report = verify_distribution(distribution)
                 if adoption is not None and adoption["distribution_source_commit"] != report["source_commit"]:
                     raise SelectionConflictError("历史归属转换的目标发行版不符")
-                components, selected = _selected_components(selection, expected_root, replacing_distribution=True)
+                components, selected = _selected_components(selection, expected_root, replacing_distribution=True,
+                                                    absorbed=frozenset(absorbed_plugin_ids(distribution)))
                 with measure("publish.candidate"):
                     available, candidate = _distribution_candidate(
                         distribution=distribution, workspace=workspace, plugins_home=plugins_home, selected=selected,
@@ -1341,7 +1350,7 @@ def ensure_bundle(
                 _validate_receipt_state(receipt, workspace=workspace, plugins_home=plugins_home)
                 selection = PluginSelection(workspace)
                 expected = selection.read()
-                components, selected = ((), {}) if expected is None else _selected_components(selection, expected)
+                components, selected = ((), {}) if expected is None else _selected_components(selection, expected, absorbed=frozenset(absorbed_plugin_ids(distribution)))
             runner = MigrationRunner(repo_root=_SOURCE_ROOT, config_path=config_path,
                                      plugins_home=plugins_home, bundle_directory=distribution / "bundles", workspace=workspace,
                                      fixed_sources=distribution_migration_sources(workspace, plugins_home, distribution))
@@ -1487,6 +1496,8 @@ def _stage_missing_from_extra(
         raise RuntimeError(
             f"无法取得 preset 启用但发行版已不再自带、或需要重建依赖环境的插件（{str(error).splitlines()[0] if str(error) else type(error).__name__}）。请检查网络与 extra 仓库地址"
             "（AKASHIC_EXTRA_REPO），或用 --extra-inputs 指向预先下载好的输入目录后重试") from error
+    for identity, note in found.skipped:
+        print(f"{identity}: {note}", file=sys.stderr, flush=True)
     if not found.targets:
         return []
     (root / "staged").mkdir()

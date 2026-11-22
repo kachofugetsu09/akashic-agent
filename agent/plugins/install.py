@@ -37,7 +37,7 @@ from agent.plugins.manifest import (
     plugins_root,
     workspace_plugin_data_dir,
 )
-from agent.plugins.bundles import patch_rows, set_plugin_choice
+from agent.plugins.bundles import absorbed_plugin_ids, patch_rows, set_plugin_choice
 from agent.plugins.selection import PluginSelection
 from agent.plugins.static_manifest import (
     StaticPluginManifest,
@@ -197,6 +197,9 @@ def install_git_plugin(
         check_plugin_source(clone_root)
         _ = read_initial_config(clone_root)
         plugin_name = _validate_path_segment(static_manifest.name, "插件 name")
+        # 已被 Core 吸收的身份不再作为外置插件安装：在写 cache、patch 和安装记录之前拒绝，与 pkg install 的说明一致。
+        if (provider := absorbed_plugin_ids().get(f"{plugin_name}@{marketplace}")) is not None:
+            raise ValueError(f"{plugin_name}@{marketplace} 已并入 Core 的 {provider} 插件，不再作为扩展包安装")
         _reject_takeover(
             workspace=workspace,
             plugin_id=f"{plugin_name}@{marketplace}",

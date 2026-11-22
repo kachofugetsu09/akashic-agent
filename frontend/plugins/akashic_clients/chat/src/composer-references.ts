@@ -8,7 +8,7 @@ export interface ComposerReference {
 
 /** 拖拽时写入的自定义 MIME：与侧栏内部排序用的 text/plain 分开，互不干扰。 */
 export const SESSION_DRAG_TYPE = "application/x-akashic-session";
-/** 一次最多引用几个会话；与后端 session_reference.MAX_REFERENCES 一致。 */
+/** 一次最多引用几个会话；与后端 plugins/conversation/session_reference.py 的 MAX_REFERENCES 一致。 */
 export const MAX_REFERENCES = 4;
 
 // 引用属于「这个编辑位置」，所以按 draftKey 分开存：新会话与各会话的草稿互不串。

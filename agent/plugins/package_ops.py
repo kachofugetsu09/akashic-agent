@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Literal, cast
 from uuid import uuid4
 
-from agent.plugins.bundles import composition_rows, set_plugin_choice
+from agent.plugins.bundles import absorbed_plugin_ids, composition_rows, set_plugin_choice
 from agent.plugins.extra_repo import is_official_repo, official_marketplace
 from agent.plugins.distribution_sources import distribution_sources
 from agent.plugins.install import PluginInstallResult, finalize_uninstall_plugin, fetch_sha_shallow, install_git_plugin
@@ -140,6 +140,9 @@ def _healthy(ctx: Context, package: InstalledPackage) -> str:
 # 安装一个包到指定提交；需要换来源的身份不在这里处理。
 def install_one(ctx: Context, state: PackageState, plugin_id: str, sha: str, upgrade: bool = False) -> Outcome:
     name = plugin_id.partition("@")[0]
+    # 0. 已并入 Core 的身份不再作为扩展包存在：明确拒绝，不安装也不升级。
+    if (provider := absorbed_plugin_ids().get(plugin_id)) is not None:
+        return Outcome(name, "failed", f"{plugin_id} 已并入 Core 的 {provider} 插件，不再作为扩展包安装")
     # 1. 发行版命名空间或历史归属的身份属于换来源，不传 takeover。
     if state.requires_switch(plugin_id):
         return Outcome(name, "needs-switch", f"{plugin_id} 属于发行版身份，需要换来源操作")
@@ -199,7 +202,9 @@ def install_many(ctx: Context, plugin_ids: list[str], heads: dict[str, str] | No
         name = plugin_id.partition("@")[0]
         sha = heads.get(name)
         package = here.get(plugin_id)
-        if sha is None:
+        if (provider := absorbed_plugin_ids().get(plugin_id)) is not None:
+            outcomes.append(Outcome(name, "failed", f"{plugin_id} 已并入 Core 的 {provider} 插件，不再作为扩展包安装"))
+        elif sha is None:
             outcomes.append(Outcome(name, "failed", f"远端没有 release/{name}"))
         elif package is not None and package.head == sha and not package.repair and not _healthy(ctx, package):
             outcomes.append(Outcome(name, "current", "已是该版本，已启用"))
@@ -214,8 +219,14 @@ def upgrade_many(ctx: Context, names: list[str]) -> list[Outcome]:
     installed = {item.name: item for item in state.packages if item.source == "extra"}
     heads = list_release_heads(ctx.repo)
     outcomes: list[Outcome] = []
+    absorbed = absorbed_plugin_ids()
     for name in names or sorted(installed):
         package = installed.get(name)
+        # 已并入 Core 的身份不升级：不带名字的 pkg upgrade 直接略过遗留包，点名时明确说明。
+        if package is not None and package.plugin_id in absorbed:
+            if names:
+                outcomes.append(Outcome(name, "failed", f"{package.plugin_id} 已并入 Core 的 {absorbed[package.plugin_id]} 插件，不再升级"))
+            continue
         if package is None:
             other = next((item for item in state.packages if item.name == name), None)
             detail = "未安装" if other is None else f"来源不同（{other.source}，目标 {ctx.repo}），不能升级"

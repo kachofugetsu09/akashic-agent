@@ -52,6 +52,7 @@ from agent.plugins._operation import (
     run_operation,
 )
 from agent.plugin_composition.config_input import decode_config, encode_config
+from agent.plugins.bundles import absorbed_plugin_ids
 from agent.plugins.channel_credentials import CoreProviderClientFactory
 from agent.plugins.composable import ComposablePlugin
 from agent.plugins.generation import PluginGeneration
@@ -457,6 +458,9 @@ class PluginManager:
                 raise RuntimeError(
                     f"source scan 未提供已验证 plugin id: {source.plugin_root}"
                 )
+            if source.source_type == "installed" and f"{name}@{source.marketplace}" in absorbed_plugin_ids(self._distribution.root):
+                logger.warning("插件 %s@%s 已并入 Core，跳过发现", name, source.marketplace)
+                continue
             if name in seen_names and source.source_type == "builtin":
                 logger.warning("插件名重复，跳过: %s (%s)", name, source.plugin_root)
                 continue
@@ -2219,6 +2223,15 @@ class PluginManager:
         """从固定输入创建只属于当前 Root 的模块、Scope 和 generation。"""
 
         records = tuple(self._selection.read_input(ref) for ref in components)
+        # 防线：已被 Core 吸收的外置身份（例如手工改了选择文件而仍被选中）在加载前跳过，不能让核心插件因重复注册陪着失败。
+        absorbed = absorbed_plugin_ids(self._distribution.root)
+        if absorbed:
+            kept = [(ref, record) for ref, record in zip(components, records, strict=True)
+                    if not (record["source_type"] == "installed" and record["plugin_id"] in absorbed)]
+            for ref, record in zip(components, records, strict=True):
+                if (ref, record) not in kept:
+                    logger.warning("插件 %s 已并入 Core 的 %s，跳过加载", record["plugin_id"], absorbed[cast(str, record["plugin_id"])])
+            components, records = tuple(ref for ref, _ in kept), tuple(record for _, record in kept)
         for record in records:
             if record["version"] not in {5, 6} or record["runtime"] != {
                 "python_tag": sys.implementation.cache_tag,
