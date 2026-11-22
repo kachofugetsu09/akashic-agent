@@ -18,7 +18,7 @@ from agent.plugins.distribution_sources import distribution_sources
 from agent.plugins.install import PluginInstallResult, finalize_uninstall_plugin, fetch_sha_shallow, install_git_plugin
 from agent.plugins.manifest import plugins_root
 from agent.plugins.package_index import expand, load_index
-from agent.plugins.prerequisites import clear_disabled, describe, record_declared, record_disabled, unmet
+from agent.plugins.prerequisites import clear_disabled, describe, read_disabled, record_declared, record_disabled, unmet
 from agent.plugins.packages import InstalledPackage, PackageState, list_release_heads, read_state, sync_rows
 from agent.plugins.resources import ResourceError, repair_resources
 from agent.plugins.selection import PluginSelection
@@ -134,6 +134,10 @@ def _healthy(ctx: Context, package: InstalledPackage) -> str:
     enabled = {row.plugin: not row.disabled for row in composition_rows(ctx.workspace)}
     if not enabled.get(package.plugin_id, False):
         return "已安装但未启用"
+    # 前置条件不满足的原因在停用之前就记下了：仍开着却有当前已装提交的记录，说明上次停用没做完，要重走收尾。
+    # 只认 head 一致的记录：旧版本留下的记录在启用新版本时会被忽略但不一定清除。
+    if read_disabled(ctx.workspace).get(package.plugin_id, {}).get("head") == package.head:
+        return "前置条件收尾未完成"
     view = _live_view(ctx, package.plugin_id)
     if ctx.online and (view is None or view.get("state") is None or view.get("load_error")):
         return f"加载异常: {None if view is None else view.get('load_error')}"
@@ -196,25 +200,48 @@ def _declare(ctx: Context, name: str, plugin_id: str, sha: str) -> list[str] | N
     return needs
 
 
+# 前置条件以将来运行插件的 Core 为准：在线时问 Core（pkg 可能跑在 PATH 不同的宿主 Shell 里），
+# 离线时本进程就是将要启动的运行环境。实例已不在线（退出码 3）或运行中的 Core 不认识这个方法（4）
+# 时退回本进程检测。其余问不到的情况（Core 报错、选中的旧 Gateway 没有这个命令等）不拿调用者的
+# 环境顶替：全部当作未确认，包保持关闭，以后启用时由 Core 再检测（plugin-set-enabled 在 Core 里查）。
+# 返回 (不满足或未确认的项, 未确认的原因)。RPC 每次最多 32 项，按批询问同一个 Core。
+def _unmet_in_core(ctx: Context, needs: list[str]) -> tuple[list[str], str]:
+    if not needs or not ctx.online:
+        return unmet(needs), ""
+    missing: list[str] = []
+    for start in range(0, len(needs), 32):
+        done = _main(ctx, "plugin-prerequisites", *needs[start:start + 32])
+        if done.returncode in (3, 4):
+            print(f"运行中的实例没法检测前置条件，改为在当前环境检测: {done.stderr.strip() or done.returncode}", file=sys.stderr)
+            return unmet(needs), ""
+        if done.returncode != 0:
+            return list(needs), _last_line(RuntimeError(done.stderr.strip() or f"退出码 {done.returncode}"))
+        missing.extend(str(item) for item in cast(list[object], _json_of(done).get("unmet", [])))
+    return missing, ""
+
+
 # 装完后：包声明了外部前置条件而本机不满足，包照装但保持关闭并记录原因（返回说明）。
-# 在线时经 Gateway 热停用（plugin-disable），离线直接写 patch。
+# 在线时经 Gateway 热停用（plugin-set-enabled off），离线直接写 patch。
 def _hold_closed(ctx: Context, name: str, plugin_id: str, sha: str) -> str:
     needs = _declare(ctx, name, plugin_id, sha)
     if needs is None:
         return ""
-    missing = unmet(needs)
+    missing, unconfirmed = _unmet_in_core(ctx, needs)
     if not missing:
         clear_disabled(ctx.workspace, plugin_id)
         return ""
-    record_disabled(ctx.workspace, plugin_id, missing, sha)
+    note = f"没能在运行中的实例里确认前置条件（{unconfirmed}），启用时会再检测" if unconfirmed else ""
+    record_disabled(ctx.workspace, plugin_id, missing, sha, note)
     if ctx.online:
-        done = _main(ctx, "plugin-disable", plugin_id)
+        # 用 plugin-set-enabled 而不是 plugin-disable：后者在 Agent 回合里被当作内部动作拒绝，
+        # Agent 自己跑 pkg install 时包会因此装失败；两者在线时走同一条 Gateway 启停路径。
+        done = _main(ctx, "plugin-set-enabled", plugin_id, "off")
         if done.returncode != 0:
-            raise RuntimeError(done.stderr.strip() or done.stdout.strip() or "plugin-disable 失败")
+            raise RuntimeError(done.stderr.strip() or done.stdout.strip() or "plugin-set-enabled off 失败")
     else:
         root = distribution_sources(ctx.workspace, plugins_root(), replacing_distribution=True).root
         _ = set_plugin_choice(ctx.workspace, plugin_id, enabled=False, distribution=root)
-    return f"已安装但未启用：{describe(missing)}"
+    return f"已安装但未启用：{note or describe(missing)}"
 
 
 # 按名字安装：pkg 只管官方仓库；其他仓库用 plugin-install --marketplace，这里明确拒绝。
