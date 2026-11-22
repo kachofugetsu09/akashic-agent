@@ -4,14 +4,20 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-from pathlib import Path
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal
 
 DEFAULT_EXTRA_REPO = "https://github.com/kachofugetsu09/akashic-plugins.git"
 BRANCH_PREFIX = "refs/heads/release/"
 _GIT_TIMEOUT_S = 60
+
+# git 与 pip 联网要用的环境变量白名单：代理、证书、ssh。宿主脚本为避免 GIT_DIR/GIT_WORK_TREE 等变量污染临时仓库，
+# 只传 PATH/HOME 和这里列出的变量；查询远端（ls-remote）与取包（fetch）共用这一份，行为一致。
+PROXY_ENV = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy")
+CERT_ENV = ("SSL_CERT_FILE", "SSL_CERT_DIR", "GIT_SSL_CAINFO", "GIT_SSL_CAPATH", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE")
+SSH_ENV = ("SSH_AUTH_SOCK", "GIT_SSH", "GIT_SSH_COMMAND")
 
 GapAction = Literal["install", "switch", "retire", "optional", "retired"]
 
@@ -36,6 +42,14 @@ class ExtraAction:
     kind: Literal["install", "switch", "upgrade"]
     plugin_id: str
     commit: str
+
+
+def git_env() -> dict[str, str]:
+    environment = {"GIT_TERMINAL_PROMPT": "0", "PATH": os.environ.get("PATH", "/usr/bin:/bin:/usr/local/bin"),
+                   "HOME": os.environ.get("HOME", str(Path.home()))}
+    environment.update({key: os.environ[key] for key in (*PROXY_ENV, *CERT_ENV, *SSH_ENV, "XDG_CONFIG_HOME")
+                        if key in os.environ})
+    return environment
 
 
 # 来源仓库：显式参数优先，其次环境变量，最后是默认常量。
@@ -68,7 +82,7 @@ def list_release_heads(repo: str) -> dict[str, str]:
     result = subprocess.run(
         ["git", "ls-remote", "--heads", "--", repo, BRANCH_PREFIX + "*"],
         capture_output=True, text=True, check=False, timeout=_GIT_TIMEOUT_S,
-        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        env=git_env(),
     )
     if result.returncode != 0:
         raise RuntimeError(f"git ls-remote 失败: {repo}\n{result.stderr.strip()}")

@@ -17,6 +17,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Callable
 
+from agent.plugins.extra_repo import PROXY_ENV
+
 class WheelResolutionFailure(RuntimeError):
     """依赖本身无法解析成 wheel（冲突、只有源码包等）：与网络不可达区分开，调用方不要提示"检查网络"。"""
 
@@ -35,7 +37,9 @@ def _normalize(name: str) -> str:
 # 在目标镜像里执行：联网，输出目录绑出来；用户取宿主当前用户，产物属主与宿主一致。
 def docker_resolver(image: str, run: Run) -> Resolver:
     def resolve(work: Path) -> dict[str, object]:
-        command = ["docker", "run", "--rm", "--user", f"{os.getuid()}:{os.getgid()}", "--read-only",
+        # 容器里取不到宿主环境：代理变量按名字透传（只在宿主设置了才传；证书文件路径在容器里没有意义，不传）。
+        proxies = [item for key in PROXY_ENV if key in os.environ for item in ("--env", key)]
+        command = ["docker", "run", "--rm", "--user", f"{os.getuid()}:{os.getgid()}", "--read-only", *proxies,
                    "--tmpfs", "/tmp:rw,mode=1777,size=2g", "--mount", f"type=bind,src={work},dst={work}",
                    "--workdir", "/opt/akashic/source", "--env", "HOME=/tmp", "--entrypoint", "/opt/venv/bin/python",
                    image, "-B", "-m", "agent.plugins.dependency_wheels", "--work", str(work)]

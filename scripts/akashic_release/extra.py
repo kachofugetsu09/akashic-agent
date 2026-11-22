@@ -20,6 +20,7 @@ from agent.plugins.extra_repo import (
     ExtraAction,
     SelectedPackage,
     classify_gaps,
+    git_env,
     list_release_heads,
     resolve_repo,
     upgrade_actions,
@@ -57,8 +58,7 @@ class ExtraResult:
 
 
 def _git(*args: str, cwd: Path | None = None) -> str:
-    result = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=False,
-                            env={"GIT_TERMINAL_PROMPT": "0", "PATH": "/usr/bin:/bin:/usr/local/bin", "HOME": str(Path.home())})
+    result = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=False, env=git_env())
     if result.returncode != 0:
         raise RuntimeError(f"git {' '.join(args)} 失败: {result.stderr.strip()}")
     return result.stdout.strip()
