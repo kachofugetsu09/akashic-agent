@@ -27,7 +27,7 @@ Config = GatewayConfig
 inject = (HOST_INFO,)
 workspace_files = (".app-server-token",)
 entrypoints = {"exec": "cli.exec_main", "plugin-install": "cli.install_main",
-               "plugin-status": "cli.status_main", "plugin-uninstall": "cli.uninstall_main",
+               "plugin-status": "cli.status_main", "plugin-uninstall": "cli.uninstall_main", "plugin-set-enabled": "cli.set_enabled_main",
                "app-server": "cli.app_server_main"}
 
 

@@ -246,6 +246,23 @@ async def management(arguments: tuple[str, ...], *, workspace: Path, config_path
     return 0
 
 
+# 在线启停：返回 0 成功、1 被拒绝（原因已打印）、3 没有运行中的实例（调用方回落到只写 patch）。
+NO_INSTANCE = 3
+
+
+async def set_enabled_main(arguments: tuple[str, ...], *, workspace: Path, config_path: Path) -> int:
+    plugin_id, switch = arguments
+    try:
+        result = await request(workspace, "plugin/set-enabled", {"plugin_id": plugin_id, "enabled": switch == "on"})
+    except (ConnectionError, OSError):
+        return NO_INSTANCE
+    except (RemoteError, ValueError, RuntimeError) as error:
+        print(str(error), file=sys.stderr)
+        return 1
+    print(f"插件已{'启用' if switch == 'on' else '禁用'}（在线）: {plugin_id} {result.get('publication_state', '')}".strip())
+    return 0
+
+
 async def install_main(arguments: tuple[str, ...], *, workspace: Path, config_path: Path) -> int:
     return await management(arguments, workspace=workspace, config_path=config_path, command="plugin-install")
 
