@@ -122,6 +122,15 @@ Core 侧一个 PR，extra 侧先行或同时：
 - **只为这些插件存在的第三方依赖只列出，不删。** 本批只有 `web_fetch_http` 进程内导入 `html2text`、`lxml`（`requirements.txt`、`docker/host-runtime/requirements.lock`）；Core 镜像继续带着，直到依赖方案确定。
 - **验证夹具。** 带 `distribution.json` 摘要校验的发行版不能用软链复制；要临时改 preset 行验证"迁出后的终态"时，用硬链接复制发行版目录、改 `bundles/base.toml` 并重算 `distribution.json` 里的 bundle 摘要，用 `start.py --distribution` 启动，不要改共享缓存里的发行版。
 
+工作台类、主动与记忆类（批 B、C）再补：
+
+- **宿主前端与 core 插件的点名要先扫。** 搜 `frontend/plugins/akashic_clients`、`frontend/plugins/ui`、`packages/`、其余 core 插件对被迁出插件 id、`plugins.<name>` import、服务键字符串的引用；批 B 的 7 个、批 C 的 6 个都没有反向依赖（唯一的跨插件 import 是 `scheduler`→`timer`，同批迁出）。`scripts/check_narrow_ui.mjs` 之类按插件名放行查询的脚本只是名单，插件缺席时不会失败，不用动。
+- **带数据库迁移的插件**（`migration.catalog.toml` + `<name>_migrations/`）：两者都在源码目录里，随 release 分支一起发布；验证看 `migrations.sqlite3` 的 `_yoyo_migration`、`_yoyo_log` 行数与迁出前相同（迁出后历史迁移不重跑）。
+- **随插件搬的测试里的相对路径与共用夹具。** 测试从 `tests/` 搬到 `tests/<name>/` 后，`Path(__file__).parents[1] / "plugins"` 要改成 `parents[2]`；只被这个插件的测试用的夹具（如 `tests/support/goal_harness.py`）一起搬进 `tests/<name>/`，import 路径同步改；Core 共用的夹具（`tests.fixtures`、`tests.support.delivery_sources`）留在 Core。
+- **core 配置引用 extra 插件。** `bundles/base.toml` 里 `context` 的 `prompt_sources` 点名 `markdown_memory@release`：该插件被禁用（缺席）时实例照常启动，`context` 仍 active，日志没有告警或错误。
+- **只在基准里配置的插件名。** `benchmark/computer_runtime/runtime.py` 的 `prompt_sources` 仍点名 `markdown_memory`；该基准直接从 Core 的 `plugins/` 目录装配，迁出后需要给它提供 extra 仓库的检出目录（`AKASHIC_EXTRA_PLUGIN_DIRS`），这次没有处理。
+- **能力快照差异要排除同一分支里先前批次的影响。** 叠栈分支上，前一批迁出的插件（本来就没启用）会在 diff 里显示"少了"，只看当前批次的插件即可。
+
 ### Phase 3：批量迁纯 Python 插件
 
 每批一个 PR，顺序以门禁结果为准：
