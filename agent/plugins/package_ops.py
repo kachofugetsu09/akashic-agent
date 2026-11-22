@@ -134,8 +134,9 @@ def _healthy(ctx: Context, package: InstalledPackage) -> str:
     enabled = {row.plugin: not row.disabled for row in composition_rows(ctx.workspace)}
     if not enabled.get(package.plugin_id, False):
         return "已安装但未启用"
-    # 前置条件不满足的原因在停用之前就记下了：仍开着却有记录，说明上次停用没做完，要重走收尾。
-    if package.plugin_id in read_disabled(ctx.workspace):
+    # 前置条件不满足的原因在停用之前就记下了：仍开着却有当前已装提交的记录，说明上次停用没做完，要重走收尾。
+    # 只认 head 一致的记录：旧版本留下的记录在启用新版本时会被忽略但不一定清除。
+    if read_disabled(ctx.workspace).get(package.plugin_id, {}).get("head") == package.head:
         return "前置条件收尾未完成"
     view = _live_view(ctx, package.plugin_id)
     if ctx.online and (view is None or view.get("state") is None or view.get("load_error")):
