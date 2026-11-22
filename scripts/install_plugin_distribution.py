@@ -1363,6 +1363,8 @@ def ensure_bundle(
     extra_repo: str | None = None,
     extra_inputs: Path | None = None,
     allow_retire: bool = False,
+    install_extra: tuple[str, ...] = (),
+    profile_patch: Path | None = None,
 ) -> dict[str, Any]:
     """First-install defaults, then compose the deployed distribution with external inputs.
 
@@ -1385,6 +1387,9 @@ def ensure_bundle(
             raise RuntimeError("既有 selection 缺少首次分发 receipt；不能猜测插件来源或重装默认组合")
         workspace.mkdir(parents=True, exist_ok=True)
         initialize_empty_workspace(repo_root=_SOURCE_ROOT, workspace=workspace, config_path=config_path)
+        # 首次安装的选择（未选的预设行关掉、选中的非预设包启用）：必须在初始化之后、第一次候选计算之前写入；已有 patch 不覆盖。
+        if profile_patch is not None and not (workspace / "bundle.patch.toml").exists():
+            _ = (workspace / "bundle.patch.toml").write_bytes(profile_patch.read_bytes())
     maintenance = WorkspaceMaintenanceLock(workspace)
     publication = PluginPublicationLock(plugins_home)
     maintenance.acquire()
@@ -1437,7 +1442,7 @@ def ensure_bundle(
                     extra_targets = _stage_missing_from_extra(
                         distribution=distribution, workspace=workspace, plugins_home=plugins_home, selection=selection,
                         expected=expected, repo=extra_repo, inputs=extra_inputs, root=extra_root,
-                        allow_retire=allow_retire)
+                        allow_retire=allow_retire, install_extra=install_extra)
                     for target in extra_targets:
                         name, marketplace = target["plugin_id"].split("@")
                         candidate[target["plugin_id"]] = ResolvedPluginSource(
@@ -1585,11 +1590,12 @@ def _commit_selection(
 # 本次 extra 包的安装（指针、环境、选择）不会半途生效。
 def _stage_missing_from_extra(
     *, distribution: Path, workspace: Path, plugins_home: Path, selection: PluginSelection, expected: str | None,
-    repo: str | None, inputs: Path | None, root: Path, allow_retire: bool = False,
+    repo: str | None, inputs: Path | None, root: Path, allow_retire: bool = False, install_extra: tuple[str, ...] = (),
 ) -> list[dict[str, Any]]:
     from scripts.akashic_release.extra import ExtraOptions, prepare_extra_inputs
 
-    options = ExtraOptions(repo=repo, inputs=inputs, pull_images=False, gaps_only=True, allow_retire=allow_retire)
+    options = ExtraOptions(repo=repo, inputs=inputs, pull_images=False, gaps_only=True, allow_retire=allow_retire,
+                           install_extra=install_extra)
     try:
         found = prepare_extra_inputs(workspace=workspace, plugins_home=plugins_home, source=distribution,
                                      mode=os.environ.get("AKASHIC_PLUGIN_BUNDLE", "base"), root_ref=expected,
@@ -1614,13 +1620,15 @@ def _stage_missing_from_extra(
 
 # 首次安装的联网部分单独做完：取包、校验、求 wheel 到 out（与 --extra-inputs 同格式），不写 cache、选择或 patch。
 # 失败直接抛错，状态不变；之后的 ensure 用 --extra-inputs 离线安装，不再联网。
-def _prefetch_extra(distribution: Path, workspace: Path, plugins_home: Path, repo: str, out: Path) -> dict[str, Any]:
+def _prefetch_extra(distribution: Path, workspace: Path, plugins_home: Path, repo: str, out: Path,
+                    install_extra: tuple[str, ...] = (), profile_patch: Path | None = None) -> dict[str, Any]:
     from scripts.akashic_release.extra import ExtraOptions, prepare_extra_inputs
 
     out.mkdir(parents=True, exist_ok=True)
     found = prepare_extra_inputs(
         workspace=workspace, plugins_home=plugins_home, source=distribution, mode=os.environ.get("AKASHIC_PLUGIN_BUNDLE", "base"),
-        root_ref=PluginSelection(workspace).read(), options=ExtraOptions(repo=repo, pull_images=False, gaps_only=True, record_needs=True),
+        root_ref=PluginSelection(workspace).read(), options=ExtraOptions(repo=repo, pull_images=False, gaps_only=True, record_needs=True, install_extra=install_extra,
+                                                      patch_file=profile_patch),
         out=out, run=subprocess.run)
     return {"prefetched": [item["plugin_id"] for item in found.targets]}
 
@@ -1669,13 +1677,16 @@ def main() -> None:
     parser.add_argument("--extra-repo", help="--ensure-bundle：preset 启用而发行版已不再自带的插件从该 extra 仓库补装")
     parser.add_argument("--extra-inputs", type=Path, help="--ensure-bundle：预先下载好的 extra 输入目录（不联网）")
     parser.add_argument("--prefetch-extra", type=Path, help="只联网取好首次安装需要的 extra 包（含 wheel）到该目录，之后用 --extra-inputs 离线安装")
+    parser.add_argument("--install-extra", default="", help="首次安装选定要装的 extra 包（逗号分隔的 manifest 名）")
+    parser.add_argument("--profile-patch", type=Path, help="--ensure-bundle：首次安装的选择（bundle.patch.toml 内容），初始化后写入")
     parser.add_argument("--allow-retire", action="store_true", help="--ensure-bundle：确认让在用而发行版不再提供、上游也没有的内置插件消失")
     args = parser.parse_args()
 
     if args.prefetch_extra is not None:
         if args.extra_repo is None:
             parser.error("--prefetch-extra 需要 --extra-repo")
-        print(json.dumps(_prefetch_extra(args.distribution, args.workspace, args.plugins_home, args.extra_repo, args.prefetch_extra),
+        print(json.dumps(_prefetch_extra(args.distribution, args.workspace, args.plugins_home, args.extra_repo, args.prefetch_extra,
+                                                    tuple(item for item in args.install_extra.split(",") if item), args.profile_patch),
                          ensure_ascii=False))
         return
     if sum((args.verify_only, args.ensure_bundle, args.publish)) > 1:
@@ -1720,6 +1731,8 @@ def main() -> None:
                     extra_repo=args.extra_repo,
                     extra_inputs=args.extra_inputs,
                     allow_retire=args.allow_retire,
+                    install_extra=tuple(item for item in args.install_extra.split(",") if item),
+                    profile_patch=args.profile_patch,
                 )
             _repair_resources_best_effort(args.workspace.expanduser().resolve(strict=False))
         else:

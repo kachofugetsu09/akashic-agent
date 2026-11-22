@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Callable
 import hashlib
 import fcntl
 import json
@@ -14,6 +15,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+from typing import cast
 import socket
 import time
 from urllib.error import URLError
@@ -40,15 +42,21 @@ class Preparation:
         with self.log.open("a", encoding="utf-8") as stream:
             stream.write(f"\n{title}\n")
 
-    def run(self, command: list[str], *, cwd: Path = ROOT) -> None:
+    def run(self, command: list[str], *, cwd: Path = ROOT, progress: Callable[[dict[str, object]], None] | None = None) -> None:
         """Keep command output in the log and stop the entire child on cancellation."""
         started = time.monotonic()
         result = None
         with self.log.open("ab") as stream:
+            offset = self.log.stat().st_size
             child = subprocess.Popen(command, cwd=cwd, stdout=stream, stderr=stream,
                                      start_new_session=True)
             try:
+                while progress is not None and child.poll() is None:
+                    offset = _relay_events(self.log, offset, progress)
+                    time.sleep(0.3)
                 result = child.wait()
+                if progress is not None:
+                    _ = _relay_events(self.log, offset, progress)
             except BaseException:
                 # A cancelled build must not continue writing after its owner exits.
                 os.killpg(child.pid, signal.SIGTERM)
@@ -64,6 +72,34 @@ class Preparation:
                                           "seconds": round(time.monotonic() - started, 6)}) + "\n").encode())
         if result:
             raise RuntimeError(f"{self.stage}失败（退出码 {result}）。查看日志，处理原因后重新运行 ./start。")
+
+
+# 把子进程日志里新增的计时记录（真实耗时步骤的完成）转给显示函数；返回新的读取位置。
+def _relay_events(log: Path, offset: int, progress: Callable[[dict[str, object]], None]) -> int:
+    with log.open("rb") as stream:
+        _ = stream.seek(offset)
+        data = stream.read()
+    complete = data.rfind(b"\n") + 1
+    for line in data[:complete].decode("utf-8", errors="replace").splitlines():
+        if line.startswith("{"):
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(record, dict) and record.get("event") == "release.timing" and record.get("status") == "complete":
+                progress(cast(dict[str, object], record))
+    return offset + complete
+
+
+# 只显示真正耗时的步骤：一次性取包、求依赖 wheel、逐包安装；不伪造下载条。
+def _show_progress(record: dict[str, object]) -> None:
+    stage, seconds = record.get("stage"), float(cast(float, record.get("seconds", 0)))
+    if stage == "extra.fetch_all":
+        print(f"  已取回 {record.get('packages')} 个扩展包（{seconds:.1f}s）", flush=True)
+    elif stage == "extra.wheels" and seconds >= 1:
+        print(f"  已求解依赖 wheel：{record.get('plugin')}（{seconds:.0f}s）", flush=True)
+    elif stage == "extra.install":
+        print(f"  已安装 {record.get('plugin')}（{seconds:.1f}s）", flush=True)
 
 
 def prepare_source(preparation: Preparation, cache: Path) -> tuple[Path, Path, Path]:
@@ -144,7 +180,8 @@ def prepare_environment(preparation: Preparation, cache: Path, revision: str) ->
 
 def prepare_install(preparation: Preparation, core: Path, distribution: Path,
                     python: Path, state: Path, extra_repo: str, extra_inputs: Path | None = None,
-                    allow_retire: bool = False) -> None:
+                    allow_retire: bool = False, profile: str | None = None, groups: list[str] | None = None,
+                    assume_yes: bool = False) -> None:
     """Initialize only launcher-owned data and retain the installer's existing choices."""
     workspace = state / "workspace"
     config = state / "config.toml"
@@ -180,6 +217,16 @@ def prepare_install(preparation: Preparation, core: Path, distribution: Path,
         preparation.run([str(python), str(core / "main.py"), "init", "--config", str(config),
                          "--workspace", str(workspace)], cwd=core)
     # 2. The formal installer is the only owner of profile installation and receipts.
+    # 首次安装：先让用户选装哪些扩展包（有终端才提问；--profile/--groups 可覆盖），选择写成 bundle.patch.toml（初始化之后）。
+    install_extra: tuple[str, ...] = ()
+    if not receipt.exists() and extra_inputs is None:
+        from scripts.first_install import choose, preset_extra_rows, render_patch
+        rows = preset_extra_rows(distribution, os.environ.get("AKASHIC_PLUGIN_BUNDLE", "base"))
+        choice = choose(repo=extra_repo, home=plugin_home, preset_rows=rows, profile=profile, groups=groups or [], assume_yes=assume_yes)
+        patch = workspace / "bundle.patch.toml"
+        if (choice.disable_rows or choice.enable_ids) and not patch.exists():
+            _ = patch.write_text(render_patch(choice, rows), encoding="utf-8")
+        install_extra = choice.install or ()
     # 首次安装：联网部分（取包、求依赖 wheel）先单独做完，再用离线输入安装；失败在这一步退出，状态不变。
     prefetched: Path | None = None
     if not receipt.exists() and extra_inputs is None:
@@ -190,7 +237,8 @@ def prepare_install(preparation: Preparation, core: Path, distribution: Path,
             preparation.run([str(python), str(core / "scripts/install_plugin_distribution.py"),
                              "--distribution", str(distribution), "--bundle", str(distribution / "bundles" / (os.environ.get("AKASHIC_PLUGIN_BUNDLE", "base") + ".toml")),
                              "--workspace", str(workspace), "--plugins-home", str(plugin_home), "--config", str(config),
-                             "--extra-repo", extra_repo, "--prefetch-extra", str(prefetched)], cwd=core)
+                             "--extra-repo", extra_repo, "--prefetch-extra", str(prefetched),
+                             "--install-extra", ",".join(install_extra)], cwd=core, progress=_show_progress)
         except RuntimeError as error:
             shutil.rmtree(prefetched, ignore_errors=True)
             lines = [line for line in preparation.log.read_text(encoding="utf-8", errors="replace").splitlines() if line.startswith("RuntimeError")]
@@ -204,10 +252,12 @@ def prepare_install(preparation: Preparation, core: Path, distribution: Path,
                "--ensure-bundle", "--receipt", str(receipt), "--extra-repo", extra_repo]
     if extra_inputs is not None:
         command += ["--extra-inputs", str(extra_inputs)]
+    if install_extra:
+        command += ["--install-extra", ",".join(install_extra)]
     if allow_retire:
         command.append("--allow-retire")
     try:
-        preparation.run(command, cwd=core)
+        preparation.run(command, cwd=core, progress=_show_progress if install_extra else None)
         if prefetched is not None:
             shutil.rmtree(prefetched, ignore_errors=True)
     except RuntimeError as error:
@@ -308,6 +358,9 @@ def main() -> int:
     parser.add_argument("--extra-repo", help="extra 插件仓库地址（可为本地路径）；默认取 AKASHIC_EXTRA_REPO 或官方仓库")
     parser.add_argument("--extra-inputs", type=Path,
                         help="预先下载好的 extra 输入目录，不联网；用于离线环境和 CI")
+    parser.add_argument("--profile", choices=("full", "minimal", "custom"), help="首次安装的扩展包选择；不给且有终端就提问，没有终端等于 full")
+    parser.add_argument("--groups", default="", help="自选的包组（逗号分隔，隐含 custom）")
+    parser.add_argument("--yes", action="store_true", help="首次安装不提问不确认")
     parser.add_argument("--allow-retire", action="store_true",
                         help="确认让在用而发行版不再提供、extra 上游也没有的内置插件消失；默认启动失败并列出它们")
     parser.add_argument("--host", default="127.0.0.1",
@@ -349,7 +402,8 @@ def main() -> int:
                 else:
                     core, distribution, python = prepare_source(preparation, args.cache.expanduser().resolve())
                 prepare_install(preparation, core, distribution, python, state, resolve_repo(args.extra_repo),
-                                args.extra_inputs.resolve() if args.extra_inputs else None, args.allow_retire)
+                                args.extra_inputs.resolve() if args.extra_inputs else None, args.allow_retire,
+                                args.profile, [item for item in args.groups.split(",") if item], args.yes)
             return run_service(preparation, core, python, state, args.port,
                                args.distribution is not None, not args.no_browser, distribution, args.host)
         except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as error:
