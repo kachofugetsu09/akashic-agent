@@ -17,6 +17,7 @@ from agent.plugins.distribution_sources import distribution_sources
 from agent.plugins.install import PluginInstallResult, finalize_uninstall_plugin, fetch_sha_shallow, install_git_plugin
 from agent.plugins.manifest import plugins_root
 from agent.plugins.package_index import expand, load_index
+from agent.plugins.prerequisites import clear_disabled, describe, record_disabled, unmet
 from agent.plugins.packages import InstalledPackage, PackageState, list_release_heads, read_state, sync_rows
 from agent.plugins.resources import ResourceError, repair_resources
 from agent.plugins.selection import PluginSelection
@@ -158,7 +159,23 @@ def install_one(ctx: Context, state: PackageState, plugin_id: str, sha: str, upg
         _ = _install_offline(ctx, plugin_id, sha)
     except (RuntimeError, ValueError, OSError, subprocess.CalledProcessError) as error:
         return Outcome(name, "failed", _last_line(error))
-    return Outcome(name, "upgraded" if upgrade else "installed", sha[:12])
+    return Outcome(name, "upgraded" if upgrade else "installed", _hold_closed(ctx, name, plugin_id) or sha[:12])
+
+
+# 离线安装后：index 声明了外部前置条件而本机不满足，包照装但保持关闭并记录原因（返回说明）；index 取不到不影响安装。
+def _hold_closed(ctx: Context, name: str, plugin_id: str) -> str:
+    try:
+        needs = load_index(ctx.repo, plugins_root()).packages[name].needs
+    except (RuntimeError, KeyError):
+        return ""
+    missing = unmet(needs)
+    if not missing:
+        clear_disabled(ctx.workspace, plugin_id)
+        return ""
+    root = distribution_sources(ctx.workspace, plugins_root(), replacing_distribution=True).root
+    _ = set_plugin_choice(ctx.workspace, plugin_id, enabled=False, distribution=root)
+    record_disabled(ctx.workspace, plugin_id, missing)
+    return f"已安装但未启用：{describe(missing)}"
 
 
 # 按名字安装：pkg 只管官方仓库；其他仓库用 plugin-install --marketplace，这里明确拒绝。
