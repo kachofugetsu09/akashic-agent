@@ -288,6 +288,9 @@ class PluginManager:
                 _ = await asyncio.wait({current.task}, timeout=max(0.0, deadline - loop.time()))
                 if not current.task.done():
                     raise OperationBusyError(self._busy_text(label))
+            # 排队期间可能已开始停机或关闭准入：出队后、任何写入之前再检查一次。
+            self._restart_gate.check_open()
+            self._require_operation_idle()
             yield
         finally:
             self._admission.release()
@@ -1255,19 +1258,14 @@ class PluginManager:
             raise ValueError("配置请求 ID 无效")
         content = config_bytes(config)
         revision = hashlib.sha256(content).hexdigest()
-        try:
-            previous_request = self._reload_journal.config_update(request_id)
-        except KeyError:
-            previous_request = None
-        if previous_request is not None:
-            if previous_request["plugin_id"] != plugin_id or previous_request["previous_input"] != expected_input:
-                raise ValueError("配置请求 ID 已被其他输入使用")
-            if previous_request["config_revision"] != revision:
-                raise ValueError("同一请求 ID 不允许修改配置")
-            return self.read_config_update(plugin_id, request_id)
+        if (replay := self._config_replay(plugin_id, request_id, expected_input, revision)) is not None:
+            return replay
         label = f"保存 {plugin_id} 的配置"
         try:
             async with self._admitted(label):
+                # 同一请求可能在排队期间已由另一次提交写好回执：出队后重新核对。
+                if (replay := self._config_replay(plugin_id, request_id, expected_input, revision)) is not None:
+                    return replay
                 generation = self._active_generations[plugin_id]
                 if generation.input_ref != expected_input:
                     raise ValueError("配置已更新，请刷新后重试")
@@ -1284,6 +1282,19 @@ class PluginManager:
                 self._start_operation(lambda: self._apply_config_update(request_id), label=label, background=True)
         except OperationBusyError as error:
             raise ValueError(str(error)) from error
+        return self.read_config_update(plugin_id, request_id)
+
+    # 重放同一配置请求只读取已有回执；请求 ID 被别的输入或内容占用时拒绝。没有回执返回 None。
+    def _config_replay(self, plugin_id: str, request_id: str, expected_input: str,
+                       revision: str) -> dict[str, object] | None:
+        try:
+            previous_request = self._reload_journal.config_update(request_id)
+        except KeyError:
+            return None
+        if previous_request["plugin_id"] != plugin_id or previous_request["previous_input"] != expected_input:
+            raise ValueError("配置请求 ID 已被其他输入使用")
+        if previous_request["config_revision"] != revision:
+            raise ValueError("同一请求 ID 不允许修改配置")
         return self.read_config_update(plugin_id, request_id)
 
     def read_config_update(self, plugin_id: str, request_id: str) -> dict[str, object]:
