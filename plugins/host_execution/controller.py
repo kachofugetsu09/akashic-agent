@@ -163,6 +163,7 @@ class _ImageOperation:
         self._total = total_seconds
         self._timer = threading.Timer(total_seconds, self.abort)
         self._timer.daemon = True
+        self._running = False
 
     def abort(self) -> None:
         with self._lock:
@@ -193,7 +194,12 @@ class _ImageOperation:
     def _timeout(self, limit: float) -> float:
         return max(0.1, min(limit, self._deadline - time.monotonic()))
 
+    # 执行线程是否还活着：超时后线程可能没回来，控制器据此拒绝新的请求，任何时候最多一个幸存线程。
+    def alive(self) -> bool:
+        return self._running
+
     def run(self, image: str) -> dict[str, object]:
+        self._running = True
         self._timer.start()
         try:
             reference = quote(image, safe="")
@@ -208,6 +214,7 @@ class _ImageOperation:
             raise RuntimeError(self._message() if self._aborted else f"Docker 连接失败: {error}") from error
         finally:
             self._timer.cancel()
+            self._running = False
 
     def _request(self, method: str, path: str, limit: float, *, drain: bool) -> int:
         self._check()
@@ -314,6 +321,7 @@ class WorkloadControllerServer:
         self._leases = self._load_leases()
         self._image_active: str | None = None
         self._image_operation: _ImageOperation | None = None
+        self._image_survivor: _ImageOperation | None = None
         self._stopped_path = self._state_path.with_suffix(".stopped.json")
         self._stopped = self._load_state(self._stopped_path)
         self._controller_id = uuid4().hex
@@ -606,9 +614,12 @@ class WorkloadControllerServer:
             raise ValueError("镜像必须使用 sha256 digest 固定")
         if self._image_active is not None:
             raise RuntimeError(f"正在拉取 {self._image_active}，稍后再试")
+        if self._image_survivor is not None and self._image_survivor.alive():
+            raise RuntimeError("上一次拉取仍未退出，稍后再试")
         self._image_active = image
         operation = _ImageOperation(self._engine.socket_path, _IMAGE_PULL_TIMEOUT_S, _IMAGE_INSPECT_TIMEOUT_S)
         self._image_operation = operation
+        self._image_survivor = operation
         # 每次操作一个新的单线程执行器：线程万一卡住，也不会拖住下一次请求；期限到了即使线程没回来，也在期限加宽限后返回失败。
         executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="image-ensure")
         try:
