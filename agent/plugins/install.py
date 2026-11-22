@@ -15,7 +15,7 @@ from uuid import uuid4
 from agent.plugins.python_environment import ENVIRONMENT_FILE, OfflineWheels, PythonEnvironments
 from agent.plugins.reload_journal import ReloadJournal
 from agent.plugins.distribution_sources import distribution_plugin_sources, read_distribution_adoption
-from agent.plugins.extra_repo import same_origin as same_origin
+from agent.plugins.extra_repo import is_official_repo, same_origin as same_origin
 from agent.plugins.source_resolver import ResolvedPluginSource
 from agent.plugins.files import sync_directory
 from agent.plugins.input_preparation import check_plugin_source, read_initial_config
@@ -277,8 +277,10 @@ def _reject_takeover(
     if receipt is not None and configured:
         reserved.update(f"{item.plugin_name}@{item.marketplace}" for item in
                         distribution_plugin_sources(Path(configured)))
-    # 2. 显式接管，或同源升级一个已是已安装来源的身份，跳过其余检查。
-    if plugin_id in takeover or (plugin_id not in reserved and is_same_source_upgrade(workspace, plugin_id, source)):
+    # 2. 显式接管、同源升级，或官方仓库对未被选择身份的全新安装，跳过其余检查。
+    if plugin_id in takeover or (plugin_id not in reserved and (
+            is_same_source_upgrade(workspace, plugin_id, source)
+            or is_official_fresh_install(workspace, plugin_id, source))):
         return
     # 3. 发行版回执：同 marketplace 拒绝；发行版自带或历史归属的身份拒绝。
     if receipt is not None and marketplace == receipt["marketplace"]:
@@ -306,6 +308,21 @@ def is_same_source_upgrade(workspace: Path, plugin_id: str, source: str) -> bool
                 return False
             return same_origin(origin, source)
     return False
+
+
+# 官方身份的全新安装：当前选择里没有该身份的任何输入（没有内置输入可被接管，也不是升级），
+# 来源是配置的官方 extra 仓库。调用方已确认该身份不在发行版自带与历史归属里；pkg 与安装器共用。
+def is_official_fresh_install(workspace: Path, plugin_id: str, source: str) -> bool:
+    if not is_official_repo(source):
+        return False
+    selection = PluginSelection(workspace)
+    if not selection.path.exists():
+        return True
+    reference = selection.read()
+    if reference is None:
+        return True
+    return all(selection.read_input(identity)["plugin_id"] != plugin_id
+               for identity in selection.components(reference))
 
 
 # 来源地址比较：只去掉首尾空白和末尾斜杠，其余逐字比较。
