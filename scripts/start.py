@@ -86,20 +86,32 @@ def _relay_events(log: Path, offset: int, progress: Callable[[dict[str, object]]
                 record = json.loads(line)
             except ValueError:
                 continue
-            if isinstance(record, dict) and record.get("event") == "release.timing" and record.get("status") == "complete":
+            if isinstance(record, dict) and record.get("event") == "release.timing" and record.get("status") in ("started", "complete"):
                 progress(cast(dict[str, object], record))
     return offset + complete
 
 
 # 只显示真正耗时的步骤：一次性取包、求依赖 wheel、逐包安装；不伪造下载条。
-def _show_progress(record: dict[str, object]) -> None:
-    stage, seconds = record.get("stage"), float(cast(float, record.get("seconds", 0)))
-    if stage == "extra.fetch_all":
-        print(f"  已取回 {record.get('packages')} 个扩展包（{seconds:.1f}s）", flush=True)
-    elif stage == "extra.wheels" and seconds >= 1:
-        print(f"  已求解依赖 wheel：{record.get('plugin')}（{seconds:.0f}s）", flush=True)
-    elif stage == "extra.install":
-        print(f"  已安装 {record.get('plugin')}（{seconds:.1f}s）", flush=True)
+class _Progress:
+    """只显示真实事件：一次性取包、求依赖 wheel、逐包安装（开始时显示 (i/N) 正在安装，完成时补上耗时）；不伪造下载条。"""
+
+    def __init__(self) -> None:
+        self.total = 0
+        self.count = 0
+
+    def __call__(self, record: dict[str, object]) -> None:
+        stage, status = record.get("stage"), record.get("status")
+        seconds = float(cast(float, record.get("seconds", 0)))
+        if stage == "extra.fetch_all" and status == "complete":
+            self.total = int(cast(int, record.get("packages", 0)))
+            print(f"  已取回 {self.total} 个扩展包（{seconds:.1f}s）", flush=True)
+        elif stage == "extra.wheels" and status == "complete" and seconds >= 1:
+            print(f"  已求解依赖 wheel：{record.get('plugin')}（{seconds:.0f}s）", flush=True)
+        elif stage == "extra.install" and status == "started":
+            self.count += 1
+            print(f"  ({self.count}/{self.total or '?'}) 正在安装 {record.get('plugin')} …", end="", flush=True)
+        elif stage == "extra.install" and status == "complete":
+            print(f" 完成（{seconds:.1f}s）", flush=True)
 
 
 # 汇总：已安装但因外部前置条件未满足而保持关闭的包（来自 runtime/disabled-reasons.json）。
@@ -186,10 +198,46 @@ def prepare_environment(preparation: Preparation, cache: Path, revision: str) ->
     return stage / "env"
 
 
+# 首次安装（或上次没做完的首次安装）：返回 True；已有选择而回执缺失等异常存量直接报错，不提问不写文件。
+def _first_install_pending(state: Path, workspace: Path, receipt: Path) -> bool:
+    from scripts.first_install import clear_intent, load_intent, selection_committed
+
+    committed = selection_committed(workspace)
+    if not receipt.exists():
+        if committed:
+            raise RuntimeError("既有 selection 缺少首次分发 receipt；不能猜测插件来源或重装默认组合。请使用原入口核对已有安装。")
+        return True
+    if load_intent(state) is None:
+        return False
+    if committed:
+        clear_intent(state)
+        return False
+    return True
+
+
+# 提问（或沿用上次的意图）并把选择写成 patch；patch 只由首装意图拥有：有过意图记录时整体重写（幂等），
+# 没有意图记录而已有 patch 说明是用户自己的，不动。返回要装的扩展包。
+def _choose_first_install(state: Path, workspace: Path, distribution: Path, plugin_home: Path, extra_repo: str,
+                          profile: str | None, groups: list[str], assume_yes: bool, reselect: bool) -> tuple[str, ...]:
+    from agent.plugins.absorbed import read_absorbed
+    from scripts.first_install import choose, load_intent, preset_extra_rows, render_patch
+
+    rows = preset_extra_rows(distribution, os.environ.get("AKASHIC_PLUGIN_BUNDLE", "base"))
+    had_intent = load_intent(state) is not None
+    choice = choose(repo=extra_repo, home=plugin_home, preset_rows=rows, profile=profile, groups=groups, assume_yes=assume_yes,
+                    state=state, reselect=reselect, absorbed=frozenset(item.partition("@")[0] for item in read_absorbed(distribution)))
+    patch = workspace / "bundle.patch.toml"
+    if had_intent or not patch.exists():
+        temporary = patch.with_name(patch.name + ".tmp")
+        _ = temporary.write_text(render_patch(choice, rows), encoding="utf-8")
+        os.replace(temporary, patch)
+    return choice.install
+
+
 def prepare_install(preparation: Preparation, core: Path, distribution: Path,
                     python: Path, state: Path, extra_repo: str, extra_inputs: Path | None = None,
                     allow_retire: bool = False, profile: str | None = None, groups: list[str] | None = None,
-                    assume_yes: bool = False) -> None:
+                    assume_yes: bool = False, reselect: bool = False) -> None:
     """Initialize only launcher-owned data and retain the installer's existing choices."""
     workspace = state / "workspace"
     config = state / "config.toml"
@@ -220,26 +268,22 @@ def prepare_install(preparation: Preparation, core: Path, distribution: Path,
             os.fsync(directory)
         finally:
             os.close(directory)
+    # 是否首次安装必须在提问与写任何文件之前定下来，与 ensure 的拒绝条件同一个判定：有选择记录而回执缺失就直接报错退出。
+    first = _first_install_pending(state, workspace, receipt)
     if not receipt.exists():
         preparation.step("准备数据目录")
         preparation.run([str(python), str(core / "main.py"), "init", "--config", str(config),
                          "--workspace", str(workspace)], cwd=core)
     # 2. The formal installer is the only owner of profile installation and receipts.
-    # 首次安装：先让用户选装哪些扩展包（有终端才提问；--profile/--groups 可覆盖），选择写成 bundle.patch.toml（初始化之后）。
+    # 首次安装：先让用户选装哪些扩展包（有终端才提问；--profile/--groups 可覆盖），选择先落成意图记录，再据此写 bundle.patch.toml。
     install_extra: tuple[str, ...] = ()
-    if not receipt.exists() and extra_inputs is None:
-        from agent.plugins.absorbed import read_absorbed
-        from scripts.first_install import choose, preset_extra_rows, render_patch
-        rows = preset_extra_rows(distribution, os.environ.get("AKASHIC_PLUGIN_BUNDLE", "base"))
-        choice = choose(repo=extra_repo, home=plugin_home, preset_rows=rows, profile=profile, groups=groups or [], assume_yes=assume_yes,
-                        absorbed=frozenset(item.partition("@")[0] for item in read_absorbed(distribution)))
-        patch = workspace / "bundle.patch.toml"
-        if (choice.disable_rows or choice.enable_ids) and not patch.exists():
-            _ = patch.write_text(render_patch(choice, rows), encoding="utf-8")
-        install_extra = choice.install or ()
+    if first and extra_inputs is None:
+        install_extra = _choose_first_install(state, workspace, distribution, plugin_home, extra_repo, profile, groups or [],
+                                              assume_yes, reselect)
     # 首次安装：联网部分（取包、求依赖 wheel）先单独做完，再用离线输入安装；失败在这一步退出，状态不变。
     prefetched: Path | None = None
-    if not receipt.exists() and extra_inputs is None:
+    shown = _Progress()
+    if first and extra_inputs is None:
         prefetched = state / ".extra-prefetch"
         shutil.rmtree(prefetched, ignore_errors=True)
         preparation.step("下载扩展包")
@@ -248,7 +292,7 @@ def prepare_install(preparation: Preparation, core: Path, distribution: Path,
                              "--distribution", str(distribution), "--bundle", str(distribution / "bundles" / (os.environ.get("AKASHIC_PLUGIN_BUNDLE", "base") + ".toml")),
                              "--workspace", str(workspace), "--plugins-home", str(plugin_home), "--config", str(config),
                              "--extra-repo", extra_repo, "--prefetch-extra", str(prefetched),
-                             "--install-extra", ",".join(install_extra)], cwd=core, progress=_show_progress)
+                             "--install-extra", ",".join(install_extra)], cwd=core, progress=shown)
         except RuntimeError as error:
             shutil.rmtree(prefetched, ignore_errors=True)
             lines = [line for line in preparation.log.read_text(encoding="utf-8", errors="replace").splitlines() if line.startswith("RuntimeError")]
@@ -267,9 +311,12 @@ def prepare_install(preparation: Preparation, core: Path, distribution: Path,
     if allow_retire:
         command.append("--allow-retire")
     try:
-        preparation.run(command, cwd=core, progress=_show_progress if install_extra else None)
+        preparation.run(command, cwd=core, progress=shown if install_extra else None)
         if prefetched is not None:
             shutil.rmtree(prefetched, ignore_errors=True)
+        if first:
+            from scripts.first_install import clear_intent
+            clear_intent(state)
         _print_closed_summary(workspace)
     except RuntimeError as error:
         # 子进程的原因在日志里；补装失败时把"缺哪些包、怎么办"带到终端。
@@ -372,11 +419,14 @@ def main() -> int:
     parser.add_argument("--profile", choices=("full", "minimal", "custom"), help="首次安装的扩展包选择；不给且有终端就提问，没有终端等于 full")
     parser.add_argument("--groups", default="", help="自选的包组（逗号分隔，隐含 custom）")
     parser.add_argument("--yes", action="store_true", help="首次安装不提问不确认")
+    parser.add_argument("--reselect", action="store_true", help="首次安装失败后重跑时重新选择（默认沿用上次的选择，不再提问）")
     parser.add_argument("--allow-retire", action="store_true",
                         help="确认让在用而发行版不再提供、extra 上游也没有的内置插件消失；默认启动失败并列出它们")
     parser.add_argument("--host", default="127.0.0.1",
                         help="监听地址；computer 浏览器经宿主出口访问 localhost，开发实例不需要改它")
     args = parser.parse_args()
+    if args.extra_inputs and (args.profile or args.groups):
+        parser.error("--extra-inputs 是预先下载好的输入目录，已经决定了要装的包，不能同时给 --profile/--groups")
     if not 1 <= args.port <= 65535:
         parser.error("--port 必须在 1 到 65535 之间")
     state = args.state.expanduser().resolve()
@@ -414,7 +464,7 @@ def main() -> int:
                     core, distribution, python = prepare_source(preparation, args.cache.expanduser().resolve())
                 prepare_install(preparation, core, distribution, python, state, resolve_repo(args.extra_repo),
                                 args.extra_inputs.resolve() if args.extra_inputs else None, args.allow_retire,
-                                args.profile, [item for item in args.groups.split(",") if item], args.yes)
+                                args.profile, [item for item in args.groups.split(",") if item], args.yes, args.reselect)
             return run_service(preparation, core, python, state, args.port,
                                args.distribution is not None, not args.no_browser, distribution, args.host)
         except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as error:

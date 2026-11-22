@@ -64,6 +64,7 @@ class ExtraOptions:
     profile: str | None = None
     groups: tuple[str, ...] = ()
     assume_yes: bool = False
+    reselect: bool = False
 
 
 @dataclass(frozen=True)

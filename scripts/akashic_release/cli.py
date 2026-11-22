@@ -102,7 +102,7 @@ def install(args: argparse.Namespace, *, self_deploy: dict[str, object] | None =
                                    allow_retire=getattr(args, "allow_retire", False),
                                    profile=getattr(args, "profile", None),
                                    groups=tuple(item for item in getattr(args, "groups", "").split(",") if item),
-                                   assume_yes=getattr(args, "yes", False)),
+                                   assume_yes=getattr(args, "yes", False), reselect=getattr(args, "reselect", False)),
             )
     # 降级的外置插件进入 install 结果，自部署 worker 的 status 也能看到。
     runtime_check = (read_json(paths.activation / "active.json").get("runtimeCheck")
@@ -193,6 +193,7 @@ def _parser() -> argparse.ArgumentParser:
     install_parser.add_argument("--profile", choices=("full", "minimal", "custom"), help="首次安装的扩展包选择；不给且有终端就提问，没有终端等于 full")
     install_parser.add_argument("--groups", default="", help="首次安装自选的包组（逗号分隔，隐含 custom）")
     install_parser.add_argument("--yes", action="store_true", help="首次安装不提问不确认")
+    install_parser.add_argument("--reselect", action="store_true", help="首次安装失败后重跑时重新选择（默认沿用上次的选择，不再提问）")
     install_parser.set_defaults(handler=install)
 
     doctor_parser = subparsers.add_parser("doctor")

@@ -9,7 +9,7 @@ import subprocess
 import time
 import sys
 from pathlib import Path
-from typing import Callable, Mapping, cast
+from typing import Callable, Iterable, Mapping, cast
 
 from agent.plugins.extra_repo import resolve_repo
 from scripts.akashic_release.extra import ExtraOptions, ExtraResult, merge_inputs, prepare_extra_inputs
@@ -221,6 +221,19 @@ def render_environment(values: Mapping[str, str]) -> str:
     return "".join(f"{key}={values[key]}\n" for key in sorted(values))
 
 
+# 子进程输出逐行透传到终端（不缓冲到结束才出）；注入的假 run（演练驱动）仍按原样一次性返回。
+def _run_streaming(command: list[str], run: Run) -> subprocess.CompletedProcess[str]:
+    if run is not subprocess.run:
+        return run(command, check=False, capture_output=True, text=True)
+    lines: list[str] = []
+    with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True) as process:
+        for line in cast(Iterable[str], process.stdout):
+            lines.append(line)
+            print(line, end="", file=sys.stderr, flush=True)
+        returncode = process.wait()
+    return subprocess.CompletedProcess(command, returncode, "".join(lines), "".join(lines))
+
+
 # 首次激活：用目标镜像的 ensure 入口，把已取好的输入离线装进 state（无网络），提交选择；服务随后启动不再联网。
 def _ensure_first_install(*, paths: ReleasePaths, candidate: Mapping[str, str], inputs: Path, run: Run, install_extra: tuple[str, ...],
                           bundle: str = "base") -> None:
@@ -234,7 +247,7 @@ def _ensure_first_install(*, paths: ReleasePaths, candidate: Mapping[str, str], 
     command += [candidate["AKASHIC_IMAGE"], "ensure", "--extra-inputs", "/opt/akashic/deploy-inputs",
                 "--profile-patch", "/opt/akashic/deploy-inputs/profile.patch.toml", "--install-extra", ",".join(install_extra)]
     with measure("release.first_install"):
-        completed = run(command, check=False, capture_output=True, text=True)
+        completed = _run_streaming(command, run)
         if completed.returncode != 0:
             raise RuntimeError(f"首次安装扩展包失败（exit={completed.returncode}），服务未启动: {completed.stderr.strip()[-800:]}")
 
@@ -431,22 +444,23 @@ def activate_release(
         # 下载耗时不再落在启动后的健康检查期限内；任何一步失败都在启动前抛错，状态不变、可重跑。
         if extra is not None and extra.enabled:
             from agent.plugins.absorbed import read_absorbed
-            from scripts.first_install import choose, preset_extra_rows, render_patch
+            from scripts.first_install import choose, clear_intent, preset_extra_rows, render_patch
 
             inputs_dir = attempt_path.with_suffix(".inputs")
             inputs_dir.mkdir(parents=True, exist_ok=True)
             mode = current.get("AKASHIC_PLUGIN_BUNDLE", "base")
             rows = preset_extra_rows(paths.source(target), mode)
             choice = choose(repo=resolve_repo(extra.repo), home=paths.state / "plugin-home", preset_rows=rows, profile=extra.profile,
-                            groups=list(extra.groups), assume_yes=extra.assume_yes,
+                            groups=list(extra.groups), assume_yes=extra.assume_yes, state=paths.state, reselect=extra.reselect,
                             absorbed=frozenset(item.partition("@")[0] for item in read_absorbed(paths.source(target))))
             _ = (inputs_dir / "profile.patch.toml").write_text(render_patch(choice, rows), encoding="utf-8")
             _ = prepare_extra_inputs(workspace=paths.state / "workspace", plugins_home=paths.state / "plugin-home",
                                          source=paths.source(target), mode=mode, root_ref=None,
                                          options=replace(extra, image=candidate["AKASHIC_IMAGE"], gaps_only=True, record_needs=True,
-                                                         install_extra=choice.install or (), patch_file=inputs_dir / "profile.patch.toml"),
+                                                         install_extra=choice.install, patch_file=inputs_dir / "profile.patch.toml"),
                                          out=inputs_dir, run=run)
-            _ensure_first_install(paths=paths, candidate=candidate, inputs=inputs_dir, run=run, install_extra=choice.install or (), bundle=mode)
+            _ensure_first_install(paths=paths, candidate=candidate, inputs=inputs_dir, run=run, install_extra=choice.install, bundle=mode)
+            clear_intent(paths.state)
     else:
         if plan is not None and (plan.is_symlink() or not plan.is_file()):
             raise ValueError("部署清单必须是普通文件")
