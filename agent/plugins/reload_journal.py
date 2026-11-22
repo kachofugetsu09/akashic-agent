@@ -152,8 +152,11 @@ class JournalPreflight:
 
     def has_pending_config_updates(self, components: tuple[str, ...]) -> bool:
         """A selected config must be recovered before an offline code publication."""
-        return any(state == "accepted" or input_ref in components for state, input_ref in
-                   self._copy.execute("SELECT state,input_ref FROM config_updates WHERE state != 'active'"))
+        # 已选中且配置文件已写好（pending_config 为空）的 selected 回执只差运行实例确认，文件就是当前配置；
+        # 旧版本排空时停机会留下这种回执，下次启动按实际实例结算，不挡发布。
+        return any(state == "accepted" or (input_ref in components and not (state == "selected" and pending is None))
+                   for state, input_ref, pending in self._copy.execute(
+                       "SELECT state,input_ref,pending_config FROM config_updates WHERE state != 'active'"))
 
 
 def _journal_bytes(path: Path) -> tuple[bytes, tuple[int, int, int]]:
