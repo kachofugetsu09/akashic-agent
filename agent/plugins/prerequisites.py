@@ -179,12 +179,16 @@ def _controller_ensure(socket_path: Path, image: str, timeout: float = CONTROLLE
             if not chunk:
                 break
             raw += chunk
+    if not raw.strip():
+        raise ValueError("Workload Controller 在处理期间退出或断开；稍后再试启用")
     reply = json.loads(raw)
     if isinstance(reply, dict) and reply.get("ok") is True:
         return
     error = str(reply.get("error", "")) if isinstance(reply, dict) else ""
     if "action 无效" in error:
         raise _ControllerUnsupported(error)
+    if "正在拉取" in error:
+        raise ValueError(f"宿主上的控制器{error}（同一时间只拉一个镜像）；稍后再试启用")
     raise ValueError(f"镜像 {image} 在宿主上准备失败：{error or '控制器没有返回原因'}")
 
 
