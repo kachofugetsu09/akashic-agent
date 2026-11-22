@@ -54,7 +54,7 @@ from agent.plugins._operation import (
 from agent.plugin_composition.config_input import decode_config, encode_config
 from agent.plugins.bundles import absorbed_plugin_ids
 from agent.plugins.channel_credentials import CoreProviderClientFactory
-from agent.plugins.prerequisites import check_before_enable, ensure_images, read_disabled
+from agent.plugins.prerequisites import check_before_enable, ensure_images, load_disabled
 from agent.plugins.composable import ComposablePlugin
 from agent.plugins.generation import PluginGeneration
 from agent.plugins.host import (
@@ -1904,7 +1904,7 @@ class PluginManager:
         self.require_installed_plugin(plugin_id)
         # 外部前置条件（docker、命令行工具）曾未满足而被关闭的插件，启用前重新检测。
         if enabled:
-            check_before_enable(self._workspace, plugin_id)
+            await run_file_io(lambda: check_before_enable(self._workspace, plugin_id))
             images = self._plugin_images(plugin_id)
             if images:
                 _ = await run_file_io(lambda: ensure_images(images))
@@ -2093,7 +2093,7 @@ class PluginManager:
             None if operation_view is None else operation_view["plugin_id"]
         )
 
-        disabled_reasons = read_disabled(self._workspace)
+        disabled_reasons, disabled_problem = load_disabled(self._workspace)
         installed = self._installed_ids()
         plugin_ids = (
             set(installed) | set(manifest)
@@ -2163,6 +2163,8 @@ class PluginManager:
             "selection_ref": selection_ref,
             "selection_components": list(selected_refs.values()),
             "plugins": plugins,
+            # 前置条件原因记录损坏时给出可见提示（条目按"未知，需重新检测"处理）。
+            "disabled_reasons_problem": disabled_problem,
             "source_failures": source_failures,
             "operation": operation_view,
             "preset": self._preset_status(manifest, selected_refs),

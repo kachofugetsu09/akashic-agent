@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Literal, cast
 from uuid import uuid4
 
+from agent.plugins.artifacts import read_pointers, resolve_pointer
 from agent.plugins.bundles import absorbed_plugin_ids, composition_rows, set_plugin_choice
 from agent.plugins.extra_repo import is_official_repo, official_marketplace
 from agent.plugins.distribution_sources import distribution_sources
@@ -154,8 +155,9 @@ def install_one(ctx: Context, state: PackageState, plugin_id: str, sha: str, upg
         # 3. 在线等到终态，离线只写 cache 与选择 patch。
         if ctx.online:
             result, detail = _install_online(ctx, plugin_id, sha)
-            # 前置条件不满足的包常在激活时就失败（如缺 Workload Controller）：同样保持关闭并说明，不当作安装失败。
-            if result in ("installed", "failed"):
+            # 只转换一种失败：目标已确认落地（新 artifact 已发布、指针指向它），且本机前置条件确实不满足导致激活失败
+            # （如缺 Workload Controller）。其余失败（下载、校验、依赖、旧 artifact 未换成目标）保持真实失败，不动正在用的旧包。
+            if result == "installed" or (result == "failed" and _landed(ctx, name, plugin_id, sha)):
                 held = _hold_closed(ctx, name, plugin_id)
                 if held:
                     result, detail = "installed", held
@@ -165,6 +167,20 @@ def install_one(ctx: Context, state: PackageState, plugin_id: str, sha: str, upg
     except (RuntimeError, ValueError, OSError, subprocess.CalledProcessError) as error:
         return Outcome(name, "failed", _last_line(error))
     return Outcome(name, "upgraded" if upgrade else "installed", _hold_closed(ctx, name, plugin_id) or sha[:12])
+
+
+# 目标提交已落地：stable 指针指向的 artifact 就是 sha（失败安装会回滚指针，回滚后不算落地）。
+def _landed(ctx: Context, name: str, plugin_id: str, sha: str) -> bool:
+    base = plugins_root() / "cache" / plugin_id.partition("@")[2] / name
+    try:
+        pointers = read_pointers(base, validate_content=False)
+        artifact = None if pointers is None else resolve_pointer(base, pointers.stable, validate_content=False)
+    except (OSError, ValueError):
+        return False
+    if artifact is None:
+        return False
+    head = subprocess.run(["git", "-C", str(artifact), "rev-parse", "HEAD"], capture_output=True, text=True, check=False).stdout.strip()
+    return head == sha
 
 
 # 装完后：index 声明了外部前置条件而本机不满足，包照装但保持关闭并记录原因（返回说明）；index 取不到不影响安装。
