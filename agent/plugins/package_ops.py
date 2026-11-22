@@ -18,6 +18,7 @@ from agent.plugins.install import PluginInstallResult, finalize_uninstall_plugin
 from agent.plugins.manifest import plugins_root
 from agent.plugins.package_index import expand, load_index
 from agent.plugins.packages import InstalledPackage, PackageState, list_release_heads, read_state, sync_rows
+from agent.plugins.resources import ResourceError, repair_resources
 from agent.plugins.selection import PluginSelection
 from agent.plugins.static_manifest import load_static_plugin_manifest
 from bootstrap.workspace_lock import PluginPublicationLock, WorkspaceMaintenanceLock
@@ -236,11 +237,23 @@ def upgrade_many(ctx: Context, names: list[str]) -> list[Outcome]:
         elif heads[name] != package.head or package.repair:
             # 提交没变但依赖环境需要重建（旧 Core 装的、Python 小版本变了等）：同一提交重装，建出环境。
             outcomes.append(install_one(ctx, state, package.plugin_id, heads[name], upgrade=True))
+        elif package.resource_repair and package.artifact is not None:
+            # 代码与依赖环境都好，只缺资源：直接对已装 artifact 的 resources.json 取回，失败如实报错。
+            outcomes.append(_repair_resources(ctx, package))
         elif problem := _healthy(ctx, package):
             outcomes.append(Outcome(name, "inactive", f"版本已是最新，但{problem}；用 pkg install {name} 重试"))
         else:
             outcomes.append(Outcome(name, "current", package.head[:12]))
     return outcomes
+
+
+# 只修资源：取回已装 artifact 声明的资源（不重装、不碰选择与记录）。
+def _repair_resources(ctx: Context, package: InstalledPackage) -> Outcome:
+    try:
+        repair_resources(cast(Path, package.artifact), ctx.workspace)
+    except (ResourceError, OSError) as error:
+        return Outcome(package.name, "failed", _last_line(error))
+    return Outcome(package.name, "upgraded", "资源已修复")
 
 
 # 在线卸载只回执"已受理"：等到选择里不再有它且 cache 已清理，超时如实说仍在进行。

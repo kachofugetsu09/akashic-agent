@@ -41,7 +41,7 @@ from agent.plugins.dependency_constraints import (
     DependencyBatch, build_constraints, core_lock, installed_pins, normalize, verify_selected_environments,
 )
 from agent.plugins.dependency_paths import site_packages
-from agent.plugins.resources import check_archive_dir, ensure_resources, read_manifest
+from agent.plugins.resources import check_archive_dir, ensure_resources, read_manifest, repair_installed_resources
 from agent.plugins.python_environment import ENVIRONMENT_FILE, INPROCESS_KEY, PythonEnvironments, inprocess_runtime
 from agent.plugins.python_environment import OfflineWheels, preflight_offline_runtime, wheel_tree_sha256
 from agent.plugins.input_preparation import prepare_plugin_input, PLUGIN_INPUT_API, PluginInitialConfigError
@@ -1487,6 +1487,30 @@ def ensure_bundle(
         maintenance.release()
 
 
+# 选择里已装（extra 等外置来源）的 artifact：[(插件身份, artifact 目录)]；选择文件不存在返回空。
+def _installed_artifacts(workspace: Path) -> list[tuple[str, Path]]:
+    path = workspace / "runtime/plugin-stable.json"
+    if not path.is_file():
+        return []
+    document = json.loads(path.read_text(encoding="utf-8"))
+    return [(record["plugin_id"], Path(record["code"])) for record in document["inputs"].values()
+            if record["source_type"] == "installed"]
+
+
+# 每次启动、在补装事务之后执行的尽力而为步骤：已装包声明的资源缺失或损坏就对着它自己的 artifact 取回
+# （不取代码、不求 wheel、不碰选择与安装记录）。任何失败只打警告，服务照常启动，该资源在取用时报 RESOURCE_UNAVAILABLE。
+# 补装的早返回分支（没有缺口）也会走到这里，因为它在 ensure_bundle 返回之后。
+def _repair_resources_best_effort(workspace: Path) -> None:
+    try:
+        failures = repair_installed_resources(_installed_artifacts(workspace), workspace)
+    except (OSError, ValueError, KeyError, RuntimeError) as error:
+        print(f"警告: 已装包的资源修复步骤失败，已跳过: {error}", file=sys.stderr, flush=True)
+        return
+    for name, reason in failures:
+        print(f"警告: {name}: 资源修复失败，保留现有安装；服务照常启动，该资源在用到时报 RESOURCE_UNAVAILABLE（{reason}）",
+              file=sys.stderr, flush=True)
+
+
 _EXTRA_RESTORE = "runtime/extra-install-restore.json"
 
 
@@ -1649,6 +1673,7 @@ def main() -> None:
                     extra_inputs=args.extra_inputs,
                     allow_retire=args.allow_retire,
                 )
+            _repair_resources_best_effort(args.workspace.expanduser().resolve(strict=False))
         else:
             result = install_bundle(
                 args.distribution,

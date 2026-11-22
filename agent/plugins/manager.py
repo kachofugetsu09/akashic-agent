@@ -100,7 +100,7 @@ from agent.plugins.reload_journal import (
 from agent.plugins.scope import CleanupFailure, PluginScope
 from agent.plugins.distribution_sources import is_distribution_input
 from agent.plugins.installed_adoption import plan_installed_adoption
-from agent.plugins.resources import entry_paths
+from agent.plugins.resources import resource_resolvers
 from agent.plugins.selection import PluginSelection, SelectionConflictError
 from agent.plugins.source_resolver import (
     PluginSourceFailure,
@@ -2332,6 +2332,7 @@ class PluginManager:
 
         plugin = cast(ComposablePlugin, generation.instance)
         workspace = self._workspace
+        resources, resource_error = resource_resolvers(generation.code_dir, workspace)
         try:
             generation.fiber = await root._mount_module(  # pyright: ignore[reportPrivateUsage]
                 plugin.apply,
@@ -2347,7 +2348,8 @@ class PluginManager:
                     config=copy.deepcopy(generation.config_projection),
                     workspace_roots=plugin.workspace_roots,
                     workspace_files=plugin.workspace_files,
-                    resources=entry_paths(generation.code_dir, workspace),
+                    resources=resources,
+                    resource_error=resource_error,
                 ),
             )
         except BaseException:

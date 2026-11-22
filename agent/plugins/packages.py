@@ -18,6 +18,7 @@ from agent.plugins.install import is_official_fresh_install, is_same_source_upgr
 from agent.plugins.manifest import plugins_root
 from agent.plugins.package_index import PackageIndex, load_index
 from agent.plugins.python_environment import PythonEnvironments, environment_repair_reason
+from agent.plugins.resources import resource_repair_reason
 from agent.plugins.selection import PluginSelection, SelectionFormatError
 from agent.plugins.source_resolver import ResolvedPluginSource, resolve_plugin_sources
 from agent.plugins.static_manifest import load_static_plugin_manifest, read_only_manifest_facts
@@ -34,6 +35,9 @@ class InstalledPackage:
     retired: bool = False
     # 进程内依赖环境需要重建的原因；pkg upgrade 会重建，不需要为空。
     repair: str = ""
+    # 声明的资源缺失或损坏的原因；pkg upgrade 直接对已装 artifact 取回（不重装）。artifact 是已装目录。
+    resource_repair: str = ""
+    artifact: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -47,6 +51,7 @@ class ListRow:
     status: str
     remote_head: str
     repair: str = ""
+    resource_repair: str = ""
 
 
 @dataclass(frozen=True)
@@ -82,13 +87,22 @@ def _source_of(artifact: Path, builtin: bool, repo: str) -> str:
     return "extra" if same_origin(origin, repo) else f"git:{origin}"
 
 
+# 显式操作（pkg list/upgrade）看到资源问题：pkg upgrade 直接取回，取不到归档就如实失败。
+def _resource_repair(artifact: Path, workspace: Path) -> str:
+    try:
+        return resource_repair_reason(artifact, workspace) or ""
+    except (OSError, ValueError) as error:
+        return f"资源声明无法读取: {error}"
+
+
 def _package(plugin_id: str, artifact: Path, builtin: bool, repo: str, selected: bool,
              retired: bool = False, *, workspace: Path) -> InstalledPackage:
     repair = "" if builtin else environment_repair_reason(
         artifact, PythonEnvironments(workspace), lambda: (sys.version_info.major, sys.version_info.minor)) or ""
+    resource_repair = "" if builtin else _resource_repair(artifact, workspace)
     return InstalledPackage(plugin_id, plugin_id.partition("@")[0], _version_of(artifact),
                             _source_of(artifact, builtin, repo), _git(artifact, "rev-parse", "HEAD") or "-",
-                            selected, retired, repair)
+                            selected, retired, repair, resource_repair, artifact)
 
 
 # 选择文件缺失（从未启动过的 workspace）等同空选择。
@@ -196,9 +210,9 @@ def list_rows(packages: list[InstalledPackage], repo: str, remote: bool) -> list
             remote_head = heads.get(item.name, "")
             # 提交已是最新但依赖环境需要重建的包也是 upgradable：pkg upgrade 会重建。
             status = ("removed-upstream" if not remote_head
-                      else "upgradable" if remote_head != item.head or item.repair else "current")
+                      else "upgradable" if remote_head != item.head or item.repair or item.resource_repair else "current")
         rows.append(ListRow(item.plugin_id, item.version, item.source, item.head, item.selected,
-                            item.retired, status, remote_head, item.repair))
+                            item.retired, status, remote_head, item.repair, item.resource_repair))
     return rows
 
 
@@ -215,7 +229,8 @@ def _print_list(rows: list[ListRow], remote: bool, as_json: bool) -> None:
         if remote:
             line += f"  {row.status} {_short(row.remote_head)}"
         marks = ("" if row.selected else "  [已装，未进选择]") + ("  [发行版已不提供]" if row.retired else "") + (
-            f"  [依赖环境需重建: {row.repair}]" if row.repair else "")
+            f"  [依赖环境需重建: {row.repair}]" if row.repair else "") + (
+            f"  [{row.resource_repair}]" if row.resource_repair else "")
         print(line + marks)
     if not rows:
         print("没有已装的包")
