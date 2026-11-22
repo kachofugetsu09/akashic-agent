@@ -16,6 +16,7 @@ from agent.plugins.extra_repo import classify_gaps, list_release_heads as list_r
 from agent.plugins.extra_repo import resolve_repo as resolve_repo
 from agent.plugins.install import is_official_fresh_install, is_same_source_upgrade, same_origin
 from agent.plugins.manifest import plugins_root
+from agent.plugins.package_index import PackageIndex, load_index
 from agent.plugins.python_environment import PythonEnvironments, environment_repair_reason
 from agent.plugins.selection import PluginSelection, SelectionFormatError
 from agent.plugins.source_resolver import ResolvedPluginSource, resolve_plugin_sources
@@ -244,6 +245,33 @@ def _print_sync(rows: list[SyncRow], repo: str, as_json: bool) -> None:
         print("无需安装")
 
 
+def _megabytes(size: int) -> str:
+    return f"{size / 1048576:.1f} MB"
+
+
+# 组与成员列表：已装标记、必需标记、每包说明与大小、前置条件、自动依赖；离线回落缓存时先给一行说明。
+def _print_groups(index: PackageIndex, installed: set[str], as_json: bool) -> None:
+    if as_json:
+        print(json.dumps({"index": index.sha, "note": index.note,
+                          "groups": [{**asdict(group), "packages": [{**asdict(index.packages[name]), "installed": name in installed}
+                                                                    for name in group.members]}
+                                     for group in index.groups.values()]}, ensure_ascii=False, indent=2))
+        return
+    if index.note:
+        print(index.note)
+    for group in index.groups.values():
+        done = sum(name in installed for name in group.members)
+        size = sum(index.packages[name].size_bytes for name in group.members)
+        flag = "（必需）" if group.required else ""
+        print(f"@{group.id:<10} {group.title}{flag}  {done}/{len(group.members)} 已装，{_megabytes(size)}  {group.description}")
+        for name in group.members:
+            package = index.packages[name]
+            notes = [f"依赖 {', '.join(package.requires)}"] if package.requires else []
+            notes += [f"需要 {', '.join(package.needs)}"] if package.needs else []
+            print(f"    {'*' if name in installed else ' '} {name:<22} {_megabytes(package.size_bytes):>8}  {package.desc}"
+                  + (f"  [{'; '.join(notes)}]" if notes else ""))
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="pkg", description="包管理器")
     common = argparse.ArgumentParser(add_help=False)
@@ -252,6 +280,7 @@ def _parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
     listing = commands.add_parser("list", help="列出已装包", parents=[common])
     _ = listing.add_argument("--remote", action="store_true", help="对比远端 release/* 分支")
+    _ = commands.add_parser("groups", help="列出 extra 仓库的包组与成员", parents=[common])
     sync = commands.add_parser("sync", help="安装应装集合", parents=[common])
     _ = sync.add_argument("--dry-run", action="store_true", help="只打印，不做修改")
     _ = sync.add_argument("--timeout", type=float, default=120.0, help="在线等待每个包到终态的秒数")
@@ -293,6 +322,11 @@ def _run_write(options: argparse.Namespace, workspace: Path, config_path: Path, 
 
 
 def _dispatch(options: argparse.Namespace, workspace: Path, repo: str) -> int:
+    if options.command == "groups":
+        index = load_index(repo, plugins_root())
+        installed = {item.name for item in read_state(workspace, repo).packages if item.source == "extra"}
+        _print_groups(index, installed, bool(options.json))
+        return 0
     if options.command == "list":
         remote = bool(options.remote)
         _print_list(list_rows(read_state(workspace, repo).packages, repo, remote), remote, bool(options.json))

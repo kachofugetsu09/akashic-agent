@@ -16,6 +16,7 @@ from agent.plugins.extra_repo import is_official_repo, official_marketplace
 from agent.plugins.distribution_sources import distribution_sources
 from agent.plugins.install import PluginInstallResult, finalize_uninstall_plugin, fetch_sha_shallow, install_git_plugin
 from agent.plugins.manifest import plugins_root
+from agent.plugins.package_index import expand, load_index
 from agent.plugins.packages import InstalledPackage, PackageState, list_release_heads, read_state, sync_rows
 from agent.plugins.selection import PluginSelection
 from agent.plugins.static_manifest import load_static_plugin_manifest
@@ -162,9 +163,20 @@ def install_named(ctx: Context, names: list[str]) -> list[Outcome]:
         return [Outcome(name, "failed", f"{ctx.repo} 不是官方 extra 仓库；pkg 只管官方仓库，"
                         "其他仓库请用 plugin-install --marketplace") for name in names]
     try:
+        names = _expand_groups(ctx, names)
         return install_many(ctx, [identity_of(name) for name in names])
-    except ValueError as error:
+    except (ValueError, RuntimeError) as error:
         return [Outcome(name, "failed", str(error)) for name in names]
+
+
+# 参数里出现 @组 时读 index，展开成成员并补上依赖闭包（依赖在前）；没有 @ 参数不读 index，行为与此前相同。
+def _expand_groups(ctx: Context, names: list[str]) -> list[str]:
+    if not any(name.startswith("@") for name in names):
+        return names
+    full, added = expand(load_index(ctx.repo, plugins_root()), names)
+    if added:
+        print(f"自动带上依赖: {', '.join(added)}", file=sys.stderr)
+    return full
 
 
 # 逐个安装；只有已被选择、启用且正常的同版本才跳过，其余走安装路径（可复用已有 artifact）。
