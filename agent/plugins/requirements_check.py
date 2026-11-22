@@ -6,6 +6,7 @@ requirements 文件里可以写 pip 选项行（--no-binary、--index-url、-r�
 from __future__ import annotations
 
 import re
+import zipfile
 from pathlib import Path
 
 _NAME = r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?"
@@ -81,6 +82,34 @@ def check_bundled_wheels(directory: Path) -> tuple[Path, ...]:
         if _BUNDLED_NAME.fullmatch(entry.name) is None:
             raise ValueError(f"{directory.name}/{entry.name} 不是纯 Python wheel（只收 *-py3-none-any.whl）")
         total += entry.stat().st_size
+        _check_pure_wheel(entry, directory.name)
     if total > _MAX_BUNDLED_BYTES:
         raise ValueError(f"{directory.name}/ 总体积超过上限 {_MAX_BUNDLED_BYTES // (1024 * 1024)}MB")
     return tuple(entries)
+
+
+_NATIVE_SUFFIXES = (".so", ".pyd", ".dylib", ".dll")
+
+
+# 文件名只是声明：打开归档核对 WHEEL 元数据确为纯 Python（Root-Is-Purelib: true、标签只有 py3-none-any），且不含原生扩展成员。
+def _check_pure_wheel(path: Path, label: str) -> None:
+    where = f"{label}/{path.name}"
+    try:
+        with zipfile.ZipFile(path) as archive:
+            names = archive.namelist()
+            metadata = [name for name in names if name.count("/") == 1 and name.endswith(".dist-info/WHEEL")]
+            if len(metadata) != 1:
+                raise ValueError(f"{where} 不是合法的 wheel（缺少唯一的 .dist-info/WHEEL）")
+            text = archive.read(metadata[0]).decode("utf-8")
+    except (OSError, zipfile.BadZipFile, UnicodeDecodeError) as error:
+        raise ValueError(f"{where} 不是合法的 wheel: {error}") from error
+    fields = [line.partition(":") for line in text.splitlines() if ":" in line]
+    values = [(key.strip().lower(), value.strip()) for key, _, value in fields]
+    purelib = [value.lower() for key, value in values if key == "root-is-purelib"]
+    tags = [value for key, value in values if key == "tag"]
+    if purelib != ["true"] or tags != ["py3-none-any"]:
+        raise ValueError(f"{where} 的 WHEEL 元数据不是纯 Python（Root-Is-Purelib={purelib}，Tag={tags}）")
+    native = [name for name in names if name.lower().endswith(_NATIVE_SUFFIXES) or ".so." in name.lower()]
+    if native:
+        raise ValueError(f"{where} 含原生扩展成员: {native[0]}")
+
