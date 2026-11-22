@@ -82,13 +82,15 @@ def check_bundled_wheels(directory: Path) -> tuple[Path, ...]:
         if _BUNDLED_NAME.fullmatch(entry.name) is None:
             raise ValueError(f"{directory.name}/{entry.name} 不是纯 Python wheel（只收 *-py3-none-any.whl）")
         total += entry.stat().st_size
-        _check_pure_wheel(entry, directory.name)
     if total > _MAX_BUNDLED_BYTES:
         raise ValueError(f"{directory.name}/ 总体积超过上限 {_MAX_BUNDLED_BYTES // (1024 * 1024)}MB")
+    for entry in entries:
+        _check_pure_wheel(entry, directory.name)
     return tuple(entries)
 
 
 _NATIVE_SUFFIXES = (".so", ".pyd", ".dylib", ".dll")
+_MAX_WHEEL_METADATA_BYTES = 64 * 1024
 
 
 # 文件名只是声明：打开归档核对 WHEEL 元数据确为纯 Python（Root-Is-Purelib: true、标签只有 py3-none-any），且不含原生扩展成员。
@@ -100,7 +102,14 @@ def _check_pure_wheel(path: Path, label: str) -> None:
             metadata = [name for name in names if name.count("/") == 1 and name.endswith(".dist-info/WHEEL")]
             if len(metadata) != 1:
                 raise ValueError(f"{where} 不是合法的 wheel（缺少唯一的 .dist-info/WHEEL）")
-            text = archive.read(metadata[0]).decode("utf-8")
+            # WHEEL 元数据只有几行；先看声明大小，再对实际解压输出限长，避免小压缩包撑爆内存。
+            if archive.getinfo(metadata[0]).file_size > _MAX_WHEEL_METADATA_BYTES:
+                raise ValueError(f"{where} 的 WHEEL 元数据过大")
+            with archive.open(metadata[0]) as stream:
+                raw = stream.read(_MAX_WHEEL_METADATA_BYTES + 1)
+            if len(raw) > _MAX_WHEEL_METADATA_BYTES:
+                raise ValueError(f"{where} 的 WHEEL 元数据过大")
+            text = raw.decode("utf-8")
     except (OSError, zipfile.BadZipFile, UnicodeDecodeError) as error:
         raise ValueError(f"{where} 不是合法的 wheel: {error}") from error
     fields = [line.partition(":") for line in text.splitlines() if ":" in line]
