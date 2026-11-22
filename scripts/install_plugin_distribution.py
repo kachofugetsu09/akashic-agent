@@ -1326,7 +1326,7 @@ def _extra_staging_root(workspace: Path, plugins_home: Path) -> Path | None:
     if plugins_home.resolve().is_relative_to(workspace.resolve()):
         return None
     plugins_home.mkdir(parents=True, exist_ok=True)
-    # 调用方持有 workspace 维护锁；上次被强杀留下的暂存目录在这里回收。
+    # 调用方持有插件目录的发布锁；上次被强杀留下的暂存目录在这里回收。
     for stale in plugins_home.glob(".extra-staging-*"):
         shutil.rmtree(stale, ignore_errors=True)
     return Path(tempfile.mkdtemp(prefix=".extra-staging-", dir=plugins_home))
@@ -1368,18 +1368,21 @@ def ensure_bundle(
     maintenance = WorkspaceMaintenanceLock(workspace)
     publication = PluginPublicationLock(plugins_home)
     maintenance.acquire()
-    # 本进程与它启动的 pip、git 子进程的临时文件都落在暂存目录里，结束时一并删除并复原。
-    # 插件目录在 workspace 内时没有合适的状态盘位置，退回系统临时目录。
     previous_tmp = (os.environ.get("TMPDIR"), tempfile.tempdir)
-    staging = _extra_staging_root(workspace, plugins_home)
-    extra_root = staging or Path(tempfile.mkdtemp(prefix="akashic-extra-"))
-    if staging is not None:
-        scratch = staging / "tmp"
-        scratch.mkdir()
-        os.environ["TMPDIR"] = tempfile.tempdir = str(scratch)
+    extra_root: Path | None = None
     try:
         publication.acquire()
         try:
+            # 暂存目录在插件目录的发布锁内创建并回收遗留：多个 workspace 共用一个插件目录时，
+            # 回收只会发生在没有别的进程持有发布锁、也就没有别的进程在用暂存目录的时候。
+            # 本进程与它启动的 pip、git 子进程的临时文件都落在暂存目录里，结束时一并删除并复原。
+            # 插件目录在 workspace 内时没有合适的状态盘位置，退回系统临时目录。
+            staging = _extra_staging_root(workspace, plugins_home)
+            extra_root = staging or Path(tempfile.mkdtemp(prefix="akashic-extra-"))
+            if staging is not None:
+                scratch = staging / "tmp"
+                scratch.mkdir()
+                os.environ["TMPDIR"] = tempfile.tempdir = str(scratch)
             _recover_extra_install(workspace)
             if not receipt_path.exists():
                 current = PluginSelection(workspace)
@@ -1479,7 +1482,8 @@ def ensure_bundle(
             _ = os.environ.pop("TMPDIR", None)
         else:
             os.environ["TMPDIR"] = previous_tmp[0]
-        shutil.rmtree(extra_root, ignore_errors=True)
+        if extra_root is not None:
+            shutil.rmtree(extra_root, ignore_errors=True)
         maintenance.release()
 
 
