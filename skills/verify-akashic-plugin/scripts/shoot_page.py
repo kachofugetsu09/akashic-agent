@@ -2,17 +2,28 @@
 import argparse
 import asyncio
 import json
+import os
 import shutil
 import sys
 from pathlib import Path
 from urllib.parse import urlsplit
 
 
+# 插件按 resources.json 取回的 Chromium（visuals、design 声明）：Core 镜像不带浏览器，生产里由这里提供。
+def _plugin_resource_browser() -> str | None:
+    workspace = os.environ.get("AKASHIC_WORKSPACE")
+    if not workspace:
+        return None
+    pattern = "runtime/plugin-resources/*/content/chrome-headless-shell-linux64/chrome-headless-shell"
+    found = sorted(Path(workspace).glob(pattern))
+    return str(found[0]) if found else None
+
+
 async def _launch(playwright, executable: str | None):
-    """按显式路径、已安装 Playwright 浏览器、系统浏览器顺序选择。"""
+    """按显式路径、已安装 Playwright 浏览器、插件资源里的浏览器、系统浏览器顺序选择。"""
     if executable is None:
         bundled = playwright.chromium.executable_path
-        executable = bundled if Path(bundled).is_file() else next(
+        executable = bundled if Path(bundled).is_file() else _plugin_resource_browser() or next(
             (path for name in ("chromium", "chromium-browser", "google-chrome")
              if (path := shutil.which(name))), None,
         )
