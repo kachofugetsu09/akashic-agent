@@ -1,1 +1,0 @@
-"""Ordinary Markdown memory plugin."""

@@ -75,25 +75,23 @@ def release_plugin(
     generated_root: Path | None,
 ) -> dict[str, str]:
     root = f"{plugins_root}/{name}"
-    branch = f"release/{name}"
     with tempfile.TemporaryDirectory(prefix="akashic-release-") as directory:
         scratch = Path(directory)
         package = scratch / "package"
         package.mkdir()
-        # 1. 暂存插件源码与前端产物，并校验静态 manifest 的名字与分支一致。
+        # 1. 暂存插件源码与前端产物；分支、提交说明与返回行都用 manifest 名（安装器要求分支名等于插件名，目录名可以不同，如 opencode_go 与 opencode-go）。
         stage_plugin_package(repository, commit, root, package, generated_root)
-        manifest = load_static_plugin_manifest(package)
-        if manifest.name != name:
-            raise ValueError(f"插件目录名与 manifest 名称不一致: {name} != {manifest.name}")
+        plugin = load_static_plugin_manifest(package).name
+        branch = f"release/{plugin}"
         # 2. tree 没变就不推进分支。
         tree = write_tree(output, package, scratch)
     old_tree, old_sha = branch_head(output, branch)
     if old_tree == tree:
-        return {"name": name, "branch": branch, "tree": tree, "sha": old_sha, "status": "unchanged"}
+        return {"name": plugin, "branch": branch, "tree": tree, "sha": old_sha, "status": "unchanged"}
     # 3. 新建无父提交并推进分支（旧值作为 CAS 条件，新分支用全零）。
-    sha = commit_tree(output, tree, name)
+    sha = commit_tree(output, tree, plugin)
     _ = git(output, "update-ref", f"refs/heads/{branch}", sha, old_sha or "0" * 40)
-    return {"name": name, "branch": branch, "tree": tree, "sha": sha, "status": "updated"}
+    return {"name": plugin, "branch": branch, "tree": tree, "sha": sha, "status": "updated"}
 
 
 # 一次构建全部所选插件：前端只构建一次，逐个对比 tree。
@@ -112,7 +110,7 @@ def release_plugins(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("names", nargs="+", help="插件名（plugins/<name>）")
+    parser.add_argument("names", nargs="+", help="插件目录名（plugins/<目录名>）；分支与名字取自 manifest")
     parser.add_argument("--repository", type=Path, default=_SOURCE_ROOT, help="含插件源码与前端源码的 git 仓库")
     parser.add_argument("--revision", default="HEAD")
     parser.add_argument("--plugins-root", default="plugins", help="仓库内插件目录的相对路径")
