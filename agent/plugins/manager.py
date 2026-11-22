@@ -273,8 +273,10 @@ class PluginManager:
     # 等到上限仍未轮到就报出占用者；进入后到 _start_operation 之间只做同步准备。
     @asynccontextmanager
     async def _admitted(self, label: str) -> AsyncIterator[None]:
-        # 操作自己的任务里再发起操作只会等到超时，直接拒绝。
-        if self._operation is not None and current_operation.get() is self._operation:
+        # 操作自己的任务里再发起操作只会等到超时，直接拒绝。只看仍在运行的操作：操作期间创建的
+        # 长驻任务（如启动加载时起的 Gateway 服务）会继承上下文里的操作，它结束后不能再算"内部"。
+        current = self._operation
+        if current is not None and not current.task.done() and current_operation.get() is current:
             raise OperationBusyError(f"{label}不能在插件操作内部发起")
         loop = asyncio.get_running_loop()
         deadline = loop.time() + self.ADMISSION_WAIT_SECONDS
