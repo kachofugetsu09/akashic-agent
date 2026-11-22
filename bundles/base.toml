@@ -203,3 +203,9 @@ plugin = "opencode-go@release"
 
 [rows."ledger_invariants"]
 plugin = "ledger_invariants@release"
+
+[rows."inproc_demo"]
+plugin = "inproc_demo@release"
+
+[rows."subproc_demo"]
+plugin = "subproc_demo@release"
