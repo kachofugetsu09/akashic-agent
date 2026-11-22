@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Literal, cast
 from uuid import uuid4
 
-from agent.plugins.bundles import composition_rows, set_plugin_choice
+from agent.plugins.bundles import absorbed_plugin_ids, composition_rows, set_plugin_choice
 from agent.plugins.extra_repo import is_official_repo, official_marketplace
 from agent.plugins.distribution_sources import distribution_sources
 from agent.plugins.install import PluginInstallResult, finalize_uninstall_plugin, fetch_sha_shallow, install_git_plugin
@@ -140,6 +140,9 @@ def _healthy(ctx: Context, package: InstalledPackage) -> str:
 # 安装一个包到指定提交；需要换来源的身份不在这里处理。
 def install_one(ctx: Context, state: PackageState, plugin_id: str, sha: str, upgrade: bool = False) -> Outcome:
     name = plugin_id.partition("@")[0]
+    # 0. 已并入 Core 的身份不再作为扩展包存在：明确拒绝，不安装也不升级。
+    if (provider := absorbed_plugin_ids().get(plugin_id)) is not None:
+        return Outcome(name, "failed", f"{plugin_id} 已并入 Core 的 {provider} 插件，不再作为扩展包安装")
     # 1. 发行版命名空间或历史归属的身份属于换来源，不传 takeover。
     if state.requires_switch(plugin_id):
         return Outcome(name, "needs-switch", f"{plugin_id} 属于发行版身份，需要换来源操作")

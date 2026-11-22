@@ -1,0 +1,7 @@
+# 已被 Core 吸收的插件身份：这些身份不再作为外置包存在。无论用户 patch 怎么写，它们都不进入候选组合，
+# 不被安装、升级或补装；选择里已有的同身份输入在下一次部署或启动补装时移出。用户 patch 里的行保留（回退到旧 Core 时仍有效），
+# 但被忽略并在日志里说明。provider 是现在提供该能力的 Core 插件。
+schema_version = 1
+
+[absorbed."session_reference@release"]
+provider = "conversation"

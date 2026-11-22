@@ -105,6 +105,15 @@ def _read_rows(path: Path) -> dict[str, dict[str, object]]:
 # preset 行（base 加 mode）叠加用户 patch，语义同 Core 的 load_bundles：patch 行先按 id、再按同插件找到 preset 行；
 # 同一插件时按字段继承（只覆盖 disabled），不同插件（同 id 换 provider）则整行替换。
 # 返回 (实际生效的启用身份, preset 里出现的身份)，与 pkg sync 口径一致。
+# 已被 Core 吸收的身份到提供者（随发行版的 bundles/absorbed.toml）；没有该文件为空。
+def read_absorbed(checkout: Path) -> dict[str, str]:
+    path = checkout / "bundles/absorbed.toml"
+    if not path.is_file():
+        return {}
+    rows = tomllib.loads(path.read_text(encoding="utf-8")).get("absorbed", {})
+    return {identity: str(row.get("provider", "")) for identity, row in rows.items()}
+
+
 def composition_ids(checkout: Path, mode: str, patch: Path) -> tuple[frozenset[str], frozenset[str], frozenset[str]]:
     rows = _read_rows(checkout / "bundles/base.toml")
     if mode != "base":
@@ -118,8 +127,10 @@ def composition_ids(checkout: Path, mode: str, patch: Path) -> tuple[frozenset[s
             rows[key] = {**rows[key], **{k: v for k, v in row.items() if k == "disabled"}}
         else:
             rows[key] = row
-    enabled = frozenset(str(r["plugin"]) for r in rows.values() if not r.get("disabled", False))
-    return enabled, preset, frozenset(str(r["plugin"]) for r in rows.values())
+    # 被吸收的身份无论 patch 怎么写都不参与：不启用、不算已知，所以不会被安装、升级或补装。
+    absorbed = read_absorbed(checkout)
+    enabled = frozenset(str(r["plugin"]) for r in rows.values() if not r.get("disabled", False)) - absorbed.keys()
+    return enabled, preset - absorbed.keys(), frozenset(str(r["plugin"]) for r in rows.values()) - absorbed.keys()
 
 
 # 历史归属或首次回执里的旧制品：cache 里虽有目录，但属于被发行版接管的遗留，不算已装。
@@ -287,6 +298,10 @@ def prepare_extra_inputs(
     if current_root != root_ref:
         raise RuntimeError("选择在读取期间改变，停止部署")
     enabled, preset, known = composition_ids(source, mode, workspace / "bundle.patch.toml")
+    patch_path = workspace / "bundle.patch.toml"
+    patched = {str(row["plugin"]) for row in _read_rows(patch_path).values()} if patch_path.exists() else set()
+    absorbed_notes = tuple((identity, f"已并入 Core 的 {provider}：移出选择，忽略用户 patch 里的行")
+                           for identity, provider in sorted(read_absorbed(source).items()) if identity in selected or identity in patched)
     repo = resolve_repo(options.repo)
     remote: dict[str, str] = {}
 
@@ -297,7 +312,7 @@ def prepare_extra_inputs(
     repairs = any(package.repair and not package.builtin for package in selected.values())
     # 启动补装只为 preset 要求的缺口、在用的内置插件和需要重建环境的已装包联网；只在 patch 里启用而没在用的行不是启动的前置条件。
     if options.gaps_only and not repairs and not set(missing) & (preset | in_use):
-        return ExtraResult((), ())
+        return ExtraResult((), absorbed_notes)
 
     def heads() -> dict[str, str]:
         if not remote:
@@ -327,7 +342,7 @@ def prepare_extra_inputs(
         raise RuntimeError("以下在用的内置插件目标发行版不再提供、extra 上游也没有，部署后会消失: "
                            + ", ".join(retiring) + "；确认要移除请加 --allow-retire")
     notes = {"optional": "上游存在，未自动安装", "retired": "已退役，上游不存在", "retire": "将被移除（在用的内置插件，上游不存在）"}
-    skipped = tuple((gap.plugin_id, notes[gap.action]) for gap in gaps if gap.action in notes)
+    skipped = absorbed_notes + tuple((gap.plugin_id, notes[gap.action]) for gap in gaps if gap.action in notes)
     if not actions:
         return ExtraResult((), skipped, retiring)
     # 3. 逐个产出输入。

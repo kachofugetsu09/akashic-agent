@@ -127,8 +127,24 @@ def composition_rows(workspace: Path, distribution: Path | None = None) -> tuple
                         patch=workspace / "bundle.patch.toml")
 
 
+# 已被 Core 吸收的身份（随发行版走的 bundles/absorbed.toml）到提供它的 Core 插件名；没有发行版或没有该文件为空。
+def absorbed_plugin_ids(distribution: Path | None = None) -> dict[str, str]:
+    configured = os.environ.get("AKASHIC_PLUGIN_DISTRIBUTION")
+    if distribution is None and configured:
+        distribution = Path(configured)
+    if distribution is None:
+        return {}
+    path = distribution / "bundles" / "absorbed.toml"
+    if not path.is_file():
+        return {}
+    rows = cast(dict[str, dict[str, str]], tomllib.loads(path.read_text(encoding="utf-8")).get("absorbed", {}))
+    return {identity: str(row.get("provider", "")) for identity, row in rows.items()}
+
+
+# 用户 patch 怎么写都不能让被吸收的身份进入组合：这里一律当作未启用。
 def plugin_choices(workspace: Path, distribution: Path | None = None) -> dict[str, bool]:
-    return {row.plugin: not row.disabled for row in composition_rows(workspace, distribution)}
+    absorbed = absorbed_plugin_ids(distribution)
+    return {row.plugin: not row.disabled and row.plugin not in absorbed for row in composition_rows(workspace, distribution)}
 
 
 # 只改启停，不抄 config：没写的字段继续跟随 preset。改完和 preset 相同时删掉这一行，回到跟随 preset；
