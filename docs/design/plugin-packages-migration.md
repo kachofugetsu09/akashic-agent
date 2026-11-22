@@ -114,6 +114,14 @@ Core 侧一个 PR，extra 侧先行或同时：
 - **技能与文档。** 技能随插件目录走，不用单独处理；`docs/INDEX.md` 的代码路径指向 extra 仓库；历史 ADR 不改。
 - **能力快照。** 迁出前后 `capability_snapshot.py diff --ignore-source --ignore-build` 应只剩 `[preset].retired` 多出该插件（来源变化的预期信号）。面板用 `/api/chat/plugin-ui/query` 的 `day` 读一次，确认能从迁出后的实例读到旧数据。
 
+批量迁出（Phase 3）再多做这些：
+
+- **不在 preset、只靠用户 patch 启用的插件不要新增 preset 行**（也不动 `bundles/*.toml`）。迁出后启动补装只处理 preset 缺口，这类插件会被静默丢出选择（实例照常启动，`pkg sync --dry-run` 报"只在用户 patch 里启用、上游存在"）；`pkg install` 对 `@release` 身份只回 `needs-switch`。所以这类迁出必须等部署侧"当前选择里在用的内置插件也换来源"合并后再合入。
+- **测试按行为拆。** 整个文件测同一插件的搬到 `tests/<name>/`（加空 `__init__.py`，避免同名模块冲突）；一个文件里混着 Core 与插件行为的，把插件那几个用例原样搬走；Core 测试拿被迁出插件当示例（如 `test_plugin_hot_reload.py` 里 standard_web 的提供方登记）时，在 Core 里去掉该段，把被去掉的断言放进 extra 的 `tests/<name>/`，保持覆盖。
+- **非测试的名字引用。** 搜 `set_plugin_choice(..., "<name>")` 这类对被迁出插件的开关（基准、脚本）：插件不在 Core 树里时没有意义，删掉；顺带的文档文字若属于另一个 extra 插件的目录（如 `plugins/computer/bench/README.md`），不要改，否则那个插件的 release 提交会变。
+- **只为这些插件存在的第三方依赖只列出，不删。** 本批只有 `web_fetch_http` 进程内导入 `html2text`、`lxml`（`requirements.txt`、`docker/host-runtime/requirements.lock`）；Core 镜像继续带着，直到依赖方案确定。
+- **验证夹具。** 带 `distribution.json` 摘要校验的发行版不能用软链复制；要临时改 preset 行验证"迁出后的终态"时，用硬链接复制发行版目录、改 `bundles/base.toml` 并重算 `distribution.json` 里的 bundle 摘要，用 `start.py --distribution` 启动，不要改共享缓存里的发行版。
+
 ### Phase 3：批量迁纯 Python 插件
 
 每批一个 PR，顺序以门禁结果为准：

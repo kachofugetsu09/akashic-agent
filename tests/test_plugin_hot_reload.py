@@ -324,8 +324,6 @@ async def test_registries_filter_non_active_contributors(tmp_path: Path) -> None
     from plugins.plugin_settings.plugin import apply as apply_plugin_settings
     from plugins.sources.contract import SOURCES_V5 as SOURCES
     from plugins.sources.plugin import apply as apply_sources
-    from plugins.standard_web.contract import WEB_PROVIDERS, SearchRequest
-    from plugins.standard_web.web import Providers as WebProviders, WebConfig
     from plugins.ui.contract import UI
 
     class _DummySender(Sender):
@@ -348,10 +346,6 @@ async def test_registries_filter_non_active_contributors(tmp_path: Path) -> None
 
         def receipt(self, request_id: str) -> dict[str, object]:
             return {}
-
-    class _DummySearch:
-        async def search(self, request: SearchRequest) -> dict[str, object]:
-            return {"ok": True}
 
     log = MessageLog(tmp_path / "sessions.db")
     root = CompositionRoot("test")
@@ -385,15 +379,11 @@ async def test_registries_filter_non_active_contributors(tmp_path: Path) -> None
         async def mount_sources(ctx: Context) -> None:
             await apply_sources(ctx)
 
-        async def mount_web(ctx: Context) -> None:
-            _ = await ctx.provide(WEB_PROVIDERS, WebProviders(ctx, WebConfig()))
-
         await root.mount(core, name="core")
         await root.mount(mount_delivery, name="delivery", inject=(BINDINGS,))
         await root.mount(mount_onboarding, name="onboarding", inject=(RUNTIME_CATALOG,))
         await root.mount(mount_settings, name="plugin_settings", inject=(UI,))
         await root.mount(mount_sources, name="sources", inject=(MESSAGE_WRITERS,))
-        await root.mount(mount_web, name="standard_web")
 
         async def _internal_err() -> dict[str, object]:
             raise CompositionError("SERVICE_SCOPE_MISMATCH", "internal")
@@ -441,7 +431,6 @@ async def test_registries_filter_non_active_contributors(tmp_path: Path) -> None
                 SettingsForm("Flaky", "desc", (SettingsField("token", "Token"),)),
                 _DummyConfig(),
             )
-            _ = await ctx.require(WEB_PROVIDERS).register_search(ctx, _DummySearch(), label="FlakyWeb")
             _ = await ctx.require(SOURCES).register(
                 ctx,
                 name="flaky_src",
@@ -454,7 +443,7 @@ async def test_registries_filter_non_active_contributors(tmp_path: Path) -> None
         await root.mount(
             mount_unloading_contrib,
             name="flaky_contrib",
-            inject=(DELIVERY_SENDERS, ONBOARDING, SETTINGS_FORMS, WEB_PROVIDERS, SOURCES),
+            inject=(DELIVERY_SENDERS, ONBOARDING, SETTINGS_FORMS, SOURCES),
             runtime=PluginRuntime("flaky@local", "local", tmp_path, tmp_path / "fd", tmp_path, {}),
         )
 
@@ -498,12 +487,6 @@ async def test_registries_filter_non_active_contributors(tmp_path: Path) -> None
                 assert forms.entries() == ()
                 with pytest.raises(KeyError):
                     _ = forms.entry("flaky@local")
-
-                web_providers = root.service_value(WEB_PROVIDERS)
-                assert web_providers is not None
-                assert web_providers.choices("search") == []
-                res = await web_providers.search(SearchRequest(query="hello", num_results=3))
-                assert "error" in res
 
                 sources_svc = root.service_value(SOURCES)
                 assert sources_svc is not None
