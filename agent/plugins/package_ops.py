@@ -206,7 +206,7 @@ def _hold_closed(ctx: Context, name: str, plugin_id: str, sha: str) -> str:
     if not missing:
         clear_disabled(ctx.workspace, plugin_id)
         return ""
-    record_disabled(ctx.workspace, plugin_id, missing)
+    record_disabled(ctx.workspace, plugin_id, missing, sha)
     if ctx.online:
         done = _main(ctx, "plugin-disable", plugin_id)
         if done.returncode != 0:

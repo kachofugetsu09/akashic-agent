@@ -98,7 +98,9 @@ def load_disabled(workspace: Path) -> tuple[dict[str, dict[str, object]], str | 
     rows: dict[str, dict[str, object]] = {}
     for plugin_id, row in cast(dict[str, object], value).items():
         needs = cast(dict[str, object], row).get("needs") if isinstance(row, dict) else None
+        # head 缺失（旧格式）按"不匹配"处理，不算损坏；有就必须是字符串。
         if (isinstance(row, dict) and isinstance(cast(dict[str, object], row).get("reason"), str)
+                and isinstance(cast(dict[str, object], row).get("head", ""), str)
                 and isinstance(needs, list) and all(_valid_need(item) for item in cast(list[object], needs))):
             rows[plugin_id] = cast(dict[str, object], row)
         else:
@@ -135,10 +137,10 @@ def _update(workspace: Path, change: Callable[[dict[str, dict[str, object]]], bo
             _write(workspace, rows)
 
 
-# 记录某插件因前置条件未满足而保持关闭。
-def record_disabled(workspace: Path, plugin_id: str, missing: list[str]) -> None:
+# 记录某插件因前置条件未满足而保持关闭；同样绑定写入时的 artifact 提交（head），与已装提交不一致就当没有这条记录。
+def record_disabled(workspace: Path, plugin_id: str, missing: list[str], head: str) -> None:
     def change(rows: dict[str, dict[str, object]]) -> bool:
-        rows[plugin_id] = {"needs": missing, "reason": describe(missing)}
+        rows[plugin_id] = {"needs": missing, "reason": describe(missing), "head": head}
         return True
 
     _update(workspace, change)
@@ -171,6 +173,14 @@ def load_declared(workspace: Path) -> tuple[dict[str, tuple[list[str], str]], st
 # 声明绑定写入时的 artifact 提交（head）：读取时与当前已装提交不一致就当没有声明（退回原因记录），
 # 所以旧 Core 改过包、卸载后以别的方式重装，都不会拿陈旧声明当事实。
 def record_declared(workspace: Path, plugin_id: str, needs: list[str], head: str) -> None:
+    parse_needs(needs, plugin_id)
+    _update_declared(workspace, lambda declared: declared.__setitem__(plugin_id, (needs, head)))
+    # needs 为空是显式声明"没有前置条件"：旧的未启用原因也一并作废。
+    if not needs:
+        clear_disabled_safe(workspace, plugin_id)
+
+
+def _update_declared(workspace: Path, change: Callable[[dict[str, tuple[list[str], str]]], object]) -> None:
     path = workspace / _DECLARED
     path.parent.mkdir(parents=True, exist_ok=True)
     with (path.parent / (path.name + ".lock")).open("a") as lock:
@@ -178,11 +188,7 @@ def record_declared(workspace: Path, plugin_id: str, needs: list[str], head: str
         declared, problem = load_declared(workspace)
         if problem is not None:
             raise ValueError(f"前置条件声明记录损坏，未改动：{problem}；修复或删除该文件后重试")
-        parse_needs(needs, plugin_id)
-        if needs:
-            declared[plugin_id] = (needs, head)
-        elif declared.pop(plugin_id, None) is None:
-            return
+        _ = change(declared)
         descriptor, name = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=path.parent)
         try:
             with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
@@ -198,7 +204,7 @@ def forget_plugin(workspace: Path, plugin_id: str) -> None:
     clear_disabled_safe(workspace, plugin_id)
     declared, problem = load_declared(workspace)
     if problem is None and plugin_id in declared:
-        record_declared(workspace, plugin_id, [], "")
+        _update_declared(workspace, lambda rows: rows.pop(plugin_id, None))
 
 
 def clear_disabled_safe(workspace: Path, plugin_id: str) -> None:
@@ -234,10 +240,12 @@ def check_before_enable(workspace: Path, plugin_id: str, head: str = "") -> None
     rows, problem = load_disabled(workspace)
     if declared_problem is not None or problem is not None:
         raise ValueError(f"{plugin_id} 不能启用：前置条件记录损坏，无法确认条件是否满足（{declared_problem or problem}）；修复或删除该文件后重试")
+    # 声明与原因记录都只在 head 与当前已装提交一致时有效：有匹配的声明以声明为准；否则有匹配的原因用原因；都没有就不额外拒绝。
     entry = declared.get(plugin_id)
     needs: list[str] | None = entry[0] if entry is not None and head and entry[1] == head else None
-    if needs is None and plugin_id in rows:
-        needs = cast(list[str], rows[plugin_id]["needs"])
+    reason = rows.get(plugin_id)
+    if needs is None and reason is not None and head and reason.get("head") == head:
+        needs = cast(list[str], reason["needs"])
     if not needs:
         return
     still = unmet(needs)
