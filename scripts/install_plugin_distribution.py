@@ -1584,6 +1584,19 @@ def _stage_missing_from_extra(
         expected_root_ref=expected, selection=selection, workspace=workspace, plugins_home=plugins_home)
 
 
+# 首次安装的联网部分单独做完：取包、校验、求 wheel 到 out（与 --extra-inputs 同格式），不写 cache、选择或 patch。
+# 失败直接抛错，状态不变；之后的 ensure 用 --extra-inputs 离线安装，不再联网。
+def _prefetch_extra(distribution: Path, workspace: Path, plugins_home: Path, repo: str, out: Path) -> dict[str, Any]:
+    from scripts.akashic_release.extra import ExtraOptions, prepare_extra_inputs
+
+    out.mkdir(parents=True, exist_ok=True)
+    found = prepare_extra_inputs(
+        workspace=workspace, plugins_home=plugins_home, source=distribution, mode=os.environ.get("AKASHIC_PLUGIN_BUNDLE", "base"),
+        root_ref=PluginSelection(workspace).read(), options=ExtraOptions(repo=repo, pull_images=False, gaps_only=True),
+        out=out, run=subprocess.run)
+    return {"prefetched": [item["plugin_id"] for item in found.targets]}
+
+
 def _write_receipt(path: Path, result: dict[str, Any]) -> None:
     """Atomically publish one durable installer receipt."""
 
@@ -1627,9 +1640,16 @@ def main() -> None:
     parser.add_argument("--closed-boot", help=argparse.SUPPRESS)
     parser.add_argument("--extra-repo", help="--ensure-bundle：preset 启用而发行版已不再自带的插件从该 extra 仓库补装")
     parser.add_argument("--extra-inputs", type=Path, help="--ensure-bundle：预先下载好的 extra 输入目录（不联网）")
+    parser.add_argument("--prefetch-extra", type=Path, help="只联网取好首次安装需要的 extra 包（含 wheel）到该目录，之后用 --extra-inputs 离线安装")
     parser.add_argument("--allow-retire", action="store_true", help="--ensure-bundle：确认让在用而发行版不再提供、上游也没有的内置插件消失")
     args = parser.parse_args()
 
+    if args.prefetch_extra is not None:
+        if args.extra_repo is None:
+            parser.error("--prefetch-extra 需要 --extra-repo")
+        print(json.dumps(_prefetch_extra(args.distribution, args.workspace, args.plugins_home, args.extra_repo, args.prefetch_extra),
+                         ensure_ascii=False))
+        return
     if sum((args.verify_only, args.ensure_bundle, args.publish)) > 1:
         parser.error("--verify-only、--ensure-bundle、--publish 互斥")
     if args.closed_boot is not None and (not args.publish or args.preflight_only):
