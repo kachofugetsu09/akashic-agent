@@ -424,7 +424,8 @@ def _first_install_extra(*, paths: ReleasePaths, target: str, current: Mapping[s
 
     mode = current.get("AKASHIC_PLUGIN_BUNDLE", "base")
     if extra.inputs is not None:
-        _ensure_first_install(paths=paths, candidate=candidate, inputs=extra.inputs.resolve(strict=True), run=run, install_extra=(), bundle=mode)
+        _ensure_first_install(paths=paths, candidate=candidate, inputs=extra.inputs.resolve(strict=True), run=run, install_extra=(), bundle=mode,
+                              progress=Progress())
         return
     inputs_dir.mkdir(parents=True, exist_ok=True)
     rows = preset_extra_rows(paths.source(target), mode)
@@ -434,13 +435,13 @@ def _first_install_extra(*, paths: ReleasePaths, target: str, current: Mapping[s
     workspace_patch = paths.state / "workspace/bundle.patch.toml"
     patch = workspace_patch if workspace_patch.exists() else inputs_dir / "profile.patch.toml"
     write_patch(choice, rows, patch)
-    _ = prepare_extra_inputs(workspace=paths.state / "workspace", plugins_home=paths.state / "plugin-home",
+    found = prepare_extra_inputs(workspace=paths.state / "workspace", plugins_home=paths.state / "plugin-home",
                              source=paths.source(target), mode=mode, root_ref=None,
                              options=replace(extra, image=candidate["AKASHIC_IMAGE"], gaps_only=True, record_needs=True,
                                              install_extra=choice.install, patch_file=patch),
                              out=inputs_dir, run=run)
     _ensure_first_install(paths=paths, candidate=candidate, inputs=inputs_dir, run=run, install_extra=choice.install, bundle=mode,
-                          progress=Progress(len(choice.install)))
+                          progress=Progress(len(found.targets)))  # N 取预取实际产出的目标数
     clear_intent(paths.state)
 
 
