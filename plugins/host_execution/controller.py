@@ -16,6 +16,7 @@ import struct
 import sys
 import tempfile
 import threading
+import time
 from uuid import uuid4
 from dataclasses import asdict
 from concurrent.futures import ThreadPoolExecutor
@@ -70,8 +71,10 @@ class DockerEngine:
 
     def __init__(self, socket_path: Path) -> None:
         self._socket_path = socket_path
-        self._aborted = False
-        self._image_socket: socket.socket | None = None
+
+    @property
+    def socket_path(self) -> Path:
+        return self._socket_path
 
     async def request(
         self,
@@ -126,72 +129,114 @@ class DockerEngine:
             connection.close()
 
 
-    # 确保镜像：inspect（短期限）+ 拉取，整体一个硬期限。到点由计时器主动关闭到引擎的连接，阻塞中的读立即失败；
-    # 控制器停止时 abort_image 做同样的事。只在专用的单线程里调用，不占默认线程池。
-    def ensure_image_sync(self, image: str, total_seconds: float, inspect_seconds: float) -> dict[str, object]:
-        self._aborted = False
-        timer = threading.Timer(total_seconds, self.abort_image)
-        timer.start()
-        try:
-            reference = quote(image, safe="")
-            status = self._image_request("GET", f"/images/{reference}/json", inspect_seconds, drain=True)
-            if status == 200:
-                return {"present": True, "pulled": False}
-            if status != 404:
-                raise RuntimeError(f"Docker 查询镜像失败（HTTP {status}）")
-            self._pull(reference, total_seconds)
-            return {"present": True, "pulled": True}
-        finally:
-            timer.cancel()
+class _OperationAborted(RuntimeError):
+    pass
 
-    def abort_image(self) -> None:
-        self._aborted = True
-        # getresponse() 会把 connection.sock 交给响应并置空，所以单独保存原始 socket 才能打断阻塞中的读。
-        stream = self._image_socket
+
+class _AbortableConnection(http.client.HTTPConnection):
+    """到 Docker 引擎的连接：socket 一创建就登记到所属操作，connect 之前和之后都能被中止。"""
+
+    def __init__(self, socket_path: Path, operation: "_ImageOperation", timeout: float) -> None:
+        super().__init__("docker", timeout=timeout)
+        self._socket_path = socket_path
+        self._operation = operation
+
+    def connect(self) -> None:
+        stream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self._operation.register(stream)
+        stream.settimeout(self.timeout)
+        stream.connect(str(self._socket_path))
+        self.sock = stream
+
+
+class _ImageOperation:
+    """一次 image_ensure：自己的中止标志、自己的 socket、自己的期限。计时器与控制器停止都只作用于这个对象，
+    所以上一次请求迟到的计时器回调不会碰到下一次请求。只保证期限到了请求返回失败，不承诺线程会被杀。"""
+
+    def __init__(self, socket_path: Path, total_seconds: float, inspect_seconds: float) -> None:
+        self._socket_path = socket_path
+        self._inspect_seconds = inspect_seconds
+        self._lock = threading.Lock()
+        self._aborted = False
+        self._socket: socket.socket | None = None
+        self._deadline = time.monotonic() + total_seconds
+        self._total = total_seconds
+        self._timer = threading.Timer(total_seconds, self.abort)
+        self._timer.daemon = True
+
+    def abort(self) -> None:
+        with self._lock:
+            self._aborted = True
+            stream = self._socket
         if stream is not None:
             try:
                 stream.shutdown(socket.SHUT_RDWR)
             except OSError:
                 pass
 
-    def _image_request(self, method: str, path: str, timeout: float, *, drain: bool) -> int:
-        connection = _UnixHttpConnection(self._socket_path)
-        connection.timeout = timeout
+    def register(self, stream: socket.socket) -> None:
+        with self._lock:
+            if self._aborted:
+                stream.close()
+                raise _OperationAborted(self._message())
+            self._socket = stream
+
+    def _message(self) -> str:
+        return f"镜像操作超过 {self._total:.0f} 秒的总期限（或控制器正在停止），已中止"
+
+    def _check(self) -> None:
+        with self._lock:
+            aborted = self._aborted
+        if aborted or time.monotonic() >= self._deadline:
+            raise _OperationAborted(self._message())
+
+    def _timeout(self, limit: float) -> float:
+        return max(0.1, min(limit, self._deadline - time.monotonic()))
+
+    def run(self, image: str) -> dict[str, object]:
+        self._timer.start()
         try:
-            if self._aborted:
-                raise RuntimeError("镜像操作已超过总期限或被中止")
+            reference = quote(image, safe="")
+            status = self._request("GET", f"/images/{reference}/json", self._inspect_seconds, drain=True)
+            if status == 200:
+                return {"present": True, "pulled": False}
+            if status != 404:
+                raise RuntimeError(f"Docker 查询镜像失败（HTTP {status}）")
+            self._pull(reference)
+            return {"present": True, "pulled": True}
+        except OSError as error:
+            raise RuntimeError(self._message() if self._aborted else f"Docker 连接失败: {error}") from error
+        finally:
+            self._timer.cancel()
+
+    def _request(self, method: str, path: str, limit: float, *, drain: bool) -> int:
+        self._check()
+        connection = _AbortableConnection(self._socket_path, self, self._timeout(limit))
+        try:
             connection.request(method, f"/{_API_VERSION}{path}")
-            self._image_socket = connection.sock
-            if self._aborted:
-                raise RuntimeError("镜像操作已超过总期限或被中止")
+            self._check()
             response = connection.getresponse()
             if drain:
                 _ = response.read(1_048_576)
-            if self._aborted:
-                raise RuntimeError("镜像操作已超过总期限或被中止")
+            self._check()
             return response.status
-        except OSError as error:
-            raise RuntimeError("镜像操作已超过总期限或被中止" if self._aborted else f"Docker 连接失败: {error}") from error
         finally:
-            self._image_socket = None
+            self._socket = None
             connection.close()
 
-    # POST /images/create 的响应是逐行 JSON 进度：单行有大小上限，读到 error 就失败；读被 abort 打断不算完成。
-    def _pull(self, reference: str, total_seconds: float) -> None:
-        connection = _UnixHttpConnection(self._socket_path)
-        connection.timeout = 120.0
+    # POST /images/create 的响应是逐行 JSON 进度：单行有大小上限，读到 error 就失败；读被中止打断不算完成。
+    def _pull(self, reference: str) -> None:
+        self._check()
+        connection = _AbortableConnection(self._socket_path, self, self._timeout(120.0))
         try:
             connection.request("POST", f"/{_API_VERSION}/images/create?fromImage={reference}")
-            self._image_socket = connection.sock
-            if self._aborted:
-                raise RuntimeError(f"拉取镜像超过 {total_seconds:.0f} 秒的总期限（或控制器正在停止），已中止")
+            self._check()
             response = connection.getresponse()
             if response.status != 200:
                 raise RuntimeError(f"Docker 拉取镜像失败（HTTP {response.status}）: {response.read(4096).decode('utf-8', errors='replace')}")
             while True:
                 line = response.readline(1_048_576)
-                if self._aborted:
-                    raise RuntimeError(f"拉取镜像超过 {total_seconds:.0f} 秒的总期限（或控制器正在停止），已中止")
+                self._check()
                 if not line:
                     return
                 try:
@@ -200,10 +245,8 @@ class DockerEngine:
                     continue
                 if isinstance(record, dict) and record.get("error"):
                     raise RuntimeError(f"拉取镜像失败: {str(record['error'])[:500]}")
-        except OSError as error:
-            raise RuntimeError(f"拉取镜像超过 {total_seconds:.0f} 秒的总期限（或控制器正在停止），已中止" if self._aborted else f"拉取镜像失败: {error}") from error
         finally:
-            self._image_socket = None
+            self._socket = None
             connection.close()
 
 
@@ -270,7 +313,7 @@ class WorkloadControllerServer:
         self._requests: set[asyncio.Task[None]] = set()
         self._leases = self._load_leases()
         self._image_active: str | None = None
-        self._image_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="image-ensure")
+        self._image_operation: _ImageOperation | None = None
         self._stopped_path = self._state_path.with_suffix(".stopped.json")
         self._stopped = self._load_state(self._stopped_path)
         self._controller_id = uuid4().hex
@@ -370,8 +413,8 @@ class WorkloadControllerServer:
                 requests = tuple(self._requests)
                 for request in requests:
                     _ = request.cancel()
-                self._engine.abort_image()
-                self._image_executor.shutdown(wait=False, cancel_futures=True)
+                if self._image_operation is not None:
+                    self._image_operation.abort()
                 if requests:
                     results = await asyncio.gather(*requests, return_exceptions=True)
                 else:
@@ -564,13 +607,22 @@ class WorkloadControllerServer:
         if self._image_active is not None:
             raise RuntimeError(f"正在拉取 {self._image_active}，稍后再试")
         self._image_active = image
+        operation = _ImageOperation(self._engine.socket_path, _IMAGE_PULL_TIMEOUT_S, _IMAGE_INSPECT_TIMEOUT_S)
+        self._image_operation = operation
+        # 每次操作一个新的单线程执行器：线程万一卡住，也不会拖住下一次请求；期限到了即使线程没回来，也在期限加宽限后返回失败。
+        executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="image-ensure")
         try:
-            return await asyncio.get_running_loop().run_in_executor(
-                self._image_executor, self._engine.ensure_image_sync, image, _IMAGE_PULL_TIMEOUT_S, _IMAGE_INSPECT_TIMEOUT_S)
+            future = asyncio.get_running_loop().run_in_executor(executor, operation.run, image)
+            return await asyncio.wait_for(future, timeout=_IMAGE_PULL_TIMEOUT_S + 5.0)
+        except asyncio.TimeoutError:
+            operation.abort()
+            raise RuntimeError(f"镜像操作超过 {_IMAGE_PULL_TIMEOUT_S:.0f} 秒的总期限，已中止") from None
         except asyncio.CancelledError:
-            self._engine.abort_image()
+            operation.abort()
             raise
         finally:
+            executor.shutdown(wait=False)
+            self._image_operation = None
             self._image_active = None
 
     # 启动失败后按稳定名核对现场；核对本身失败时不作结论，保持「结果未知」的保守语义。
