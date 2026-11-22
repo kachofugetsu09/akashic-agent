@@ -154,6 +154,11 @@ def install_one(ctx: Context, state: PackageState, plugin_id: str, sha: str, upg
         # 3. 在线等到终态，离线只写 cache 与选择 patch。
         if ctx.online:
             result, detail = _install_online(ctx, plugin_id, sha)
+            # 前置条件不满足的包常在激活时就失败（如缺 Workload Controller）：同样保持关闭并说明，不当作安装失败。
+            if result in ("installed", "failed"):
+                held = _hold_closed(ctx, name, plugin_id)
+                if held:
+                    result, detail = "installed", held
             return Outcome(name, "upgraded" if upgrade and result == "installed" else result,
                            detail or sha[:12])
         _ = _install_offline(ctx, plugin_id, sha)
@@ -162,7 +167,8 @@ def install_one(ctx: Context, state: PackageState, plugin_id: str, sha: str, upg
     return Outcome(name, "upgraded" if upgrade else "installed", _hold_closed(ctx, name, plugin_id) or sha[:12])
 
 
-# 离线安装后：index 声明了外部前置条件而本机不满足，包照装但保持关闭并记录原因（返回说明）；index 取不到不影响安装。
+# 装完后：index 声明了外部前置条件而本机不满足，包照装但保持关闭并记录原因（返回说明）；index 取不到不影响安装。
+# 在线时经 Gateway 热停用（plugin-disable），离线直接写 patch。
 def _hold_closed(ctx: Context, name: str, plugin_id: str) -> str:
     try:
         needs = load_index(ctx.repo, plugins_root()).packages[name].needs
@@ -172,9 +178,14 @@ def _hold_closed(ctx: Context, name: str, plugin_id: str) -> str:
     if not missing:
         clear_disabled(ctx.workspace, plugin_id)
         return ""
-    root = distribution_sources(ctx.workspace, plugins_root(), replacing_distribution=True).root
-    _ = set_plugin_choice(ctx.workspace, plugin_id, enabled=False, distribution=root)
     record_disabled(ctx.workspace, plugin_id, missing)
+    if ctx.online:
+        done = _main(ctx, "plugin-disable", plugin_id)
+        if done.returncode != 0:
+            raise RuntimeError(done.stderr.strip() or done.stdout.strip() or "plugin-disable 失败")
+    else:
+        root = distribution_sources(ctx.workspace, plugins_root(), replacing_distribution=True).root
+        _ = set_plugin_choice(ctx.workspace, plugin_id, enabled=False, distribution=root)
     return f"已安装但未启用：{describe(missing)}"
 
 

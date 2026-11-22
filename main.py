@@ -694,6 +694,20 @@ if __name__ == "__main__":
             sys.exit(1)
         plugin_id = args[1]
         enabled = args[0] == "plugin-enable"
+        # 实例在线时走 Gateway：与设置页同一条路径，启用前检测外部前置条件并热重载；没有运行中的实例才只写 patch。
+        from akashic_sdk import RemoteError
+        from plugins.gateway.cli import request as gateway_request
+
+        try:
+            online = asyncio.run(gateway_request(workspace, "plugin/set-enabled", {"plugin_id": plugin_id, "enabled": enabled}))
+        except (ConnectionError, OSError):
+            online = None
+        except RemoteError as exc:
+            print(str(exc))
+            sys.exit(1)
+        if online is not None:
+            print(f"插件已{'启用' if enabled else '禁用'}（在线）: {plugin_id} {online.get('publication_state', '')}".strip())
+            sys.exit(0)
         from agent.plugins.install import set_installed_plugin_enabled
 
         try:
