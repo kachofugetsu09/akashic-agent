@@ -99,7 +99,10 @@ def install(args: argparse.Namespace, *, self_deploy: dict[str, object] | None =
                 extra=ExtraOptions(enabled=not getattr(args, "no_extra", False),
                                    repo=getattr(args, "extra_repo", None),
                                    inputs=getattr(args, "extra_inputs", None),
-                                   allow_retire=getattr(args, "allow_retire", False)),
+                                   allow_retire=getattr(args, "allow_retire", False),
+                                   profile=getattr(args, "profile", None),
+                                   groups=tuple(item for item in getattr(args, "groups", "").split(",") if item),
+                                   assume_yes=getattr(args, "yes", False), reselect=getattr(args, "reselect", False)),
             )
     # 降级的外置插件进入 install 结果，自部署 worker 的 status 也能看到。
     runtime_check = (read_json(paths.activation / "active.json").get("runtimeCheck")
@@ -187,6 +190,10 @@ def _parser() -> argparse.ArgumentParser:
                                 help="预先下载好的 extra 输入目录（此前联网部署留下的 .inputs 目录），不联网")
     install_parser.add_argument("--allow-retire", action="store_true",
                                 help="确认让在用的内置插件随新发行版消失（发行版不再提供且 extra 上游也没有）；默认拒绝，自部署不传")
+    install_parser.add_argument("--profile", choices=("full", "minimal", "custom"), help="首次安装的扩展包选择；不给且有终端就提问，没有终端等于 full")
+    install_parser.add_argument("--groups", default="", help="首次安装自选的包组（逗号分隔，隐含 custom）")
+    install_parser.add_argument("--yes", action="store_true", help="首次安装不提问不确认")
+    install_parser.add_argument("--reselect", action="store_true", help="首次安装失败后重跑时重新选择（默认沿用上次的选择，不再提问）")
     install_parser.set_defaults(handler=install)
 
     doctor_parser = subparsers.add_parser("doctor")
@@ -238,7 +245,11 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
-    args = _parser().parse_args()
+    parser = _parser()
+    args = parser.parse_args()
+    # 与 start 同一条规则：离线输入已经决定了要装的包，不能再给 --profile/--groups。
+    if getattr(args, "extra_inputs", None) and (getattr(args, "profile", None) or getattr(args, "groups", "")):
+        parser.error("--extra-inputs 是预先下载好的输入目录，已经决定了要装的包，不能同时给 --profile/--groups")
     result = args.handler(args)
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
     return 0

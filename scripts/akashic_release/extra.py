@@ -56,6 +56,15 @@ class ExtraOptions:
     wheel_resolver: Resolver | None = None
     # 首次安装：把 index 声明的外部前置条件（needs）记进目标，供离线 ensure 按同一套策略装上但保持关闭；也不为缺前置条件的包预拉镜像。
     record_needs: bool = False
+    # 首次安装选定要装的 extra 包（manifest 名）：并入应装集合，patch 里启用的非预设包也按首装处理而不是 optional。
+    install_extra: tuple[str, ...] = ()
+    # 首次安装的选择文件（bundle.patch.toml 内容）：workspace 还没初始化、patch 还不存在时，用它代替 workspace 里的 patch 计算应装集合。
+    patch_file: Path | None = None
+    # 首次安装的选择参数（akashic-release install 的 --profile/--groups/--yes）；不在 prepare_extra_inputs 里用，由首次激活分支读取。
+    profile: str | None = None
+    groups: tuple[str, ...] = ()
+    assume_yes: bool = False
+    reselect: bool = False
 
 
 @dataclass(frozen=True)
@@ -316,11 +325,15 @@ def prepare_extra_inputs(
     current_root, selected = read_selected(workspace, target_python(options.image, run, options.wheel_resolver))
     if current_root != root_ref:
         raise RuntimeError("选择在读取期间改变，停止部署")
-    enabled, preset, known = composition_ids(source, mode, workspace / "bundle.patch.toml")
-    patch_path = workspace / "bundle.patch.toml"
+    patch_path = options.patch_file or workspace / "bundle.patch.toml"
+    enabled, preset, known = composition_ids(source, mode, patch_path)
     patched = {str(row["plugin"]) for row in _read_rows(patch_path).values()} if patch_path.exists() else set()
+    absorbed = read_absorbed(source)
     absorbed_notes = tuple((identity, f"已并入 Core 的 {provider}：移出选择，忽略用户 patch 里的行")
-                           for identity, provider in sorted(read_absorbed(source).items()) if identity in selected or identity in patched)
+                           for identity, provider in sorted(absorbed.items()) if identity in selected or identity in patched)
+    # 首装选定要装的包并入应装集合；已被 Core 吸收的身份（如 index 里仍列着的 session_reference）不能被装回来。
+    wanted = frozenset(f"{name}@{MARKETPLACE}" for name in options.install_extra) - absorbed.keys()
+    enabled, preset, known = enabled | wanted, preset | wanted, known | wanted
     repo = resolve_repo(options.repo)
     remote: dict[str, str] = {}
 
