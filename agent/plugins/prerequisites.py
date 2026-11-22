@@ -18,6 +18,9 @@ from typing import cast
 
 DOCKER_SOCKET = Path("/var/run/docker.sock")
 _RECORD = "runtime/disabled-reasons.json"
+_DECLARED = "runtime/declared-needs.json"
+# 前置条件相关的两份状态文件：安装事务的恢复点（snapshot）一并保存与还原。
+RECORD_FILES = (_RECORD, _DECLARED)
 
 
 def _connects(path: Path, timeout: float) -> bool:
@@ -71,6 +74,13 @@ def describe(missing: Iterable[str]) -> str:
 # 前置条件声明只有两种合法形式：docker、command:<命令>。
 def _valid_need(value: object) -> bool:
     return isinstance(value, str) and (value == "docker" or (value.startswith("command:") and len(value) > len("command:")))
+
+
+# 校验一份前置条件声明（来自 index、旁注或记录）：必须是字符串列表，每项是 docker 或 command:<命令>；不合法抛 ValueError。
+def parse_needs(value: object, where: str) -> list[str]:
+    if not isinstance(value, list) or not all(_valid_need(item) for item in cast(list[object], value)):
+        raise ValueError(f"{where} 的前置条件声明无效（必须是 docker 或 command:<命令> 组成的列表）: {value!r}")
+    return cast(list[str], value)
 
 
 # 读原因记录：返回 (有效条目, 问题说明)。文件不存在是正常（没有问题）；坏 JSON、顶层不是对象、条目不是
@@ -139,14 +149,54 @@ def clear_disabled(workspace: Path, plugin_id: str) -> None:
 
 
 # 启用前的统一检查：有记录且条件仍不满足就拒绝并说明；满足了清掉记录放行。
+# 包声明的前置条件（安装时随包记下：index 或首装旁注的 needs），不依赖联网；启用检查以它为准，原因记录只用于展示。
+def load_declared(workspace: Path) -> tuple[dict[str, list[str]], str | None]:
+    path = workspace / _DECLARED
+    if not path.exists():
+        return {}, None
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(value, dict):
+            raise ValueError("顶层必须是对象")
+        return {key: parse_needs(item, key) for key, item in cast(dict[str, object], value).items()}, None
+    except (OSError, ValueError) as error:
+        return {}, f"{path} 无法读取或格式无效（{error}）"
+
+
+def record_declared(workspace: Path, plugin_id: str, needs: list[str]) -> None:
+    path = workspace / _DECLARED
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with (path.parent / (path.name + ".lock")).open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        declared, problem = load_declared(workspace)
+        if problem is not None:
+            raise ValueError(f"前置条件声明记录损坏，未改动：{problem}；修复或删除该文件后重试")
+        if needs:
+            declared[plugin_id] = needs
+        elif declared.pop(plugin_id, None) is None:
+            return
+        descriptor, name = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=path.parent)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                _ = stream.write(json.dumps(declared, ensure_ascii=False, indent=1, sort_keys=True))
+            os.replace(name, path)
+        finally:
+            Path(name).unlink(missing_ok=True)
+
+
+# 启用前的统一检查：以包声明的 needs 为准（没有声明时退回原因记录里的 needs，都没有就放行）；
+# 仍不满足就拒绝并说明，满足了清掉展示用的原因记录；任一记录文件损坏都拒绝（无法确认条件）。
 def check_before_enable(workspace: Path, plugin_id: str) -> None:
+    declared, declared_problem = load_declared(workspace)
     rows, problem = load_disabled(workspace)
-    if problem is not None:
-        raise ValueError(f"{plugin_id} 不能启用：前置条件原因记录损坏，无法确认条件是否满足（{problem}）；修复或删除该文件后重试")
-    record = rows.get(plugin_id)
-    if record is None:
+    if declared_problem is not None or problem is not None:
+        raise ValueError(f"{plugin_id} 不能启用：前置条件记录损坏，无法确认条件是否满足（{declared_problem or problem}）；修复或删除该文件后重试")
+    needs = declared.get(plugin_id)
+    if needs is None and plugin_id in rows:
+        needs = cast(list[str], rows[plugin_id]["needs"])
+    if not needs:
         return
-    still = unmet(cast(list[str], record["needs"]))
+    still = unmet(needs)
     if still:
         raise ValueError(f"{plugin_id} 不能启用：{describe(still)}；补齐后再启用")
     clear_disabled(workspace, plugin_id)

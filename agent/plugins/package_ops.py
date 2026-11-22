@@ -18,7 +18,7 @@ from agent.plugins.distribution_sources import distribution_sources
 from agent.plugins.install import PluginInstallResult, finalize_uninstall_plugin, fetch_sha_shallow, install_git_plugin
 from agent.plugins.manifest import plugins_root
 from agent.plugins.package_index import expand, load_index
-from agent.plugins.prerequisites import clear_disabled, describe, record_disabled, unmet
+from agent.plugins.prerequisites import clear_disabled, describe, record_declared, record_disabled, unmet
 from agent.plugins.packages import InstalledPackage, PackageState, list_release_heads, read_state, sync_rows
 from agent.plugins.resources import ResourceError, repair_resources
 from agent.plugins.selection import PluginSelection
@@ -190,6 +190,7 @@ def _hold_closed(ctx: Context, name: str, plugin_id: str) -> str:
         needs = load_index(ctx.repo, plugins_root()).packages[name].needs
     except (RuntimeError, KeyError):
         return ""
+    record_declared(ctx.workspace, plugin_id, list(needs))
     missing = unmet(needs)
     if not missing:
         clear_disabled(ctx.workspace, plugin_id)
