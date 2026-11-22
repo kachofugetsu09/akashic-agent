@@ -141,6 +141,7 @@ def read_state(workspace: Path, repo: str) -> PackageState:
         builtin = record["source_type"] == "builtin"
         retired = builtin and bool(distribution.sources) and plugin_id not in provided
         packages[plugin_id] = _package(plugin_id, Path(cast(str, record["code"])), builtin, repo, True, retired)
+    marketplaces = frozenset(source.marketplace for source in distribution.sources if source.marketplace)
     installed: set[str] = set()
     for source in resolve_plugin_sources(installed_cache_root=home / "cache"):
         if source.plugin_root.resolve() in ignored:
@@ -149,11 +150,12 @@ def read_state(workspace: Path, repo: str) -> PackageState:
         # 发行版已不提供的旧内置输入让位给 cache 里的新安装。
         if plugin_id not in packages or packages[plugin_id].retired:
             packages[plugin_id] = _package(plugin_id, source.plugin_root, False, repo, False)
-        # 只有来源是 extra 仓库的 artifact 才算"已装"；旧内置遗留制品不能掩盖缺口。
-        if _source_of(source.plugin_root, False, repo) == "extra":
+        # 官方命名空间里只有来源是 extra 仓库的 artifact 才算"已装"，旧内置遗留制品不能掩盖缺口；
+        # 其他 marketplace（github、local 等）的 artifact 照常算已装。
+        official = plugin_id.partition("@")[2] in marketplaces
+        if not official or _source_of(source.plugin_root, False, repo) == "extra":
             installed.add(plugin_id)
     ordered = sorted(packages.values(), key=lambda item: item.plugin_id)
-    marketplaces = frozenset(source.marketplace for source in distribution.sources if source.marketplace)
     return PackageState(ordered, provided, frozenset(installed), distribution.legacy_ids, marketplaces, distribution.root,
                         workspace, repo)
 
