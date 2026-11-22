@@ -105,6 +105,10 @@ def _check_offline_requirements(path: Path) -> None:
 
     from pip._vendor.packaging.requirements import InvalidRequirement, Requirement
 
+    from agent.plugins.requirements_check import check_plain_requirements
+
+    # 先过统一的纯文本校验（与联网求 wheel 之前的检查是同一份），再逐行用 packaging 解析。
+    _ = check_plain_requirements(path.read_text(encoding="utf-8"), str(path.name))
     lines = path.read_text(encoding="utf-8").splitlines()
     found = False
     for number, raw in enumerate(lines, 1):
