@@ -1,7 +1,7 @@
 # 非核心插件外移与包管理：迁移计划
 
 - 日期：2026-11-22
-- 状态：进行中（Phase 0）
+- 状态：Phase 0–3 已完成（2026-11-22，29 个插件由 extra 仓库提供）；Phase 4 未开始
 - 关系：修订 ADR 0148。0148 撤回 #1973 的原因是安装与更新流程没有跟上（插件 PR、升 lock、部署三步；镜像、制品库、覆盖三处来源）。本计划先重做初始化、安装、更新流程，再外移插件；迁移完成后写新 ADR 取代 0148。
 
 ## 目标
@@ -149,6 +149,33 @@ Core 侧一个 PR，extra 侧先行或同时：
 - B：`projects`、`main_session`、`session_title`、`session_reference`、`workspace_changes`、`markdown_reader`、`terminal`
 - C：`goal`、`scheduler`、`timer`、`userinformation`、`message_push`、`markdown_memory`
 - D：`codex`、`gemini`、`opencode_go`、`telegram_sender`、`vision`、`computer`
+
+### Phase 3 完成记录
+
+已迁出（身份保持 `@release`，登记在 `plugin_boundary.toml` 的 `[tiers].external`；Core PR / extra PR）：
+
+| 批 | 插件 | Core | extra |
+|---|---|---|---|
+| 样本 | `privacy_mask` | #2178 | 建仓时一并推出 |
+| 样本 | `watch` | #2180 | #9 |
+| A | `subagent`、`subagent_codex`、`subagent_claude_code`、`standard_web`、`web_fetch_http`、`web_search_exa`、`web_search_searxng`、`stable_view` | #2182 | #10 |
+| B | `projects`、`main_session`、`session_title`、`session_reference`、`workspace_changes`、`markdown_reader`、`terminal` | #2184 | #11 |
+| C | `goal`、`scheduler`、`timer`、`userinformation`、`message_push`、`markdown_memory` | #2185 | #12 |
+| D | `codex`、`gemini`、`opencode_go`（身份 `opencode-go`）、`telegram_sender`、`vision`、`computer` | #2186 | #13 |
+
+配套：#2181 与 #2183（换来源按"现在是否在用"判定、官方 extra 包按 `@release` 全新安装）、#2172（已安装的官方身份插件执行迁移）、#2176/#2177（部署侧产出清单与首装补装）。
+
+仍在 Core 的 `[tiers].extra`：`akasha`、`design`、`visuals`、`telegram_channel`，原因都是 Phase 4：进程内导入第三方包（numba/numpy/jieba、playwright、python-telegram-bot），在"插件自带依赖挂进主进程"实现前不能迁。除这四个外，extra 层没有被遗漏的可迁插件。
+
+迁移门禁：`scripts/check_yoyo_migrations.py` 已支持 `--root` 指向外部仓库根。extra 仓库的 CI 接入它（PR 上跑"已发布迁移只能追加"）并把固定的 Core 版本升到包含该参数的提交之后，这条保证才由 extra 承接；在那之前 Core 自己的检查对已迁出的插件放行，迁出插件的迁移不可变没有门禁。
+
+已知缺口：
+
+- 聊天输入框的"引用会话"（拖入会话、`MAX_REFERENCES`）写在宿主前端，后端读取由 `session_reference` 提供；Phase 5 做按场景选装时，`session_reference` 不能当可选包，否则界面还能引用而后端没有人读。
+- 声明镜像的插件（`computer`）的镜像仍由 Core 的 `docker/computer` 与 `.github/workflows/computer-image.yml` 构建；摘要变化要在 extra 仓库改 `plugin.py`。
+- `scripts/build-web-plugins.mjs` 里 `computer` 的构建目标特例、visuals/design 的专用构建段仍在 Core 的构建脚本里（Phase 4）。
+- 进程内导入第三方包的已迁插件（`web_fetch_http`：html2text、lxml；`telegram_sender`：aiohttp、telegramify-markdown）依赖 Core 镜像继续带着这些包。
+- `benchmark/computer_runtime` 与 `benchmark/computer_driver` 的 `--agent` 模式只能在 extra 仓库 `extra_ci.py compose` 的合成目录里运行；`computer_driver` 的非 Agent 模式不受影响。
 
 ### Phase 4：带重依赖的插件
 

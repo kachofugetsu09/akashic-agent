@@ -312,6 +312,9 @@ def main():
         "--provider-kind", choices=("real", "simulated"), default="real"
     )
     args = parser.parse_args()
+    # computer 插件已迁到 extra 仓库：--source 必须是 extra_ci.py compose 的合成目录（含 plugins/computer）。
+    if args.agent and not (args.source / "plugins/computer/skills/computer/SKILL.md").is_file():
+        parser.error("--source 下没有 plugins/computer：需要 extra 仓库的合成目录，在 extra 仓库里运行 `python scripts/extra_ci.py compose --core <Core 检出> --synth <目录>` 生成")
     if args.agent and (
         not args.model or args.driver != "source" or args.suppress_actions
     ):
