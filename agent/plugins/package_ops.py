@@ -300,20 +300,25 @@ def _dependency_plan(ctx: Context, names: list[str]) -> tuple[list[str], dict[st
     return ordered + [name for name in names if name.partition("@")[0] not in index.packages], needs
 
 
-# 按计划逐个安装：依赖没装好（失败，或装上但因前置条件保持关闭）时，依赖它的包不装，免得装上却加载失败。
+# 按计划逐个安装：依赖没装好（失败、装上但因前置条件保持关闭，或要重启才生效）时，依赖它的包不装，
+# 免得装上却加载失败。要重启的依赖：当前进程仍是旧合同，提示重启后再装。
 def _install_planned(ctx: Context, names: list[str], needs: dict[str, set[str]]) -> list[Outcome]:
     heads = list_release_heads(ctx.repo)
     outcomes: list[Outcome] = []
     not_ready: set[str] = set()
+    seen: list[tuple[str, str]] = []
     for name in names:
         bare = name.partition("@")[0]
         if blocked := sorted(needs.get(bare, set()) & not_ready):
-            outcomes.append(Outcome(bare, "failed", f"依赖 {', '.join(blocked)} 没有就绪，未安装"))
+            restart = any(dict(seen).get(dep) == "restart-required" for dep in blocked)
+            hint = "（需要先重启实例，再重新安装）" if restart else ""
+            outcomes.append(Outcome(bare, "failed", f"依赖 {', '.join(blocked)} 没有就绪，未安装{hint}"))
             not_ready.add(bare)
             continue
         outcome = install_many(ctx, [identity_of(name)], heads)[0]
         outcomes.append(outcome)
-        if outcome.result in BAD_RESULTS or outcome.detail.startswith("已安装但未启用"):
+        seen.append((bare, outcome.result))
+        if outcome.result in BAD_RESULTS or outcome.result == "restart-required" or outcome.detail.startswith("已安装但未启用"):
             not_ready.add(bare)
     return outcomes
 
