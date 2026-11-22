@@ -459,9 +459,14 @@ ARCHIVE_SECONDS = 900.0
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-# 把声明的归档下载到 destination（<sha256>.zip），返回部署清单条目；没有 resources.json 返回 None。
+# 按 sha256 去重（归档文件是 <sha256>.zip，同一份归档可被多个资源以不同入口使用）：每个 sha256 取第一个声明。
+def unique_archives(items: tuple[Resource, ...]) -> list[Resource]:
+    return list({item.sha256: item for item in reversed(items)}.values())[::-1]
+
+
+# 把声明的归档下载到 destination（<sha256>.zip，每个唯一 sha256 一份），返回部署清单条目；没有 resources.json 返回 None。
 def stage_archives(code: Path, destination: Path, *, reuse: Path | None = None, seconds: float = ARCHIVE_SECONDS) -> dict[str, object] | None:
-    items = read_manifest(code)
+    items = unique_archives(read_manifest(code))
     if not items:
         return None
     destination.mkdir(parents=True, exist_ok=True)
@@ -487,8 +492,10 @@ def _download_in_subprocess(code: Path, destination: Path, names: list[str], sec
         done = subprocess.run(command, cwd=_REPO_ROOT, capture_output=True, text=True, timeout=seconds, check=False,
                               env={**os.environ, "PYTHONPATH": str(_REPO_ROOT)})
     except subprocess.TimeoutExpired as error:
+        _clear_partials(destination)
         raise ResourceError(f"资源归档下载超过硬上限 {seconds:.0f} 秒，已终止下载进程") from error
     if done.returncode != 0:
+        _clear_partials(destination)
         raise ResourceError(f"资源归档下载失败: {(done.stderr or done.stdout).strip()[-400:]}")
 
 
@@ -505,10 +512,11 @@ def check_archive(resource: Resource, path: Path) -> None:
 # 归档目录必须恰好是声明的那几份，每份哈希都对得上；返回声明条目。
 def check_archive_dir(code: Path, directory: Path, expected: object) -> tuple[Resource, ...]:
     items = read_manifest(code)
+    unique = unique_archives(items)
     names = sorted(path.name for path in directory.iterdir())
-    if names != sorted(f"{item.sha256}.zip" for item in items) or expected != sorted(item.sha256 for item in items):
+    if names != sorted(f"{item.sha256}.zip" for item in unique) or expected != sorted(item.sha256 for item in unique):
         raise ResourceError(f"资源归档目录与 resources.json 声明不一致: {names}")
-    for item in items:
+    for item in unique:
         check_archive(item, directory / f"{item.sha256}.zip")
     return items
 
@@ -540,13 +548,27 @@ def _main(arguments: list[str]) -> int:
         return 2
 
 
-# download：只下载并校验归档到 dest（<sha256>.zip），不解压、不发布；整个命令共用一个期限。
+# 清掉 dest 里下载中断留下的临时文件（.partial-*）；正式归档只通过校验后的原子改名出现。
+def _clear_partials(dest: Path) -> None:
+    for path in dest.glob(".partial-*"):
+        path.unlink(missing_ok=True)
+
+
+# download：只下载并校验归档到 dest（<sha256>.zip，按唯一 sha256），不解压、不发布；整个命令共用一个期限。
+# 先写 .partial-<sha256>，校验通过后原子改名；失败或被杀留下的临时文件由下次运行（或父进程）清掉。
 def _run_download(items: list[Resource], dest: Path, seconds: float) -> int:
     dest.mkdir(parents=True, exist_ok=True)
+    _clear_partials(dest)
     deadline = _Deadline(seconds)
-    for item in items:
-        _ = download_archive(item, dest / f"{item.sha256}.zip", deadline=deadline)
-    print(json.dumps([{"name": item.name, "sha256": item.sha256} for item in items]))
+    unique = unique_archives(tuple(items))
+    for item in unique:
+        partial = dest / f".partial-{item.sha256}"
+        try:
+            _ = download_archive(item, partial, deadline=deadline)
+            os.replace(partial, dest / f"{item.sha256}.zip")
+        finally:
+            partial.unlink(missing_ok=True)
+    print(json.dumps([{"name": item.name, "sha256": item.sha256} for item in unique]))
     return 0
 
 
