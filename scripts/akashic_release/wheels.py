@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Callable, cast
 
 from agent.plugins.extra_repo import PROXY_ENV
-from agent.plugins.requirements_check import check_plain_requirements
+from agent.plugins.requirements_check import BUNDLED_WHEELS_DIR, check_bundled_wheels, check_plain_requirements
 
 class WheelResolutionFailure(RuntimeError):
     """依赖本身无法解析成 wheel（冲突、只有源码包等）：与网络不可达区分开，调用方不要提示"检查网络"。"""
@@ -166,6 +166,13 @@ def resolve_package_wheels(
             # 联网之前先校验（与镜像内入口同一份函数），点名文件与行。
             _ = check_plain_requirements(path.read_text(encoding="utf-8"), str(path.relative_to(code)))
             shutil.copyfile(path, work / "req" / label)
+        # 插件自带的纯 Python wheel（只给进程内依赖用）：联网之前先校验，再随 work 目录交给求包容器。
+        bundled = check_bundled_wheels(code / BUNDLED_WHEELS_DIR) if inprocess is not None else ()
+        if bundled:
+            (work / "bundled").mkdir()
+            (work / "bundled").chmod(0o755)
+            for wheel in bundled:
+                shutil.copyfile(wheel, work / "bundled" / wheel.name)
         others: Mapping[str, tuple[str, str]] = {key: value for key, value in pins.items() if value[1] != plugin_id}
         spec = {"plugin": name, "inprocess": "inprocess.txt" if inprocess is not None else None,
                 "runtimes": [label for label in files if label != "inprocess.txt"],

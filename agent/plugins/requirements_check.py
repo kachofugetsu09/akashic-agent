@@ -6,6 +6,8 @@ requirements 文件里可以写 pip 选项行（--no-binary、--index-url、-r�
 from __future__ import annotations
 
 import re
+import zipfile
+from pathlib import Path
 
 _NAME = r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?"
 _SPEC = r"(?:===|==|!=|<=|>=|~=|<|>)\s*[A-Za-z0-9.*+!_-]+"
@@ -52,3 +54,71 @@ def _reject_reason(line: str) -> str | None:
     if _REQUIREMENT.fullmatch(line) is None:
         return "不是合法的 PEP 508 普通包要求"
     return None
+
+
+# 插件自带的 wheel 目录：只收纯 Python wheel（py3-none-any）。自带 wheel 与插件自身代码同等受信（都是进程内任意代码），
+# 限定纯 Python 是为了避免平台/ABI 问题，也让内容可以被人直接读懂；安装 wheel 不执行 setup.py，所以仍然不现编源码包。
+BUNDLED_WHEELS_DIR = "wheels"
+_BUNDLED_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.]*-[A-Za-z0-9_.!+]+-py3-none-any\.whl$")
+_MAX_BUNDLED_FILES = 32
+_MAX_BUNDLED_BYTES = 256 * 1024 * 1024
+
+
+# 校验并列出 wheels/ 里的文件；目录不存在返回空元组。名字不合格、不是普通文件、数量或体积超限都点名拒绝。
+def check_bundled_wheels(directory: Path) -> tuple[Path, ...]:
+    if directory.is_symlink():
+        raise ValueError(f"{directory.name}/ 不能是符号链接")
+    if not directory.exists():
+        return ()
+    if not directory.is_dir():
+        raise ValueError(f"{directory.name} 必须是目录")
+    entries = sorted(directory.iterdir(), key=lambda item: item.name)
+    if len(entries) > _MAX_BUNDLED_FILES:
+        raise ValueError(f"{directory.name}/ 文件过多（上限 {_MAX_BUNDLED_FILES}）")
+    total = 0
+    for entry in entries:
+        if entry.is_symlink() or not entry.is_file():
+            raise ValueError(f"{directory.name}/{entry.name} 不是普通文件")
+        if _BUNDLED_NAME.fullmatch(entry.name) is None:
+            raise ValueError(f"{directory.name}/{entry.name} 不是纯 Python wheel（只收 *-py3-none-any.whl）")
+        total += entry.stat().st_size
+    if total > _MAX_BUNDLED_BYTES:
+        raise ValueError(f"{directory.name}/ 总体积超过上限 {_MAX_BUNDLED_BYTES // (1024 * 1024)}MB")
+    for entry in entries:
+        _check_pure_wheel(entry, directory.name)
+    return tuple(entries)
+
+
+_NATIVE_SUFFIXES = (".so", ".pyd", ".dylib", ".dll")
+_MAX_WHEEL_METADATA_BYTES = 64 * 1024
+
+
+# 文件名只是声明：打开归档核对 WHEEL 元数据确为纯 Python（Root-Is-Purelib: true、标签只有 py3-none-any），且不含原生扩展成员。
+def _check_pure_wheel(path: Path, label: str) -> None:
+    where = f"{label}/{path.name}"
+    try:
+        with zipfile.ZipFile(path) as archive:
+            names = archive.namelist()
+            metadata = [name for name in names if name.count("/") == 1 and name.endswith(".dist-info/WHEEL")]
+            if len(metadata) != 1:
+                raise ValueError(f"{where} 不是合法的 wheel（缺少唯一的 .dist-info/WHEEL）")
+            # WHEEL 元数据只有几行；先看声明大小，再对实际解压输出限长，避免小压缩包撑爆内存。
+            if archive.getinfo(metadata[0]).file_size > _MAX_WHEEL_METADATA_BYTES:
+                raise ValueError(f"{where} 的 WHEEL 元数据过大")
+            with archive.open(metadata[0]) as stream:
+                raw = stream.read(_MAX_WHEEL_METADATA_BYTES + 1)
+            if len(raw) > _MAX_WHEEL_METADATA_BYTES:
+                raise ValueError(f"{where} 的 WHEEL 元数据过大")
+            text = raw.decode("utf-8")
+    except (OSError, zipfile.BadZipFile, UnicodeDecodeError) as error:
+        raise ValueError(f"{where} 不是合法的 wheel: {error}") from error
+    fields = [line.partition(":") for line in text.splitlines() if ":" in line]
+    values = [(key.strip().lower(), value.strip()) for key, _, value in fields]
+    purelib = [value.lower() for key, value in values if key == "root-is-purelib"]
+    tags = [value for key, value in values if key == "tag"]
+    if purelib != ["true"] or tags != ["py3-none-any"]:
+        raise ValueError(f"{where} 的 WHEEL 元数据不是纯 Python（Root-Is-Purelib={purelib}，Tag={tags}）")
+    native = [name for name in names if name.lower().endswith(_NATIVE_SUFFIXES) or ".so." in name.lower()]
+    if native:
+        raise ValueError(f"{where} 含原生扩展成员: {native[0]}")
+
