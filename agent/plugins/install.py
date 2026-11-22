@@ -474,7 +474,7 @@ def _activate_plugin_version(
         _ = shutil.copytree(clone_root, staging_root, dirs_exist_ok=True)
         _prepare_static_python_runtimes(
             staging_root, static_manifest, workspace=workspace,
-            offline_wheels=offline_wheels, dependency_batch=dependency_batch,
+            offline_wheels=offline_wheels, dependency_batch=dependency_batch, plugins_home=cache_root.parents[1],
         )
 
         # 3. 先落完整 artifact，再原子切换 stable/latest 指针对。
@@ -674,6 +674,7 @@ def _prepare_static_python_runtimes(
     workspace: Path,
     offline_wheels: OfflineWheels | None = None,
     dependency_batch: DependencyBatch | None = None,
+    plugins_home: Path | None = None,
 ) -> None:
     """在最终耐久路径准备环境；安装 cache 只保存不可变引用。"""
     environments = PythonEnvironments(workspace)
@@ -683,7 +684,7 @@ def _prepare_static_python_runtimes(
     if inprocess is not None:
         # 约束只作用于进程内环境；临时约束文件在整个准备期间保持存在。离线（部署）与在线路径用同一份约束。
         with tempfile.TemporaryDirectory(prefix="akashic-constraints-") as scratch:
-            constraints = build_constraints(workspace, manifest.name, environments, Path(scratch), dependency_batch)
+            constraints = build_constraints(workspace, manifest.name, environments, Path(scratch), dependency_batch, plugins_home)
             refs[INPROCESS_KEY] = environments.prepare(
                 plugin_root, inprocess, constraints=constraints, offline_wheels=offline_wheels)
     # 2. 根与子目录 requirements.txt 的子进程 runtime，行为不变。

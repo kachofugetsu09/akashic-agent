@@ -63,21 +63,52 @@ class DependencyPaths:
         self._attached: dict[str, Path] = {}
         self._restart_pending: set[str] = set()
 
+    # 模块实际所在的位置：__file__、__spec__.submodule_search_locations 与 __path__（隐式命名空间包没有 __file__，
+    # 位置在 __path__ 里）；归属必须按这些位置落在哪个已挂载环境下判断，不能只看顶层名字。
+    @staticmethod
+    def _locations(module: object) -> list[str]:
+        found: list[str] = []
+        file = getattr(module, "__file__", None)
+        if file:
+            found.append(str(file))
+        spec = getattr(module, "__spec__", None)
+        for item in getattr(spec, "submodule_search_locations", None) or ():
+            found.append(str(item))
+        try:
+            found.extend(str(item) for item in getattr(module, "__path__", None) or ())
+        except (TypeError, ImportError):
+            pass
+        return found
+
     def _imported_from(self, directory: Path) -> bool:
         prefix = str(directory) + "/"
-        return any(str(getattr(module, "__file__", None) or "").startswith(prefix)
-                   for module in tuple(sys.modules.values()))
+        return any(location.startswith(prefix)
+                   for module in tuple(sys.modules.values()) for location in self._locations(module))
 
-    # 该环境里的某个顶层包已经从另一个已挂载的插件环境（例如已卸载插件留下的）以不同版本导入。
-    # Core 自带包的版本一致性由安装期的约束保证，这里只看插件环境之间的残留。
+    # 该分发包提供的模块名（点号形式）：取自它的文件清单；读不到时退回顶层名。
+    @staticmethod
+    def _provided(dist: importlib.metadata.Distribution) -> set[str]:
+        names: set[str] = set()
+        for file in dist.files or ():
+            parts = file.parts
+            if parts[0].endswith((".dist-info", ".data")) or not parts[-1].endswith((".py", ".so")):
+                continue
+            stem = parts[-1].split(".", 1)[0]
+            names.add(".".join((*parts[:-1], "" if stem == "__init__" else stem)).strip("."))
+        if not names:
+            names = set((dist.read_text("top_level.txt") or "").split() or [dist.metadata["Name"].replace("-", "_")])
+        return names
+
+    # 该环境里的某个模块已经从另一个已挂载的插件环境（例如已卸载插件留下的）以不同版本导入。
+    # Core 自带包的版本一致性由安装期的约束保证，这里只看插件环境之间的残留；命名空间子模块按位置归属判断。
     def _shadowed(self, site: Path) -> bool:
         others = tuple(str(path) + "/" for path in self._attached.values() if path != site)
         for dist in importlib.metadata.distributions(path=[str(site)]):
-            tops = (dist.read_text("top_level.txt") or "").split() or [dist.metadata["Name"].replace("-", "_")]
-            for top in tops:
-                origin = str(getattr(sys.modules.get(top), "__file__", None) or "")
-                if origin.startswith(others) and self._loaded_version(origin, dist.metadata["Name"]) != dist.version:
-                    return True
+            for name in self._provided(dist):
+                module = sys.modules.get(name)
+                for location in () if module is None else self._locations(module):
+                    if location.startswith(others) and self._loaded_version(location, dist.metadata["Name"]) != dist.version:
+                        return True
         return False
 
     # 已导入的那份包的版本：读它所在环境里的 dist-info。
@@ -89,6 +120,20 @@ class DependencyPaths:
                 return dist.version
         return None
 
+    # 已挂载的其他插件环境现在已不可用（目录被删、元数据坏）：它的模块可能仍驻留在本进程，版本事实读不到，
+    # 约束构造也只能跳过它，所以不依赖逐模块检查，一律保守要求重启。
+    def _attached_broken(self, plugin_name: str) -> bool:
+        for name, site in self._attached.items():
+            if name == plugin_name:
+                continue
+            try:
+                environment_python(site.parents[4])
+            except (ValueError, IndexError):
+                return True
+            if not site.is_dir():
+                return True
+        return False
+
     # 需要重启才能让该插件拿到自己的依赖：同插件旧环境的模块已导入；或（给出当前选择时）进程里还挂着
     # 不属于当前选择的环境；或它环境里的包已从别处以不同版本导入。
     def restart_needed(self, plugin_name: str, site: Path, selected: frozenset[str] | None = None) -> bool:
@@ -96,6 +141,8 @@ class DependencyPaths:
         if previous == site:
             return False
         if previous is not None and self._imported_from(previous):
+            return True
+        if self._attached_broken(plugin_name):
             return True
         if selected is not None and any(name not in selected for name in self._attached if name != plugin_name):
             return True

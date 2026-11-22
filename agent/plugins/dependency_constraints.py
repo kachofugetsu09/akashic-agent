@@ -78,14 +78,42 @@ def installed_pins(site: Path) -> dict[str, str]:
             for dist in importlib.metadata.distributions(path=[str(site)])}
 
 
+# 其他已装插件"即将生效"的进程内环境：cache 当前指针指向的 artifact 优先（离线 pkg 只推进指针、下次启动才进选择，
+# 在线时两者一致），其次是选择记录里的旧引用；都不可用返回 None。
+def _effective_site(
+    plugin_id: str, selected_ref: str, environments: EnvironmentOpener, plugins_home: Path | None,
+) -> Path | None:
+    from agent.plugins.artifacts import read_pointers, resolve_pointer
+    from agent.plugins.dependency_paths import site_packages
+    from agent.plugins.python_environment import inprocess_ref
+
+    refs: list[str] = []
+    if plugins_home is not None:
+        name, _, marketplace = plugin_id.partition("@")
+        base = plugins_home / "cache" / marketplace / name
+        try:
+            pointers = read_pointers(base, validate_content=False)
+            artifact = None if pointers is None else resolve_pointer(base, pointers.stable, validate_content=False)
+            pointed = None if artifact is None else inprocess_ref(artifact)
+        except (OSError, ValueError, RuntimeError):
+            pointed = None
+        if pointed is not None:
+            refs.append(pointed)
+    refs.append(selected_ref)
+    for ref in dict.fromkeys(refs):
+        try:
+            return site_packages(environments.open(ref))
+        except (OSError, ValueError, RuntimeError):
+            continue
+    return None
+
+
 # 其他已安装插件的进程内环境版本，取自选择里随安装固定的环境引用；与 Core 重名的丢掉（Core 优先），
 # 彼此重名时按 plugin_id 排序先出现者为准。读不到别人的环境时失败，不当作没有约束。
 def _other_pins(
     workspace: Path, plugin_name: str, core: Mapping[str, str], environments: EnvironmentOpener,
-    batch: DependencyBatch | None = None,
+    batch: DependencyBatch | None = None, plugins_home: Path | None = None,
 ) -> tuple[dict[str, str], dict[str, str]]:
-    from agent.plugins.dependency_paths import site_packages
-
     selection = PluginSelection(workspace)
     pins: dict[str, str] = {}
     origins: dict[str, str] = {}
@@ -103,11 +131,11 @@ def _other_pins(
         owner = plugin_id.partition("@")[0]
         if record["source_type"] != "installed" or owner == plugin_name or owner in replaced or ref is None:
             continue
-        try:
-            site = site_packages(environments.open(ref))
-        except (OSError, ValueError, RuntimeError):
-            # 环境已损坏的已装插件现在无法加载，没有生效的依赖版本可约束；它由 environment_repair_reason 标为需重建，
-            # 重建时会带着本批的结果作为约束，冲突在那时被拒绝。不能因为它让别的插件（含修复同一个共用环境的兄弟包）装不上。
+        site = _effective_site(plugin_id, ref, environments, plugins_home)
+        if site is None:
+            # 选择里和 cache 指针里的环境都不可用：这个已装插件现在无法加载，没有生效的版本可约束；它由
+            # environment_repair_reason 标为需重建，重建时带着本批结果作为约束。进程里若仍挂着它的环境，
+            # 由 DependencyPaths 保守要求重启，不靠这里。
             continue
         for name, version in installed_pins(site).items():
             if name not in core and name not in pins:
@@ -149,10 +177,11 @@ def constraints_from_pins(plugin_name: str, scratch: Path, others: Mapping[str, 
 # 生成本次安装的约束：Core 锁 + 其他插件的进程内版本（选择里的已装插件；有 batch 时本批的包取新解析结果）。
 def build_constraints(
     workspace: Path, plugin_name: str, environments: EnvironmentOpener, scratch: Path, batch: DependencyBatch | None = None,
+    plugins_home: Path | None = None,
 ) -> Constraints:
     lock, _ = core_lock()
     core = _parse_pins(lock.read_text(encoding="utf-8")) if lock is not None else {}
-    others, origins = _other_pins(workspace, plugin_name, core, environments, batch)
+    others, origins = _other_pins(workspace, plugin_name, core, environments, batch, plugins_home)
     return constraints_from_pins(plugin_name, scratch, others, origins)
 
 

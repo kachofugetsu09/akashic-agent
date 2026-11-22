@@ -277,7 +277,7 @@ def _stage_deployment_targets(
             if inprocess is not None:
                 _check_inprocess_entry(target, wheels.directory, plugin_id)
                 constraints = build_constraints(workspace, identity.name, PythonEnvironments(workspace),
-                                                _scratch(staged, f"external-{index}-constraints"), batch)
+                                                _scratch(staged, f"external-{index}-constraints"), batch, plugins_home)
             for runtime_index, runtime in enumerate((*identity.python, *(() if inprocess is None else (inprocess,)))):
                 if not (code / runtime.requirements).read_text(encoding="utf-8").strip():
                     continue
