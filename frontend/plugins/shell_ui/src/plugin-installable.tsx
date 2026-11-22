@@ -41,17 +41,24 @@ export function InstallablePackages({ http, active, onInstalled }: {
   const [error, setError] = useState("");
   const [task, setTask] = useState<Task | null>(null);
   const [failure, setFailure] = useState("");
+  const [submitting, setSubmitting] = useState(false);
   const running = task?.state === "running";
   const seen = useRef(running);
-  // 每次读状态或提交安装都领一个序号，只采用最新的回包：发起早、回来晚的状态读取不能覆盖刚提交的任务。
-  const sequence = useRef(0);
+  // 提交代次：每次提交安装加一，提交之前发出的状态读取回来时作废，不能覆盖刚提交的任务。
+  const epoch = useRef(0);
+  // 状态读取串行：上一次还没回来就不再发，避免慢回包互相淘汰。
+  const polling = useRef(false);
 
   const load = useCallback(() => call<{ groups: Group[] }>(http, "/api/dashboard/plugins/installable")
     .then((body) => { setGroups(body.groups); setError(""); }, (reason: unknown) => setError(reason instanceof Error ? reason.message : String(reason))), [http]);
-  const poll = useCallback(() => {
-    const ticket = ++sequence.current;
-    return call<{ task: Task | null }>(http, "/api/dashboard/plugins/install")
-      .then((body) => { if (ticket === sequence.current) setTask(body.task); }, () => undefined);
+  const poll = useCallback(async () => {
+    if (polling.current) return;
+    polling.current = true;
+    const ticket = epoch.current;
+    try {
+      const body = await call<{ task: Task | null }>(http, "/api/dashboard/plugins/install");
+      if (ticket === epoch.current) setTask(body.task);
+    } catch { /* 下一轮再读 */ } finally { polling.current = false; }
   }, [http]);
 
   // 列表读取较慢，只在变为可见时读一次；同时接上页面重开前已在进行的安装。
@@ -67,15 +74,20 @@ export function InstallablePackages({ http, active, onInstalled }: {
     seen.current = running;
   }, [running, onInstalled, load]);
 
+  // 提交期间禁用所有安装按钮；被拒绝（已有任务在装）时重新读状态，接上实际在跑的任务。
   const install = async (name: string) => {
     setFailure("");
-    const ticket = ++sequence.current;
+    setSubmitting(true);
+    epoch.current += 1;
     try {
-      const started = await call<Task>(http, "/api/dashboard/plugins/install", {
+      setTask(await call<Task>(http, "/api/dashboard/plugins/install", {
         method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name }),
-      });
-      if (ticket === sequence.current) setTask(started);
-    } catch (reason) { setFailure(reason instanceof Error ? reason.message : String(reason)); }
+      }));
+    } catch (reason) {
+      setFailure(reason instanceof Error ? reason.message : String(reason));
+      polling.current = false;
+      await poll();
+    } finally { setSubmitting(false); }
   };
 
   if (error) return <section className="shell-inventory-group"><h4>可安装</h4>
@@ -96,7 +108,7 @@ export function InstallablePackages({ http, active, onInstalled }: {
             return <li key={pkg.name} className="shell-installable-row">
               <span className="shell-inventory-name"><strong>{pkg.name}</strong>
                 <small>{pkg.desc}</small>{meta.length > 0 && <small>{meta.join(" · ")}</small>}</span>
-              <button type="button" disabled={running} aria-busy={mine} onClick={() => void install(pkg.name)}>
+              <button type="button" disabled={running || submitting} aria-busy={mine} onClick={() => void install(pkg.name)}>
                 {mine ? "安装中…" : "安装"}</button>
             </li>;
           })}
