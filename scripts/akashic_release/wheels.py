@@ -38,23 +38,26 @@ def _normalize(name: str) -> str:
 # 在目标镜像里执行：联网，输出目录绑出来；用户取宿主当前用户，产物属主与宿主一致。
 # 网络用宿主网络（--network host）：宿主代理常绑在 127.0.0.1，默认 bridge 容器里的同一地址指向容器自己。
 # 只用于停机前的求包容器；停机窗口内的预检与安装仍是 --network none。
-def docker_resolver(image: str, run: Run) -> Resolver:
+def docker_resolver(image: str, run: Run, cache: Path | None = None) -> Resolver:
     def resolve(work: Path) -> dict[str, object]:
         # 容器里取不到宿主环境：代理变量按名字透传（只在宿主设置了才传；证书文件路径在容器里没有意义，不传）。
         proxies = [item for key in PROXY_ENV if key in os.environ for item in ("--env", key)]
         command = ["docker", "run", "--rm", "--network", "host", "--user", f"{os.getuid()}:{os.getgid()}", "--read-only", *proxies,
                    "--tmpfs", "/tmp:rw,mode=1777,size=2g", "--mount", f"type=bind,src={work},dst={work}",
+                   *(() if cache is None else ("--mount", f"type=bind,src={cache},dst={cache}")),
                    "--workdir", "/opt/akashic/source", "--env", "HOME=/tmp", "--entrypoint", "/opt/venv/bin/python",
-                   image, "-B", "-m", "agent.plugins.dependency_wheels", "--work", str(work)]
+                   image, "-B", "-m", "agent.plugins.dependency_wheels", "--work", str(work),
+                   *(() if cache is None else ("--cache", str(cache)))]
         return _read_result(work, run(command, check=False, capture_output=True, text=True))
 
     return resolve
 
 
 # 不经 docker 的执行点：用本机（或容器内）的 Core 解释器与 pip；首装补装在容器里、以及本机验证用。
-def local_resolver(core_root: Path) -> Resolver:
+def local_resolver(core_root: Path, cache: Path | None = None) -> Resolver:
     def resolve(work: Path) -> dict[str, object]:
-        done = subprocess.run([sys.executable, "-B", "-m", "agent.plugins.dependency_wheels", "--work", str(work)],
+        done = subprocess.run([sys.executable, "-B", "-m", "agent.plugins.dependency_wheels", "--work", str(work),
+                               *(() if cache is None else ("--cache", str(cache)))],
                               cwd=core_root, env={**os.environ, "PYTHONPATH": str(core_root)}, check=False,
                               capture_output=True, text=True)
         return _read_result(work, done)

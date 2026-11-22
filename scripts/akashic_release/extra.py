@@ -14,8 +14,10 @@ import tomllib
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Mapping
 from typing import Callable, Iterator, cast
 
+from utils.timing import measure
 from agent.plugins.extra_repo import (
     ExtraAction,
     SelectedPackage,
@@ -165,14 +167,35 @@ def read_literals(plugin_py: Path) -> tuple[str, int, tuple[str, ...]]:
 
 
 # 取指定提交成 git bundle；release 分支无父提交，按 SHA 取到的就是全部历史。
-def fetch_bundle(repo: str, name: str, commit: str, destination: Path) -> None:
+# store 给出时从本地仓库（fetch_commits 一次取回的）取，产物与直接从上游取同一个提交逐字节相同。
+def fetch_bundle(repo: str, name: str, commit: str, destination: Path, store: Path | None = None) -> None:
     with tempfile.TemporaryDirectory(prefix="akashic-extra-") as directory:
         work = Path(directory)
         _git("init", "--quiet", cwd=work)
-        _git("fetch", "--quiet", "--", repo, commit, cwd=work)
+        _git("fetch", "--quiet", "--", repo if store is None else f"file://{store}", commit, cwd=work)
         ref = f"refs/heads/release/{name}"
         _git("update-ref", ref, commit, cwd=work)
         _git("bundle", "create", str(destination), ref, cwd=work)
+
+
+# 本次需要的全部提交用一次 git fetch 取进 store（逐包取每次都是一次网络往返，全新安装时占掉大半时间）。
+# 不退回逐个取：失败原因是确定的（提交不存在）就逐个取也不会成功，是网络问题就重试一次整批；
+# 错误信息点名取不到的提交对应的包。
+def fetch_commits(repo: str, wants: Mapping[str, str], store: Path) -> None:
+    store.mkdir()
+    _git("init", "--quiet", cwd=store)
+    shas = list(dict.fromkeys(wants.values()))
+    for attempt in (1, 2):
+        try:
+            _git("fetch", "--quiet", "--no-tags", "--", repo, *shas, cwd=store)
+            return
+        except RuntimeError as error:
+            message = str(error)
+            reason = message.split("失败: ", 1)[-1]
+            missing = [f"{name}@{commit[:12]}" for name, commit in wants.items() if commit in reason]
+            if attempt == 2 or any(hint in reason for hint in ("not our ref", "couldn't find remote ref", "no such remote ref")):
+                culprit = "、".join(missing) if missing else "、".join(f"{name}@{commit[:12]}" for name, commit in wants.items())
+                raise RuntimeError(f"一次取回 {len(shas)} 个提交失败（涉及: {culprit}）: {reason.strip().splitlines()[0]}") from error
 
 
 # 把 bundle 检出到临时目录；调用方在目录里校验并求依赖 wheel。
@@ -206,7 +229,7 @@ def _offline_heads(directory: Path) -> dict[str, str]:
 # 为一个动作产出 bundle 与清单条目：联网取代码或取离线输入，校验，预拉镜像。
 def _produce(
     action: ExtraAction, repo: str, options: ExtraOptions, out: Path, run: Run, *, workspace: Path,
-    pins: dict[str, tuple[str, str]], resolver: Resolver,
+    pins: dict[str, tuple[str, str]], resolver: Resolver, store: Path | None = None,
 ) -> dict[str, object]:
     name = action.plugin_id.partition("@")[0]
     bundle = out / _BUNDLE.format(name=name)
@@ -223,7 +246,8 @@ def _produce(
         if source.resolve() != bundle.resolve():
             shutil.copyfile(source, bundle)
     else:
-        fetch_bundle(repo, name, action.commit, bundle)
+        with measure("extra.fetch", plugin=name):
+            fetch_bundle(repo, name, action.commit, bundle, store)
     wheels: dict[str, object] | None = None
     with _checkout(bundle, action.commit) as code:
         images = check_code(code, name)
@@ -238,8 +262,9 @@ def _produce(
                 pins[key] = (version, action.plugin_id)
             wheels = {"offline_wheels": offline, "core_lock_sha256": sidecar.get("core_lock_sha256"), **carried}
         else:
-            wheels = resolve_package_wheels(code=code, plugin_id=action.plugin_id, workspace=workspace, pins=pins,
-                                            resolver=resolver, out=out)
+            with measure("extra.wheels", plugin=name):
+                wheels = resolve_package_wheels(code=code, plugin_id=action.plugin_id, workspace=workspace, pins=pins,
+                                                resolver=resolver, out=out)
     for image in images if options.pull_images else ():
         run(["docker", "pull", image], check=True, capture_output=True, text=True)
     target: dict[str, object] = {
@@ -276,7 +301,8 @@ def prepare_extra_inputs(
     def heads() -> dict[str, str]:
         if not remote:
             try:
-                remote.update(_offline_heads(options.inputs) if options.inputs is not None else list_release_heads(repo))
+                with measure("extra.ls_remote"):
+                    remote.update(_offline_heads(options.inputs) if options.inputs is not None else list_release_heads(repo))
             except (RuntimeError, OSError) as error:
                 raise RuntimeError(f"{str(error).splitlines()[0]}；需要装的插件: {', '.join(missing)}") from error
         return remote
@@ -302,12 +328,20 @@ def prepare_extra_inputs(
         return ExtraResult((), skipped, retiring)
     # 3. 逐个产出输入。
     out.mkdir(parents=True, exist_ok=True)
-    resolver = options.wheel_resolver or (docker_resolver(options.image, run) if options.image is not None
-                                          else local_resolver(Path(__file__).resolve().parents[2]))
-    # 本批要生效的包以新解析结果替换旧 pin：旧选择里它们的 pin 不参与约束；不在本批的已装包照旧。
-    pins = installed_pins(workspace, frozenset(action.plugin_id.partition("@")[0] for action in actions))
-    targets = tuple(_produce(action, repo, options, out, run, workspace=workspace, pins=pins, resolver=resolver)
-                    for action in actions)
+    # 取包仓库与 pip 缓存放在同一个宿主临时目录里：各包共用一次 git fetch 的结果与一份 pip 缓存，结束即删。
+    with tempfile.TemporaryDirectory(prefix="akashic-extra-store-") as store_directory:
+        store = Path(store_directory)
+        cache = store / "pip-cache"
+        cache.mkdir()
+        resolver = options.wheel_resolver or (docker_resolver(options.image, run, cache) if options.image is not None
+                                              else local_resolver(Path(__file__).resolve().parents[2], cache))
+        # 本批要生效的包以新解析结果替换旧 pin：旧选择里它们的 pin 不参与约束；不在本批的已装包照旧。
+        pins = installed_pins(workspace, frozenset(action.plugin_id.partition("@")[0] for action in actions))
+        if options.inputs is None:
+            with measure("extra.fetch_all", packages=len(actions)):
+                fetch_commits(repo, {action.plugin_id.partition("@")[0]: action.commit for action in actions}, store / "git")
+        targets = tuple(_produce(action, repo, options, out, run, workspace=workspace, pins=pins, resolver=resolver,
+                                 store=None if options.inputs is not None else store / "git") for action in actions)
     return ExtraResult(targets, skipped, retiring)
 
 

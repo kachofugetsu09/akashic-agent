@@ -26,11 +26,12 @@ class WheelResolutionError(RuntimeError):
     """依赖无法解析成 wheel（冲突、只有源码包、网络），在停机前失败。"""
 
 
-def _download(requirements: Path, destination: Path, constraints: Constraints | None, bundled: Path | None = None) -> None:
+def _download(requirements: Path, destination: Path, constraints: Constraints | None,
+              bundled: Path | None = None, cache: Path | None = None) -> None:
     # 联网之前先校验声明：requirements 里的 pip 选项或 URL/VCS/本地路径会绕过 --only-binary，让源码包的构建脚本执行。
     _ = check_plain_requirements(requirements.read_text(encoding="utf-8"), requirements.name)
     command = [sys.executable, "-I", "-m", "pip", "--isolated", "--disable-pip-version-check", "download", "--only-binary=:all:",
-               "--no-cache-dir", "--no-input", "--dest", str(destination), "-r", str(requirements)]
+               *(["--no-cache-dir"] if cache is None else ["--cache-dir", str(cache)]), "--no-input", "--dest", str(destination), "-r", str(requirements)]
     if constraints is not None:
         command += [item for file in constraints.files for item in ("-c", str(file))]
     # 插件自带的纯 Python wheel 由 Core 自己拼成 --find-links（requirements 文件里的 pip 选项仍一律拒绝）；仍只收 wheel、仍过约束。
@@ -55,7 +56,7 @@ def _download(requirements: Path, destination: Path, constraints: Constraints | 
 
 # work 目录里：spec.json（plugin、inprocess、runtimes、others、origins）与 req/ 下的 requirements 文件；
 # 产出 wheels/ 与 result.json。进程内依赖带约束，子进程 runtime 的依赖各自独立（同一个 wheel 目录）。
-def resolve(work: Path) -> dict[str, object]:
+def resolve(work: Path, cache: Path | None = None) -> dict[str, object]:
     spec = cast(dict[str, object], json.loads((work / "spec.json").read_text(encoding="utf-8")))
     wheels = work / "wheels"
     wheels.mkdir(exist_ok=True)
@@ -67,11 +68,11 @@ def resolve(work: Path) -> dict[str, object]:
             constraints = constraints_from_pins(
                 str(spec["plugin"]), Path(scratch), cast(dict[str, str], spec["others"]), cast(dict[str, str], spec["origins"]))
             bundled = work / "bundled"
-            _download(work / "req" / inprocess, wheels, constraints, bundled if bundled.is_dir() else None)
+            _download(work / "req" / inprocess, wheels, constraints, bundled if bundled.is_dir() else None, cache)
             # 进程内依赖的解析结果（此时目录里只有它的闭包）：后面的包与安装期都据此作约束；子进程 runtime 的依赖不算。
             inprocess_pins = {normalize(parts[0]): parts[1] for parts in (item.name.split("-") for item in wheels.glob("*.whl"))}
         for name in cast(list[str], spec["runtimes"]):
-            _download(work / "req" / name, wheels, None)
+            _download(work / "req" / name, wheels, None, cache=cache)
     return {"core_lock_sha256": None if lock is None else hashlib.sha256(lock.read_bytes()).hexdigest(),
             "wheels": sorted(item.name for item in wheels.iterdir()), "inprocess_pins": inprocess_pins}
 
@@ -79,10 +80,13 @@ def resolve(work: Path) -> dict[str, object]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     _ = parser.add_argument("--work", type=Path, required=True)
-    work = cast(Path, parser.parse_args().work)
+    # 同一次部署里各包共用的 pip 缓存（宿主侧临时目录）：后求的包复用已下载的 wheel 与索引页，不再逐包重新下载。
+    _ = parser.add_argument("--cache", type=Path)
+    options = parser.parse_args()
+    work = cast(Path, options.work)
     result: dict[str, object]
     try:
-        result = resolve(work)
+        result = resolve(work, cast(Path | None, options.cache))
         code = 0
     except (RuntimeError, ValueError, OSError) as error:
         result = {"error": str(error)}

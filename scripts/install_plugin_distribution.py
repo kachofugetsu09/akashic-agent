@@ -1113,12 +1113,13 @@ def _install_targets(
         name, marketplace = plugin_id.split("@")
         # Matching code does not prove an existing Python environment belongs to this interpreter.
         # 清单是部署者信任的显式替换：目标发行版是否自带已在预检核对，这里放行防接管。
-        installed = install_git_plugin(
-            workspace=workspace, source=str(target["bundle"]), marketplace=marketplace,
-            ref_name=target["commit"], plugins_home=plugins_home,
-            refresh_existing_artifact=False, offline_wheels=target["wheels"],
-            takeover=frozenset({plugin_id}), dependency_batch=batch,
-        )
+        with measure("extra.install", plugin=name):
+            installed = install_git_plugin(
+                workspace=workspace, source=str(target["bundle"]), marketplace=marketplace,
+                ref_name=target["commit"], plugins_home=plugins_home,
+                refresh_existing_artifact=False, offline_wheels=target["wheels"],
+                takeover=frozenset({plugin_id}), dependency_batch=batch,
+            )
         artifact = installed.installed_path
         if target["upstream"]:
             set_artifact_origin(artifact, target["upstream"])
