@@ -13,11 +13,16 @@ DEFAULT_EXTRA_REPO = "https://github.com/kachofugetsu09/akashic-plugins.git"
 BRANCH_PREFIX = "refs/heads/release/"
 _GIT_TIMEOUT_S = 60
 
-# git 与 pip 联网要用的环境变量白名单：代理、证书、ssh。宿主脚本为避免 GIT_DIR/GIT_WORK_TREE 等变量污染临时仓库，
-# 只传 PATH/HOME 和这里列出的变量；查询远端（ls-remote）与取包（fetch）共用这一份，行为一致。
+# 容器里取不到宿主环境，求 wheel 的 docker run 按名字透传这些代理变量（证书文件路径在容器里没有意义，不传）。
 PROXY_ENV = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy")
-CERT_ENV = ("SSL_CERT_FILE", "SSL_CERT_DIR", "GIT_SSL_CAINFO", "GIT_SSL_CAPATH", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE")
-SSH_ENV = ("SSH_AUTH_SOCK", "GIT_SSH", "GIT_SSH_COMMAND")
+# 会改变 git 定位仓库的变量（见 git(1) Environment Variables）：宿主脚本在临时仓库里 init/fetch/bundle，
+# 继承它们会把操作指到别处；其余变量（代理、证书、认证、GIT_CONFIG_*、LANG 等）原样继承，与 pkg 在线发现一致。
+_GIT_REPOSITORY_LOCATION = frozenset({
+    "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR", "GIT_NAMESPACE", "GIT_PREFIX", "GIT_IMPLICIT_WORK_TREE", "GIT_CEILING_DIRECTORIES",
+    "GIT_GRAFT_FILE", "GIT_SHALLOW_FILE", "GIT_REPLACE_REF_BASE", "GIT_NO_REPLACE_OBJECTS", "GIT_QUARANTINE_PATH",
+    "GIT_INTERNAL_SUPER_PREFIX", "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+})
 
 GapAction = Literal["install", "switch", "retire", "optional", "retired"]
 
@@ -45,10 +50,8 @@ class ExtraAction:
 
 
 def git_env() -> dict[str, str]:
-    environment = {"GIT_TERMINAL_PROMPT": "0", "PATH": os.environ.get("PATH", "/usr/bin:/bin:/usr/local/bin"),
-                   "HOME": os.environ.get("HOME", str(Path.home()))}
-    environment.update({key: os.environ[key] for key in (*PROXY_ENV, *CERT_ENV, *SSH_ENV, "XDG_CONFIG_HOME")
-                        if key in os.environ})
+    environment = {key: value for key, value in os.environ.items() if key not in _GIT_REPOSITORY_LOCATION}
+    environment["GIT_TERMINAL_PROMPT"] = "0"
     return environment
 
 
