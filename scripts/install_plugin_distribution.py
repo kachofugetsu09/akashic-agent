@@ -1141,9 +1141,9 @@ def _install_targets(
     targets: list[dict[str, Any]], *, workspace: Path, plugins_home: Path, selection: PluginSelection,
     selected: dict[str, tuple[str, Mapping[str, object], Path]], candidate: dict[str, ResolvedPluginSource],
     distribution_root: Path | None = None,
-) -> tuple[list[tuple[str, list[str]]], list[str], list[tuple[str, list[str], str]]]:
+) -> tuple[list[tuple[str, list[str], str]], list[str], list[tuple[str, list[str], str]]]:
     batch = _dependency_batch(targets)
-    closed: list[tuple[str, list[str]]] = []
+    closed: list[tuple[str, list[str], str]] = []
     met: list[str] = []
     declared: list[tuple[str, list[str], str]] = []
     for target in targets:
@@ -1171,7 +1171,7 @@ def _install_targets(
             met.append(plugin_id)
         if missing:
             _ = set_plugin_choice(workspace, plugin_id, enabled=False, distribution=distribution_root)
-            closed.append((plugin_id, missing))
+            closed.append((plugin_id, missing, artifact_head(artifact)))
             candidate.pop(plugin_id, None)
             print(f"{plugin_id}: 已安装但未启用：{describe(missing)}", file=sys.stderr, flush=True)
             continue
@@ -1487,8 +1487,8 @@ def ensure_bundle(
                 # 提交前失败或进程死亡，恢复会还原成事务前的内容；提交后不存在"记录还没写"的崩溃窗口。
                 for plugin_id, needs, head in declared:
                     record_declared(workspace, plugin_id, needs, head)
-                for plugin_id, missing in closed:
-                    record_disabled(workspace, plugin_id, missing)
+                for plugin_id, missing, head in closed:
+                    record_disabled(workspace, plugin_id, missing, head)
                 for plugin_id in met:
                     clear_disabled(workspace, plugin_id)
                 if expected is None or new_components != components or replace:
