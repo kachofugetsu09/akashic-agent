@@ -18,12 +18,19 @@ class DependencyEnvironmentError(RuntimeError):
 # 进程内环境读安装时固定的引用（artifact 里的环境记录），不查任何可变指针；
 # 缺记录、缺环境目录、元数据损坏、版本不匹配都转成带区分信息的 DependencyEnvironmentError。
 def root_environment(code: Path, environments: PythonEnvironments) -> Path | None:
-    if inprocess_runtime(code) is None:
-        return None
-    ref = inprocess_ref(code)
+    # 1. 声明文件与安装记录的读取错误（坏 JSON、结构不对、不可读）也属于依赖环境边界，点名文件。
+    try:
+        if inprocess_runtime(code) is None:
+            return None
+        ref = inprocess_ref(code)
+    except (OSError, ValueError) as error:
+        raise DependencyEnvironmentError(
+            f"无法读取插件的依赖环境记录（requirements.inprocess.txt 或 .akashic-python-environment）：{error}；"
+            "请重新安装该插件以重建") from error
     if ref is None:
         raise DependencyEnvironmentError(
             "插件声明了 requirements.inprocess.txt，但安装记录里没有对应的依赖环境引用；请重新安装该插件")
+    # 2. 引用指向的环境目录与元数据。
     try:
         return environments.open(ref)
     except FileNotFoundError as error:

@@ -344,14 +344,21 @@ def inprocess_runtime(code: Path) -> InprocessRuntime | None:
     return InprocessRuntime(requirements=INPROCESS_REQUIREMENTS, runtime_root=_INPROCESS_DIR)
 
 
-# 随安装固定下来的进程内环境引用（与子进程 runtime 同一份记录）；没有声明或记录缺失返回 None。
+# 随安装固定下来的进程内环境引用（与子进程 runtime 同一份记录）；记录缺失或没有该键返回 None，
+# 内容不是合法 JSON 映射、引用格式无效时抛 ValueError（读取错误由调用方转换）。
 def inprocess_ref(code: Path) -> str | None:
     path = code / ENVIRONMENT_FILE
     if path.is_symlink() or not path.is_file():
         return None
     value = json.loads(path.read_text())
-    ref = value.get(INPROCESS_KEY) if isinstance(value, dict) else None
-    return ref if isinstance(ref, str) else None
+    if not isinstance(value, dict):
+        raise ValueError(f"{ENVIRONMENT_FILE} 必须是映射")
+    ref = cast(dict[str, object], value).get(INPROCESS_KEY)
+    if ref is None:
+        return None
+    if not isinstance(ref, str) or len(ref) not in {32, 64} or any(char not in "0123456789abcdef" for char in ref):
+        raise ValueError(f"{ENVIRONMENT_FILE} 里的进程内环境引用无效")
+    return ref
 
 
 def read_environment_refs(code: Path, manifest: StaticPluginManifest) -> dict[str, str]:
