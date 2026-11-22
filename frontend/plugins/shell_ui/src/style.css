@@ -502,6 +502,7 @@
   .shell-installable-row button:disabled { opacity: 0.5; cursor: default; }
   .shell-installable-row button[aria-busy="true"] { opacity: 1; cursor: progress; color: var(--ak-ink-muted); }
   .shell-installable-row button:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 2px; }
+  .shell-inventory-group .shell-inventory-error { font-size: 13px; }
   .shell-installable-note { margin: 0; font-size: 13px; text-wrap: pretty; color: var(--ak-ink-secondary); }
   .shell-installable-log { max-height: 240px; margin: 6px 0 0; padding: 10px 12px; overflow: auto; font-size: 12px; line-height: 18px; white-space: pre-wrap; overflow-wrap: anywhere; border: 1px solid var(--ak-rule-subtle); border-radius: var(--ak-radius-sm); background: var(--ak-paper-sheet); color: var(--ak-ink-secondary); }
   .shell-inventory-empty { display: grid; justify-items: start; gap: 4px; font-size: 13px; color: var(--ak-ink-muted); }
