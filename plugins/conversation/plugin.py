@@ -10,6 +10,7 @@ from plugins.ui.contract import hidden_part, part_display_key
 from plugins.ledger.contract import ARTIFACT_READ
 from plugins.ledger.contract import BINDINGS
 from plugins.channels.contract import CHANNEL_STEER, ChannelInboundMessage, InputPartRejected, read_input_parts
+from plugins.tools.contract import TOOLS
 from plugins.commands.contract import COMMANDS, CommandDefinition, CommandInvocation, CommandResult
 from plugins.ledger.contract import (
     MESSAGE_CATALOG,
@@ -50,6 +51,7 @@ from plugins.sources.contract import (
 )
 
 from .commands import CONTENT, CONVERSATION_COMMANDS, SOURCE_CHECK, run_commands
+from .session_reference import provide_session_reference
 from .steer import Steers
 
 api_version = 3
@@ -59,7 +61,7 @@ desc = "接纳和控制同一来源的消息，程序由调用者另行选择"
 inject = (
     BINDINGS, OWNER_STATE, TASKS, ARTIFACT_READ, COMMANDS, CONTENT, SOURCE_CHECK,
     MESSAGE_WRITERS, SESSION_ADMISSION, SOURCES, SOURCE_SESSION, RESTART_GATE,
-    MESSAGE_CATALOG,
+    MESSAGE_CATALOG, TOOLS,
 )
 
 
@@ -206,6 +208,8 @@ async def apply(ctx: Context) -> None:
     # 自己写入的内部材料不进聊天正文；宿主不维护按插件列举的隐藏名单。
     for kind in ("channel.origin", "command.result"):
         _ = await ctx.provide(part_display_key(kind), hidden_part)
+    # 引用会话：片段校验、聊天里的引用展示与 read_session 工具（宿主前端的会话引用依赖它，所以随 Core 提供）。
+    await provide_session_reference(ctx)
     _ = await ctx.provide(CONVERSATION_COMMANDS, command)
     _ = await ctx.provide(CONVERSATION_COMPLETE, complete)
     steers = Steers(
