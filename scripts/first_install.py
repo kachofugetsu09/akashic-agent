@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
@@ -144,7 +145,8 @@ def desired_rows(choice: Choice, preset_rows: dict[str, str]) -> dict[str, tuple
     return rows
 
 
-BLOCK_BEGIN = "# >>> akashic 首次安装（自动生成；首装完成前每次重跑会整块重写，要自定义请写在块外）"
+BLOCK_BEGIN = "# >>> akashic 首次安装"
+BLOCK_NOTE = "（自动生成；首装完成前每次重跑会整块重写。要自定义请写在块外，不要改块内）"
 BLOCK_END = "# <<< akashic 首次安装"
 
 
@@ -152,20 +154,30 @@ def _row_text(key: str, plugin: str, disabled: bool) -> str:
     return f'[rows."{key}"]\nplugin = "{plugin}"\ndisabled = {"true" if disabled else "false"}\n'
 
 
-# 把文本按标记块切成 (块前, 块后)；没有块时整段是块前。起止标记缺一个、重复或次序反了就报错让人手工整理，不猜。
+def _digest(body: str) -> str:
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()[:16]
+
+
+# 把文本按标记块切成 (块前, 块后)；没有块时整段是块前。
+# 只替换我们自己写过、逐字节没变的块：起始标记行带块内容的摘要，对不上（块被改过，或标记文本出现在别处，
+# 比如 TOML 多行字符串里）就报错让人手工整理，不猜。标记缺一个、重复或次序反了同样报错。
 def _split_block(text: str, path: Path) -> tuple[str, str]:
     lines = text.splitlines(keepends=True)
-    begins = [i for i, line in enumerate(lines) if line.startswith("# >>> akashic 首次安装")]
-    ends = [i for i, line in enumerate(lines) if line.startswith("# <<< akashic 首次安装")]
+    begins = [i for i, line in enumerate(lines) if line.startswith(BLOCK_BEGIN)]
+    ends = [i for i, line in enumerate(lines) if line.startswith(BLOCK_END)]
     if not begins and not ends:
         return text, ""
     if len(begins) != 1 or len(ends) != 1 or begins[0] > ends[0]:
-        raise RuntimeError(f"{path} 里首次安装的标记块不完整或重复（需要恰好一对 '# >>> akashic 首次安装' 与 '# <<< akashic 首次安装'）；手工整理后重试")
+        raise RuntimeError(f"{path} 里首次安装的标记块不完整或重复（需要恰好一对 '{BLOCK_BEGIN}' 与 '{BLOCK_END}'）；手工整理后重试")
+    head, body = lines[begins[0]], "".join(lines[begins[0] + 1:ends[0]])
+    if f"sha256={_digest(body)}" not in head:
+        raise RuntimeError(f"{path} 里首次安装的标记块被改动过（或标记文本出现在块以外的地方）；"
+                           "把你的设置移到块外、删除整个块后重试，首装没有改动这个文件")
     return "".join(lines[:begins[0]]), "".join(lines[ends[0] + 1:])
 
 
 # 按意图整块重新生成首装写入的内容（块外文本一字不动）：块外已定义的 row 键，块里跳过（用户的定义优先，也避免重复表）。
-def render_block(choice: Choice, preset_rows: dict[str, str], outside: str, path: Path, out: TextIO) -> str:
+def render_block(choice: Choice, preset_rows: dict[str, str], outside: str, path: Path, out: TextIO) -> tuple[str, set[str]]:
     try:
         defined = set(cast(dict[str, object], tomllib.loads(outside).get("rows", {})))
     except tomllib.TOMLDecodeError as error:
@@ -173,12 +185,11 @@ def render_block(choice: Choice, preset_rows: dict[str, str], outside: str, path
     wanted = desired_rows(choice, preset_rows)
     for key in sorted(defined & set(wanted)):
         print(f"  {path.name} 里已有你定义的 {key}，首次安装的同名设置跳过", file=out)
-    rows = [_row_text(key, *value) for key, value in wanted.items() if key not in defined]
-    return "\n".join([BLOCK_BEGIN + "\n", *rows, BLOCK_END + "\n"])
+    body = "\n".join(["", *(_row_text(key, *value) for key, value in wanted.items() if key not in defined)])
+    return f"{BLOCK_BEGIN} sha256={_digest(body)}{BLOCK_NOTE}\n{body}{BLOCK_END}\n", defined
 
 
 # 落盘前按 TOML 语义核对结果：首装要写的每个 row（块外用户已定义的不算）都必须以想要的值生效。
-# 标记按行识别、不理解 TOML 多行字符串；字符串里恰好出现标记文本时由这里拦住，不写出语义错误的 patch。
 def _check_written(text: str, expected: dict[str, tuple[str, bool]], path: Path) -> None:
     try:
         rows = cast(dict[str, dict[str, object]], tomllib.loads(text).get("rows", {}))
@@ -190,28 +201,14 @@ def _check_written(text: str, expected: dict[str, tuple[str, bool]], path: Path)
         raise RuntimeError(f"重写 {path} 的首次安装块后这些设置没有按预期生效: {', '.join(wrong)}；文件没有改动，请手工检查标记块")
 
 
-# 块外（用户）的内容按语义不能变：顶层非 rows 的键与块外定义的 row 都要与改写前一致。
-def _check_outside_kept(existing: str, text: str, defined: set[str], path: Path) -> None:
-    old, new = tomllib.loads(existing), tomllib.loads(text)
-    old_rows = cast(dict[str, object], old.get("rows", {}))
-    new_rows = cast(dict[str, object], new.get("rows", {}))
-    changed = sorted({key for key in old.keys() | new.keys() if key != "rows" and old.get(key) != new.get(key)}
-                     | {key for key in defined if old_rows.get(key) != new_rows.get(key)})
-    if changed:
-        raise RuntimeError(f"重写 {path} 的首次安装块会改动块外的内容: {', '.join(changed)}；文件没有改动，请手工检查标记块")
-
-
 # 按意图写 patch（start 与 release 共用，临时与落盘 patch 同一规则）。
 def write_patch(choice: Choice, preset_rows: dict[str, str], patch: Path, out: TextIO = sys.stdout) -> None:
     existing = patch.read_text(encoding="utf-8") if patch.exists() else "schema_version = 1\n"
     before, after = _split_block(existing, patch)
-    block = render_block(choice, preset_rows, before + after, patch, out)
+    block, defined = render_block(choice, preset_rows, before + after, patch, out)
     before = before + ("\n" if before and not before.endswith("\n\n") else "")
     text = before + block + ("\n" + after.lstrip("\n") if after.strip() else "")
-    outside = tomllib.loads(before + after)
-    defined = set(cast(dict[str, object], outside.get("rows", {})))
     _check_written(text, {key: value for key, value in desired_rows(choice, preset_rows).items() if key not in defined}, patch)
-    _check_outside_kept(existing, text, defined, patch)
     temporary = patch.with_name(patch.name + ".tmp")
     _ = temporary.write_text(text, encoding="utf-8")
     os.replace(temporary, patch)
