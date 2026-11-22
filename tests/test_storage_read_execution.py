@@ -9,7 +9,7 @@ import pytest
 from plugins.ledger.log import MessageLog
 from plugins.ledger.contract import Input
 from tests.test_message_log import writer
-from tests.test_akasha_execution import WorkerGate
+from tests.support.worker_gate import WorkerGate
 
 
 @pytest.mark.asyncio
