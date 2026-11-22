@@ -170,12 +170,24 @@ def render_block(choice: Choice, preset_rows: dict[str, str], outside: str, path
         defined = set(cast(dict[str, object], tomllib.loads(outside).get("rows", {})))
     except tomllib.TOMLDecodeError as error:
         raise RuntimeError(f"{path} 不是有效的 TOML（{error}）；修正后重试，首装没有改动它") from error
-    wanted = {row: (preset_rows[row], True) for row in choice.disable_rows}
-    wanted.update({identity: (identity, False) for identity in choice.enable_ids})
+    wanted = desired_rows(choice, preset_rows)
     for key in sorted(defined & set(wanted)):
         print(f"  {path.name} 里已有你定义的 {key}，首次安装的同名设置跳过", file=out)
     rows = [_row_text(key, *value) for key, value in wanted.items() if key not in defined]
     return "\n".join([BLOCK_BEGIN + "\n", *rows, BLOCK_END + "\n"])
+
+
+# 落盘前按 TOML 语义核对结果：首装要写的每个 row（块外用户已定义的不算）都必须以想要的值生效。
+# 标记按行识别、不理解 TOML 多行字符串；字符串里恰好出现标记文本时由这里拦住，不写出语义错误的 patch。
+def _check_written(text: str, expected: dict[str, tuple[str, bool]], path: Path) -> None:
+    try:
+        rows = cast(dict[str, dict[str, object]], tomllib.loads(text).get("rows", {}))
+    except tomllib.TOMLDecodeError as error:
+        raise RuntimeError(f"重写 {path} 的首次安装块后不是有效的 TOML（{error}）；文件没有改动，请手工检查标记块") from error
+    wrong = sorted(key for key, (plugin, disabled) in expected.items()
+                   if key not in rows or (rows[key].get("plugin"), rows[key].get("disabled", False)) != (plugin, disabled))
+    if wrong:
+        raise RuntimeError(f"重写 {path} 的首次安装块后这些设置没有按预期生效: {', '.join(wrong)}；文件没有改动，请手工检查标记块")
 
 
 # 按意图写 patch（start 与 release 共用，临时与落盘 patch 同一规则）。
@@ -185,6 +197,8 @@ def write_patch(choice: Choice, preset_rows: dict[str, str], patch: Path, out: T
     block = render_block(choice, preset_rows, before + after, patch, out)
     before = before + ("\n" if before and not before.endswith("\n\n") else "")
     text = before + block + ("\n" + after.lstrip("\n") if after.strip() else "")
+    defined = set(cast(dict[str, object], tomllib.loads(before + after).get("rows", {})))
+    _check_written(text, {key: value for key, value in desired_rows(choice, preset_rows).items() if key not in defined}, patch)
     temporary = patch.with_name(patch.name + ".tmp")
     _ = temporary.write_text(text, encoding="utf-8")
     os.replace(temporary, patch)
