@@ -105,7 +105,7 @@ def _read_rows(path: Path) -> dict[str, dict[str, object]]:
 # preset 行（base 加 mode）叠加用户 patch，语义同 Core 的 load_bundles：patch 行先按 id、再按同插件找到 preset 行；
 # 同一插件时按字段继承（只覆盖 disabled），不同插件（同 id 换 provider）则整行替换。
 # 返回 (实际生效的启用身份, preset 里出现的身份)，与 pkg sync 口径一致。
-def composition_ids(checkout: Path, mode: str, patch: Path) -> tuple[frozenset[str], frozenset[str]]:
+def composition_ids(checkout: Path, mode: str, patch: Path) -> tuple[frozenset[str], frozenset[str], frozenset[str]]:
     rows = _read_rows(checkout / "bundles/base.toml")
     if mode != "base":
         rows.update(_read_rows(checkout / "bundles" / f"{mode}.toml"))
@@ -118,7 +118,8 @@ def composition_ids(checkout: Path, mode: str, patch: Path) -> tuple[frozenset[s
             rows[key] = {**rows[key], **{k: v for k, v in row.items() if k == "disabled"}}
         else:
             rows[key] = row
-    return frozenset(str(r["plugin"]) for r in rows.values() if not r.get("disabled", False)), preset
+    enabled = frozenset(str(r["plugin"]) for r in rows.values() if not r.get("disabled", False))
+    return enabled, preset, frozenset(str(r["plugin"]) for r in rows.values())
 
 
 # 历史归属或首次回执里的旧制品：cache 里虽有目录，但属于被发行版接管的遗留，不算已装。
@@ -285,7 +286,7 @@ def prepare_extra_inputs(
     current_root, selected = read_selected(workspace, target_python(options.image, run, options.wheel_resolver))
     if current_root != root_ref:
         raise RuntimeError("选择在读取期间改变，停止部署")
-    enabled, preset = composition_ids(source, mode, workspace / "bundle.patch.toml")
+    enabled, preset, known = composition_ids(source, mode, workspace / "bundle.patch.toml")
     repo = resolve_repo(options.repo)
     remote: dict[str, str] = {}
 
@@ -317,7 +318,10 @@ def prepare_extra_inputs(
                 raise RuntimeError(f"preset 启用的插件目标发行版不再自带，extra 上游也没有: {gap.plugin_id}")
             kind = "switch" if gap.plugin_id in selected else "install"
             actions.append(ExtraAction(kind, gap.plugin_id, heads()[gap.plugin_id.partition("@")[0]]))
-    actions.extend(upgrade_actions(selected, heads, repo, gaps_only=options.gaps_only))
+    # 已装包若在目标发行版的预设与用户 patch 里都没有行（例如能力并回了 Core、预设行被删），候选组合会把它移出选择，
+    # 这里也不能再给它安排升级，否则会把它装回来、与 Core 里的同名能力重复。
+    kept = {plugin_id: package for plugin_id, package in selected.items() if package.builtin or plugin_id in known}
+    actions.extend(upgrade_actions(kept, heads, repo, gaps_only=options.gaps_only))
     retiring = tuple(gap.plugin_id for gap in gaps if gap.action == "retire")
     if retiring and not options.allow_retire:
         raise RuntimeError("以下在用的内置插件目标发行版不再提供、extra 上游也没有，部署后会消失: "
