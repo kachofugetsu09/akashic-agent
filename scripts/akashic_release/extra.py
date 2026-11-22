@@ -339,8 +339,9 @@ def prepare_extra_inputs(
         return ExtraResult((), skipped, retiring)
     # 3. 逐个产出输入。
     out.mkdir(parents=True, exist_ok=True)
-    # 取包仓库与 pip 缓存放在同一个宿主临时目录里：各包共用一次 git fetch 的结果与一份 pip 缓存，结束即删。
-    with tempfile.TemporaryDirectory(prefix="akashic-extra-store-") as store_directory:
+    # 取包仓库与 pip 缓存放在输出目录旁的同一个临时目录里：各包共用一次 git fetch 的结果与一份 pip 缓存，结束即删。
+    # 不用系统临时目录：启动补装在服务容器里运行，那里的 /tmp 是 256MB 内存盘。
+    with tempfile.TemporaryDirectory(prefix="akashic-extra-store-", dir=out.parent) as store_directory:
         store = Path(store_directory)
         cache = store / "pip-cache"
         cache.mkdir()

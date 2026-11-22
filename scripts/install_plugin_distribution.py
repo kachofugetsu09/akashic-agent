@@ -1295,6 +1295,16 @@ def publish_distribution(
             maintenance.release()
 
 
+# 启动补装的暂存目录放在状态盘：服务容器的 /tmp 是 256MB 内存盘，放不下依赖 wheel 的下载与暂存两份副本。
+def _extra_staging_root(workspace: Path) -> Path:
+    parent = workspace / "runtime"
+    parent.mkdir(parents=True, exist_ok=True)
+    # 调用方持有 workspace 维护锁；上次被强杀留下的暂存目录在这里回收。
+    for stale in parent.glob("extra-staging-*"):
+        shutil.rmtree(stale, ignore_errors=True)
+    return Path(tempfile.mkdtemp(prefix="extra-staging-", dir=parent))
+
+
 def ensure_bundle(
     distribution: Path,
     bundle_file: Path,
@@ -1331,7 +1341,7 @@ def ensure_bundle(
     maintenance = WorkspaceMaintenanceLock(workspace)
     publication = PluginPublicationLock(plugins_home)
     maintenance.acquire()
-    extra_root = Path(tempfile.mkdtemp(prefix="akashic-extra-"))
+    extra_root = _extra_staging_root(workspace)
     try:
         publication.acquire()
         try:
