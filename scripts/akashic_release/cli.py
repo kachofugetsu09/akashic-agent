@@ -179,7 +179,7 @@ def _parser() -> argparse.ArgumentParser:
     install_parser.add_argument(
         "--cli-path", type=Path, default=Path.home() / ".local/bin/akashic-release"
     )
-    install_parser.add_argument("--yes", action="store_true")
+    install_parser.add_argument("--yes", action="store_true", help="不确认直接部署；首次安装时也不提问（等于 --profile full）")
     install_parser.add_argument("--no-activate", action="store_true")
     install_parser.add_argument("--plan", type=Path, help="显式外置插件目标；省略时更新 Core/Bridge 与内置 preset，并先执行必要内置迁移")
     install_parser.add_argument("--inputs", type=Path, help="清单引用的 bundle/wheels 目录")
@@ -192,7 +192,6 @@ def _parser() -> argparse.ArgumentParser:
                                 help="确认让在用的内置插件随新发行版消失（发行版不再提供且 extra 上游也没有）；默认拒绝，自部署不传")
     install_parser.add_argument("--profile", choices=("full", "minimal", "custom"), help="首次安装的扩展包选择；不给且有终端就提问，没有终端等于 full")
     install_parser.add_argument("--groups", default="", help="首次安装自选的包组（逗号分隔，隐含 custom）")
-    install_parser.add_argument("--yes", action="store_true", help="首次安装不提问不确认")
     install_parser.add_argument("--reselect", action="store_true", help="首次安装失败后重跑时重新选择（默认沿用上次的选择，不再提问）")
     install_parser.set_defaults(handler=install)
 
