@@ -1342,6 +1342,11 @@ def ensure_bundle(
     publication = PluginPublicationLock(plugins_home)
     maintenance.acquire()
     extra_root = _extra_staging_root(workspace)
+    # 本进程与它启动的 pip、git 子进程的临时文件都落在暂存目录里，结束时一并删除并复原。
+    previous_tmp = (os.environ.get("TMPDIR"), tempfile.tempdir)
+    scratch = extra_root / "tmp"
+    scratch.mkdir()
+    os.environ["TMPDIR"] = tempfile.tempdir = str(scratch)
     try:
         publication.acquire()
         try:
@@ -1439,6 +1444,11 @@ def ensure_bundle(
         finally:
             publication.release()
     finally:
+        tempfile.tempdir = previous_tmp[1]
+        if previous_tmp[0] is None:
+            _ = os.environ.pop("TMPDIR", None)
+        else:
+            os.environ["TMPDIR"] = previous_tmp[0]
         shutil.rmtree(extra_root, ignore_errors=True)
         maintenance.release()
 
