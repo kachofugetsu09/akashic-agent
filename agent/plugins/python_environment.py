@@ -19,7 +19,7 @@ from utils.timing import measure
 
 from agent.plugins.files import encode_tree, sync_directory, tree_entries
 from agent.plugins.requirements_check import BUNDLED_WHEELS_DIR, check_bundled_wheels
-from agent.plugins.resources import declared_refs
+from agent.plugins.resources import declared_refs, resource_repair_reason
 from agent.plugins.static_manifest import StaticPluginManifest, StaticPythonRuntime
 
 if TYPE_CHECKING:
@@ -499,14 +499,22 @@ def environment_repair_reason(
     # 1. 没声明进程内依赖就没有这类环境。
     try:
         if inprocess_runtime(code) is None:
-            return None
+            return _resource_reason(code, environments)
         ref = inprocess_ref(code)
     except (OSError, ValueError) as error:
         return f"安装记录无法读取: {error}"
     if ref is None:
         return "安装记录里没有进程内依赖环境引用"
-    # 2. 引用必须指向可用的环境。
-    return environment_unusable_reason(environments, ref, python, inprocess=True)
+    # 2. 引用必须指向可用的环境；之后声明的资源也必须可用（同一个自愈：同提交 upgrade 重取）。
+    return environment_unusable_reason(environments, ref, python, inprocess=True) or _resource_reason(code, environments)
+
+
+# 声明了 resources.json 的 artifact：任一资源缺失或损坏就需要重新取回。持久根与环境根同在 workspace/runtime 下。
+def _resource_reason(code: Path, environments: PythonEnvironments) -> str | None:
+    try:
+        return resource_repair_reason(code, environments.path.parent.parent)
+    except (OSError, ValueError) as error:
+        return f"资源声明无法读取: {error}"
 
 
 def read_environment_refs(code: Path, manifest: StaticPluginManifest) -> dict[str, str]:
