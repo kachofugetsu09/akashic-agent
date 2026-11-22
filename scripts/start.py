@@ -102,6 +102,14 @@ def _show_progress(record: dict[str, object]) -> None:
         print(f"  已安装 {record.get('plugin')}（{seconds:.1f}s）", flush=True)
 
 
+# 汇总：已安装但因外部前置条件未满足而保持关闭的包（来自 runtime/disabled-reasons.json）。
+def _print_closed_summary(workspace: Path) -> None:
+    from agent.plugins.prerequisites import read_disabled
+
+    for plugin_id, row in sorted(read_disabled(workspace).items()):
+        print(f"已安装但未启用：{plugin_id.partition('@')[0]}（{row['reason']}）", flush=True)
+
+
 def prepare_source(preparation: Preparation, cache: Path) -> tuple[Path, Path, Path]:
     """Build one committed source revision and reuse its completed distribution."""
     # 1. Build exact source, without silently substituting HEAD for local edits.
@@ -260,6 +268,7 @@ def prepare_install(preparation: Preparation, core: Path, distribution: Path,
         preparation.run(command, cwd=core, progress=_show_progress if install_extra else None)
         if prefetched is not None:
             shutil.rmtree(prefetched, ignore_errors=True)
+        _print_closed_summary(workspace)
     except RuntimeError as error:
         # 子进程的原因在日志里；补装失败时把"缺哪些包、怎么办"带到终端。
         lines = [line for line in preparation.log.read_text(encoding="utf-8", errors="replace").splitlines()
