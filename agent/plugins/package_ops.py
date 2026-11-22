@@ -16,6 +16,7 @@ from agent.plugins.extra_repo import is_official_repo, official_marketplace
 from agent.plugins.distribution_sources import distribution_sources
 from agent.plugins.install import PluginInstallResult, finalize_uninstall_plugin, fetch_sha_shallow, install_git_plugin
 from agent.plugins.manifest import plugins_root
+from agent.plugins.package_index import expand, load_index
 from agent.plugins.packages import InstalledPackage, PackageState, list_release_heads, read_state, sync_rows
 from agent.plugins.selection import PluginSelection
 from agent.plugins.static_manifest import load_static_plugin_manifest
@@ -162,14 +163,35 @@ def install_named(ctx: Context, names: list[str]) -> list[Outcome]:
         return [Outcome(name, "failed", f"{ctx.repo} 不是官方 extra 仓库；pkg 只管官方仓库，"
                         "其他仓库请用 plugin-install --marketplace") for name in names]
     try:
-        return install_many(ctx, [identity_of(name) for name in names])
-    except ValueError as error:
+        names, heads = _expand_groups(ctx, names)
+        return install_many(ctx, [identity_of(name) for name in names], heads)
+    except (ValueError, RuntimeError) as error:
         return [Outcome(name, "failed", str(error)) for name in names]
 
 
-# 逐个安装；只有已被选择、启用且正常的同版本才跳过，其余走安装路径（可复用已有 artifact）。
-def install_many(ctx: Context, plugin_ids: list[str]) -> list[Outcome]:
+# 参数里出现 @组 时读 index，展开成成员并补上依赖闭包（依赖在前）；没有 @ 参数不读 index，行为与此前相同。
+def _expand_groups(ctx: Context, names: list[str]) -> tuple[list[str], dict[str, str] | None]:
+    if not any(name.startswith("@") for name in names):
+        return names, None
+    index = load_index(ctx.repo, plugins_root())
+    if index.note:
+        print(index.note, file=sys.stderr)
+    full, added = expand(index, names)
+    if added:
+        print(f"自动带上依赖: {', '.join(added)}", file=sys.stderr)
+    # index 可能过期（缓存回落，或 extra 发布时 release 先于 index 前进）：展开的每个包都要在远端真实存在，
+    # 否则整体失败、不安装任何包。不带 @ 的多包安装不走这里，保持逐个处理的既有语义。
     heads = list_release_heads(ctx.repo)
+    missing = [name for name in full if name not in heads]
+    if missing:
+        raise RuntimeError("这些包在远端已不存在（index 可能已过期），未安装任何包: " + ", ".join(missing))
+    return full, heads
+
+
+# 逐个安装；只有已被选择、启用且正常的同版本才跳过，其余走安装路径（可复用已有 artifact）。
+def install_many(ctx: Context, plugin_ids: list[str], heads: dict[str, str] | None = None) -> list[Outcome]:
+    # 组安装把预检用的那份 heads 快照传进来：核对的全集与安装用的是同一份，两次读取之间分支消失不会部分安装。
+    heads = list_release_heads(ctx.repo) if heads is None else heads
     state = read_state(ctx.workspace, ctx.repo)
     here = {item.plugin_id: item for item in state.packages if item.source == "extra"}
     outcomes: list[Outcome] = []

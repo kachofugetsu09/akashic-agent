@@ -11,6 +11,7 @@ from typing import Literal
 
 DEFAULT_EXTRA_REPO = "https://github.com/kachofugetsu09/akashic-plugins.git"
 BRANCH_PREFIX = "refs/heads/release/"
+INDEX_REF = "refs/heads/index"
 _GIT_TIMEOUT_S = 60
 
 # 容器里取不到宿主环境，求 wheel 的 docker run 按名字透传这些代理变量（证书文件路径在容器里没有意义，不传）。
@@ -82,21 +83,31 @@ def same_origin(left: str, right: str) -> bool:
     return left.strip().rstrip("/") == right.strip().rstrip("/")
 
 
-# 一次 ls-remote 取全部 release/<name> 分支，返回 name 到提交 SHA 的映射。
-def list_release_heads(repo: str) -> dict[str, str]:
+# 一次 ls-remote 取全部 release/<name> 分支与 index 分支：返回 (name 到提交 SHA 的映射, index 的 SHA，没有则空串)。
+def list_heads(repo: str) -> tuple[dict[str, str], str]:
     result = subprocess.run(
-        ["git", "ls-remote", "--heads", "--", repo, BRANCH_PREFIX + "*"],
+        ["git", "ls-remote", "--heads", "--", repo, BRANCH_PREFIX + "*", INDEX_REF],
         capture_output=True, text=True, check=False, timeout=_GIT_TIMEOUT_S,
         env=git_env(),
     )
     if result.returncode != 0:
         raise RuntimeError(f"git ls-remote 失败: {repo}\n{result.stderr.strip()}")
     heads: dict[str, str] = {}
+    index = ""
     for line in result.stdout.splitlines():
         sha, _, ref = line.partition("\t")
-        if ref.startswith(BRANCH_PREFIX) and len(sha) == 40:
+        if len(sha) != 40:
+            continue
+        if ref.startswith(BRANCH_PREFIX):
             heads[ref.removeprefix(BRANCH_PREFIX)] = sha
-    return heads
+        elif ref == INDEX_REF:
+            index = sha
+    return heads, index
+
+
+# 只要 release/<name> 分支的映射（pkg 的既有调用方）。
+def list_release_heads(repo: str) -> dict[str, str]:
+    return list_heads(repo)[0]
 
 
 # 缺口分类，pkg sync 与部署清单共用。判据是"现在是否在用"，不只看 preset：
