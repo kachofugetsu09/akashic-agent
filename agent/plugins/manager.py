@@ -2042,21 +2042,25 @@ class PluginManager:
             except RestartRejectedError:
                 await self._restart_gate.wait_until_open()
 
-    # 续接操作：选择仍含该插件就关闭旧 owner 并按已选输入启动新代；期间已停用或卸载就只关闭旧代。
+    # 续接操作：先看当前启停选择，已显式停用就走停用路径只关闭旧 owner 并移出运行选择；
+    # 否则选择仍含该插件就关闭旧 owner 并按已选输入启动新代，期间已卸载就只关闭旧代。
     async def _finish_handoff(self, plugin_id: str) -> bool:
+        disabled = self._explicitly_disabled(plugin_id)
         selection_ref = self._selection.read()
         selected = () if selection_ref is None else tuple(
             ref for ref in self._selection_components(selection_ref)
             if self._selection.read_input(ref).get("plugin_id") == plugin_id
         )
         active = self._active_generations.get(plugin_id)
-        if (not self._draining_generations.get(plugin_id) and active is not None
+        if (not disabled and not self._draining_generations.get(plugin_id) and active is not None
                 and active.input_ref in selected and self._generation_is_locally_ready(active)):
             self._finish_recovered_config_updates()
             return True
         try:
             with self._bounded_drain():
-                if selected:
+                if disabled:
+                    await self._reconcile_disabled_and_drain(plugin_id)
+                elif selected:
                     _ = await self._retry_runtime_recovery(plugin_id)
                 for generation in tuple(self._draining_generations.get(plugin_id, ())):
                     await self._dispose_generation(generation, state="retired")
@@ -2090,9 +2094,14 @@ class PluginManager:
 
     def _handoff_message(self, plugin_id: str) -> str:
         calls = self._handoff_calls(plugin_id)
+        then = "关闭旧版本" if self._explicitly_disabled(plugin_id) else "启用新版本"
         if not calls:
-            return f"已受理：{plugin_id} 的旧版本调用已结束，正在启用新版本"
-        return f"已受理：{plugin_id} 的旧版本还在等 {calls} 个调用结束，结束后自动启用新版本"
+            return f"已受理：{plugin_id} 的旧版本调用已结束，正在{then}"
+        return f"已受理：{plugin_id} 的旧版本还在等 {calls} 个调用结束，结束后自动{then}"
+
+    # 持久启停选择里关掉的插件；没有选择行时与调和同一默认：内置身份启用、带 @ 的安装身份不启用。
+    def _explicitly_disabled(self, plugin_id: str) -> bool:
+        return plugin_choices(self._workspace, self._distribution.root).get(plugin_id, "@" not in plugin_id) is False
 
     # 残留排空占住的插件 -> 占住它的排空插件：旧代及其消费者，加上它们仍固定持有的上游提供方。
     # 换代这些插件会等同一批调用或撞上仍被持有的服务；闭包外的插件照常更新。
