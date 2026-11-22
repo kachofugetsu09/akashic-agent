@@ -2,25 +2,46 @@
 import argparse
 import asyncio
 import json
+import os
 import shutil
 import sys
 from pathlib import Path
 from urllib.parse import urlsplit
 
 
+# 插件按 resources.json 取回的 Chromium（visuals、design 声明）：Core 镜像不带浏览器，生产里由这里提供。
+# 只认带完成标记的资源，最近发布的在前；历史版本可能残缺，所以由调用方逐个试启动。
+def _plugin_resource_browsers() -> list[str]:
+    workspace = os.environ.get("AKASHIC_WORKSPACE")
+    if not workspace:
+        return []
+    entry = "content/chrome-headless-shell-linux64/chrome-headless-shell"
+    published = [marker.parent for marker in Path(workspace).glob("runtime/plugin-resources/*/COMPLETE.json")]
+    published.sort(key=lambda folder: (folder / "COMPLETE.json").stat().st_mtime, reverse=True)
+    return [str(folder / entry) for folder in published if (folder / entry).is_file()]
+
+
 async def _launch(playwright, executable: str | None):
-    """按显式路径、已安装 Playwright 浏览器、系统浏览器顺序选择。"""
-    if executable is None:
-        bundled = playwright.chromium.executable_path
-        executable = bundled if Path(bundled).is_file() else next(
-            (path for name in ("chromium", "chromium-browser", "google-chrome")
-             if (path := shutil.which(name))), None,
-        )
-    if executable is None or not Path(executable).is_file():
-        print("没有可用浏览器；界面未亲眼验证，可用 --browser 指定已安装路径", file=sys.stderr)
-        raise SystemExit(2)
-    # 启动失败保留真实错误，不关闭浏览器沙箱或掩盖依赖问题。
-    return await playwright.chromium.launch(executable_path=executable)
+    """显式路径只试它；否则按已安装 Playwright 浏览器、插件资源里的浏览器、系统浏览器顺序逐个试启动。"""
+    if executable is not None:
+        if not Path(executable).is_file():
+            print(f"--browser 指定的浏览器不存在: {executable}", file=sys.stderr)
+            raise SystemExit(2)
+        # 启动失败保留真实错误，不关闭浏览器沙箱或掩盖依赖问题。
+        return await playwright.chromium.launch(executable_path=executable)
+    bundled = playwright.chromium.executable_path
+    candidates = ([bundled] if Path(bundled).is_file() else []) + _plugin_resource_browsers() + [
+        path for name in ("chromium", "chromium-browser", "google-chrome") if (path := shutil.which(name))]
+    failures: list[str] = []
+    for candidate in candidates:
+        try:
+            return await playwright.chromium.launch(executable_path=candidate)
+        except Exception as error:  # 逐个候选尝试；全部失败时把每个的真实错误都打印出来
+            failures.append(f"{candidate}: {str(error).strip().splitlines()[0] if str(error).strip() else type(error).__name__}")
+    print("没有可用浏览器；界面未亲眼验证，可用 --browser 指定已安装路径", file=sys.stderr)
+    for line in failures:
+        print(f"  启动失败 {line}", file=sys.stderr)
+    raise SystemExit(2)
 
 
 async def _set_theme(page, theme: str) -> None:
