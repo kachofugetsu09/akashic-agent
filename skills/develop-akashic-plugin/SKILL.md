@@ -48,6 +48,9 @@ WebUI 页面读 `references/web-ui.md` 和 `templates/page/` 就够了，不再�
 - 依赖的服务写进 `inject`，用 `ctx.require(KEY)` 取。资源、监听、后台任务都交给 `ctx.effect` / `ctx.spawn` 管理，
   不在 import 时启动进程、开端口或发消息。
 - 配置读 `ctx.config`（没有配置时是空对象），自己校验；插件自己的持久数据只写 `ctx.data_root`。
-- 外部 Python 依赖写 `requirements.txt`，没有时不要假设第三方包已装。
+- 第三方依赖按用途声明，没有声明时不要假设第三方包已装（Core 镜像只带它自己要的包）：
+  - 插件代码在主进程里 `import` 的包写 `requirements.inprocess.txt`。它会装进插件自己的环境，挂在主进程 import 路径末尾（Core 的包优先），版本受 Core 锁约束。只写直接 import 的包；Core 自带的 `pydantic`、`httpx`、`fastapi` 不写。用版本范围，不要钉死 `==`，除非版本本身要和别的东西配对。
+  - 只给插件起的子进程命令用的包写 `requirements.txt`。它不会进主进程的 import 路径。
+  - 大文件（浏览器、模型等）写 `resources.json`（`{"schema_version": 1, "resources": [{"name", "url", "sha256", "archive", "entry", "size"}]}`，`archive` 目前只支持 `zip`，`entry` 是包内入口文件）。安装时下载、校验、发布，插件里用 `ctx.runtime.resource("<name>")` 取路径；不要在运行时自己下载。
 - 不恢复已删除的旧协议：`class Plugin`、`apply(ctx, config)`、`is_active`、`skill_roots`、TOML MCP 声明、
   `plugin_latest`、stable/latest 候选晋升都已退役。
