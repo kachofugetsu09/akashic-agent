@@ -137,6 +137,10 @@ disabled = true
 plugin = "skills@release"
 disabled = true
 
+[rows."plugin_update"]
+plugin = "plugin_update@release"
+disabled = true
+
 [rows."shell"]
 plugin = "shell@release"
 disabled = true
