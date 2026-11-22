@@ -15,7 +15,7 @@ import sys
 import tempfile
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Callable
+from typing import Callable, cast
 
 from agent.plugins.extra_repo import PROXY_ENV
 
@@ -35,16 +35,17 @@ def _normalize(name: str) -> str:
 
 
 # 在目标镜像里执行：联网，输出目录绑出来；用户取宿主当前用户，产物属主与宿主一致。
+# 网络用宿主网络（--network host）：宿主代理常绑在 127.0.0.1，默认 bridge 容器里的同一地址指向容器自己。
+# 只用于停机前的求包容器；停机窗口内的预检与安装仍是 --network none。
 def docker_resolver(image: str, run: Run) -> Resolver:
     def resolve(work: Path) -> dict[str, object]:
         # 容器里取不到宿主环境：代理变量按名字透传（只在宿主设置了才传；证书文件路径在容器里没有意义，不传）。
         proxies = [item for key in PROXY_ENV if key in os.environ for item in ("--env", key)]
-        command = ["docker", "run", "--rm", "--user", f"{os.getuid()}:{os.getgid()}", "--read-only", *proxies,
+        command = ["docker", "run", "--rm", "--network", "host", "--user", f"{os.getuid()}:{os.getgid()}", "--read-only", *proxies,
                    "--tmpfs", "/tmp:rw,mode=1777,size=2g", "--mount", f"type=bind,src={work},dst={work}",
                    "--workdir", "/opt/akashic/source", "--env", "HOME=/tmp", "--entrypoint", "/opt/venv/bin/python",
                    image, "-B", "-m", "agent.plugins.dependency_wheels", "--work", str(work)]
-        run(command, check=False, capture_output=True, text=True)
-        return _read_result(work)
+        return _read_result(work, run(command, check=False, capture_output=True, text=True))
 
     return resolve
 
@@ -52,18 +53,20 @@ def docker_resolver(image: str, run: Run) -> Resolver:
 # 不经 docker 的执行点：用本机（或容器内）的 Core 解释器与 pip；首装补装在容器里、以及本机验证用。
 def local_resolver(core_root: Path) -> Resolver:
     def resolve(work: Path) -> dict[str, object]:
-        subprocess.run([sys.executable, "-B", "-m", "agent.plugins.dependency_wheels", "--work", str(work)],
-                       cwd=core_root, env={**os.environ, "PYTHONPATH": str(core_root)}, check=False,
-                       capture_output=True, text=True)
-        return _read_result(work)
+        done = subprocess.run([sys.executable, "-B", "-m", "agent.plugins.dependency_wheels", "--work", str(work)],
+                              cwd=core_root, env={**os.environ, "PYTHONPATH": str(core_root)}, check=False,
+                              capture_output=True, text=True)
+        return _read_result(work, done)
 
     return resolve
 
 
-def _read_result(work: Path) -> dict[str, object]:
+def _read_result(work: Path, done: subprocess.CompletedProcess[str]) -> dict[str, object]:
     path = work / "result.json"
     if not path.exists():
-        raise RuntimeError("求依赖 wheel 的命令没有产出结果（镜像里缺少 Core 的 dependency_wheels，或命令本身失败）")
+        # 命令自己失败（缺 pip、权限、导入错误、docker 报错）：带出真实原因，不用通用提示掩盖。
+        detail = " | ".join(part for part in ((done.stderr or "").strip()[-600:], (done.stdout or "").strip()[-300:]) if part)
+        raise RuntimeError(f"求依赖 wheel 的命令失败（退出码 {done.returncode}）：{detail or '无输出'}")
     result = json.loads(path.read_text(encoding="utf-8"))
     if "error" in result:
         raise WheelResolutionFailure(str(result["error"]))
@@ -86,8 +89,8 @@ def _site_packages(environment: Path) -> list[Path]:
     return sorted((environment / ".inprocess/.venv/lib").glob("python*/site-packages"))
 
 
-# 已装外置插件的进程内环境里的 name==version（读 dist-info 的 METADATA），键为规范化包名。
-def installed_pins(workspace: Path) -> dict[str, tuple[str, str]]:
+# 已装外置插件的进程内环境里的 name==version（读 dist-info 的 METADATA），键为规范化包名；exclude 是本批要替换的插件名。
+def installed_pins(workspace: Path, exclude: frozenset[str] = frozenset()) -> dict[str, tuple[str, str]]:
     selection = workspace / "runtime/plugin-stable.json"
     pins: dict[str, tuple[str, str]] = {}
     if not selection.exists():
@@ -95,7 +98,7 @@ def installed_pins(workspace: Path) -> dict[str, tuple[str, str]]:
     document = json.loads(selection.read_text(encoding="utf-8"))
     for record in sorted(document["inputs"].values(), key=lambda item: item["plugin_id"]):
         ref = record["python_environments"].get("inprocess/")
-        if record["source_type"] != "installed" or ref is None:
+        if record["source_type"] != "installed" or ref is None or record["plugin_id"].partition("@")[0] in exclude:
             continue
         for site in _site_packages(workspace / _ENV_ROOT / ref):
             for metadata in site.glob("*.dist-info/METADATA"):
@@ -103,11 +106,6 @@ def installed_pins(workspace: Path) -> dict[str, tuple[str, str]]:
                               if ": " in line)
                 pins.setdefault(_normalize(fields["Name"]), (fields["Version"], record["plugin_id"]))
     return pins
-
-
-# wheel 文件名 name-version-...whl 里的版本，供同一次部署里后面的包当约束。
-def wheel_pins(directory: Path) -> dict[str, str]:
-    return {_normalize(parts[0]): parts[1] for parts in (item.name.split("-") for item in directory.glob("*.whl"))}
 
 
 # 与 Core 的 wheel_tree_sha256 同一序列化：文件名、NUL、小写十六进制 SHA-256、LF；只接受普通 .whl。
@@ -154,7 +152,9 @@ def resolve_package_wheels(
         destination = out / f"extra-{name}-wheels"
         shutil.rmtree(destination, ignore_errors=True)
         shutil.copytree(work / "wheels", destination)
-    for key, version in wheel_pins(destination).items():
-        pins.setdefault(key, (version, plugin_id))
+    # 进程内依赖的新解析结果替换该插件旧 pin 并供本批后面的包作约束；子进程 runtime 的依赖是隔离的，不并入。
+    inprocess_pins = cast(dict[str, str], result.get("inprocess_pins", {}))
+    for key, version in inprocess_pins.items():
+        pins[key] = (version, plugin_id)
     return {"offline_wheels": {"relative_path": destination.name, "tree_sha256": tree_sha256(destination)},
-            "core_lock_sha256": result["core_lock_sha256"]}
+            "core_lock_sha256": result["core_lock_sha256"], **({"inprocess_pins": inprocess_pins} if inprocess is not None else {})}

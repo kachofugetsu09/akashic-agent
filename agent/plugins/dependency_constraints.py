@@ -19,6 +19,16 @@ CORE_ORIGIN = "Core 锁定版本"
 _CORE_LOCK = Path("/opt/akashic/distribution/requirements.lock")
 
 
+@dataclass(frozen=True)
+class DependencyBatch:
+    """同一次部署里将要生效的包：每个插件（按 name）的进程内解析结果 {包: 版本}。
+
+    约束必须基于同一份批次事实：本批的包以新解析结果替换盘上旧选择里的旧版本，不在本批的已装包照旧。
+    """
+
+    pins: Mapping[str, Mapping[str, str]]
+
+
 class EnvironmentOpener(Protocol):
     def open(self, ref: str) -> Path: ...
 
@@ -70,14 +80,18 @@ def installed_pins(site: Path) -> dict[str, str]:
 
 # 其他已安装插件的进程内环境版本，取自选择里随安装固定的环境引用；与 Core 重名的丢掉（Core 优先），
 # 彼此重名时按 plugin_id 排序先出现者为准。读不到别人的环境时失败，不当作没有约束。
-def _other_pins(workspace: Path, plugin_name: str, core: Mapping[str, str], environments: EnvironmentOpener) -> tuple[dict[str, str], dict[str, str]]:
+def _other_pins(
+    workspace: Path, plugin_name: str, core: Mapping[str, str], environments: EnvironmentOpener,
+    batch: DependencyBatch | None = None,
+) -> tuple[dict[str, str], dict[str, str]]:
     from agent.plugins.dependency_paths import site_packages
 
     selection = PluginSelection(workspace)
     pins: dict[str, str] = {}
     origins: dict[str, str] = {}
+    replaced = frozenset(batch.pins) if batch is not None else frozenset()
     if not selection.path.exists():
-        return pins, origins
+        return _with_batch(pins, origins, plugin_name, core, batch)
     try:
         reference = selection.read()
         records = [] if reference is None else [selection.read_input(ref) for ref in selection.components(reference)]
@@ -86,7 +100,8 @@ def _other_pins(workspace: Path, plugin_name: str, core: Mapping[str, str], envi
     for record in sorted(records, key=lambda item: str(item["plugin_id"])):
         plugin_id = str(record["plugin_id"])
         ref = cast(Mapping[str, str], record["python_environments"]).get(INPROCESS_KEY)
-        if record["source_type"] != "installed" or plugin_id.partition("@")[0] == plugin_name or ref is None:
+        owner = plugin_id.partition("@")[0]
+        if record["source_type"] != "installed" or owner == plugin_name or owner in replaced or ref is None:
             continue
         try:
             site = site_packages(environments.open(ref))
@@ -96,6 +111,19 @@ def _other_pins(workspace: Path, plugin_name: str, core: Mapping[str, str], envi
         for name, version in installed_pins(site).items():
             if name not in core and name not in pins:
                 pins[name], origins[name] = version, plugin_id
+    return _with_batch(pins, origins, plugin_name, core, batch)
+
+
+# 并入本批其他插件的新解析结果（本插件自己的不算）。
+def _with_batch(
+    pins: dict[str, str], origins: dict[str, str], plugin_name: str, core: Mapping[str, str], batch: DependencyBatch | None,
+) -> tuple[dict[str, str], dict[str, str]]:
+    for owner, owned in sorted((batch.pins if batch is not None else {}).items()):
+        if owner == plugin_name:
+            continue
+        for name, version in owned.items():
+            if name not in core and name not in pins:
+                pins[name], origins[name] = version, owner
     return pins, origins
 
 
@@ -117,11 +145,13 @@ def constraints_from_pins(plugin_name: str, scratch: Path, others: Mapping[str, 
     return Constraints(plugin_name, tuple(files), {**core, **others}, {**{name: CORE_ORIGIN for name in core}, **origins})
 
 
-# 生成本次安装的约束：Core 锁 + 选择里其他已装插件的进程内环境版本。
-def build_constraints(workspace: Path, plugin_name: str, environments: EnvironmentOpener, scratch: Path) -> Constraints:
+# 生成本次安装的约束：Core 锁 + 其他插件的进程内版本（选择里的已装插件；有 batch 时本批的包取新解析结果）。
+def build_constraints(
+    workspace: Path, plugin_name: str, environments: EnvironmentOpener, scratch: Path, batch: DependencyBatch | None = None,
+) -> Constraints:
     lock, _ = core_lock()
     core = _parse_pins(lock.read_text(encoding="utf-8")) if lock is not None else {}
-    others, origins = _other_pins(workspace, plugin_name, core, environments)
+    others, origins = _other_pins(workspace, plugin_name, core, environments, batch)
     return constraints_from_pins(plugin_name, scratch, others, origins)
 
 
@@ -143,3 +173,18 @@ def explain_failure(output: str, constraints: Constraints) -> DependencyConflict
     return DependencyConflict(
         f"依赖冲突：插件 {constraints.plugin_name} 的依赖与 {origin}要求的 {name}=={version} 不兼容"
         f"（{detail}）；请放宽该插件的依赖声明，或先升级 Core 后重试")
+
+
+# 提交选择前整体核对一次：新选择里所有插件的进程内环境，同一个包不能有两个版本，也不能与 Core 锁不同。
+def verify_selected_environments(
+    entries: Mapping[str, Mapping[str, str]], core: Mapping[str, str] | None = None,
+) -> None:
+    lock, _ = core_lock()
+    pins = core if core is not None else (_parse_pins(lock.read_text(encoding="utf-8")) if lock is not None else {})
+    seen: dict[str, tuple[str, str]] = {name: (version, CORE_ORIGIN) for name, version in pins.items()}
+    for plugin_id, owned in sorted(entries.items()):
+        for name, version in owned.items():
+            previous = seen.setdefault(name, (version, plugin_id))
+            if previous[0] != version:
+                raise DependencyConflict(
+                    f"依赖冲突：{plugin_id} 的进程内依赖 {name}=={version} 与 {previous[1]} 的 {name}=={previous[0]} 不能同时存在于主进程")

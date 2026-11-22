@@ -15,7 +15,7 @@ import tempfile
 from pathlib import Path
 from typing import cast
 
-from agent.plugins.dependency_constraints import Constraints, constraints_from_pins, core_lock, explain_failure
+from agent.plugins.dependency_constraints import Constraints, constraints_from_pins, core_lock, explain_failure, normalize
 
 _NO_MATCH = re.compile(r"No matching distribution found for ([A-Za-z0-9][A-Za-z0-9._-]*)")
 
@@ -51,16 +51,19 @@ def resolve(work: Path) -> dict[str, object]:
     wheels = work / "wheels"
     wheels.mkdir(exist_ok=True)
     lock, _ = core_lock()
+    inprocess_pins: dict[str, str] = {}
     with tempfile.TemporaryDirectory(prefix="akashic-wheels-") as scratch:
         inprocess = cast(str | None, spec["inprocess"])
         if inprocess is not None:
             constraints = constraints_from_pins(
                 str(spec["plugin"]), Path(scratch), cast(dict[str, str], spec["others"]), cast(dict[str, str], spec["origins"]))
             _download(work / "req" / inprocess, wheels, constraints)
+            # 进程内依赖的解析结果（此时目录里只有它的闭包）：后面的包与安装期都据此作约束；子进程 runtime 的依赖不算。
+            inprocess_pins = {normalize(parts[0]): parts[1] for parts in (item.name.split("-") for item in wheels.glob("*.whl"))}
         for name in cast(list[str], spec["runtimes"]):
             _download(work / "req" / name, wheels, None)
     return {"core_lock_sha256": None if lock is None else hashlib.sha256(lock.read_bytes()).hexdigest(),
-            "wheels": sorted(item.name for item in wheels.iterdir())}
+            "wheels": sorted(item.name for item in wheels.iterdir()), "inprocess_pins": inprocess_pins}
 
 
 def main() -> int:

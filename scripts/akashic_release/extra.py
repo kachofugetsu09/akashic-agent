@@ -224,7 +224,10 @@ def _produce(
             shutil.copytree(options.inputs / offline["relative_path"], out / offline["relative_path"], dirs_exist_ok=True)
             if tree_sha256(out / offline["relative_path"]) != offline["tree_sha256"]:
                 raise RuntimeError(f"离线输入里 {name} 的 wheel 摘要与旁注不一致")
-            wheels = {"offline_wheels": offline, "core_lock_sha256": sidecar.get("core_lock_sha256")}
+            carried = {key: sidecar[key] for key in ("inprocess_pins",) if key in sidecar}
+            for key, version in cast(dict[str, str], carried.get("inprocess_pins", {})).items():
+                pins[key] = (version, action.plugin_id)
+            wheels = {"offline_wheels": offline, "core_lock_sha256": sidecar.get("core_lock_sha256"), **carried}
         else:
             wheels = resolve_package_wheels(code=code, plugin_id=action.plugin_id, workspace=workspace, pins=pins,
                                             resolver=resolver, out=out)
@@ -292,7 +295,8 @@ def prepare_extra_inputs(
     out.mkdir(parents=True, exist_ok=True)
     resolver = options.wheel_resolver or (docker_resolver(options.image, run) if options.image is not None
                                           else local_resolver(Path(__file__).resolve().parents[2]))
-    pins = installed_pins(workspace)
+    # 本批要生效的包以新解析结果替换旧 pin：旧选择里它们的 pin 不参与约束；不在本批的已装包照旧。
+    pins = installed_pins(workspace, frozenset(action.plugin_id.partition("@")[0] for action in actions))
     targets = tuple(_produce(action, repo, options, out, run, workspace=workspace, pins=pins, resolver=resolver)
                     for action in actions)
     return ExtraResult(targets, skipped, retiring)
