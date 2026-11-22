@@ -191,10 +191,11 @@ def fetch_commits(repo: str, wants: Mapping[str, str], store: Path) -> None:
             return
         except RuntimeError as error:
             message = str(error)
-            missing = [f"{name}@{commit[:12]}" for name, commit in wants.items() if commit in message]
-            if attempt == 2 or any(hint in message for hint in ("not our ref", "couldn't find remote ref", "no such remote ref")):
+            reason = message.split("失败: ", 1)[-1]
+            missing = [f"{name}@{commit[:12]}" for name, commit in wants.items() if commit in reason]
+            if attempt == 2 or any(hint in reason for hint in ("not our ref", "couldn't find remote ref", "no such remote ref")):
                 culprit = "、".join(missing) if missing else "、".join(f"{name}@{commit[:12]}" for name, commit in wants.items())
-                raise RuntimeError(f"一次取回 {len(shas)} 个提交失败（涉及: {culprit}）: {message.splitlines()[0]}") from error
+                raise RuntimeError(f"一次取回 {len(shas)} 个提交失败（涉及: {culprit}）: {reason.strip().splitlines()[0]}") from error
 
 
 # 把 bundle 检出到临时目录；调用方在目录里校验并求依赖 wheel。
