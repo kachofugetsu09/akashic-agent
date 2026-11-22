@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -109,6 +109,26 @@ class PluginRuntime:
     config: Mapping[str, object]
     workspace_roots: tuple[str, ...] = ()
     workspace_files: tuple[str, ...] = ()
+    # 本插件在 resources.json 里声明的资源（名字 -> 取用函数，返回（入口路径, 问题））；按插件各自提供，不经过进程级环境变量。
+    # resource_error 非空表示声明本身读不了或格式错。
+    resources: Mapping[str, Callable[[], tuple[Path, str]]] = field(default_factory=lambda: {})
+    resource_error: str = ""
+
+    def resource(self, name: str) -> Path:
+        """返回本插件声明的资源入口路径；声明无效、未声明、缺失或损坏时抛出带修复提示的错误（用到时才报，插件照常加载）。"""
+
+        if self.resource_error:
+            raise CompositionError("RESOURCE_DECLARATION_INVALID", f"{self.plugin_id} 的 resources.json 无效: {self.resource_error}")
+        resolve = self.resources.get(name)
+        if resolve is None:
+            raise CompositionError("RESOURCE_UNDECLARED", f"{self.plugin_id} 未在 resources.json 声明资源: {name}")
+        path, problem = resolve()
+        if problem:
+            raise CompositionError(
+                "RESOURCE_UNAVAILABLE",
+                f"{self.plugin_id} 的资源 {name} 不可用（{problem}；{path}）；请重新安装或升级该插件以重新取回",
+            )
+        return path
 
     def workspace_root(self, name: str) -> Path:
         """解析插件声明过的产品级 workspace 顶层目录。"""

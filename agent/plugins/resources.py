@@ -521,6 +521,82 @@ def check_archive_dir(code: Path, directory: Path, expected: object) -> tuple[Re
     return items
 
 
+# 加载时提供给插件的取用函数（名字 -> 无参函数）：只由 artifact 自己的 resources.json 决定，回退到旧版本时自然指向旧资源。
+# 挂载时不检查资源是否存在（缺失不阻止插件加载）；每次取用时才做 verify_resource 的完整性判定（标记 + 文件清单的名字与长度，
+# 约三百次 stat，毫秒级，直接在调用方上下文里同步执行，不缓存：简单且永远反映磁盘现状），返回（入口路径, 问题）；问题为空表示可用。
+# 声明读不了或格式错时返回错误文本（取用时报"声明无效"，而不是误报"未声明"）。
+def resource_resolvers(code: Path, workspace: Path) -> tuple[dict[str, Callable[[], tuple[Path, str]]], str]:
+    try:
+        items = read_manifest(code)
+    except (ResourceError, OSError, ValueError) as error:
+        return {}, str(error)
+    root = resource_root(workspace)
+
+    def resolver(item: Resource) -> Callable[[], tuple[Path, str]]:
+        def resolve() -> tuple[Path, str]:
+            try:
+                return entry_path(item, root), verify_resource(item, root) or ""
+            except OSError as error:  # 校验期间被并发删除、读盘错误：同样是不可用
+                return entry_path(item, root), f"读取资源目录失败: {error}"
+        return resolve
+
+
+    return {item.name: resolver(item) for item in items}, ""
+
+
+# 已装 artifact 的资源是否需要重新取回（与进程内环境的自愈判定同一形状）：返回第一个不可用资源的原因，全部可用返回 None。
+def resource_repair_reason(code: Path, workspace: Path) -> str | None:
+    root = resource_root(workspace)
+    for item in read_manifest(code):
+        if (reason := verify_resource(item, root)) is not None:
+            return f"资源 {item.name} 不可用: {reason}"
+    return None
+
+
+# ---- 已装包的资源修复：直接对已装 artifact 自己的 resources.json 取回，不取代码、不求 wheel、不碰选择与安装记录 ----
+# 按内容寻址，天然幂等：健康的资源直接复用，损坏或缺失的重新下载并发布；失败等于没做过。
+# 在子进程里跑本模块的 fetch 入口，父进程用硬超时兜底（期限检查只是尽力，不能打断阻塞 I/O）。
+# pkg upgrade 单包修复的期限（人为操作，不受启动健康检查约束）。
+REPAIR_PACKAGE_SECONDS = 300.0
+# 启动补装之后的修复只是快速尝试：它算在服务启动健康检查的期限里（默认 120 秒），总预算必须远小于它。
+# 下不完就放弃并警告，由 pkg upgrade <包> 修复；正常部署在停机前由宿主侧取好资源，不依赖这一步。
+STARTUP_REPAIR_SECONDS = 60.0
+
+
+# 取回一个已装 artifact 声明的全部资源；失败抛 ResourceError。
+def repair_resources(code: Path, workspace: Path, *, seconds: float = REPAIR_PACKAGE_SECONDS) -> None:
+    command = [sys.executable, "-B", "-m", "agent.plugins.resources", "fetch", "--manifest", str(code / RESOURCES_FILE),
+               "--root", str(resource_root(workspace)), "--max-seconds", str(max(seconds - 15, 1.0))]
+    try:
+        done = subprocess.run(command, cwd=_REPO_ROOT, capture_output=True, text=True, timeout=seconds, check=False,
+                              env={**os.environ, "PYTHONPATH": str(_REPO_ROOT)})
+    except subprocess.TimeoutExpired as error:
+        raise ResourceError(f"取回资源超过硬上限 {seconds:.0f} 秒，已终止") from error
+    if done.returncode != 0:
+        raise ResourceError(f"取回资源失败: {(done.stderr or done.stdout).strip()[-400:]}")
+
+
+# 启动补装之后的尽力而为步骤：逐个已装包（名字, artifact 目录）检查，资源缺失或损坏的取回；每个包独立，失败只返回警告。
+# 总期限 total 用完后剩下的包直接放弃并警告，不让下载拖住启动。返回 [(名字, 原因)]。
+def repair_installed_resources(
+    packages: list[tuple[str, Path]], workspace: Path, *, per_package: float = STARTUP_REPAIR_SECONDS, total: float = STARTUP_REPAIR_SECONDS,
+) -> list[tuple[str, str]]:
+    failures: list[tuple[str, str]] = []
+    end = time.monotonic() + total
+    for name, code in packages:
+        try:
+            if resource_repair_reason(code, workspace) is None:
+                continue
+            left = end - time.monotonic()
+            if left < 5:
+                failures.append((name, "启动补装的资源修复总期限已用完，放弃"))
+                continue
+            repair_resources(code, workspace, seconds=min(per_package, left))
+        except (ResourceError, OSError, ValueError) as error:
+            failures.append((name, str(error).strip().splitlines()[0][:300] if str(error).strip() else type(error).__name__))
+    return failures
+
+
 def _main(arguments: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="python -m agent.plugins.resources")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -529,6 +605,7 @@ def _main(arguments: list[str]) -> int:
         _ = command.add_argument("--manifest", type=Path, required=True)
         _ = command.add_argument("--root", type=Path, required=True)
         _ = command.add_argument("--name")
+        _ = command.add_argument("--max-seconds", type=float, default=_MAX_SECONDS)
     fetch_only = commands.add_parser("download")
     _ = fetch_only.add_argument("--manifest", type=Path, required=True)
     _ = fetch_only.add_argument("--dest", type=Path, required=True)
@@ -542,7 +619,8 @@ def _main(arguments: list[str]) -> int:
                     if not names or item.name in names]
         if options.command == "download":
             return _run_download(selected, cast(Path, options.dest), float(options.max_seconds))
-        return _run_publish(selected, options.command, cast(Path, options.root), cast("str | None", raw if isinstance(raw, str) else None))
+        return _run_publish(selected, options.command, cast(Path, options.root), cast("str | None", raw if isinstance(raw, str) else None),
+                            float(options.max_seconds))
     except (ResourceError, OSError) as error:
         print(json.dumps({"error": str(error)}), file=sys.stderr)
         return 2
@@ -608,14 +686,14 @@ def _run_download(items: list[Resource], dest: Path, seconds: float) -> int:
 
 
 # fetch / verify：取回并发布，或只检查已发布内容；退出码 0 可用、1 不可用、2 错误。
-def _run_publish(items: list[Resource], command: str, root: Path, name: str | None) -> int:
+def _run_publish(items: list[Resource], command: str, root: Path, name: str | None, seconds: float) -> int:
     if name is not None and not items:
         raise ResourceError(f"声明里没有资源 {name}")
     report: list[dict[str, object]] = []
     for item in items:
         reason = verify_resource(item, root) if command == "verify" else None
         if command == "fetch":
-            _ = fetch_resource(item, root)
+            _ = fetch_resource(item, root, max_seconds=seconds)
         report.append({"name": item.name, "sha256": item.sha256, "path": str(entry_path(item, root)),
                        "usable": reason is None, **({"reason": reason} if reason else {})})
     print(json.dumps(report))
