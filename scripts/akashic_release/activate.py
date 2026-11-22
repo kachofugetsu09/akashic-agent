@@ -222,21 +222,25 @@ def render_environment(values: Mapping[str, str]) -> str:
 
 
 # 子进程输出逐行透传到终端（不缓冲到结束才出）；注入的假 run（演练驱动）仍按原样一次性返回。
-def _run_streaming(command: list[str], run: Run) -> subprocess.CompletedProcess[str]:
+def _run_streaming(command: list[str], run: Run, progress: Callable[[dict[str, object]], None] | None = None) -> subprocess.CompletedProcess[str]:
     if run is not subprocess.run:
         return run(command, check=False, capture_output=True, text=True)
+    from scripts.first_install import relay_line
+
     lines: list[str] = []
     with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True) as process:
         for line in cast(Iterable[str], process.stdout):
             lines.append(line)
-            print(line, end="", file=sys.stderr, flush=True)
+            # 进度事件渲染成人话行，其余输出原样透传。
+            if progress is None or not relay_line(line.strip(), progress):
+                print(line, end="", file=sys.stderr, flush=True)
         returncode = process.wait()
     return subprocess.CompletedProcess(command, returncode, "".join(lines), "".join(lines))
 
 
 # 首次激活：用目标镜像的 ensure 入口，把已取好的输入离线装进 state（无网络），提交选择；服务随后启动不再联网。
 def _ensure_first_install(*, paths: ReleasePaths, candidate: Mapping[str, str], inputs: Path, run: Run, install_extra: tuple[str, ...],
-                          bundle: str = "base") -> None:
+                          bundle: str = "base", progress: Callable[[dict[str, object]], None] | None = None) -> None:
     command = ["docker", "run", "--rm", "--network", "none", "--read-only", "--tmpfs", "/tmp:rw,mode=1777,size=4g",
                "--mount", f"type=bind,src={paths.state},dst={paths.state}",
                "--mount", f"type=bind,src={inputs},dst=/opt/akashic/deploy-inputs,readonly"]
@@ -248,7 +252,7 @@ def _ensure_first_install(*, paths: ReleasePaths, candidate: Mapping[str, str], 
     if (inputs / "profile.patch.toml").exists():
         command += ["--profile-patch", "/opt/akashic/deploy-inputs/profile.patch.toml"]
     with measure("release.first_install"):
-        completed = _run_streaming(command, run)
+        completed = _run_streaming(command, run, progress)
         if completed.returncode != 0:
             raise RuntimeError(f"首次安装扩展包失败（exit={completed.returncode}），服务未启动: {completed.stderr.strip()[-800:]}")
 
@@ -416,7 +420,7 @@ def _record_failure(
 def _first_install_extra(*, paths: ReleasePaths, target: str, current: Mapping[str, str], candidate: Mapping[str, str],
                          extra: ExtraOptions, inputs_dir: Path, run: Run) -> None:
     from agent.plugins.absorbed import read_absorbed
-    from scripts.first_install import choose, clear_intent, preset_extra_rows, write_patch
+    from scripts.first_install import Progress, choose, clear_intent, preset_extra_rows, write_patch
 
     mode = current.get("AKASHIC_PLUGIN_BUNDLE", "base")
     if extra.inputs is not None:
@@ -435,7 +439,8 @@ def _first_install_extra(*, paths: ReleasePaths, target: str, current: Mapping[s
                              options=replace(extra, image=candidate["AKASHIC_IMAGE"], gaps_only=True, record_needs=True,
                                              install_extra=choice.install, patch_file=patch),
                              out=inputs_dir, run=run)
-    _ensure_first_install(paths=paths, candidate=candidate, inputs=inputs_dir, run=run, install_extra=choice.install, bundle=mode)
+    _ensure_first_install(paths=paths, candidate=candidate, inputs=inputs_dir, run=run, install_extra=choice.install, bundle=mode,
+                          progress=Progress(len(choice.install)))
     clear_intent(paths.state)
 
 

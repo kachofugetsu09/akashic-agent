@@ -320,3 +320,40 @@ def choose(
         raise RuntimeError("已取消，未做任何改动")
     save_intent(state, choice)
     return choice
+
+
+# 把进度事件渲染成人话行（start 与 release 共用）：一次性取包、求依赖 wheel、逐包安装；不伪造下载条。
+class Progress:
+    """只显示真实事件：一次性取包、求依赖 wheel、逐包安装（开始时显示 (i/N) 正在安装，完成时补上耗时）；不伪造下载条。"""
+
+    def __init__(self, total: int = 0) -> None:
+        self.total = total
+        self.count = 0
+
+    def __call__(self, record: dict[str, object]) -> None:
+        stage, status = record.get("stage"), record.get("status")
+        seconds = float(cast(float, record.get("seconds", 0)))
+        if stage == "extra.fetch_all" and status == "complete":
+            self.total = int(cast(int, record.get("packages", 0)))
+            print(f"  已取回 {self.total} 个扩展包（{seconds:.1f}s）", flush=True)
+        elif stage == "extra.wheels" and status == "complete" and seconds >= 1:
+            print(f"  已求解依赖 wheel：{record.get('plugin')}（{seconds:.0f}s）", flush=True)
+        elif stage == "extra.install" and status == "started":
+            self.count += 1
+            print(f"  ({self.count}/{self.total or '?'}) 正在安装 {record.get('plugin')} …", end="", flush=True)
+        elif stage == "extra.install" and status == "complete":
+            print(f" 完成（{seconds:.1f}s）", flush=True)
+
+
+# 一行子进程输出：是 release.timing 的开始/完成事件就交给 progress，并返回 True（不再原样打印）。
+def relay_line(line: str, progress: Callable[[dict[str, object]], None]) -> bool:
+    if not line.startswith("{"):
+        return False
+    try:
+        record = json.loads(line)
+    except ValueError:
+        return False
+    if isinstance(record, dict) and record.get("event") == "release.timing" and record.get("status") in ("started", "complete"):
+        progress(cast(dict[str, object], record))
+        return True
+    return False
