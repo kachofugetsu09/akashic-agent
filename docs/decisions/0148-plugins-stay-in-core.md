@@ -1,6 +1,6 @@
 # 0148 · 内置插件留在 Core 仓库
 
-- 状态：accepted / implemented for review
+- 状态：superseded by [0167](0167-plugins-ship-from-extra.md)（2026-11-22：先重做安装与更新流程，再把非核心插件迁到 extra 仓库）
 - 日期：2026-11-11
 - 依据：#1973 栈（#1974–#1989、akashic-plugins #1–#8）上线后的使用反馈；用户拍板撤回。
 

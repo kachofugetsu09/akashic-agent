@@ -6,6 +6,7 @@
 
 | ID | 状态 | 主题 | 关联条款 |
 |---|---|---|---|
+| [0167](0167-plugins-ship-from-extra.md) | accepted / implemented for review | 非核心插件由官方 extra 仓库提供，Core 用 pkg 管理；取代 0148 | PLG-001 |
 | [0151](0151-watch-closes-every-loop.md) | proposed / implemented for review | 值班：每件事要有着落，来源可以是一个脚本 | PRO-004～PRO-006 |
 | [0152](0152-watch-speaks-at-the-right-moment.md) | proposed / implemented for review | 值班：话留到合适的时刻说，聊天里先回应 | PRO-004～PRO-006 |
 | [0153](0153-watch-panel.md) | proposed / implemented for review | 值班面板：从已有记录现读，只认识来源和事件 | PRO-005 |
@@ -23,7 +24,7 @@
 | [0154](0154-watch-reshapes-its-own-sources.md) | proposed / implemented for review | 值班：自己去看、自己接着看、到头就拆；猜的先放便签 | PRO-004～PRO-006 |
 | [0150](0150-sources-have-one-event-entry.md) | proposed / implemented for review | 来源只有一个事件入口，删除 EventMail | PRO-004 |
 | [0149](0149-watch-replaces-wake.md) | proposed / implemented for review | 值班（watch）取代 Wake：便宜模型看流，主 Agent 自己决定做什么 | PRO-003、PRO-005、PRO-006、SEC-011 |
-| [0148](0148-plugins-stay-in-core.md) | accepted / implemented for review | 内置插件留在 Core 仓库：撤回 #1973 拆仓与热更新，正交性靠仓库内边界（前端归属、R13） | PLG-001 |
+| [0148](0148-plugins-stay-in-core.md) | superseded by 0167 | 内置插件留在 Core 仓库：撤回 #1973 拆仓与热更新，正交性靠仓库内边界（前端归属、R13） | PLG-001 |
 | [0147](0147-appearance-dependencies-are-machine-checked.md) | accepted / implemented for review | 外观依赖由静态检查守护：圆角与投影取 token，变量只能解析到自己或宿主 | WEBUI-007、PLG-001 |
 | [0146](0146-drift-is-retired.md) | accepted / implemented for review | 移除漫游（Drift）；主动消息口径由来源插件自己声明 | PRO-002、PLG-006、TST-001 |
 | [0145](0145-message-provenance-is-decided-once.md) | accepted / implemented for review | 消息出处只在写入器绑定时判定一次，读取方共用一处解释；自动来源共用中心循环 | RUN-001～RUN-003、PLG-003、MEM-009、TST-001 |
