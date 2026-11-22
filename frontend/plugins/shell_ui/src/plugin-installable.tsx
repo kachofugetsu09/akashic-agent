@@ -44,7 +44,8 @@ export function InstallablePackages({ http, active, onInstalled }: {
   const [submitting, setSubmitting] = useState(false);
   const running = task?.state === "running";
   const seen = useRef(running);
-  // 提交代次：每次提交安装加一，提交之前发出的状态读取回来时作废，不能覆盖刚提交的任务。
+  // 提交代次：提交安装时和提交返回时各加一，提交之前与提交期间发出的状态读取回来时作废
+  // （服务端那时可能还没落盘任务，会读到空），不能覆盖刚提交的任务。
   const epoch = useRef(0);
   // 状态读取串行：上一次还没回来就不再发，避免慢回包互相淘汰。
   const polling = useRef(false);
@@ -80,9 +81,11 @@ export function InstallablePackages({ http, active, onInstalled }: {
     setSubmitting(true);
     epoch.current += 1;
     try {
-      setTask(await call<Task>(http, "/api/dashboard/plugins/install", {
+      const started = await call<Task>(http, "/api/dashboard/plugins/install", {
         method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name }),
-      }));
+      });
+      epoch.current += 1;
+      setTask(started);
     } catch (reason) {
       setFailure(reason instanceof Error ? reason.message : String(reason));
       polling.current = false;
