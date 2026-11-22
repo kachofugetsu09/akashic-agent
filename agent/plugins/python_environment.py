@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import hashlib
 import json
 import os
@@ -125,6 +126,19 @@ def _check_offline_requirements(path: Path) -> None:
         found = True
     if not found:
         raise ValueError("离线 wheel 输入只用于非空普通 requirements")
+
+
+# 把 path 所在文件系统的脏数据整体刷盘（libc syncfs），不可用或失败时退回全局 sync；比逐文件 fsync 快两个数量级。
+def _sync_filesystem(path: Path) -> None:
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        library = ctypes.CDLL(None, use_errno=True)
+        if library.syncfs(fd) != 0:
+            os.sync()
+    except (AttributeError, OSError):
+        os.sync()
+    finally:
+        os.close(fd)
 
 
 def preflight_offline_runtime(
@@ -263,16 +277,13 @@ class PythonEnvironments:
                     else:
                         _run(command, build_source)
             with measure("plugin.environment.sync", plugin=code.name):
+                # 1. 先逐个设只读权限（权限是元数据，随后整体落盘），2. 再对环境所在文件系统做一次整体刷盘，替代逐文件 fsync。
                 for current, _, files in os.walk(root, topdown=False):
                     for name in files:
                         path = Path(current) / name
-                        if path.is_symlink():
-                            continue
-                        path.chmod(0o555 if path.stat().st_mode & 0o111 else 0o444)
-                        with path.open("rb") as stream:
-                            os.fsync(stream.fileno())
-                    sync_directory(Path(current))
-                sync_directory(self.path)
+                        if not path.is_symlink():
+                            path.chmod(0o555 if path.stat().st_mode & 0o111 else 0o444)
+                _sync_filesystem(self.path)
             if offline_wheels is not None:
                 _ = _verify_offline_wheels(offline_wheels)
             if _environment_input(source, runtime, wheel_digest or "") != input_value:
