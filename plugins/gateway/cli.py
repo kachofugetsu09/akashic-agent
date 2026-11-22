@@ -263,6 +263,19 @@ async def set_enabled_main(arguments: tuple[str, ...], *, workspace: Path, confi
     return 0
 
 
+# 问运行中的 Core 哪些前置条件不满足，输出一行 JSON：{"unmet": [...]}。
+async def prerequisites_main(arguments: tuple[str, ...], *, workspace: Path, config_path: Path) -> int:
+    try:
+        result = await request(workspace, "plugin/prerequisites", {"needs": list(arguments)})
+    except (ConnectionError, OSError):
+        return NO_INSTANCE
+    except (RemoteError, ValueError, RuntimeError) as error:
+        print(str(error), file=sys.stderr)
+        return 1
+    print(json.dumps({"unmet": result.get("unmet", [])}, ensure_ascii=False))
+    return 0
+
+
 async def install_main(arguments: tuple[str, ...], *, workspace: Path, config_path: Path) -> int:
     return await management(arguments, workspace=workspace, config_path=config_path, command="plugin-install")
 

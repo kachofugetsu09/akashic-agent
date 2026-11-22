@@ -196,21 +196,35 @@ def _declare(ctx: Context, name: str, plugin_id: str, sha: str) -> list[str] | N
     return needs
 
 
+# 前置条件以将来运行插件的 Core 为准：在线时问 Core（pkg 可能跑在 PATH 不同的宿主 Shell 里），
+# 离线时本进程就是将要启动的运行环境；问不到 Core（旧版本没有这个命令等）时退回本进程检测并说明。
+def _unmet_in_core(ctx: Context, needs: list[str]) -> list[str]:
+    if not needs or not ctx.online:
+        return unmet(needs)
+    done = _main(ctx, "plugin-prerequisites", *needs)
+    if done.returncode == 0:
+        return [str(item) for item in cast(list[object], _json_of(done).get("unmet", []))]
+    print(f"没能在运行中的实例里检测前置条件，改为在当前环境检测: {done.stderr.strip() or done.returncode}", file=sys.stderr)
+    return unmet(needs)
+
+
 # 装完后：包声明了外部前置条件而本机不满足，包照装但保持关闭并记录原因（返回说明）。
-# 在线时经 Gateway 热停用（plugin-disable），离线直接写 patch。
+# 在线时经 Gateway 热停用（plugin-set-enabled off），离线直接写 patch。
 def _hold_closed(ctx: Context, name: str, plugin_id: str, sha: str) -> str:
     needs = _declare(ctx, name, plugin_id, sha)
     if needs is None:
         return ""
-    missing = unmet(needs)
+    missing = _unmet_in_core(ctx, needs)
     if not missing:
         clear_disabled(ctx.workspace, plugin_id)
         return ""
     record_disabled(ctx.workspace, plugin_id, missing, sha)
     if ctx.online:
-        done = _main(ctx, "plugin-disable", plugin_id)
+        # 用 plugin-set-enabled 而不是 plugin-disable：后者在 Agent 回合里被当作内部动作拒绝，
+        # Agent 自己跑 pkg install 时包会因此装失败；两者在线时走同一条 Gateway 启停路径。
+        done = _main(ctx, "plugin-set-enabled", plugin_id, "off")
         if done.returncode != 0:
-            raise RuntimeError(done.stderr.strip() or done.stdout.strip() or "plugin-disable 失败")
+            raise RuntimeError(done.stderr.strip() or done.stdout.strip() or "plugin-set-enabled off 失败")
     else:
         root = distribution_sources(ctx.workspace, plugins_root(), replacing_distribution=True).root
         _ = set_plugin_choice(ctx.workspace, plugin_id, enabled=False, distribution=root)

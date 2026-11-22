@@ -36,6 +36,7 @@ class PluginInstallPort(ConfigHost, Protocol):
     async def reconcile_disabled_and_drain(self, plugin_id: str) -> None: ...
     async def set_plugin_enabled(self, plugin_id: str, enabled: bool) -> dict[str, object]: ...
     async def wait_idle(self) -> None: ...
+    async def unmet_prerequisites(self, needs: list[str]) -> list[str]: ...
 
 
 class PluginUpdates:
@@ -94,6 +95,11 @@ class PluginUpdates:
     async def wait_idle(self, ctx: Context) -> None:
         """等待当前宿主操作退出；不取消操作，也不提交新选择。"""
         await self._check(ctx).wait_idle()
+
+    # 在运行中的 Core 里检测外部前置条件（docker、command:<命令>），返回不满足的项。
+    # 命令行（如在宿主 Shell 里跑 pkg）与 Core 的 PATH 可能不同，以 Core 为准。
+    async def unmet(self, ctx: Context, needs: list[str]) -> list[str]:
+        return await self._check(ctx).unmet_prerequisites(needs)
 
     async def changes(self, ctx: Context) -> AsyncGenerator[None]:
         """通知只唤醒读取，不保存队列或持有等待发布必须排空的租约。"""
