@@ -33,6 +33,10 @@ class SetEnabledParams(StrictModel):
     enabled: bool
 
 
+class PrerequisitesParams(StrictModel):
+    needs: list[str] = Field(max_length=32)
+
+
 def build_control_service(ctx: Context, *, workspace_token: str | None) -> ControlService:
     """参数校验属于协议层，持久接纳和管理提交仍由各自 owner 完成。"""
     updates = ctx.require(PLUGIN_UPDATES)
@@ -106,6 +110,10 @@ def build_control_service(ctx: Context, *, workspace_token: str | None) -> Contr
         request = cast(SetEnabledParams, params)
         return await updates.set_enabled(ctx, request.plugin_id, request.enabled)
 
+    # 在 Core 里检测外部前置条件：pkg 在宿主 Shell 里运行时，以 Core 的 PATH 与 Docker 通道为准。
+    async def prerequisites(params: BaseModel) -> object:
+        return {"unmet": await updates.unmet(ctx, cast(PrerequisitesParams, params).needs)}
+
     return ControlService(
         ctx.require(MESSAGE_CATALOG), ctx.runtime.workspace, accept=accept,
         attachments=ctx.require(CHANNEL_ATTACHMENT_READ).resolve_refs,
@@ -117,5 +125,6 @@ def build_control_service(ctx: Context, *, workspace_token: str | None) -> Contr
         request_scope=ctx.runtime_scope,
         methods={"runtime/prepare-stop": RpcMethod(StopParams, stop),
                  "runtime/cancel-stop": RpcMethod(CancelStopParams, cancel_stop),
-                 "plugin/set-enabled": RpcMethod(SetEnabledParams, set_enabled)},
+                 "plugin/set-enabled": RpcMethod(SetEnabledParams, set_enabled),
+                 "plugin/prerequisites": RpcMethod(PrerequisitesParams, prerequisites)},
     )

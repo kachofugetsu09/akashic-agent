@@ -56,7 +56,7 @@ from agent.plugins._operation import (
 from agent.plugin_composition.config_input import decode_config, encode_config
 from agent.plugins.bundles import absorbed_plugin_ids
 from agent.plugins.channel_credentials import CoreProviderClientFactory
-from agent.plugins.prerequisites import check_before_enable, ensure_images, installed_head, load_disabled
+from agent.plugins.prerequisites import check_before_enable, ensure_images, installed_head, load_disabled, parse_needs, unmet
 from agent.plugins.composable import ComposablePlugin
 from agent.plugins.generation import PluginGeneration
 from agent.plugins.host import (
@@ -2136,6 +2136,11 @@ class PluginManager:
             return None
         return {"plugin_id": plugin_id, "publication_state": "draining", "selection_ref": selection_ref,
                 "message": self._drain_busy_text(plugin_id, source)}
+
+    # 在本进程（Core）的环境里检测前置条件；检测可能连 Workload Controller，放到线程里。
+    async def unmet_prerequisites(self, needs: list[str]) -> list[str]:
+        declared = parse_needs(needs, "前置条件检测请求")
+        return await asyncio.to_thread(unmet, declared)
 
     async def set_plugin_enabled(self, plugin_id: str, enabled: bool) -> dict[str, object]:
         return await self._run_operation(lambda: self._set_plugin_enabled(plugin_id, enabled),
