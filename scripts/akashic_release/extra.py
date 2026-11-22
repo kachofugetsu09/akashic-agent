@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterator, cast
 
+from utils.timing import measure
 from agent.plugins.extra_repo import (
     ExtraAction,
     SelectedPackage,
@@ -223,7 +224,8 @@ def _produce(
         if source.resolve() != bundle.resolve():
             shutil.copyfile(source, bundle)
     else:
-        fetch_bundle(repo, name, action.commit, bundle)
+        with measure("extra.fetch", plugin=name):
+            fetch_bundle(repo, name, action.commit, bundle)
     wheels: dict[str, object] | None = None
     with _checkout(bundle, action.commit) as code:
         images = check_code(code, name)
@@ -238,8 +240,9 @@ def _produce(
                 pins[key] = (version, action.plugin_id)
             wheels = {"offline_wheels": offline, "core_lock_sha256": sidecar.get("core_lock_sha256"), **carried}
         else:
-            wheels = resolve_package_wheels(code=code, plugin_id=action.plugin_id, workspace=workspace, pins=pins,
-                                            resolver=resolver, out=out)
+            with measure("extra.wheels", plugin=name):
+                wheels = resolve_package_wheels(code=code, plugin_id=action.plugin_id, workspace=workspace, pins=pins,
+                                                resolver=resolver, out=out)
     for image in images if options.pull_images else ():
         run(["docker", "pull", image], check=True, capture_output=True, text=True)
     target: dict[str, object] = {
@@ -276,7 +279,8 @@ def prepare_extra_inputs(
     def heads() -> dict[str, str]:
         if not remote:
             try:
-                remote.update(_offline_heads(options.inputs) if options.inputs is not None else list_release_heads(repo))
+                with measure("extra.ls_remote"):
+                    remote.update(_offline_heads(options.inputs) if options.inputs is not None else list_release_heads(repo))
             except (RuntimeError, OSError) as error:
                 raise RuntimeError(f"{str(error).splitlines()[0]}；需要装的插件: {', '.join(missing)}") from error
         return remote
