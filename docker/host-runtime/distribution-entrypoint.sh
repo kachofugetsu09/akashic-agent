@@ -39,6 +39,17 @@ fi
 
 mkdir -p "$WORKSPACE" "$PLUGIN_HOME"
 
+# 首次激活由宿主侧先联网取好 extra 包与 wheel（--extra-inputs），在服务启动之前用本子命令离线装好并提交选择；
+# 这样随后的正常启动选择已提交，不联网，健康检查期限与下载耗时无关。
+if [[ "${1:-}" == "ensure" ]]; then
+    shift
+    exec /opt/venv/bin/python /opt/akashic/source/scripts/install_plugin_distribution.py \
+        --distribution /opt/akashic/distribution \
+        --bundle /opt/akashic/distribution/bundles/"${AKASHIC_PLUGIN_BUNDLE:-base}".toml \
+        --workspace "$WORKSPACE" --plugins-home "$PLUGIN_HOME" --config "$CONFIG" \
+        --ensure-bundle --receipt "$WORKSPACE/runtime/distribution-install.json" "$@"
+fi
+
 # 补装是否完成以"选择已经提交"为判据：首装中途失败时回执已写、选择仍是空，重试仍要补装；
 # 选择已提交的实例由 akashic-release 在停机前处理，启动不联网（没有缺口本来也不联网）。
 extra_args=()
