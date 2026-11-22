@@ -167,7 +167,7 @@ Core 侧一个 PR，extra 侧先行或同时：
 
 仍在 Core 的 `[tiers].extra`：`akasha`、`design`、`visuals`、`telegram_channel`，原因都是 Phase 4：进程内导入第三方包（numba/numpy/jieba、playwright、python-telegram-bot），在"插件自带依赖挂进主进程"实现前不能迁。除这四个外，extra 层没有被遗漏的可迁插件。
 
-已补的门禁：extra 仓库的 PR 对固定版本 Core 的 `scripts/check_yoyo_migrations.py --root` 跑"已发布迁移只能追加"（Core 自己的检查对已迁出的插件放行，这条保证由 extra 承接）。
+迁移门禁：`scripts/check_yoyo_migrations.py` 已支持 `--root` 指向外部仓库根。extra 仓库的 CI 接入它（PR 上跑"已发布迁移只能追加"）并把固定的 Core 版本升到包含该参数的提交之后，这条保证才由 extra 承接；在那之前 Core 自己的检查对已迁出的插件放行，迁出插件的迁移不可变没有门禁。
 
 已知缺口：
 
@@ -175,7 +175,7 @@ Core 侧一个 PR，extra 侧先行或同时：
 - 声明镜像的插件（`computer`）的镜像仍由 Core 的 `docker/computer` 与 `.github/workflows/computer-image.yml` 构建；摘要变化要在 extra 仓库改 `plugin.py`。
 - `scripts/build-web-plugins.mjs` 里 `computer` 的构建目标特例、visuals/design 的专用构建段仍在 Core 的构建脚本里（Phase 4）。
 - 进程内导入第三方包的已迁插件（`web_fetch_http`：html2text、lxml；`telegram_sender`：aiohttp、telegramify-markdown）依赖 Core 镜像继续带着这些包。
-- `benchmark/computer_runtime`、`benchmark/computer_driver` 只能在 extra 仓库 `extra_ci.py compose` 的合成目录里运行。
+- `benchmark/computer_runtime` 与 `benchmark/computer_driver` 的 `--agent` 模式只能在 extra 仓库 `extra_ci.py compose` 的合成目录里运行；`computer_driver` 的非 Agent 模式不受影响。
 
 ### Phase 4：带重依赖的插件
 
