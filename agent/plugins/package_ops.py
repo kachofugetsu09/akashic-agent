@@ -197,22 +197,23 @@ def _declare(ctx: Context, name: str, plugin_id: str, sha: str) -> list[str] | N
 
 
 # 前置条件以将来运行插件的 Core 为准：在线时问 Core（pkg 可能跑在 PATH 不同的宿主 Shell 里），
-# 离线时本进程就是将要启动的运行环境。只有实例已不在线（退出码 3）或运行中的 Core 不认识
-# 这个方法（4）才退回本进程检测；Core 明确报错时安装失败，不拿调用者的环境顶替。
-# RPC 每次最多 32 项，按批询问同一个 Core。
-def _unmet_in_core(ctx: Context, needs: list[str]) -> list[str]:
+# 离线时本进程就是将要启动的运行环境。实例已不在线（退出码 3）或运行中的 Core 不认识这个方法（4）
+# 时退回本进程检测。其余问不到的情况（Core 报错、选中的旧 Gateway 没有这个命令等）不拿调用者的
+# 环境顶替：全部当作未确认，包保持关闭，以后启用时由 Core 再检测（plugin-set-enabled 在 Core 里查）。
+# 返回 (不满足或未确认的项, 未确认的原因)。RPC 每次最多 32 项，按批询问同一个 Core。
+def _unmet_in_core(ctx: Context, needs: list[str]) -> tuple[list[str], str]:
     if not needs or not ctx.online:
-        return unmet(needs)
+        return unmet(needs), ""
     missing: list[str] = []
     for start in range(0, len(needs), 32):
         done = _main(ctx, "plugin-prerequisites", *needs[start:start + 32])
         if done.returncode in (3, 4):
             print(f"运行中的实例没法检测前置条件，改为在当前环境检测: {done.stderr.strip() or done.returncode}", file=sys.stderr)
-            return unmet(needs)
+            return unmet(needs), ""
         if done.returncode != 0:
-            raise RuntimeError(f"运行中的实例检测前置条件失败: {done.stderr.strip() or done.returncode}")
+            return list(needs), _last_line(RuntimeError(done.stderr.strip() or f"退出码 {done.returncode}"))
         missing.extend(str(item) for item in cast(list[object], _json_of(done).get("unmet", [])))
-    return missing
+    return missing, ""
 
 
 # 装完后：包声明了外部前置条件而本机不满足，包照装但保持关闭并记录原因（返回说明）。
@@ -221,11 +222,12 @@ def _hold_closed(ctx: Context, name: str, plugin_id: str, sha: str) -> str:
     needs = _declare(ctx, name, plugin_id, sha)
     if needs is None:
         return ""
-    missing = _unmet_in_core(ctx, needs)
+    missing, unconfirmed = _unmet_in_core(ctx, needs)
     if not missing:
         clear_disabled(ctx.workspace, plugin_id)
         return ""
-    record_disabled(ctx.workspace, plugin_id, missing, sha)
+    note = f"没能在运行中的实例里确认前置条件（{unconfirmed}），启用时会再检测" if unconfirmed else ""
+    record_disabled(ctx.workspace, plugin_id, missing, sha, note)
     if ctx.online:
         # 用 plugin-set-enabled 而不是 plugin-disable：后者在 Agent 回合里被当作内部动作拒绝，
         # Agent 自己跑 pkg install 时包会因此装失败；两者在线时走同一条 Gateway 启停路径。
@@ -235,7 +237,7 @@ def _hold_closed(ctx: Context, name: str, plugin_id: str, sha: str) -> str:
     else:
         root = distribution_sources(ctx.workspace, plugins_root(), replacing_distribution=True).root
         _ = set_plugin_choice(ctx.workspace, plugin_id, enabled=False, distribution=root)
-    return f"已安装但未启用：{describe(missing)}"
+    return f"已安装但未启用：{note or describe(missing)}"
 
 
 # 按名字安装：pkg 只管官方仓库；其他仓库用 plugin-install --marketplace，这里明确拒绝。

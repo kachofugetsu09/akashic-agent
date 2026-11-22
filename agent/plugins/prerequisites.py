@@ -138,9 +138,9 @@ def _update(workspace: Path, change: Callable[[dict[str, dict[str, object]]], bo
 
 
 # 记录某插件因前置条件未满足而保持关闭；同样绑定写入时的 artifact 提交（head），与已装提交不一致就当没有这条记录。
-def record_disabled(workspace: Path, plugin_id: str, missing: list[str], head: str) -> None:
+def record_disabled(workspace: Path, plugin_id: str, missing: list[str], head: str, reason: str = "") -> None:
     def change(rows: dict[str, dict[str, object]]) -> bool:
-        rows[plugin_id] = {"needs": missing, "reason": describe(missing), "head": head}
+        rows[plugin_id] = {"needs": missing, "reason": reason or describe(missing), "head": head}
         return True
 
     _update(workspace, change)
