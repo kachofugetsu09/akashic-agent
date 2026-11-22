@@ -649,6 +649,8 @@ if __name__ == "__main__":
         sys.exit(1)
 
     os.environ["AKASHIC_WORKSPACE"] = str(workspace)
+    # 设置页的安装任务要用本进程实际使用的配置再调 pkg 子命令；不动 AKASHIC_CONFIG 的既有语义。
+    os.environ["AKASHIC_CORE_CONFIG"] = str(Path(config_path).resolve())
     try:
         _reject_agent_internal_plugin_action(args[0] if args else "")
     except ValueError as exc:
