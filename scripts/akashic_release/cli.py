@@ -245,7 +245,11 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
-    args = _parser().parse_args()
+    parser = _parser()
+    args = parser.parse_args()
+    # 与 start 同一条规则：离线输入已经决定了要装的包，不能再给 --profile/--groups。
+    if getattr(args, "extra_inputs", None) and (getattr(args, "profile", None) or getattr(args, "groups", "")):
+        parser.error("--extra-inputs 是预先下载好的输入目录，已经决定了要装的包，不能同时给 --profile/--groups")
     result = args.handler(args)
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
     return 0

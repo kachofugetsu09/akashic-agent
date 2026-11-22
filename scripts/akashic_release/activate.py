@@ -244,8 +244,9 @@ def _ensure_first_install(*, paths: ReleasePaths, candidate: Mapping[str, str], 
         command += ["--env", f"{key}={candidate[key]}"]
     # 预取按哪个 profile 产出 targets，离线 ensure 就按同一个补装（否则两阶段组合不一致）。
     command += ["--env", f"AKASHIC_PLUGIN_BUNDLE={bundle}"]
-    command += [candidate["AKASHIC_IMAGE"], "ensure", "--extra-inputs", "/opt/akashic/deploy-inputs",
-                "--profile-patch", "/opt/akashic/deploy-inputs/profile.patch.toml", "--install-extra", ",".join(install_extra)]
+    command += [candidate["AKASHIC_IMAGE"], "ensure", "--extra-inputs", "/opt/akashic/deploy-inputs", "--install-extra", ",".join(install_extra)]
+    if (inputs / "profile.patch.toml").exists():
+        command += ["--profile-patch", "/opt/akashic/deploy-inputs/profile.patch.toml"]
     with measure("release.first_install"):
         completed = _run_streaming(command, run)
         if completed.returncode != 0:
@@ -442,7 +443,11 @@ def activate_release(
             raise ValueError("首次初始化的 state 备份请由部署者在安装前完成")
         # 首次激活也在服务启动之前联网取好 extra 包与 wheel，并在 --network none 的容器里离线装好：
         # 下载耗时不再落在启动后的健康检查期限内；任何一步失败都在启动前抛错，状态不变、可重跑。
-        if extra is not None and extra.enabled:
+        if extra is not None and extra.enabled and extra.inputs is not None:
+            # 离线输入已经决定了要装的包：不选择、不联网读 index。
+            _ensure_first_install(paths=paths, candidate=candidate, inputs=extra.inputs.resolve(strict=True), run=run, install_extra=(),
+                                  bundle=current.get("AKASHIC_PLUGIN_BUNDLE", "base"))
+        elif extra is not None and extra.enabled:
             from agent.plugins.absorbed import read_absorbed
             from scripts.first_install import choose, clear_intent, preset_extra_rows, render_patch
 

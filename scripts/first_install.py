@@ -227,6 +227,9 @@ def choose(
             index = load_index(repo, home)
         except RuntimeError as error:
             raise RuntimeError(f"{error}；取不到扩展包组信息，未做任何改动，联网后重试，或选择最小安装（--profile minimal）") from error
+        # 首装只接受这一次取到的 index：用本机缓存的旧包组信息会把过期的包集合当成"全部"。
+        if index.note:
+            raise RuntimeError(f"取不到最新的包组信息（{index.note}）；未做任何改动，联网后重试，或选择最小安装（--profile minimal）")
     asked = False
     if profile is None:
         if interactive() and not assume_yes:
