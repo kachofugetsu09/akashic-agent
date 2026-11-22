@@ -190,6 +190,17 @@ def _check_written(text: str, expected: dict[str, tuple[str, bool]], path: Path)
         raise RuntimeError(f"重写 {path} 的首次安装块后这些设置没有按预期生效: {', '.join(wrong)}；文件没有改动，请手工检查标记块")
 
 
+# 块外（用户）的内容按语义不能变：顶层非 rows 的键与块外定义的 row 都要与改写前一致。
+def _check_outside_kept(existing: str, text: str, defined: set[str], path: Path) -> None:
+    old, new = tomllib.loads(existing), tomllib.loads(text)
+    old_rows = cast(dict[str, object], old.get("rows", {}))
+    new_rows = cast(dict[str, object], new.get("rows", {}))
+    changed = sorted({key for key in old.keys() | new.keys() if key != "rows" and old.get(key) != new.get(key)}
+                     | {key for key in defined if old_rows.get(key) != new_rows.get(key)})
+    if changed:
+        raise RuntimeError(f"重写 {path} 的首次安装块会改动块外的内容: {', '.join(changed)}；文件没有改动，请手工检查标记块")
+
+
 # 按意图写 patch（start 与 release 共用，临时与落盘 patch 同一规则）。
 def write_patch(choice: Choice, preset_rows: dict[str, str], patch: Path, out: TextIO = sys.stdout) -> None:
     existing = patch.read_text(encoding="utf-8") if patch.exists() else "schema_version = 1\n"
@@ -197,8 +208,10 @@ def write_patch(choice: Choice, preset_rows: dict[str, str], patch: Path, out: T
     block = render_block(choice, preset_rows, before + after, patch, out)
     before = before + ("\n" if before and not before.endswith("\n\n") else "")
     text = before + block + ("\n" + after.lstrip("\n") if after.strip() else "")
-    defined = set(cast(dict[str, object], tomllib.loads(before + after).get("rows", {})))
+    outside = tomllib.loads(before + after)
+    defined = set(cast(dict[str, object], outside.get("rows", {})))
     _check_written(text, {key: value for key, value in desired_rows(choice, preset_rows).items() if key not in defined}, patch)
+    _check_outside_kept(existing, text, defined, patch)
     temporary = patch.with_name(patch.name + ".tmp")
     _ = temporary.write_text(text, encoding="utf-8")
     os.replace(temporary, patch)
