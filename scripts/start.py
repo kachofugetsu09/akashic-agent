@@ -215,23 +215,17 @@ def _first_install_pending(state: Path, workspace: Path, receipt: Path) -> bool:
     return True
 
 
-# 提问（或沿用上次的意图）并把选择写成 patch；patch 只由首装意图拥有：有过意图记录时整体重写（幂等），
-# 没有意图记录而已有 patch 说明是用户自己的，不动。返回要装的扩展包。
+# 提问（或沿用上次的意图）并把选择写成 patch：只替换首装上次写的行，用户手写或改过的行原样保留（见 first_install.write_patch）。
+# 返回要装的扩展包。
 def _choose_first_install(state: Path, workspace: Path, distribution: Path, plugin_home: Path, extra_repo: str,
                           profile: str | None, groups: list[str], assume_yes: bool, reselect: bool) -> tuple[str, ...]:
     from agent.plugins.absorbed import read_absorbed
-    from scripts.first_install import choose, load_intent, preset_extra_rows, render_patch
+    from scripts.first_install import choose, preset_extra_rows, write_patch
 
     rows = preset_extra_rows(distribution, os.environ.get("AKASHIC_PLUGIN_BUNDLE", "base"))
-    had_intent = load_intent(state) is not None
     choice = choose(repo=extra_repo, home=plugin_home, preset_rows=rows, profile=profile, groups=groups, assume_yes=assume_yes,
                     state=state, reselect=reselect, absorbed=frozenset(item.partition("@")[0] for item in read_absorbed(distribution)))
-    patch = workspace / "bundle.patch.toml"
-    if had_intent or not patch.exists():
-        temporary = patch.with_name(patch.name + ".tmp")
-        _ = temporary.write_text(render_patch(choice, rows), encoding="utf-8")
-        os.replace(temporary, patch)
-    return choice.install
+    return write_patch(state, choice, rows, workspace / "bundle.patch.toml").install
 
 
 def prepare_install(preparation: Preparation, core: Path, distribution: Path,
