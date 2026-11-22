@@ -220,6 +220,22 @@ def render_environment(values: Mapping[str, str]) -> str:
     return "".join(f"{key}={values[key]}\n" for key in sorted(values))
 
 
+# 首次激活：用目标镜像的 ensure 入口，把已取好的输入离线装进 state（无网络），提交选择；服务随后启动不再联网。
+def _ensure_first_install(*, paths: ReleasePaths, candidate: Mapping[str, str], inputs: Path, run: Run, bundle: str = "base") -> None:
+    command = ["docker", "run", "--rm", "--network", "none", "--read-only", "--tmpfs", "/tmp:rw,mode=1777,size=4g",
+               "--mount", f"type=bind,src={paths.state},dst={paths.state}",
+               "--mount", f"type=bind,src={inputs},dst=/opt/akashic/deploy-inputs,readonly"]
+    for key in ("AKASHIC_CONFIG", "AKASHIC_WORKSPACE", "AKASHIC_PLUGIN_HOME", "AKASHIC_RUNTIME_COMMIT", "AKASHIC_RUNTIME_TREE"):
+        command += ["--env", f"{key}={candidate[key]}"]
+    # 预取按哪个 profile 产出 targets，离线 ensure 就按同一个补装（否则两阶段组合不一致）。
+    command += ["--env", f"AKASHIC_PLUGIN_BUNDLE={bundle}"]
+    command += [candidate["AKASHIC_IMAGE"], "ensure", "--extra-inputs", "/opt/akashic/deploy-inputs"]
+    with measure("release.first_install"):
+        completed = run(command, check=False, capture_output=True, text=True)
+        if completed.returncode != 0:
+            raise RuntimeError(f"首次安装扩展包失败（exit={completed.returncode}），服务未启动: {completed.stderr.strip()[-800:]}")
+
+
 def _publish(
     *, paths: ReleasePaths, candidate: Mapping[str, str], plan: Path,
     inputs: Path, digest: str, backup_dir: Path | None, preflight: bool, run: Run,
@@ -408,6 +424,16 @@ def activate_release(
             raise RuntimeError("既有部署或显式清单必须有完整 Root；先修复正式选择")
         if backup:
             raise ValueError("首次初始化的 state 备份请由部署者在安装前完成")
+        # 首次激活也在服务启动之前联网取好 extra 包与 wheel，并在 --network none 的容器里离线装好：
+        # 下载耗时不再落在启动后的健康检查期限内；任何一步失败都在启动前抛错，状态不变、可重跑。
+        if extra is not None and extra.enabled:
+            first = prepare_extra_inputs(workspace=paths.state / "workspace", plugins_home=paths.state / "plugin-home",
+                                         source=paths.source(target), mode=current.get("AKASHIC_PLUGIN_BUNDLE", "base"), root_ref=None,
+                                         options=replace(extra, image=candidate["AKASHIC_IMAGE"], gaps_only=True, record_needs=True),
+                                         out=attempt_path.with_suffix(".inputs"), run=run)
+            if first.targets:
+                _ensure_first_install(paths=paths, candidate=candidate, inputs=attempt_path.with_suffix(".inputs"), run=run,
+                                      bundle=current.get("AKASHIC_PLUGIN_BUNDLE", "base"))
     else:
         if plan is not None and (plan.is_symlink() or not plan.is_file()):
             raise ValueError("部署清单必须是普通文件")

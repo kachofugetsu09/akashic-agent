@@ -20,6 +20,8 @@ from typing import Callable, Iterator, cast
 from utils.timing import measure
 from agent.plugins.absorbed import read_absorbed
 from agent.plugins.resources import stage_archives
+from agent.plugins.prerequisites import parse_needs, unmet
+from agent.plugins.package_index import load_index
 from agent.plugins.extra_repo import (
     ExtraAction,
     SelectedPackage,
@@ -52,6 +54,8 @@ class ExtraOptions:
     # 带第三方依赖的包在哪里求 wheel：显式的执行点优先；否则有目标镜像就在镜像里（docker），都没有就用本机 Core 解释器。
     image: str | None = None
     wheel_resolver: Resolver | None = None
+    # 首次安装：把 index 声明的外部前置条件（needs）记进目标，供离线 ensure 按同一套策略装上但保持关闭；也不为缺前置条件的包预拉镜像。
+    record_needs: bool = False
 
 
 @dataclass(frozen=True)
@@ -234,7 +238,7 @@ def _offline_heads(directory: Path) -> dict[str, str]:
 # 为一个动作产出 bundle 与清单条目：联网取代码或取离线输入，校验，预拉镜像。
 def _produce(
     action: ExtraAction, repo: str, options: ExtraOptions, out: Path, run: Run, *, workspace: Path,
-    pins: dict[str, tuple[str, str]], resolver: Resolver, store: Path | None = None,
+    pins: dict[str, tuple[str, str]], resolver: Resolver, store: Path | None = None, needs: tuple[str, ...] = (),
 ) -> dict[str, object]:
     name = action.plugin_id.partition("@")[0]
     bundle = out / _BUNDLE.format(name=name)
@@ -274,15 +278,33 @@ def _produce(
         with measure("extra.resources", plugin=name):
             resources = stage_archives(code, out / f"extra-{name}-resources",
                                        reuse=None if options.inputs is None else options.inputs / f"extra-{name}-resources")
-    for image in images if options.pull_images else ():
+    needs = needs or tuple(parse_needs(sidecar.get("needs", []), name))
+    # 前置条件在宿主侧（预取运行的地方）判定一次，结果写进目标（unmet：不满足的条件列表，空表示都满足）；
+    # 容器里的离线安装只读取它，不再自己探测——容器既没有控制器通路也没有 docker socket。
+    unmet_now: list[str] | None = (parse_needs(sidecar["unmet"], name) if "unmet" in sidecar
+                                   else unmet(needs) if needs and options.record_needs else None)
+    # 前置条件不满足的包照装但保持关闭，也就不为它拉镜像（没有 docker 的主机上首装不能因此失败）。
+    for image in images if options.pull_images and not unmet_now else ():
         run(["docker", "pull", image], check=True, capture_output=True, text=True)
     target: dict[str, object] = {
         "plugin_id": action.plugin_id, "kind": action.kind, "bundle_relative_path": bundle.name,
         "bundle_sha256": _sha256(bundle), "target_commit": action.commit, "upstream": repo, "images": list(images),
         **(wheels or {}), **({"offline_resources": resources} if resources is not None else {}),
+        **({"needs": list(needs)} if needs else {}), **({"unmet": unmet_now} if unmet_now is not None else {}),
     }
     (out / _SIDECAR.format(name=name)).write_text(json.dumps(target, sort_keys=True), encoding="utf-8")
     return target
+
+
+# 首次安装时按 index 取各包的外部前置条件；取不到 index（或不需要）就是空，沿用旧行为。
+def _needs_by_name(repo: str, workspace: Path, options: ExtraOptions) -> dict[str, tuple[str, ...]]:
+    if not options.record_needs or options.inputs is not None:
+        return {}
+    try:
+        index = load_index(repo, workspace.parent / "plugin-home")
+    except RuntimeError:
+        return {}
+    return {name: package.needs for name, package in index.packages.items() if package.needs}
 
 
 # 宿主侧入口：任何一步失败都抛错，调用方在停机之前整体失败。
@@ -357,8 +379,10 @@ def prepare_extra_inputs(
         if options.inputs is None:
             with measure("extra.fetch_all", packages=len(actions)):
                 fetch_commits(repo, {action.plugin_id.partition("@")[0]: action.commit for action in actions}, store / "git")
+        needs = _needs_by_name(repo, workspace, options)
         targets = tuple(_produce(action, repo, options, out, run, workspace=workspace, pins=pins, resolver=resolver,
-                                 store=None if options.inputs is not None else store / "git") for action in actions)
+                                 store=None if options.inputs is not None else store / "git",
+                                 needs=needs.get(action.plugin_id.partition("@")[0], ())) for action in actions)
     return ExtraResult(targets, skipped, retiring)
 
 

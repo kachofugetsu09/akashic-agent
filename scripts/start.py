@@ -180,6 +180,22 @@ def prepare_install(preparation: Preparation, core: Path, distribution: Path,
         preparation.run([str(python), str(core / "main.py"), "init", "--config", str(config),
                          "--workspace", str(workspace)], cwd=core)
     # 2. The formal installer is the only owner of profile installation and receipts.
+    # 首次安装：联网部分（取包、求依赖 wheel）先单独做完，再用离线输入安装；失败在这一步退出，状态不变。
+    prefetched: Path | None = None
+    if not receipt.exists() and extra_inputs is None:
+        prefetched = state / ".extra-prefetch"
+        shutil.rmtree(prefetched, ignore_errors=True)
+        preparation.step("下载扩展包")
+        try:
+            preparation.run([str(python), str(core / "scripts/install_plugin_distribution.py"),
+                             "--distribution", str(distribution), "--bundle", str(distribution / "bundles" / (os.environ.get("AKASHIC_PLUGIN_BUNDLE", "base") + ".toml")),
+                             "--workspace", str(workspace), "--plugins-home", str(plugin_home), "--config", str(config),
+                             "--extra-repo", extra_repo, "--prefetch-extra", str(prefetched)], cwd=core)
+        except RuntimeError as error:
+            shutil.rmtree(prefetched, ignore_errors=True)
+            lines = [line for line in preparation.log.read_text(encoding="utf-8", errors="replace").splitlines() if line.startswith("RuntimeError")]
+            raise RuntimeError(f"{error} {lines[-1]}" if lines else str(error)) from error
+        extra_inputs = prefetched
     preparation.step("检查已安装功能" if receipt.exists() else "安装默认功能")
     # 发行版已不再自带而 preset 仍启用的插件从 extra 仓库补装；只有存在缺口时才联网。
     command = [str(python), str(core / "scripts/install_plugin_distribution.py"),
@@ -192,6 +208,8 @@ def prepare_install(preparation: Preparation, core: Path, distribution: Path,
         command.append("--allow-retire")
     try:
         preparation.run(command, cwd=core)
+        if prefetched is not None:
+            shutil.rmtree(prefetched, ignore_errors=True)
     except RuntimeError as error:
         # 子进程的原因在日志里；补装失败时把"缺哪些包、怎么办"带到终端。
         lines = [line for line in preparation.log.read_text(encoding="utf-8", errors="replace").splitlines()
