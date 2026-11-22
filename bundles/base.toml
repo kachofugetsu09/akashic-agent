@@ -116,6 +116,10 @@ plugin = "plugin_settings@release"
 [rows."skills"]
 plugin = "skills@release"
 
+# 插件安装工具（plugin_install）与 plugin-system 技能：Agent 自助安装、查看未启用原因并在线启用都靠它。
+[rows."plugin_update"]
+plugin = "plugin_update@release"
+
 [rows."shell"]
 plugin = "shell@release"
 
