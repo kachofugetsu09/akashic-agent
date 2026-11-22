@@ -93,6 +93,8 @@ def plugin_rows(plugins: list[Row], catalog: list[Row]) -> list[Row]:
     locked = _closure({plugin_id for plugin_id in fibers if plugin_id.split("@", 1)[0] in MANAGEMENT_ROOTS}, providers)
     rows: list[Row] = []
     for plugin in plugins:
+        if _is_patch_only(plugin):
+            continue
         plugin_id = cast(str, plugin["plugin_id"])
         own = fibers.get(plugin_id, [])
         missing = sorted({cast(str, key) for fiber in own for key in cast(list[object], fiber["missing_services"])})
@@ -117,6 +119,12 @@ def plugin_rows(plugins: list[Row], catalog: list[Row]) -> list[Row]:
             "locked": "management-required" if plugin_id in locked else None,
         })
     return rows
+
+
+# 没装、发行版也不带、没有运行代也没有待清理的行，只是 patch 里写的停用记录，不算已装。
+def _is_patch_only(plugin: Row) -> bool:
+    return (not plugin.get("installed") and not plugin["distribution_available"] and plugin["state"] is None
+            and not plugin["draining_generations"] and not plugin["cleanup_pending"])
 
 
 def _closure(roots: set[str], edges: Mapping[str, set[str]]) -> set[str]:
