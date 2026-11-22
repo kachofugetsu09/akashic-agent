@@ -17,10 +17,19 @@ _REQUIREMENT = re.compile(
 _ARCHIVE = re.compile(r"\.(?:tar(?:\.(?:gz|bz2|xz|zst))?|tgz|zip|whl)(?:\s|$)", re.IGNORECASE)
 
 
+_CODING = re.compile(r"coding[:=]")
+
+
 # 逐行校验；返回有效要求的行数。label 用于报错点名文件，行号从 1 起。
+# pip 会按 BOM、注释里的编码声明或本机 locale 重新解码文件；为了让这里看到的文本与 pip 看到的不可能不同，
+# 整个文件（含注释）只接受 ASCII，且不许出现反斜杠与编码声明。
 def check_plain_requirements(text: str, label: str) -> int:
+    if not text.isascii() or "\x00" in text:
+        raise ValueError(f"{label} 含非 ASCII 字符（含注释与 BOM）；依赖声明只接受 ASCII")
     count = 0
     for number, raw in enumerate(text.splitlines(), 1):
+        if "\\" in raw or _CODING.search(raw):
+            raise ValueError(f"{label} 第 {number} 行含反斜杠或编码声明（会改变 pip 对文件的解释）: {raw.strip()}")
         line = raw.split(" #", 1)[0].strip()
         if not line or line.startswith("#"):
             continue
