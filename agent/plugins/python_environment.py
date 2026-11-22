@@ -19,6 +19,16 @@ from agent.plugins.files import encode_tree, sync_directory, tree_entries
 from agent.plugins.static_manifest import StaticPluginManifest, StaticPythonRuntime
 
 ENVIRONMENT_FILE = ".akashic-python-environment"
+# 显式声明"这些依赖要进主进程"的文件；存在且非空才有进程内环境，根 requirements.txt 仍只是子进程 runtime。
+INPROCESS_REQUIREMENTS = "requirements.inprocess.txt"
+# 进程内环境在 refs 映射里的键；磁盘发现的 runtime_root 不会带尾随斜杠，所以不可能与任何子进程 runtime 冲突。
+INPROCESS_KEY = "inprocess/"
+_INPROCESS_DIR = ".inprocess"
+
+
+@dataclass(frozen=True, slots=True)
+class InprocessRuntime(StaticPythonRuntime):
+    """显式声明的进程内依赖 runtime；类型本身就是标记，磁盘发现的 runtime 永远是基类。"""
 
 
 @dataclass(frozen=True)
@@ -180,10 +190,7 @@ class PythonEnvironments:
             / f"python{sys.version_info.major}.{sys.version_info.minor}"
         ).resolve(strict=True)
         input_value = _environment_input(source, runtime, wheel_digest or "")
-        input_id = hashlib.sha256(
-            json.dumps(input_value, sort_keys=True).encode()
-        ).hexdigest()
-        pointer = self.path / (input_id + ".ref")
+        pointer = self.path / (_input_key(input_value, runtime) + ".ref")
         if pointer.exists():
             if pointer.is_symlink():
                 raise ValueError("Python 环境引用不能是符号链接")
@@ -310,7 +317,7 @@ def _environment_input(code: Path, runtime: StaticPythonRuntime, wheel_digest: s
                  "version": sys.version},
         "runtime_root": runtime.runtime_root,
     }
-    if wheel_digest or not requirements.strip():
+    if wheel_digest or isinstance(runtime, InprocessRuntime) or not requirements.strip():
         value["requirements_sha256"] = hashlib.sha256(requirements).hexdigest()
     else:
         value["code"] = hashlib.sha256(encode_tree(tree_entries(
@@ -319,6 +326,39 @@ def _environment_input(code: Path, runtime: StaticPythonRuntime, wheel_digest: s
     if wheel_digest:
         value["wheel_tree_sha256"] = wheel_digest
     return value
+
+
+# 环境引用键；进程内环境只看 requirements 与 Python 主.次版本，补丁升级和只改代码的升级都复用同一个环境。
+def _input_key(value: dict[str, object], runtime: StaticPythonRuntime) -> str:
+    keyed = dict(value)
+    if isinstance(runtime, InprocessRuntime):
+        keyed["base"] = {"python": f"{sys.version_info.major}.{sys.version_info.minor}"}
+    return hashlib.sha256(json.dumps(keyed, sort_keys=True).encode()).hexdigest()
+
+
+# 插件根声明了 requirements.inprocess.txt 才有进程内环境；用一个合成 runtime，不进 manifest。
+def inprocess_runtime(code: Path) -> InprocessRuntime | None:
+    path = code / INPROCESS_REQUIREMENTS
+    if path.is_symlink() or not path.is_file() or not path.read_text(encoding="utf-8").strip():
+        return None
+    return InprocessRuntime(requirements=INPROCESS_REQUIREMENTS, runtime_root=_INPROCESS_DIR)
+
+
+# 随安装固定下来的进程内环境引用（与子进程 runtime 同一份记录）；记录缺失或没有该键返回 None，
+# 内容不是合法 JSON 映射、引用格式无效时抛 ValueError（读取错误由调用方转换）。
+def inprocess_ref(code: Path) -> str | None:
+    path = code / ENVIRONMENT_FILE
+    if path.is_symlink() or not path.is_file():
+        return None
+    value = json.loads(path.read_text())
+    if not isinstance(value, dict):
+        raise ValueError(f"{ENVIRONMENT_FILE} 必须是映射")
+    ref = cast(dict[str, object], value).get(INPROCESS_KEY)
+    if ref is None:
+        return None
+    if not isinstance(ref, str) or len(ref) not in {32, 64} or any(char not in "0123456789abcdef" for char in ref):
+        raise ValueError(f"{ENVIRONMENT_FILE} 里的进程内环境引用无效")
+    return ref
 
 
 def read_environment_refs(code: Path, manifest: StaticPluginManifest) -> dict[str, str]:
@@ -330,7 +370,10 @@ def read_environment_refs(code: Path, manifest: StaticPluginManifest) -> dict[st
     if not isinstance(value, dict):
         raise ValueError("Python 环境引用必须是映射")
     refs = cast(dict[str, object], value)
-    if set(refs) != {item.runtime_root for item in manifest.python}:
+    expected = {item.runtime_root for item in manifest.python}
+    if inprocess_runtime(code) is not None:
+        expected.add(INPROCESS_KEY)
+    if set(refs) != expected:
         raise ValueError("Python 环境引用与 manifest 不一致")
     if any(
         not isinstance(ref, str)

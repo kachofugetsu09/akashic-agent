@@ -12,7 +12,9 @@ from collections.abc import Mapping
 from typing import cast
 from uuid import uuid4
 
-from agent.plugins.python_environment import ENVIRONMENT_FILE, OfflineWheels, PythonEnvironments
+from agent.plugins.python_environment import (
+    ENVIRONMENT_FILE, INPROCESS_KEY, INPROCESS_REQUIREMENTS, OfflineWheels, PythonEnvironments, inprocess_runtime,
+)
 from agent.plugins.reload_journal import ReloadJournal
 from agent.plugins.distribution_sources import distribution_plugin_sources, read_distribution_adoption
 from agent.plugins.extra_repo import is_official_repo, same_origin as same_origin
@@ -674,9 +676,16 @@ def _prepare_static_python_runtimes(
     offline_wheels: OfflineWheels | None = None,
 ) -> None:
     """在最终耐久路径准备环境；安装 cache 只保存不可变引用。"""
+    environments = PythonEnvironments(workspace)
+    refs: dict[str, str] = {}
+    # 1. 显式声明的进程内依赖独立成环境，引用与子进程 runtime 记在同一份安装记录里。
+    inprocess = inprocess_runtime(plugin_root)
+    if inprocess is not None:
+        if offline_wheels is not None:
+            raise ValueError(f"{INPROCESS_REQUIREMENTS} 暂不支持离线 wheel 安装")
+        refs[INPROCESS_KEY] = environments.prepare(plugin_root, inprocess)
+    # 2. 根与子目录 requirements.txt 的子进程 runtime，行为不变。
     if manifest.python:
-        environments = PythonEnvironments(workspace)
-        refs = {}
         used_offline_wheels = False
         for runtime in manifest.python:
             requirements = (plugin_root / runtime.requirements).read_text(encoding="utf-8")
@@ -689,6 +698,7 @@ def _prepare_static_python_runtimes(
                 refs[runtime.runtime_root] = environments.prepare(plugin_root, runtime)
         if offline_wheels is not None and not used_offline_wheels:
             raise ValueError("没有非空 Python requirements，不能提供离线 wheel")
+    if refs:
         with (plugin_root / ENVIRONMENT_FILE).open("w") as stream:
             _ = stream.write(json.dumps(refs, sort_keys=True))
             stream.flush()

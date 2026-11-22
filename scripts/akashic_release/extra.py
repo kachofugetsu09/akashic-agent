@@ -173,7 +173,8 @@ def check_bundle(bundle: Path, name: str, commit: str) -> tuple[str, ...]:
         found, api_version, images = read_literals(code / "plugin.py")
         if found != name or api_version != _API_VERSION:
             raise RuntimeError(f"extra 包 {name} 身份或 api_version 不兼容: name={found} api_version={api_version}")
-        if any(path.read_text(encoding="utf-8").strip() for path in code.rglob("requirements.txt")):
+        names = ("requirements.txt", "requirements.inprocess.txt")
+        if any(path.read_text(encoding="utf-8").strip() for name in names for path in code.rglob(name)):
             raise RuntimeError(f"extra 包 {name} 带第三方依赖，当前部署流程不支持")
     return images
 

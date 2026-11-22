@@ -86,6 +86,7 @@ from agent.plugins.manifest import (
 )
 from agent.plugins.bundles import plugin_choices, preset_plugin_ids, set_plugin_choice
 from agent.plugins.distribution_sources import DistributionSources
+from agent.plugins.dependency_paths import DependencyEnvironmentError, dependency_paths, root_environment, site_packages
 from agent.plugins.python_environment import PythonEnvironments
 from agent.plugins.reload_journal import (
     GenerationCleanupPending,
@@ -854,6 +855,7 @@ class PluginManager:
             ),))
             if changed:
                 raise RuntimeError("公共合同已变化，须重启进程: " + ", ".join(sorted(changed)))
+            self._attach_dependencies(generation)
             self._import_plugin(generation.module_path, generation.code_dir)
             manifest = generation.static_manifest
             if manifest is None:
@@ -1462,9 +1464,9 @@ class PluginManager:
             self._reload_journal.set_input_ref(result.update_id, generation.input_ref)
             expected_ref = self._selection.read()
             previous = self._active_generations.get(generation.plugin_id)
-            changed = public_contracts.register((ResolvedPluginSource(
+            changed = self._restart_required(ResolvedPluginSource(
                 generation.code_dir, generation.source_type, plugin_name=result.plugin_name,
-            ),))
+            ))
             if changed:
                 # 提交下次启动的输入；当前 Root 保留旧类型与所有 live owner。
                 operation = self._check_operation_commit()
@@ -1714,10 +1716,10 @@ class PluginManager:
                 if active.fiber.state is FiberState.PENDING:
                     readiness_ids.add(plugin_id)
                 continue
-            if public_contracts.register((ResolvedPluginSource(
+            if self._restart_required(ResolvedPluginSource(
                 Path(mod["plugin_root"]), cast(Literal["builtin", "installed"], mod["source_type"]),
                 plugin_name=mod["name"],
-            ),)):
+            )):
                 results.append({"plugin_id": plugin_id, "publication_state": "restart_required",
                                 "selection_ref": selection_ref})
                 continue
@@ -1909,9 +1911,9 @@ class PluginManager:
         if generation is None:
             return {"plugin_id": plugin_id, "publication_state": "source_unavailable"}
         expected_ref = self._selection.read()
-        if public_contracts.register((ResolvedPluginSource(
+        if self._restart_required(ResolvedPluginSource(
             generation.code_dir, generation.source_type, plugin_name=mod["name"],
-        ),)):
+        )):
             # 当前 Root 保留旧类型；选择提交给下次启动。
             operation = self._check_operation_commit()
             components = self._selection_for_plugin(expected_ref, plugin_id, self._generation_input_ref(generation))
@@ -2449,6 +2451,30 @@ class PluginManager:
             return "candidate"
         return "base"
 
+
+    # 公共合同变化，或已安装插件的依赖环境变化且旧环境模块已导入：当前进程不能原位换代，只能重启。
+    def _restart_required(self, source: ResolvedPluginSource) -> bool:
+        if public_contracts.register((source,)):
+            return True
+        try:
+            site = self._dependency_site(source.plugin_root, source.source_type)
+        except DependencyEnvironmentError:
+            # 版本不匹配等错误留给加载阶段，只让该插件失败，不能中断本次批量操作。
+            return False
+        return site is not None and dependency_paths.restart_needed(source.plugin_name, site)
+
+    # 只对已安装来源、且插件根 requirements.txt 有环境的插件；其余插件的加载路径不变。
+    def _dependency_site(self, code: Path, source_type: str) -> Path | None:
+        if source_type != "installed":
+            return None
+        environment = root_environment(code, self._python_environments)
+        return None if environment is None else site_packages(environment)
+
+    # 1. 导入插件模块前挂载依赖环境；2. 版本不匹配等错误只使该插件加载失败。
+    def _attach_dependencies(self, generation: PluginGeneration) -> None:
+        site = self._dependency_site(generation.code_dir, generation.source_type)
+        if site is not None:
+            dependency_paths.attach(generation.plugin_id.split("@", 1)[0], site)
 
     def _import_plugin(self, module_name: str, plugin_root: Path) -> None:
         """只从固定制品根导入普通 plugin.py，不接受入口别名。"""
