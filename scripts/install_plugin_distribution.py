@@ -25,6 +25,8 @@ if str(_SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(_SOURCE_ROOT))
 
 from agent.plugins.bundles import absorbed_plugin_ids, composition_rows, plugin_choices, preset_plugin_ids
+from agent.plugins.bundles import composition_rows, plugin_choices, preset_plugin_ids, set_plugin_choice
+from agent.plugins.prerequisites import describe, record_disabled, unmet
 from agent.plugins.install import install_git_plugin, set_artifact_origin
 from agent.migrations.release_backup import backup_release_state
 from agent.migrations.runner import MigrationRunner
@@ -1139,6 +1141,7 @@ def _settle_closed_boot(workspace: Path, boot_id: str) -> None:
 def _install_targets(
     targets: list[dict[str, Any]], *, workspace: Path, plugins_home: Path, selection: PluginSelection,
     selected: dict[str, tuple[str, Mapping[str, object], Path]], candidate: dict[str, ResolvedPluginSource],
+    distribution_root: Path | None = None,
 ) -> None:
     batch = _dependency_batch(targets)
     for target in targets:
@@ -1156,6 +1159,15 @@ def _install_targets(
         artifact = installed.installed_path
         if target["upstream"]:
             set_artifact_origin(artifact, target["upstream"])
+        # 首次安装的包若声明了外部前置条件而本机不满足：照装（artifact 已落地），但写 disabled 行、记录原因，不进选择；
+        # 判定与 pkg 共用 agent.plugins.prerequisites，已在用的包不受影响（只针对 kind=install 的新增包）。
+        missing = unmet(target.get("needs", ())) if target["kind"] == "install" else []
+        if missing:
+            _ = set_plugin_choice(workspace, plugin_id, enabled=False, distribution=distribution_root)
+            record_disabled(workspace, plugin_id, missing)
+            candidate.pop(plugin_id, None)
+            print(f"{plugin_id}: 已安装但未启用：{describe(missing)}", file=sys.stderr, flush=True)
+            continue
         prepared = prepare_plugin_input(
             {"name": name, "plugin_root": str(artifact), "module_path": str(artifact / "plugin.py"),
              "manifest_digest": load_static_plugin_manifest(artifact).identity_digest,
@@ -1453,7 +1465,7 @@ def ensure_bundle(
             restore_file = _save_extra_restore(workspace, plugins_home, extra_targets, expected)
             try:
                 _install_targets(extra_targets, workspace=workspace, plugins_home=plugins_home, selection=selection,
-                                 selected=selected, candidate=candidate)
+                                 selected=selected, candidate=candidate, distribution_root=distribution)
                 with measure("inputs.prepare"):
                     new_components = _prepare_distribution_inputs(
                         available=available, candidate=candidate, selected=selected,
@@ -1592,7 +1604,7 @@ def _prefetch_extra(distribution: Path, workspace: Path, plugins_home: Path, rep
     out.mkdir(parents=True, exist_ok=True)
     found = prepare_extra_inputs(
         workspace=workspace, plugins_home=plugins_home, source=distribution, mode=os.environ.get("AKASHIC_PLUGIN_BUNDLE", "base"),
-        root_ref=PluginSelection(workspace).read(), options=ExtraOptions(repo=repo, pull_images=False, gaps_only=True),
+        root_ref=PluginSelection(workspace).read(), options=ExtraOptions(repo=repo, pull_images=False, gaps_only=True, record_needs=True),
         out=out, run=subprocess.run)
     return {"prefetched": [item["plugin_id"] for item in found.targets]}
 

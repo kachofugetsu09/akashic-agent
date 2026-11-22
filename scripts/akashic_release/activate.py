@@ -221,12 +221,14 @@ def render_environment(values: Mapping[str, str]) -> str:
 
 
 # 首次激活：用目标镜像的 ensure 入口，把已取好的输入离线装进 state（无网络），提交选择；服务随后启动不再联网。
-def _ensure_first_install(*, paths: ReleasePaths, candidate: Mapping[str, str], inputs: Path, run: Run) -> None:
+def _ensure_first_install(*, paths: ReleasePaths, candidate: Mapping[str, str], inputs: Path, run: Run, bundle: str = "base") -> None:
     command = ["docker", "run", "--rm", "--network", "none", "--read-only", "--tmpfs", "/tmp:rw,mode=1777,size=4g",
                "--mount", f"type=bind,src={paths.state},dst={paths.state}",
                "--mount", f"type=bind,src={inputs},dst=/opt/akashic/deploy-inputs,readonly"]
     for key in ("AKASHIC_CONFIG", "AKASHIC_WORKSPACE", "AKASHIC_PLUGIN_HOME", "AKASHIC_RUNTIME_COMMIT", "AKASHIC_RUNTIME_TREE"):
         command += ["--env", f"{key}={candidate[key]}"]
+    # 预取按哪个 profile 产出 targets，离线 ensure 就按同一个补装（否则两阶段组合不一致）。
+    command += ["--env", f"AKASHIC_PLUGIN_BUNDLE={bundle}"]
     command += [candidate["AKASHIC_IMAGE"], "ensure", "--extra-inputs", "/opt/akashic/deploy-inputs"]
     with measure("release.first_install"):
         completed = run(command, check=False, capture_output=True, text=True)
@@ -427,10 +429,11 @@ def activate_release(
         if extra is not None and extra.enabled:
             first = prepare_extra_inputs(workspace=paths.state / "workspace", plugins_home=paths.state / "plugin-home",
                                          source=paths.source(target), mode=current.get("AKASHIC_PLUGIN_BUNDLE", "base"), root_ref=None,
-                                         options=replace(extra, image=candidate["AKASHIC_IMAGE"], gaps_only=True),
+                                         options=replace(extra, image=candidate["AKASHIC_IMAGE"], gaps_only=True, record_needs=True),
                                          out=attempt_path.with_suffix(".inputs"), run=run)
             if first.targets:
-                _ensure_first_install(paths=paths, candidate=candidate, inputs=attempt_path.with_suffix(".inputs"), run=run)
+                _ensure_first_install(paths=paths, candidate=candidate, inputs=attempt_path.with_suffix(".inputs"), run=run,
+                                      bundle=current.get("AKASHIC_PLUGIN_BUNDLE", "base"))
     else:
         if plan is not None and (plan.is_symlink() or not plan.is_file()):
             raise ValueError("部署清单必须是普通文件")
