@@ -20,7 +20,7 @@ from typing import Callable, Iterator, cast
 from utils.timing import measure
 from agent.plugins.absorbed import read_absorbed
 from agent.plugins.resources import stage_archives
-from agent.plugins.prerequisites import unmet
+from agent.plugins.prerequisites import parse_needs, unmet
 from agent.plugins.package_index import load_index
 from agent.plugins.extra_repo import (
     ExtraAction,
@@ -278,10 +278,10 @@ def _produce(
         with measure("extra.resources", plugin=name):
             resources = stage_archives(code, out / f"extra-{name}-resources",
                                        reuse=None if options.inputs is None else options.inputs / f"extra-{name}-resources")
-    needs = needs or tuple(cast(list[str], sidecar.get("needs", ())))
+    needs = needs or tuple(parse_needs(sidecar.get("needs", []), name))
     # 前置条件在宿主侧（预取运行的地方）判定一次，结果写进目标（unmet：不满足的条件列表，空表示都满足）；
     # 容器里的离线安装只读取它，不再自己探测——容器既没有控制器通路也没有 docker socket。
-    unmet_now: list[str] | None = (list(cast(list[str], sidecar["unmet"])) if "unmet" in sidecar
+    unmet_now: list[str] | None = (parse_needs(sidecar["unmet"], name) if "unmet" in sidecar
                                    else unmet(needs) if needs and options.record_needs else None)
     # 前置条件不满足的包照装但保持关闭，也就不为它拉镜像（没有 docker 的主机上首装不能因此失败）。
     for image in images if options.pull_images and not unmet_now else ():

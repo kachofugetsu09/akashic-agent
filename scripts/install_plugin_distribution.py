@@ -25,7 +25,7 @@ if str(_SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(_SOURCE_ROOT))
 
 from agent.plugins.bundles import absorbed_plugin_ids, composition_rows, plugin_choices, preset_plugin_ids, set_plugin_choice
-from agent.plugins.prerequisites import clear_disabled, describe, record_disabled
+from agent.plugins.prerequisites import artifact_head, clear_disabled, describe, parse_needs, record_declared, record_disabled
 from agent.plugins.install import install_git_plugin, set_artifact_origin
 from agent.migrations.release_backup import backup_release_state
 from agent.migrations.runner import MigrationRunner
@@ -298,7 +298,7 @@ def _stage_deployment_targets(
                                           constraints if runtime is inprocess else None)
         _publish_target_resources(code, target, inputs, staged, index, workspace, plugin_id)
         result.append({"plugin_id": plugin_id, "old_ref": old_ref, "bundle": local,
-                       "commit": commit, "code": code, "kind": kind, "upstream": target.get("upstream"), "inprocess_pins": target.get("inprocess_pins"), "needs": target.get("needs", ()), "unmet": target.get("unmet"),
+                       "commit": commit, "code": code, "kind": kind, "upstream": target.get("upstream"), "inprocess_pins": target.get("inprocess_pins"), "needs": parse_needs(target.get("needs", []), plugin_id), "unmet": (None if target.get("unmet") is None else parse_needs(target["unmet"], plugin_id)),
                        "wheels": wheels, "bundle_sha256": bundle_digest})
     return result
 
@@ -1141,10 +1141,11 @@ def _install_targets(
     targets: list[dict[str, Any]], *, workspace: Path, plugins_home: Path, selection: PluginSelection,
     selected: dict[str, tuple[str, Mapping[str, object], Path]], candidate: dict[str, ResolvedPluginSource],
     distribution_root: Path | None = None,
-) -> tuple[list[tuple[str, list[str]]], list[str]]:
+) -> tuple[list[tuple[str, list[str]]], list[str], list[tuple[str, list[str], str]]]:
     batch = _dependency_batch(targets)
     closed: list[tuple[str, list[str]]] = []
     met: list[str] = []
+    declared: list[tuple[str, list[str], str]] = []
     for target in targets:
         plugin_id = target["plugin_id"]
         name, marketplace = plugin_id.split("@")
@@ -1163,6 +1164,8 @@ def _install_targets(
         # 首次安装的包若声明了外部前置条件而宿主不满足：照装（artifact 已落地），但写 disabled 行，不进选择；
         # 判定在宿主侧预取时做好并随目标带来（unmet），这里只读取，不自己探测；原因记录等选择提交后再写（见 ensure_bundle）。
         # 只针对 kind=install 的新增包，已在用的包不受影响。
+        if target["kind"] == "install" and target.get("needs"):
+            declared.append((plugin_id, list(target["needs"]), artifact_head(artifact)))
         missing = [str(item) for item in (target.get("unmet") or ())] if target["kind"] == "install" else []
         if target["kind"] == "install" and not missing and target.get("unmet") is not None:
             met.append(plugin_id)
@@ -1191,7 +1194,7 @@ def _install_targets(
             pid: installed_pins(site_packages(environments.open(ref)))
             for pid, (_, record, _) in selected.items()
             if (ref := cast(Mapping[str, str], record["python_environments"]).get(INPROCESS_KEY)) is not None})
-    return closed, met
+    return closed, met, declared
 
 
 # 最终提交的归属凭证：部署清单自带的转换凭证原样提交；否则从已提交凭证里去掉本次首装或换来源的身份
@@ -1469,7 +1472,7 @@ def ensure_bundle(
             # 失败时按选择的落盘事实决定是否还原，不能留下"指针已推进、选择未提交"或"选择已提交、制品被删"。
             restore_file = _save_extra_restore(workspace, plugins_home, extra_targets, expected)
             try:
-                closed, met = _install_targets(extra_targets, workspace=workspace, plugins_home=plugins_home, selection=selection,
+                closed, met, declared = _install_targets(extra_targets, workspace=workspace, plugins_home=plugins_home, selection=selection,
                                                selected=selected, candidate=candidate, distribution_root=distribution)
                 with measure("inputs.prepare"):
                     new_components = _prepare_distribution_inputs(
@@ -1480,13 +1483,16 @@ def ensure_bundle(
                 new_root = expected
                 final_adoption, replace = _final_adoption(
                     selection, None, {item["plugin_id"] for item in extra_targets if item["kind"] != "upgrade"})
-                if expected is None or new_components != components or replace:
-                    new_root = _commit_selection(selection, new_components, expected, final_adoption, replace)
-                # 前置条件原因记录在选择提交之后才写：失败的事务不会留下陈旧原因；满足条件的新增包顺带清掉旧记录。
+                # 前置条件记录（声明与原因）在选择提交之前写，并在恢复点里（capture_state 含这两份文件）：
+                # 提交前失败或进程死亡，恢复会还原成事务前的内容；提交后不存在"记录还没写"的崩溃窗口。
+                for plugin_id, needs, head in declared:
+                    record_declared(workspace, plugin_id, needs, head)
                 for plugin_id, missing in closed:
                     record_disabled(workspace, plugin_id, missing)
                 for plugin_id in met:
                     clear_disabled(workspace, plugin_id)
+                if expected is None or new_components != components or replace:
+                    new_root = _commit_selection(selection, new_components, expected, final_adoption, replace)
             except BaseException:
                 if extra_targets and PluginSelection(workspace).read() == expected:
                     restore_state(json.loads(cast(Path, restore_file).read_text(encoding="utf-8"))["state"])
