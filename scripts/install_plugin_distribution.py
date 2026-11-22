@@ -299,7 +299,7 @@ def _stage_deployment_targets(
                                           constraints if runtime is inprocess else None)
         _publish_target_resources(code, target, inputs, staged, index, workspace, plugin_id)
         result.append({"plugin_id": plugin_id, "old_ref": old_ref, "bundle": local,
-                       "commit": commit, "code": code, "kind": kind, "upstream": target.get("upstream"), "inprocess_pins": target.get("inprocess_pins"),
+                       "commit": commit, "code": code, "kind": kind, "upstream": target.get("upstream"), "inprocess_pins": target.get("inprocess_pins"), "needs": target.get("needs", ()),
                        "wheels": wheels, "bundle_sha256": bundle_digest})
     return result
 
