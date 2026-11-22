@@ -279,13 +279,18 @@ def _produce(
             resources = stage_archives(code, out / f"extra-{name}-resources",
                                        reuse=None if options.inputs is None else options.inputs / f"extra-{name}-resources")
     needs = needs or tuple(cast(list[str], sidecar.get("needs", ())))
+    # 前置条件在宿主侧（预取运行的地方）判定一次，结果写进目标（unmet：不满足的条件列表，空表示都满足）；
+    # 容器里的离线安装只读取它，不再自己探测——容器既没有控制器通路也没有 docker socket。
+    unmet_now: list[str] | None = (list(cast(list[str], sidecar["unmet"])) if "unmet" in sidecar
+                                   else unmet(needs) if needs and options.record_needs else None)
     # 前置条件不满足的包照装但保持关闭，也就不为它拉镜像（没有 docker 的主机上首装不能因此失败）。
-    for image in images if options.pull_images and not (needs and unmet(needs)) else ():
+    for image in images if options.pull_images and not unmet_now else ():
         run(["docker", "pull", image], check=True, capture_output=True, text=True)
     target: dict[str, object] = {
         "plugin_id": action.plugin_id, "kind": action.kind, "bundle_relative_path": bundle.name,
         "bundle_sha256": _sha256(bundle), "target_commit": action.commit, "upstream": repo, "images": list(images),
-        **(wheels or {}), **({"offline_resources": resources} if resources is not None else {}), **({"needs": list(needs)} if needs else {}),
+        **(wheels or {}), **({"offline_resources": resources} if resources is not None else {}),
+        **({"needs": list(needs)} if needs else {}), **({"unmet": unmet_now} if unmet_now is not None else {}),
     }
     (out / _SIDECAR.format(name=name)).write_text(json.dumps(target, sort_keys=True), encoding="utf-8")
     return target
