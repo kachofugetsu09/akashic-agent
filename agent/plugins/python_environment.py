@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import hashlib
 import json
 import os
@@ -125,6 +126,35 @@ def _check_offline_requirements(path: Path) -> None:
         found = True
     if not found:
         raise ValueError("离线 wheel 输入只用于非空普通 requirements")
+
+
+# 把 path 所在文件系统的脏数据整体刷盘（libc syncfs），比逐文件 fsync 快两个数量级。
+# 返回 False 表示本机没有 syncfs，调用方改走逐文件 fsync；真实写回失败（EIO、ENOSPC 等）直接抛出，不能发布环境。
+def _sync_filesystem(path: Path) -> bool:
+    try:
+        syncfs = ctypes.CDLL(None, use_errno=True).syncfs
+    except (AttributeError, OSError):
+        return False
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        if syncfs(fd) != 0:
+            number = ctypes.get_errno()
+            raise OSError(number, f"syncfs 失败: {os.strerror(number)}", str(path))
+    finally:
+        os.close(fd)
+    return True
+
+
+# 没有 syncfs 时的等价做法：逐个文件与目录 fsync。
+def _sync_tree(root: Path, top: Path) -> None:
+    for current, _, files in os.walk(root, topdown=False):
+        for name in files:
+            path = Path(current) / name
+            if not path.is_symlink():
+                with path.open("rb") as stream:
+                    os.fsync(stream.fileno())
+        sync_directory(Path(current))
+    sync_directory(top)
 
 
 def preflight_offline_runtime(
@@ -263,16 +293,14 @@ class PythonEnvironments:
                     else:
                         _run(command, build_source)
             with measure("plugin.environment.sync", plugin=code.name):
+                # 1. 先逐个设只读权限（权限是元数据，随后整体落盘），2. 再对环境所在文件系统做一次整体刷盘，替代逐文件 fsync。
                 for current, _, files in os.walk(root, topdown=False):
                     for name in files:
                         path = Path(current) / name
-                        if path.is_symlink():
-                            continue
-                        path.chmod(0o555 if path.stat().st_mode & 0o111 else 0o444)
-                        with path.open("rb") as stream:
-                            os.fsync(stream.fileno())
-                    sync_directory(Path(current))
-                sync_directory(self.path)
+                        if not path.is_symlink():
+                            path.chmod(0o555 if path.stat().st_mode & 0o111 else 0o444)
+                if not _sync_filesystem(self.path):
+                    _sync_tree(root, self.path)
             if offline_wheels is not None:
                 _ = _verify_offline_wheels(offline_wheels)
             if _environment_input(source, runtime, wheel_digest or "") != input_value:
