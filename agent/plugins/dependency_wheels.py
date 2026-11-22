@@ -68,11 +68,11 @@ def resolve(work: Path, cache: Path | None = None) -> dict[str, object]:
             constraints = constraints_from_pins(
                 str(spec["plugin"]), Path(scratch), cast(dict[str, str], spec["others"]), cast(dict[str, str], spec["origins"]))
             bundled = work / "bundled"
-            _download(work / \"req\" / inprocess, wheels, constraints, bundled if bundled.is_dir() else None, cache)
+            _download(work / "req" / inprocess, wheels, constraints, bundled if bundled.is_dir() else None, cache)
             # 进程内依赖的解析结果（此时目录里只有它的闭包）：后面的包与安装期都据此作约束；子进程 runtime 的依赖不算。
             inprocess_pins = {normalize(parts[0]): parts[1] for parts in (item.name.split("-") for item in wheels.glob("*.whl"))}
         for name in cast(list[str], spec["runtimes"]):
-            _download(work / "req" / name, wheels, None, cache)
+            _download(work / "req" / name, wheels, None, cache=cache)
     return {"core_lock_sha256": None if lock is None else hashlib.sha256(lock.read_bytes()).hexdigest(),
             "wheels": sorted(item.name for item in wheels.iterdir()), "inprocess_pins": inprocess_pins}
 
