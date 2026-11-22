@@ -24,6 +24,12 @@ _IMAGE_REF = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
 _PYTHON_COMMAND = re.compile(r"python(?:\d+(?:\.\d+)*)?(?:\.exe)?")
 
 
+# 插件名规则的唯一出处：manifest 与 extra 仓库 index 的名字校验共用。
+def is_plugin_name(value: object) -> bool:
+    return isinstance(value, str) and _NAME.fullmatch(value) is not None
+
+
+
 class PluginSourceContentError(ValueError):
     """A plugin identity content error that tolerant source scans may report."""
 

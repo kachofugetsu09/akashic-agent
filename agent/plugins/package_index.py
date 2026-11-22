@@ -4,7 +4,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import re
 import subprocess
 import tempfile
 from dataclasses import dataclass, replace
@@ -12,6 +11,7 @@ from pathlib import Path
 from typing import cast
 
 from agent.plugins.extra_repo import git_env, list_heads
+from agent.plugins.static_manifest import is_plugin_name
 
 SCHEMA_VERSION = 1
 _TIMEOUT_S = 60
@@ -55,7 +55,6 @@ MAX_INDEX_BYTES = 1 << 20
 _MAX_GROUPS = 100
 _MAX_PACKAGES = 500
 _MAX_TEXT = 500
-_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
 
 
 def _bad(where: str, why: str) -> IndexFormatError:
@@ -78,8 +77,8 @@ def _names(value: object, where: str) -> tuple[str, ...]:
     if not isinstance(value, list) or len(cast(list[object], value)) > _MAX_PACKAGES:
         raise _bad(where, "必须是名字数组")
     items = tuple(_text(item, where) for item in cast(list[object], value))
-    if any(_NAME.fullmatch(item) is None for item in items):
-        raise _bad(where, "名字只能含字母、数字、_、.、-")
+    if not all(is_plugin_name(item) for item in items):
+        raise _bad(where, "名字必须符合插件名规则（小写字母开头，只含小写字母、数字、_、-）")
     return items
 
 
@@ -148,7 +147,7 @@ def parse_index(text: str, sha: str) -> PackageIndex:
     if len(raw_groups) > _MAX_GROUPS or len(raw_packages) > _MAX_PACKAGES:
         raise _bad("groups/packages", "条目过多")
     for key in (*raw_groups, *raw_packages):
-        if _NAME.fullmatch(key) is None:
+        if not is_plugin_name(key):
             raise _bad("名字", f"{key!r} 含不允许的字符")
     groups = {key: _group(key, value) for key, value in raw_groups.items()}
     packages = {key: _package(key, value) for key, value in raw_packages.items()}
@@ -156,39 +155,49 @@ def parse_index(text: str, sha: str) -> PackageIndex:
     return PackageIndex(sha, groups, packages)
 
 
-# 浅取 index 提交并读出 index.json：提交的树只能有这一个文件，先看大小再读内容。
+# 浅取 index 提交并读出 index.json：提交的树只能有这一个文件，先看大小再读内容；按字节取回再显式按 UTF-8 解码。
+# 强度边界：1 MiB 上限只限解析与缓存；浅 fetch 本身仍会先把对象落到临时对象库（远端发布超大对象时临时占用磁盘，随后即删）。
 def _fetch_text(repo: str, sha: str) -> str:
     with tempfile.TemporaryDirectory(prefix="akashic-index-") as directory:
         work = Path(directory)
 
-        def git(*command: str) -> str:
-            result = subprocess.run(["git", *command], cwd=work, capture_output=True, text=True, check=False, timeout=_TIMEOUT_S, env=git_env())
+        def git(*command: str) -> bytes:
+            result = subprocess.run(["git", *command], cwd=work, capture_output=True, check=False, timeout=_TIMEOUT_S, env=git_env())
             if result.returncode != 0:
-                raise RuntimeError(f"取 index 失败（{command[0]}）: {result.stderr.strip().splitlines()[-1] if result.stderr.strip() else result.returncode}")
+                tail = result.stderr.decode("utf-8", errors="replace").strip().splitlines()
+                raise RuntimeError(f"取 index 失败（{command[0]}）: {tail[-1] if tail else result.returncode}")
             return result.stdout
 
         _ = git("init", "--quiet")
         _ = git("fetch", "--quiet", "--depth=1", "--no-tags", "--", repo, sha)
-        if git("ls-tree", "--name-only", sha).split() != ["index.json"]:
+        if git("ls-tree", "--name-only", sha).decode("utf-8", errors="replace").split() != ["index.json"]:
             raise _bad("提交", "树里不是只有 index.json")
         if int(git("cat-file", "-s", f"{sha}:index.json").strip()) > MAX_INDEX_BYTES:
             raise _bad("文件", f"超过 {MAX_INDEX_BYTES} 字节")
-        return git("show", f"{sha}:index.json")
+        try:
+            return git("show", f"{sha}:index.json").decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise _bad("文件", "不是合法的 UTF-8") from error
 
 
 def _cache_path(home: Path, repo: str) -> Path:
     return home / "index-cache" / (hashlib.sha256(repo.strip().rstrip("/").encode()).hexdigest()[:16] + ".json")
 
 
-# 读缓存：超限、损坏或内容不合格都当没有缓存。
+# 读缓存：超限、损坏、字段类型不对或内容不合格都当没有缓存（继续联网取），不抛出。
 def _read_cache(path: Path) -> tuple[str, str] | None:
     try:
         if not path.is_file() or path.stat().st_size > 2 * MAX_INDEX_BYTES:
             return None
-        record = cast(dict[str, str], json.loads(path.read_text(encoding="utf-8")))
-        _ = parse_index(record["text"], record["sha"])
-        return record["sha"], record["text"]
-    except (OSError, ValueError, KeyError, TypeError, IndexFormatError):
+        record = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(record, dict):
+            return None
+        sha, text = cast(dict[str, object], record).get("sha"), cast(dict[str, object], record).get("text")
+        if not isinstance(sha, str) or not isinstance(text, str):
+            return None
+        _ = parse_index(text, sha)
+        return sha, text
+    except (OSError, ValueError, IndexFormatError):
         return None
 
 
