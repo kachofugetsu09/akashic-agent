@@ -82,15 +82,20 @@ Host Bridge 的 Shell 会提供固定版本启动器 `AKASHIC_RUNTIME_CLI`，并
 官方 extra 仓库里的插件用 `pkg` 管理，同一个运行时 CLI；下面省略 `--config "$AKASHIC_CONFIG" --workspace "$AKASHIC_WORKSPACE"`，实际执行时照上面带上：
 
 ```sh
-"$AKASHIC_RUNTIME_CLI" pkg list            # 已装的包：来源、版本、是否可升级，以及 [未启用: 原因]、[依赖环境需重建]、资源需修复等提示
+"$AKASHIC_RUNTIME_CLI" pkg list            # 已装的包（只看本地）：来源、版本，以及 [未启用: 原因]、[依赖环境需重建]、资源需修复等提示
+"$AKASHIC_RUNTIME_CLI" pkg list --remote   # 同上，再联网和 extra 比较：哪些可升级、哪些上游已删除
 "$AKASHIC_RUNTIME_CLI" pkg groups          # 可安装的包组与说明
-"$AKASHIC_RUNTIME_CLI" pkg install <名> | @<组>   # 会自动带上还没装的依赖并提示
-"$AKASHIC_RUNTIME_CLI" pkg upgrade [<名>]  # 升级；也用来修复依赖环境和缺失或损坏的资源（如浏览器）
+"$AKASHIC_RUNTIME_CLI" pkg install '包名'   # 自动带上还没装的依赖并提示
+"$AKASHIC_RUNTIME_CLI" pkg install '@组名'  # 装整组（含组外依赖）
+"$AKASHIC_RUNTIME_CLI" pkg upgrade          # 升级全部已装的官方包；也修复依赖环境和缺失或损坏的资源（如浏览器）
+"$AKASHIC_RUNTIME_CLI" pkg upgrade '包名'   # 只处理这一个包
 ```
+
+不带 `--remote` 的 `pkg list` 不联网，看不出有没有新版本。
 
 有些包声明了外部前置条件，不满足时**照装但保持关闭**，原因记在 `pkg list` 的 `[未启用: …]` 和 `plugin-status` 的 `disabled_reason` 里。前置条件只有两种：
 
-- `command:<命令>`：在 Akashic 运行环境里 `command -v <命令>` 能找到才算满足（如 `subagent_codex` 要 `codex`，`subagent_claude_code` 要 `claude`）。先自己检查；能装到当前环境 PATH 里可写的位置就装，装完用 `command -v` 确认。容器部署时根文件系统只读、PATH 里通常没有可写目录，这时告诉用户需要在镜像或宿主侧提供该命令，不要伪称已满足。
+- `command:<命令>`（如 `subagent_codex` 要 `codex`，`subagent_claude_code` 要 `claude`）：由 **Akashic Core 进程**在它自己的 PATH 上查找（等同 Core 环境里的 `shutil.which`），启用时也在 Core 里重新检测。你执行命令的 Shell 往往在 Host Bridge（宿主）上，和 Core 不是同一个环境：在这个 Shell 里装好、或 `command -v` 能找到，都**不代表**满足。容器部署时 Core 的根文件系统只读，命令要由镜像提供，或经受支持的方式挂进 Core 容器并出现在它的 PATH 上，你一般无法自己补齐，应如实告诉用户缺什么、需要在部署侧怎么提供。只有 Core 与你的 Shell 是同一环境（本机直接运行）时，才可以装到该 PATH 上可写的位置，并用同一环境的 `python -c 'import shutil; print(shutil.which("<命令>"))'` 确认。
 - `docker`：在容器里经 Workload Controller 访问宿主 Docker（`computer` 需要）。不满足说明宿主 Docker 或控制器不可用，只能请用户在宿主处理，不要尝试在容器里装 Docker。
 
 前置条件满足后在线启用（与设置页同一路径，会重新检测前置条件并热重载）：
@@ -99,9 +104,9 @@ Host Bridge 的 Shell 会提供固定版本启动器 `AKASHIC_RUNTIME_CLI`，并
 "$AKASHIC_RUNTIME_CLI" plugin-set-enabled '<name>@release' on
 ```
 
-- 仍不满足会直接拒绝并说明原因；不要反复重试同一命令。
-- 声明了镜像的插件（如 `computer`）启用前会先确保镜像在宿主上；回“正在拉取 …，稍后再试”时等几分钟再试一次。
-- 验证：`pkg list` 里该包不再有 `[未启用]`，`plugin-status` 显示 ACTIVE，再做一次与需求相关的真实检查。
+- 仍不满足会直接拒绝（“不能启用：需要…”，退出码 1）；退出码 3 表示连不上在线实例。不要反复重试同一命令。
+- 声明了镜像的插件（如 `computer`）启用前会先确保镜像在宿主上；回“正在拉取 …，稍后再试”时等几分钟再试一次；其他镜像错误（如拉取失败）如实报告，不要当作稍后会好。
+- 验证：`pkg list` 里该包不再有 `[未启用]`，不带参数的 `plugin-status` 里该插件 `state` 为 `active`（带参数时查的是 update_id，不是插件 ID），再做一次与需求相关的真实检查。
 
 ## 卸载
 
