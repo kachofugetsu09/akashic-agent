@@ -195,6 +195,19 @@ Core 侧一个 PR，extra 侧先行或同时：
 - 不用动：`docker/host-runtime/requirements.production.in`（只引用 `requirements.txt`）、`benchmark/computer_driver/*.lock`（评测自己的环境）；Core 里没有任何 `aiohttp`/`telegram`/`telegramify_markdown`/`pyromark` 的 Python import（评测脚本除外）。
 - 删之前必须满足：(1) `telegram_channel` 与 `telegram_sender` 的新版本都已在生产运行（`pkg list` 显示来源 extra、带进程内环境引用）；(2) 本机用"去掉这些包的 Core 解释器"启动同一实例，两个插件仍 active、原生扩展来自插件环境（已演练，见 #本 PR 说明）；(3) 在目标镜像里重新求 wheel 通过（部署的 `pip download --only-binary` 不失败）；(4) 确认没有其他已装插件依赖这些包（`grep` 其源码与 extra 仓库 CI 的 `check_inprocess.py --hints`）；(5) 删除作为独立 PR，随后用 `pkg upgrade` 之外的完整部署演练一次回退。
 
+#### Phase 4 进展：`visuals`、`design`（playwright 进程内依赖；Chromium 暂时仍用镜像里那份）
+
+- 迁出：两个插件进 extra 仓库，`[tiers].extra` → `external`，preset 行保留；Core 里没有对它们的 import、服务键或宿主前端点名（`frontend/plugins/ui/dashboard` 里的 `./design/runtime` 是仪表盘自己的模块，与插件无关）。没有涉及它们的测试。`visuals` 的 `frame.html`、`preview-theme.css`、`bootstrap.html` 是入库的构建产物，release 分支取的是入库版本（`stage_plugin_package` 只用构建产物覆盖 `web_module.*`、`plugin_ui.*`、`message_ui.*`、`static/`），所以随插件一起迁，改前端源码后要重新生成并提交。
+- 依赖声明：两者的 `requirements.inprocess.txt` 都是 `playwright==1.59.0`（纯 ASCII）。与 Core 的 `requirements.txt`（`playwright==1.59.0`）和锁完全一致；不用范围，因为 playwright 的版本决定它期望的 Chromium 构建号（1.59.0 对应 1217），镜像里的浏览器是按 Core 的 playwright 装的。两份声明逐字节相同，共用一个环境（实测同一个环境引用，约 240 MB，主要是 playwright 自带的 driver）。`fastapi`、`starlette`、`httpx`、`pydantic` 是 Core 永久依赖，不声明。
+- 构建特例留在 Core：`scripts/build-web-plugins.mjs` 里 visuals 与 design 的专用段本来就按"目录存在才处理"生效，合成目录里存在，所以 release 提交与迁出前在 Core 上构建的相同（只多一个 `requirements.inprocess.txt`）。`package.json` 的 `typecheck` 原来写死了设计编辑器的 tsconfig，改成 `scripts/typecheck-plugin-projects.mjs`：对 `frontend/plugins/*/*/tsconfig.json` 存在的子项目才检查；Core 自己不依赖，合成目录里同一条 `npm run typecheck` 仍覆盖设计编辑器。设计编辑器的 npm 依赖（`@open-pencil/*`、`canvaskit-wasm`、`vue`、`@valibot/to-json-schema`）仍在 Core 的 `package.json`，因为 extra 的构建用 Core 的锁。
+
+**之后从 Core 删除 playwright 的清单（单独一步）**
+
+- `requirements.txt`：`playwright==1.59.0`（第 17 行）；`docker/host-runtime/requirements.lock` 少掉 `playwright`、`greenlet`、`pyee`（后两者只由 playwright 带来）。
+- `docker/host-runtime/Dockerfile.distribution`：`python -m playwright install --only-shell chromium`（第 73 行）依赖 Core 的 playwright，`PLAYWRIGHT_BROWSERS_PATH`（第 14、61 行）也要重新安排：删 playwright 之前必须先让 Chromium 由插件拥有（另一条调研线），否则镜像里不再有安装浏览器的手段。
+- 前提：(1) 两个插件的新版本在生产运行且带进程内环境；(2) 用去掉 playwright 的 Core 解释器启动并真实渲染（已演练）；(3) 插件环境里的 playwright 版本与浏览器构建号一致——删之前由插件自己持有"playwright 版本 + 浏览器"的配对；(4) 目标镜像里求 wheel 通过；(5) Core 之后升级 playwright 必须与插件的钉死版本同步：先放宽插件声明（例如 `>=1.59.0,<1.61`）发布，再升 Core。
+- 浏览器定位：两个插件默认用 `PLAYWRIGHT_BROWSERS_PATH`（镜像里是 `/opt/playwright`，本机默认缓存）；`visuals` 的设置里本来就有"预检浏览器路径"；extra 仓库这一步新增环境变量 `AKASHIC_BROWSER_EXECUTABLE`（两个插件都认，设置优先于环境变量），并把找不到浏览器的 Playwright 原始提示整理成一行原因加修复办法。接已有 CDP 端点（对标 DSH：核心不拥有浏览器）只给方案：`chromium.connect_over_cdp(endpoint)` 替代 `launch`，设计的无头页面依赖独立 context 与 `--site-per-process` 启动参数，连外部浏览器时这些参数不可用，需要单独验证后再做。
+
 ### Phase 5：新用户体验
 
 先做：包组与默认组合；Web 首次引导里按场景选装。
