@@ -17,7 +17,7 @@ from agent.plugins.extra_repo import is_official_repo, official_marketplace
 from agent.plugins.distribution_sources import distribution_sources
 from agent.plugins.install import PluginInstallResult, finalize_uninstall_plugin, fetch_sha_shallow, install_git_plugin
 from agent.plugins.manifest import plugins_root
-from agent.plugins.package_index import expand, load_index
+from agent.plugins.package_index import closure, expand, load_index
 from agent.plugins.prerequisites import clear_disabled, describe, read_disabled, record_declared, record_disabled, unmet
 from agent.plugins.packages import InstalledPackage, PackageState, list_release_heads, read_state, sync_rows
 from agent.plugins.resources import ResourceError, repair_resources
@@ -250,6 +250,8 @@ def install_named(ctx: Context, names: list[str]) -> list[Outcome]:
         return [Outcome(name, "failed", f"{ctx.repo} 不是官方 extra 仓库；pkg 只管官方仓库，"
                         "其他仓库请用 plugin-install --marketplace") for name in names]
     try:
+        if not any(name.startswith("@") for name in names):
+            return _install_planned(ctx, *_dependency_plan(ctx, names))
         names, heads = _expand_groups(ctx, names)
         return install_many(ctx, [identity_of(name) for name in names], heads)
     except (ValueError, RuntimeError) as error:
@@ -273,6 +275,52 @@ def _expand_groups(ctx: Context, names: list[str]) -> tuple[list[str], dict[str,
     if missing:
         raise RuntimeError("这些包在远端已不存在（index 可能已过期），未安装任何包: " + ", ".join(missing))
     return full, heads
+
+
+# 不带 @ 的安装也按 index 补上还没装的依赖，像 pacman 一样：返回（依赖在前的安装顺序, 每个包在本次计划里的传递依赖）。
+# index 只用来找依赖：取不到、或名字不在 index 里时，那些名字照旧原样安装（逐个处理的既有语义）。
+def _dependency_plan(ctx: Context, names: list[str]) -> tuple[list[str], dict[str, set[str]]]:
+    try:
+        index = load_index(ctx.repo, plugins_root())
+    except (OSError, RuntimeError, ValueError) as error:
+        print(f"读不到包组信息，不检查依赖: {error}", file=sys.stderr)
+        return names, {}
+    if index.note:
+        print(index.note, file=sys.stderr)
+    known = [name.partition("@")[0] for name in names if name.partition("@")[0] in index.packages]
+    if not known:
+        return names, {}
+    selected = {item.name for item in read_state(ctx.workspace, ctx.repo).packages if item.selected}
+    ordered = [name for name in closure(index, known) if name in known or name not in selected]
+    added = [name for name in ordered if name not in known]
+    if added:
+        print(f"自动带上依赖: {', '.join(added)}", file=sys.stderr)
+    plan = set(ordered)
+    needs = {name: (set(closure(index, [name])) - {name}) & plan for name in ordered}
+    return ordered + [name for name in names if name.partition("@")[0] not in index.packages], needs
+
+
+# 按计划逐个安装：依赖没装好（失败、装上但因前置条件保持关闭，或要重启才生效）时，依赖它的包不装，
+# 免得装上却加载失败。要重启的依赖：当前进程仍是旧合同，提示重启后再装。
+def _install_planned(ctx: Context, names: list[str], needs: dict[str, set[str]]) -> list[Outcome]:
+    heads = list_release_heads(ctx.repo)
+    outcomes: list[Outcome] = []
+    not_ready: set[str] = set()
+    seen: list[tuple[str, str]] = []
+    for name in names:
+        bare = name.partition("@")[0]
+        if blocked := sorted(needs.get(bare, set()) & not_ready):
+            restart = any(dict(seen).get(dep) == "restart-required" for dep in blocked)
+            hint = "（需要先重启实例，再重新安装）" if restart else ""
+            outcomes.append(Outcome(bare, "failed", f"依赖 {', '.join(blocked)} 没有就绪，未安装{hint}"))
+            not_ready.add(bare)
+            continue
+        outcome = install_many(ctx, [identity_of(name)], heads)[0]
+        outcomes.append(outcome)
+        seen.append((bare, outcome.result))
+        if outcome.result in BAD_RESULTS or outcome.result == "restart-required" or outcome.detail.startswith("已安装但未启用"):
+            not_ready.add(bare)
+    return outcomes
 
 
 # 逐个安装；只有已被选择、启用且正常的同版本才跳过，其余走安装路径（可复用已有 artifact）。
