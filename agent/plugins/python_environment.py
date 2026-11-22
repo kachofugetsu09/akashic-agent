@@ -163,21 +163,26 @@ def _sync_tree(root: Path, top: Path) -> None:
 
 def preflight_offline_runtime(
     code: Path, runtime: StaticPythonRuntime, wheels: OfflineWheels, destination: Path,
+    constraints: Constraints | None = None,
 ) -> None:
-    """Check the target interpreter's wheel closure before state migration."""
+    """Check the target interpreter's wheel closure before state migration.
+
+    进程内 runtime 传入与安装期相同的约束：预检通过就意味着停机窗口内带约束的离线安装也能通过。
+    """
 
     requirements = code / runtime.requirements
     _check_offline_requirements(requirements)
     _ = _verify_offline_wheels(wheels)
     if not destination.is_dir() or destination.is_symlink():
         raise ValueError("离线依赖检查目标必须是已有普通目录")
-    _ = subprocess.run(
-        [sys.executable, "-I", "-m", "pip", "--isolated", "download", "--no-index",
-         f"--find-links={wheels.directory}", "--only-binary=:all:",
-         "--no-cache-dir", "--no-input", "--dest", str(destination),
-         "-r", str(requirements)],
-        check=True, capture_output=True, text=True,
-    )
+    command = [sys.executable, "-I", "-m", "pip", "--isolated", "download", "--no-index",
+               f"--find-links={wheels.directory}", "--only-binary=:all:",
+               "--no-cache-dir", "--no-input", "--dest", str(destination),
+               "-r", str(requirements), *_constraint_options(constraints, constraints is not None)]
+    if constraints is not None:
+        _run_pip(command, code, constraints)
+    else:
+        _ = subprocess.run(command, check=True, capture_output=True, text=True)
     _ = _verify_offline_wheels(wheels)
 
 
