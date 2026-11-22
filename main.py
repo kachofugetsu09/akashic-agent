@@ -694,7 +694,25 @@ if __name__ == "__main__":
             sys.exit(1)
         plugin_id = args[1]
         enabled = args[0] == "plugin-enable"
+        # 实例在线时走 Gateway：与设置页同一条路径，启用前检测外部前置条件并热重载；没有运行中的实例（或没有 Gateway）才只写 patch。
+        try:
+            online = asyncio.run(invoke_plugin_command("plugin-set-enabled", (plugin_id, "on" if enabled else "off"),
+                                                       workspace=workspace, config_path=Path(config_path)))
+        except LookupError:
+            online = 3
+        if online != 3:
+            sys.exit(online)
         from agent.plugins.install import set_installed_plugin_enabled
+        from agent.plugins.manifest import plugins_root
+        from agent.plugins.prerequisites import check_before_enable, installed_head
+
+        # 离线回落（没有运行中的实例）启用时同样检测外部前置条件，与在线路径一致；停用不检查。
+        if enabled:
+            try:
+                check_before_enable(workspace, plugin_id, installed_head(plugins_root(), plugin_id))
+            except ValueError as exc:
+                print(str(exc))
+                sys.exit(1)
 
         try:
             manifest = set_installed_plugin_enabled(plugin_id, enabled=enabled, workspace=workspace)

@@ -5,7 +5,7 @@ from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from typing import cast
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from agent.plugin_composition import Context
 from plugins.channels.contract import CHANNEL_INPUT_V2, ChannelInboundMessage
@@ -22,9 +22,15 @@ from plugins.ledger.contract import Message
 from .contract import RpcMethod
 from .errors import UpdateNotFoundError
 from .protocol.errors import JsonRpcError, SERVER_OVERLOADED
+from .protocol.models import StrictModel
 from .runtime_stop import CancelStopParams, StopParams, prepare_stop
 from .service import ControlService
 from .status_feed import RuntimeReplyStatus
+
+
+class SetEnabledParams(StrictModel):
+    plugin_id: str = Field(min_length=1, max_length=256)
+    enabled: bool
 
 
 def build_control_service(ctx: Context, *, workspace_token: str | None) -> ControlService:
@@ -95,6 +101,11 @@ def build_control_service(ctx: Context, *, workspace_token: str | None) -> Contr
         gate.abort(request.request_id)
         return {"accepting": gate.accepting}
 
+    # 在线启停：与设置页同一条路径（PluginUpdates.set_enabled，含启用前的外部前置条件检测与热重载）。
+    async def set_enabled(params: BaseModel) -> object:
+        request = cast(SetEnabledParams, params)
+        return await updates.set_enabled(ctx, request.plugin_id, request.enabled)
+
     return ControlService(
         ctx.require(MESSAGE_CATALOG), ctx.runtime.workspace, accept=accept,
         attachments=ctx.require(CHANNEL_ATTACHMENT_READ).resolve_refs,
@@ -105,5 +116,6 @@ def build_control_service(ctx: Context, *, workspace_token: str | None) -> Contr
         control_frames=ctx.require(CONTROL_FRAMES), resolve_method=resolve_method,
         request_scope=ctx.runtime_scope,
         methods={"runtime/prepare-stop": RpcMethod(StopParams, stop),
-                 "runtime/cancel-stop": RpcMethod(CancelStopParams, cancel_stop)},
+                 "runtime/cancel-stop": RpcMethod(CancelStopParams, cancel_stop),
+                 "plugin/set-enabled": RpcMethod(SetEnabledParams, set_enabled)},
     )

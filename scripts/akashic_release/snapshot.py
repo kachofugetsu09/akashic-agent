@@ -12,6 +12,7 @@ from pathlib import Path
 from collections.abc import Mapping
 from typing import Any, cast
 
+from agent.plugins.prerequisites import RECORD_FILES
 from scripts.akashic_release.manifest import atomic_write, read_json, write_json
 from scripts.akashic_release.model import ReleasePaths
 
@@ -77,6 +78,8 @@ def capture_state(workspace: Path, home: Path, plugin_ids: list[str]) -> dict[st
         "schema_version": _SCHEMA, "plugins_home": str(home), "workspace": str(workspace),
         "selection": _text(workspace / "runtime/plugin-stable.json"),
         "patch": _text(workspace / "bundle.patch.toml"),
+        # 前置条件记录（原因与声明）属于安装事务的一部分：失败或恢复时还原为事务前的内容。
+        "prerequisite_files": {name: _text(workspace / name) for name in RECORD_FILES},
         "journal_mark": _journal_mark(workspace),
         "plugins": [_plugin_record(home, plugin_id) for plugin_id in plugin_ids],
     }
@@ -141,6 +144,8 @@ def restore_state(document: Mapping[str, Any]) -> None:
                 pass
     # 2. patch、指针、新建的 artifact 与目录。
     _restore_file(workspace / "bundle.patch.toml", document["patch"])
+    for name, text in cast(dict[str, str | None], document.get("prerequisite_files", {})).items():
+        _restore_file(workspace / name, text)
     for record in document["plugins"]:
         _restore_plugin(record, Path(document["plugins_home"]))
 

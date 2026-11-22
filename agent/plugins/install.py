@@ -12,6 +12,7 @@ from collections.abc import Mapping
 from typing import cast
 from uuid import uuid4
 
+from agent.plugins.prerequisites import forget_plugin
 from agent.plugins.dependency_constraints import DependencyBatch, build_constraints
 from agent.plugins.resources import ensure_resources
 from agent.plugins.python_environment import (
@@ -109,6 +110,8 @@ def finalize_uninstall_plugin(
 
     home = plugins_home or plugins_root()
     plugin_name, marketplace = _split_installed_plugin_id(plugin_id)
+    # 卸载后包的前置条件声明与未启用原因不再有意义：一并清掉，重装时重新记。
+    forget_plugin(workspace, plugin_id)
     cache_path = home / "cache" / marketplace / plugin_name
     data_path = workspace_plugin_data_dir(workspace, plugin_name, marketplace)
     if cache_path.exists():

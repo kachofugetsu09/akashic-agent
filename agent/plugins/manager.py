@@ -54,6 +54,7 @@ from agent.plugins._operation import (
 from agent.plugin_composition.config_input import decode_config, encode_config
 from agent.plugins.bundles import absorbed_plugin_ids
 from agent.plugins.channel_credentials import CoreProviderClientFactory
+from agent.plugins.prerequisites import check_before_enable, ensure_images, installed_head, load_disabled
 from agent.plugins.composable import ComposablePlugin
 from agent.plugins.generation import PluginGeneration
 from agent.plugins.host import (
@@ -1595,6 +1596,17 @@ class PluginManager:
         if plugin_id not in self._installed_ids():
             raise RuntimeError(f"插件未安装: {plugin_id}")
 
+    # 插件静态声明的镜像（读已装 artifact 的 manifest）；读不到当作没有。
+    def _plugin_images(self, plugin_id: str) -> tuple[str, ...]:
+        mods, _failures = self._discover_modules(record_source_failures=False)
+        mod = next((item for item in mods if _resolve_plugin_id(item) == plugin_id), None)
+        if mod is None:
+            return ()
+        try:
+            return tuple(load_static_plugin_manifest(Path(mod["plugin_root"])).images)
+        except (OSError, ValueError):
+            return ()
+
     def _installed_ids(self) -> frozenset[str]:
         return installed_plugin_ids(self.installed_plugins_home) | frozenset(
             f"{source.plugin_name}@{source.marketplace}" for source in self._distribution.sources)
@@ -1890,6 +1902,12 @@ class PluginManager:
     async def _set_plugin_enabled(self, plugin_id: str, enabled: bool) -> dict[str, object]:
         # 1. 只接受已安装或发行版自带的插件，选择与 CLI plugin-enable 同源。
         self.require_installed_plugin(plugin_id)
+        # 外部前置条件（docker、命令行工具）曾未满足而被关闭的插件，启用前重新检测。
+        if enabled:
+            await run_file_io(lambda: check_before_enable(self._workspace, plugin_id, installed_head(self.installed_plugins_home, plugin_id)))
+            images = self._plugin_images(plugin_id)
+            if images:
+                _ = await run_file_io(lambda: ensure_images(images))
         _ = set_plugin_choice(self._workspace, plugin_id, enabled=enabled, distribution=self._distribution.root)
         # 2. 停用沿用排空路径，依赖它的插件由组合图转入等待。
         if not enabled:
@@ -2075,6 +2093,7 @@ class PluginManager:
             None if operation_view is None else operation_view["plugin_id"]
         )
 
+        disabled_reasons, disabled_problem = load_disabled(self._workspace)
         installed = self._installed_ids()
         plugin_ids = (
             set(installed) | set(manifest)
@@ -2109,6 +2128,7 @@ class PluginManager:
                     for source in self._distribution.sources
                 ),
                 "cache_exists": cache_exists,
+                "disabled_reason": cast(str | None, disabled_reasons.get(plugin_id, {}).get("reason")),
                 "draining_generations": [generation_status(item) for item in draining],
                 # Keep the original flat projection for existing status consumers.
                 "generation_id": None if active is None else active.generation_id,
@@ -2143,6 +2163,8 @@ class PluginManager:
             "selection_ref": selection_ref,
             "selection_components": list(selected_refs.values()),
             "plugins": plugins,
+            # 前置条件原因记录损坏时给出可见提示（条目按"未知，需重新检测"处理）。
+            "disabled_reasons_problem": disabled_problem,
             "source_failures": source_failures,
             "operation": operation_view,
             "preset": self._preset_status(manifest, selected_refs),

@@ -17,6 +17,7 @@ from agent.plugins.extra_repo import resolve_repo as resolve_repo
 from agent.plugins.install import is_official_fresh_install, is_same_source_upgrade, same_origin
 from agent.plugins.manifest import plugins_root
 from agent.plugins.package_index import PackageIndex, load_index
+from agent.plugins.prerequisites import load_disabled
 from agent.plugins.python_environment import PythonEnvironments, environment_repair_reason
 from agent.plugins.resources import resource_repair_reason
 from agent.plugins.selection import PluginSelection, SelectionFormatError
@@ -52,6 +53,10 @@ class ListRow:
     remote_head: str
     repair: str = ""
     resource_repair: str = ""
+    # 已装但因外部前置条件未满足而保持关闭的原因（来自 runtime/disabled-reasons.json）；没有为空。
+    disabled_reason: str = ""
+    # 前置条件原因记录损坏时的说明（所有行都带，空表示正常）：记录无法确认哪些包被关闭，需要修复或删除该文件。
+    disabled_problem: str = ""
 
 
 @dataclass(frozen=True)
@@ -201,7 +206,8 @@ def sync_rows(workspace: Path, repo: str) -> list[SyncRow]:
 
 
 # 本地列表；带 --remote 时只给 extra 来源的包标状态，其余标 "-"。
-def list_rows(packages: list[InstalledPackage], repo: str, remote: bool) -> list[ListRow]:
+def list_rows(packages: list[InstalledPackage], repo: str, remote: bool, workspace: Path | None = None) -> list[ListRow]:
+    disabled, problem = ({}, None) if workspace is None else load_disabled(workspace)
     heads = list_release_heads(repo) if remote else {}
     rows: list[ListRow] = []
     for item in packages:
@@ -212,7 +218,8 @@ def list_rows(packages: list[InstalledPackage], repo: str, remote: bool) -> list
             status = ("removed-upstream" if not remote_head
                       else "upgradable" if remote_head != item.head or item.repair or item.resource_repair else "current")
         rows.append(ListRow(item.plugin_id, item.version, item.source, item.head, item.selected,
-                            item.retired, status, remote_head, item.repair, item.resource_repair))
+                            item.retired, status, remote_head, item.repair, item.resource_repair,
+                            str(disabled.get(item.plugin_id, {}).get("reason", "")), problem or ""))
     return rows
 
 
@@ -224,13 +231,16 @@ def _print_list(rows: list[ListRow], remote: bool, as_json: bool) -> None:
     if as_json:
         print(json.dumps([asdict(row) for row in rows], ensure_ascii=False, indent=2))
         return
+    if rows and rows[0].disabled_problem:
+        print(f"注意：前置条件原因记录损坏，列表里的未启用原因可能缺失：{rows[0].disabled_problem}", file=sys.stderr)
     for row in rows:
         line = f"{row.plugin_id:<32} {row.version:<10} {row.source:<10} {_short(row.head)}"
         if remote:
             line += f"  {row.status} {_short(row.remote_head)}"
         marks = ("" if row.selected else "  [已装，未进选择]") + ("  [发行版已不提供]" if row.retired else "") + (
             f"  [依赖环境需重建: {row.repair}]" if row.repair else "") + (
-            f"  [{row.resource_repair}]" if row.resource_repair else "")
+            f"  [{row.resource_repair}]" if row.resource_repair else "") + (
+            f"  [未启用: {row.disabled_reason}]" if row.disabled_reason else "")
         print(line + marks)
     if not rows:
         print("没有已装的包")
@@ -344,7 +354,7 @@ def _dispatch(options: argparse.Namespace, workspace: Path, repo: str) -> int:
         return 0
     if options.command == "list":
         remote = bool(options.remote)
-        _print_list(list_rows(read_state(workspace, repo).packages, repo, remote), remote, bool(options.json))
+        _print_list(list_rows(read_state(workspace, repo).packages, repo, remote, workspace), remote, bool(options.json))
         return 0
     _print_sync(sync_rows(workspace, repo), repo, bool(options.json))
     return 0

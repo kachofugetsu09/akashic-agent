@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import cast
 
 from agent.plugins.extra_repo import git_env, list_heads
+from agent.plugins.prerequisites import parse_needs
 from agent.plugins.static_manifest import is_plugin_name
 
 SCHEMA_VERSION = 1
@@ -88,6 +89,14 @@ def _strings(value: object, where: str) -> tuple[str, ...]:
     return tuple(_text(item, where) for item in cast(list[object], value))
 
 
+# 前置条件声明与读端同一条规则（parse_needs）：非法项在读 index 时就拒绝，点名哪个包哪一项，不让它写进声明后阻塞全局启用。
+def _needs(value: object, name: str) -> tuple[str, ...]:
+    try:
+        return tuple(parse_needs(value, f"packages.{name}.needs"))
+    except ValueError as error:
+        raise _bad(f"packages.{name}.needs", str(error)) from error
+
+
 def _group(group_id: str, value: object) -> IndexGroup:
     row = _mapping(value, f"groups.{group_id}")
     required = row.get("required")
@@ -107,7 +116,7 @@ def _package(name: str, value: object) -> IndexPackage:
         raise _bad(f"packages.{name}.size_bytes", "必须是非负整数")
     group = _text(row.get("group"), f"packages.{name}.group")
     return IndexPackage(name, _text(row.get("desc"), f"packages.{name}.desc"), group, _names(row.get("requires"), f"packages.{name}.requires"),
-                        _strings(row.get("needs"), f"packages.{name}.needs"), _strings(row.get("images"), f"packages.{name}.images"), size)
+                        _needs(row.get("needs"), name), _strings(row.get("images"), f"packages.{name}.images"), size)
 
 
 # 引用完整性：成员与 requires 指向存在的包，包的 group 与组成员互相一致，依赖无环。

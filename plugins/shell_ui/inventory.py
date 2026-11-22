@@ -104,6 +104,7 @@ def plugin_rows(plugins: list[Row], catalog: list[Row]) -> list[Row]:
             "enabled": enabled,
             "phase": _phase(plugin, enabled, bool(draining), error, missing),
             "error": error,
+            "disabled_reason": plugin.get("disabled_reason"),
             "missing_services": missing,
             "dependents": sorted(dependents.get(plugin_id, ())),
             "locked": "management-required" if plugin_id in locked else None,

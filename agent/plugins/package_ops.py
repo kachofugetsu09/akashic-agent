@@ -11,12 +11,14 @@ from pathlib import Path
 from typing import Literal, cast
 from uuid import uuid4
 
+from agent.plugins.artifacts import read_pointers, resolve_pointer
 from agent.plugins.bundles import absorbed_plugin_ids, composition_rows, set_plugin_choice
 from agent.plugins.extra_repo import is_official_repo, official_marketplace
 from agent.plugins.distribution_sources import distribution_sources
 from agent.plugins.install import PluginInstallResult, finalize_uninstall_plugin, fetch_sha_shallow, install_git_plugin
 from agent.plugins.manifest import plugins_root
 from agent.plugins.package_index import expand, load_index
+from agent.plugins.prerequisites import clear_disabled, describe, record_declared, record_disabled, unmet
 from agent.plugins.packages import InstalledPackage, PackageState, list_release_heads, read_state, sync_rows
 from agent.plugins.resources import ResourceError, repair_resources
 from agent.plugins.selection import PluginSelection
@@ -153,12 +155,66 @@ def install_one(ctx: Context, state: PackageState, plugin_id: str, sha: str, upg
         # 3. 在线等到终态，离线只写 cache 与选择 patch。
         if ctx.online:
             result, detail = _install_online(ctx, plugin_id, sha)
+            # 只转换一种失败：目标已确认落地（新 artifact 已发布、指针指向它），且本机前置条件确实不满足导致激活失败
+            # （如缺 Workload Controller）。其余失败（下载、校验、依赖、旧 artifact 未换成目标）保持真实失败，不动正在用的旧包。
+            if result == "installed" or (result == "failed" and _landed(ctx, name, plugin_id, sha)):
+                held = _hold_closed(ctx, name, plugin_id, sha)
+                if held:
+                    result, detail = "installed", held
+            elif result == "restart-required":
+                _ = _declare(ctx, name, plugin_id, sha)
             return Outcome(name, "upgraded" if upgrade and result == "installed" else result,
                            detail or sha[:12])
         _ = _install_offline(ctx, plugin_id, sha)
     except (RuntimeError, ValueError, OSError, subprocess.CalledProcessError) as error:
         return Outcome(name, "failed", _last_line(error))
-    return Outcome(name, "upgraded" if upgrade else "installed", sha[:12])
+    return Outcome(name, "upgraded" if upgrade else "installed", _hold_closed(ctx, name, plugin_id, sha) or sha[:12])
+
+
+# 目标提交已落地：stable 指针指向的 artifact 就是 sha（失败安装会回滚指针，回滚后不算落地）。
+def _landed(ctx: Context, name: str, plugin_id: str, sha: str) -> bool:
+    base = plugins_root() / "cache" / plugin_id.partition("@")[2] / name
+    try:
+        pointers = read_pointers(base, validate_content=False)
+        artifact = None if pointers is None else resolve_pointer(base, pointers.stable, validate_content=False)
+    except (OSError, ValueError):
+        return False
+    if artifact is None:
+        return False
+    head = subprocess.run(["git", "-C", str(artifact), "rev-parse", "HEAD"], capture_output=True, text=True, check=False).stdout.strip()
+    return head == sha
+
+
+# 所有安装与升级的成功路径（installed、restart-required、失败但目标已落地）都经这一个入口写"包声明的 needs"，
+# 绑定目标提交；index 取不到时不写（旧声明因提交不一致自然失效）。返回声明的 needs，没有 index 返回 None。
+def _declare(ctx: Context, name: str, plugin_id: str, sha: str) -> list[str] | None:
+    try:
+        needs = list(load_index(ctx.repo, plugins_root()).packages[name].needs)
+    except (RuntimeError, KeyError):
+        return None
+    record_declared(ctx.workspace, plugin_id, needs, sha)
+    return needs
+
+
+# 装完后：包声明了外部前置条件而本机不满足，包照装但保持关闭并记录原因（返回说明）。
+# 在线时经 Gateway 热停用（plugin-disable），离线直接写 patch。
+def _hold_closed(ctx: Context, name: str, plugin_id: str, sha: str) -> str:
+    needs = _declare(ctx, name, plugin_id, sha)
+    if needs is None:
+        return ""
+    missing = unmet(needs)
+    if not missing:
+        clear_disabled(ctx.workspace, plugin_id)
+        return ""
+    record_disabled(ctx.workspace, plugin_id, missing, sha)
+    if ctx.online:
+        done = _main(ctx, "plugin-disable", plugin_id)
+        if done.returncode != 0:
+            raise RuntimeError(done.stderr.strip() or done.stdout.strip() or "plugin-disable 失败")
+    else:
+        root = distribution_sources(ctx.workspace, plugins_root(), replacing_distribution=True).root
+        _ = set_plugin_choice(ctx.workspace, plugin_id, enabled=False, distribution=root)
+    return f"已安装但未启用：{describe(missing)}"
 
 
 # 按名字安装：pkg 只管官方仓库；其他仓库用 plugin-install --marketplace，这里明确拒绝。
