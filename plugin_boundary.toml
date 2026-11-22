@@ -75,15 +75,16 @@ core = [
     "runtime_diagnostics",
 ]
 extra = [
-    "akasha", "codex", "computer", "design", "gemini", "goal", "main_session", "markdown_memory",
-    "markdown_reader", "message_push", "opencode_go", "projects", "scheduler",
-    "session_reference", "session_title", "telegram_channel", "telegram_sender", "terminal",
-    "timer", "userinformation", "vision", "visuals", "workspace_changes",
+    "akasha", "codex", "computer", "design", "gemini", "goal", "markdown_memory", "message_push",
+    "opencode_go", "scheduler", "telegram_channel", "telegram_sender", "timer", "userinformation",
+    "vision", "visuals",
 ]
 
 # 已迁出 Core 的插件：目录不再存在，但仍按 extra 层约束（core 层不得 import 它们）。
 # 迁出一个插件时，把名字从上面的 extra 移到这里；extra 仓库自己的新插件由它的 extra_tiers.toml 声明，不进本表。
 external = [
-    "privacy_mask", "watch", "stable_view", "standard_web", "subagent", "subagent_claude_code",
-    "subagent_codex", "web_fetch_http", "web_search_exa", "web_search_searxng",
+    "main_session", "markdown_reader", "privacy_mask", "projects", "session_reference",
+    "session_title", "stable_view", "standard_web", "subagent", "subagent_claude_code",
+    "subagent_codex", "terminal", "watch", "web_fetch_http", "web_search_exa",
+    "web_search_searxng", "workspace_changes",
 ]
