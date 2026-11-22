@@ -17,10 +17,12 @@ import json
 import os
 import re
 import shutil
+import string
 import stat
 import sys
 import tempfile
 import time
+import http.client
 import urllib.error
 import urllib.request
 import zipfile
@@ -30,7 +32,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import IO, cast
 from email.message import Message
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import quote, urljoin, urlsplit
 
 RESOURCES_FILE = "resources.json"
 MARKER = "COMPLETE.json"
@@ -223,6 +225,21 @@ _MAX_REDIRECTS = 5
 _MAX_SECONDS = 1800.0
 
 
+# 整个取回（含全部重试与重定向）共用的尽力期限：只在请求之间、块之间与成功出口检查，并把每次请求的 socket 超时收紧到剩余时间；
+# 不能打断单次阻塞 I/O（最坏多等一个 socket 超时）。需要硬上限的调用方应在进程层面加超时（见 stage_archives）。
+class _Deadline:
+    def __init__(self, seconds: float) -> None:
+        self.seconds = seconds
+        self._end = time.monotonic() + seconds
+
+    # 剩余秒数；已超期抛 ResourceError。
+    def remaining(self) -> float:
+        left = self._end - time.monotonic()
+        if left <= 0:
+            raise ResourceError(f"下载超过总时限 {self.seconds:.0f} 秒")
+        return left
+
+
 # 校验一个下载地址（初始地址与每一跳重定向目标共用）：https、有主机名、不带凭据、不带片段。
 def _check_url(url: str, label: str) -> None:
     parts = urlsplit(url)
@@ -232,9 +249,11 @@ def _check_url(url: str, label: str) -> None:
 
 
 # 重定向在发出后续请求之前逐跳校验；不读取 30x 响应体（标准库默认实现会无界读入内存），也不转发原请求的其他头。
+# Location 按标准库的做法处理：http.client 把头按 ISO-8859-1 解码，这里还原原始字节并百分号编码非 ASCII 部分。
 class _CheckedRedirects(urllib.request.HTTPRedirectHandler):
-    def __init__(self) -> None:
+    def __init__(self, deadline: _Deadline) -> None:
         self.hops = 0
+        self._deadline = deadline
 
     def http_error_302(self, req: urllib.request.Request, fp: IO[bytes], code: int, msg: str, headers: Message) -> IO[bytes] | None:
         # 1. 必须有目标；跳数有上限。
@@ -243,45 +262,67 @@ class _CheckedRedirects(urllib.request.HTTPRedirectHandler):
         if not location or self.hops > _MAX_REDIRECTS:
             fp.close()
             raise ResourceError(f"重定向缺少目标或超过 {_MAX_REDIRECTS} 跳（第 {self.hops} 跳，来自 {req.full_url}）")
-        # 2. 目标在发请求前校验；失败说明是哪一跳。
-        target = urljoin(req.full_url, location)
+        # 2. 编码、解析相对地址，在发请求前校验；失败说明是哪一跳。
+        target = urljoin(req.full_url, quote(location, encoding="iso-8859-1", safe=string.punctuation))
         fp.close()
         _check_url(target, f"重定向第 {self.hops} 跳目标")
-        return self.parent.open(urllib.request.Request(target, headers={"User-Agent": "akashic-resource-fetch"}), timeout=req.timeout)
+        timeout = min(cast(float, req.timeout), self._deadline.remaining())
+        return self.parent.open(urllib.request.Request(target, headers={"User-Agent": "akashic-resource-fetch"}), timeout=timeout)
 
     http_error_301 = http_error_303 = http_error_307 = http_error_308 = http_error_302
 
 
-# 默认打开方式：代理按环境变量；每次下载一个新的重定向 handler（跳数不跨下载累计）。
-def _default_open(url: str, timeout: float) -> IO[bytes]:
-    _check_url(url, "下载地址")
-    opener = urllib.request.build_opener(_CheckedRedirects())
-    response = opener.open(urllib.request.Request(url, headers={"User-Agent": "akashic-resource-fetch"}), timeout=timeout)
-    return cast(IO[bytes], response)
+# 默认打开方式：代理按环境变量；每次下载一个新的重定向 handler（跳数不跨下载累计），超时受同一个期限约束。
+def _deadline_opener(deadline: _Deadline) -> Opener:
+    def open_url(url: str, timeout: float) -> IO[bytes]:
+        _check_url(url, "下载地址")
+        opener = urllib.request.build_opener(_CheckedRedirects(deadline))
+        request = urllib.request.Request(url, headers={"User-Agent": "akashic-resource-fetch"})
+        return cast(IO[bytes], opener.open(request, timeout=min(timeout, deadline.remaining())))
+    return open_url
 
 
 # 下载一次：流式写入、同时计算哈希；超过上限、大小不符、哈希不符都失败。网络类错误由调用方重试。
-def _download(resource: Resource, target: Path, opener: Opener, timeout: float, limit: int) -> int:
+def _download(resource: Resource, target: Path, opener: Opener, timeout: float, limit: int, deadline: _Deadline) -> int:
     if resource.size is not None and resource.size > limit:
         raise ResourceError(f"声明的 size {resource.size} 超过调用方上限 {limit}")
     cap = limit if resource.size is None else min(limit, resource.size)
     digest = hashlib.sha256()
     total = 0
-    deadline = time.monotonic() + _MAX_SECONDS
-    with opener(resource.url, timeout) as response, target.open("wb") as stream:
+    with opener(resource.url, min(timeout, deadline.remaining())) as response, target.open("wb") as stream:
         while chunk := response.read(_CHUNK):
             total += len(chunk)
-            if time.monotonic() > deadline:
-                raise ResourceError(f"下载超过总时限 {_MAX_SECONDS:.0f} 秒")
+            _ = deadline.remaining()
             if total > cap:
                 raise ResourceError(f"下载超过上限 {cap} 字节")
             digest.update(chunk)
             _ = stream.write(chunk)
+    _ = deadline.remaining()
     if resource.size is not None and total != resource.size:
         raise _ShortRead(f"下载大小 {total} 与声明 {resource.size} 不符")
     if digest.hexdigest() != resource.sha256:
         raise ResourceError(f"sha256 不符：期望 {resource.sha256}，实际 {digest.hexdigest()}")
     return total
+
+
+# 下载并校验一个归档到 target（不解压）。deadline 由调用方在整个取回开始时定一次，重试不重置；
+# 网络类错误（连接、超时、大小不符）最多重试 attempts 次；哈希不符、超限、地址或头部非法等内容问题不重试，统一成 ResourceError。
+def download_archive(
+    resource: Resource, target: Path, *, opener: Opener | None = None, timeout: float = 60.0, attempts: int = 3,
+    max_download: int = DEFAULT_MAX_DOWNLOAD, deadline: _Deadline | None = None,
+) -> int:
+    clock = deadline or _Deadline(_MAX_SECONDS)
+    for attempt in range(1, attempts + 1):
+        _ = clock.remaining()
+        try:
+            return _download(resource, target, opener or _deadline_opener(clock), timeout, max_download, clock)
+        except (UnicodeError, http.client.HTTPException) as error:
+            raise ResourceError(f"下载响应不合法: {error}") from error
+        except (urllib.error.URLError, OSError, TimeoutError) as error:
+            if attempt == attempts:
+                raise ResourceError(f"下载失败（已重试 {attempts} 次）: {error}") from error
+            time.sleep(min(2.0 * attempt, 10.0, clock.remaining()))
+    raise AssertionError("attempts 必须为正")
 
 
 # 安全解压：拒绝绝对路径、..、符号链接与特殊文件、重名；还原可执行位（去掉 setuid/setgid/sticky）；
@@ -332,11 +373,14 @@ def _freeze(stage: Path) -> None:
 
 # 取回并发布一个资源，返回发布目录。已发布且可用则直接复用；同一资源并发取回由文件锁串行化，后到者复用先到者的结果。
 # 网络类错误（连接、超时、大小不符）最多重试 attempts 次；哈希不符、路径穿越、超限等内容问题不重试。
-# timeout 是单次 socket 阻塞操作的超时，不是整个下载的期限；整个下载另有 _MAX_SECONDS 的总时限。
+# timeout 是单次 socket 阻塞操作的超时；max_seconds 是整个取回（含重试与重定向）的尽力期限，只在请求之间、块之间和成功出口检查，
+# 不能打断单次阻塞 I/O（最坏多等一个 socket 超时）；需要硬上限的调用方自行在进程层面加超时。
 def fetch_resource(
     resource: Resource, root: Path, *, opener: Opener | None = None, timeout: float = 60.0, attempts: int = 3,
     max_download: int = DEFAULT_MAX_DOWNLOAD, max_extracted: int = DEFAULT_MAX_EXTRACTED, max_files: int = DEFAULT_MAX_FILES,
+    max_seconds: float = _MAX_SECONDS,
 ) -> Path:
+    deadline = _Deadline(max_seconds)
     root.mkdir(parents=True, exist_ok=True)
     target = published_path(resource, root)
     with _locked(root, resource.sha256):
@@ -352,14 +396,8 @@ def fetch_resource(
         try:
             # 2. 下载（网络类错误重试）、校验、解压到暂存目录。
             archive = stage / "download.zip"
-            for attempt in range(1, attempts + 1):
-                try:
-                    downloaded = _download(resource, archive, opener or _default_open, timeout, max_download)
-                    break
-                except (urllib.error.URLError, OSError, TimeoutError) as error:
-                    if attempt == attempts:
-                        raise ResourceError(f"下载失败（已重试 {attempts} 次）: {error}") from error
-                    time.sleep(min(2.0 * attempt, 10.0))
+            downloaded = download_archive(
+                resource, archive, opener=opener, timeout=timeout, attempts=attempts, max_download=max_download, deadline=deadline)
             files = _extract(archive, stage / CONTENT, max_extracted, max_files)
             archive.unlink()
             # 3. 入口必须在解压结果里；写完成标记、刷盘、只读化，最后原子 rename 发布。
