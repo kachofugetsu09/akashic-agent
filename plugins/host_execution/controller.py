@@ -15,8 +15,10 @@ import stat
 import struct
 import sys
 import tempfile
+import threading
 from uuid import uuid4
 from dataclasses import asdict
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import AsyncExitStack, asynccontextmanager
 from functools import cache
 from pathlib import Path, PurePosixPath
@@ -34,6 +36,8 @@ from plugins.host_execution.contract import (
 _SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._@-]{0,127}$")
 _NAME = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 _IMAGE = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
+_IMAGE_PULL_TIMEOUT_S = 600.0
+_IMAGE_INSPECT_TIMEOUT_S = 30.0
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@-]{0,511}$")
 _API_VERSION = "v1.47"
 _OWNER_LABEL = "com.akashic.workload"
@@ -66,6 +70,8 @@ class DockerEngine:
 
     def __init__(self, socket_path: Path) -> None:
         self._socket_path = socket_path
+        self._aborted = False
+        self._image_socket: socket.socket | None = None
 
     async def request(
         self,
@@ -117,6 +123,87 @@ class DockerEngine:
                 raise RuntimeError("Docker API 返回了无效 JSON")
             return value
         finally:
+            connection.close()
+
+
+    # 确保镜像：inspect（短期限）+ 拉取，整体一个硬期限。到点由计时器主动关闭到引擎的连接，阻塞中的读立即失败；
+    # 控制器停止时 abort_image 做同样的事。只在专用的单线程里调用，不占默认线程池。
+    def ensure_image_sync(self, image: str, total_seconds: float, inspect_seconds: float) -> dict[str, object]:
+        self._aborted = False
+        timer = threading.Timer(total_seconds, self.abort_image)
+        timer.start()
+        try:
+            reference = quote(image, safe="")
+            status = self._image_request("GET", f"/images/{reference}/json", inspect_seconds, drain=True)
+            if status == 200:
+                return {"present": True, "pulled": False}
+            if status != 404:
+                raise RuntimeError(f"Docker 查询镜像失败（HTTP {status}）")
+            self._pull(reference, total_seconds)
+            return {"present": True, "pulled": True}
+        finally:
+            timer.cancel()
+
+    def abort_image(self) -> None:
+        self._aborted = True
+        # getresponse() 会把 connection.sock 交给响应并置空，所以单独保存原始 socket 才能打断阻塞中的读。
+        stream = self._image_socket
+        if stream is not None:
+            try:
+                stream.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+    def _image_request(self, method: str, path: str, timeout: float, *, drain: bool) -> int:
+        connection = _UnixHttpConnection(self._socket_path)
+        connection.timeout = timeout
+        try:
+            if self._aborted:
+                raise RuntimeError("镜像操作已超过总期限或被中止")
+            connection.request(method, f"/{_API_VERSION}{path}")
+            self._image_socket = connection.sock
+            if self._aborted:
+                raise RuntimeError("镜像操作已超过总期限或被中止")
+            response = connection.getresponse()
+            if drain:
+                _ = response.read(1_048_576)
+            if self._aborted:
+                raise RuntimeError("镜像操作已超过总期限或被中止")
+            return response.status
+        except OSError as error:
+            raise RuntimeError("镜像操作已超过总期限或被中止" if self._aborted else f"Docker 连接失败: {error}") from error
+        finally:
+            self._image_socket = None
+            connection.close()
+
+    # POST /images/create 的响应是逐行 JSON 进度：单行有大小上限，读到 error 就失败；读被 abort 打断不算完成。
+    def _pull(self, reference: str, total_seconds: float) -> None:
+        connection = _UnixHttpConnection(self._socket_path)
+        connection.timeout = 120.0
+        try:
+            connection.request("POST", f"/{_API_VERSION}/images/create?fromImage={reference}")
+            self._image_socket = connection.sock
+            if self._aborted:
+                raise RuntimeError(f"拉取镜像超过 {total_seconds:.0f} 秒的总期限（或控制器正在停止），已中止")
+            response = connection.getresponse()
+            if response.status != 200:
+                raise RuntimeError(f"Docker 拉取镜像失败（HTTP {response.status}）: {response.read(4096).decode('utf-8', errors='replace')}")
+            while True:
+                line = response.readline(1_048_576)
+                if self._aborted:
+                    raise RuntimeError(f"拉取镜像超过 {total_seconds:.0f} 秒的总期限（或控制器正在停止），已中止")
+                if not line:
+                    return
+                try:
+                    record = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(record, dict) and record.get("error"):
+                    raise RuntimeError(f"拉取镜像失败: {str(record['error'])[:500]}")
+        except OSError as error:
+            raise RuntimeError(f"拉取镜像超过 {total_seconds:.0f} 秒的总期限（或控制器正在停止），已中止" if self._aborted else f"拉取镜像失败: {error}") from error
+        finally:
+            self._image_socket = None
             connection.close()
 
 
@@ -182,6 +269,8 @@ class WorkloadControllerServer:
         self._closing = False
         self._requests: set[asyncio.Task[None]] = set()
         self._leases = self._load_leases()
+        self._image_active: str | None = None
+        self._image_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="image-ensure")
         self._stopped_path = self._state_path.with_suffix(".stopped.json")
         self._stopped = self._load_state(self._stopped_path)
         self._controller_id = uuid4().hex
@@ -281,6 +370,8 @@ class WorkloadControllerServer:
                 requests = tuple(self._requests)
                 for request in requests:
                     _ = request.cancel()
+                self._engine.abort_image()
+                self._image_executor.shutdown(wait=False, cancel_futures=True)
                 if requests:
                     results = await asyncio.gather(*requests, return_exceptions=True)
                 else:
@@ -412,7 +503,9 @@ class WorkloadControllerServer:
                 body = message.get("body")
                 if not isinstance(body, dict):
                     raise ValueError("Controller 请求 body 无效")
-                result = await _finish_effect(self._dispatch(action, body))
+                effect = self._dispatch(action, body)
+                # 镜像拉取可能很久：不屏蔽取消，控制器停止时要能中止它；其余效果仍先完成再响应取消。
+                result = await effect if action == "image_ensure" else await _finish_effect(effect)
                 response = {"ok": True, "body": result}
             except Exception as error:
                 message = str(error).strip() or type(error).__name__
@@ -451,12 +544,34 @@ class WorkloadControllerServer:
             lease = _lease(body.get("lease"))
             async with self._plugin_access(lease.plugin_id):
                 return await self._stop(lease)
+        if action == "image_ensure":
+            # 与启动 workload 同一条镜像引用规则（必须 sha256 digest 固定）；不占插件或维护锁，拉取期间其他请求照常处理。
+            if set(body) != {"image"}:
+                raise ValueError("Controller image_ensure schema 不匹配")
+            return await self._ensure_image(_required_text(body, "image"))
         if action == "cleanup_candidates":
             if set(body) != {"workspace_id"}:
                 raise ValueError("Controller cleanup schema 不匹配")
             async with self._maintenance():
                 return await self._cleanup_candidates(_required_text(body, "workspace_id"))
         raise ValueError(f"Controller action 无效: {action}")
+
+    # 确保镜像在本地：同一时间全局只允许一个（非阻塞：已有在途就立刻回"正在拉取"，不排队不等待）；
+    # 在专用单线程里做，不占默认线程池；整个过程有硬的总期限；取消（控制器停止）时主动中止，不等它完成。
+    async def _ensure_image(self, image: str) -> dict[str, object]:
+        if not _IMAGE.fullmatch(image):
+            raise ValueError("镜像必须使用 sha256 digest 固定")
+        if self._image_active is not None:
+            raise RuntimeError(f"正在拉取 {self._image_active}，稍后再试")
+        self._image_active = image
+        try:
+            return await asyncio.get_running_loop().run_in_executor(
+                self._image_executor, self._engine.ensure_image_sync, image, _IMAGE_PULL_TIMEOUT_S, _IMAGE_INSPECT_TIMEOUT_S)
+        except asyncio.CancelledError:
+            self._engine.abort_image()
+            raise
+        finally:
+            self._image_active = None
 
     # 启动失败后按稳定名核对现场；核对本身失败时不作结论，保持「结果未知」的保守语义。
     async def _start_left_nothing(self, request: WorkloadStartRequest) -> bool:
