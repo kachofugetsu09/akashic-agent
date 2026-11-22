@@ -69,6 +69,7 @@ def ask_profile(index: PackageIndex | None, ask: Callable[[str], str], out: Text
 # 按档位算出结果。preset_rows 是预设里来自 extra 的行（行 id 到插件身份）；index 为 None 表示取不到。
 def decide(
     index: PackageIndex | None, preset_rows: dict[str, str], profile: str, groups: Iterable[str],
+    absorbed: frozenset[str] = frozenset(),
 ) -> Choice:
     preset_names = {identity.partition("@")[0]: row for row, identity in preset_rows.items()}
     if profile == "minimal":
@@ -84,6 +85,8 @@ def decide(
         if unknown:
             raise RuntimeError("没有这些包组: " + ", ".join(unknown))
         names = closure(index, [name for group in groups for name in index.groups[group].members])
+    # 已被 Core 吸收的包（index 里可能仍列着）不装，也不出现在清单里。
+    names = [name for name in names if name not in absorbed]
     selected = set(names)
     return Choice(profile, tuple(names), tuple(sorted(row for name, row in preset_names.items() if name not in selected)),
                   tuple(f"{name}@{MARKETPLACE}" for name in names if name not in preset_names))
@@ -119,7 +122,7 @@ def print_listing(index: PackageIndex | None, choice: Choice, out: TextIO) -> No
 # 入口：解析参数、必要时提问与确认；取不到 index 时全部沿用预设，自选直接失败。
 def choose(
     *, repo: str, home: Path, preset_rows: dict[str, str], profile: str | None, groups: list[str],
-    assume_yes: bool, ask: Callable[[str], str] = input, out: TextIO = sys.stdout,
+    assume_yes: bool, absorbed: frozenset[str] = frozenset(), ask: Callable[[str], str] = input, out: TextIO = sys.stdout,
 ) -> Choice:
     try:
         index: PackageIndex | None = load_index(repo, home)
@@ -136,7 +139,7 @@ def choose(
             asked = True
         else:
             profile = "full"
-    choice = decide(index, preset_rows, profile, groups)
+    choice = decide(index, preset_rows, profile, groups, absorbed)
     print_listing(index, choice, out)
     if asked and choice.install and ask("继续？[Y/n] ").strip().lower() in ("n", "no"):
         raise RuntimeError("已取消，未做任何改动")

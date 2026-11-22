@@ -228,9 +228,11 @@ def prepare_install(preparation: Preparation, core: Path, distribution: Path,
     # 首次安装：先让用户选装哪些扩展包（有终端才提问；--profile/--groups 可覆盖），选择写成 bundle.patch.toml（初始化之后）。
     install_extra: tuple[str, ...] = ()
     if not receipt.exists() and extra_inputs is None:
+        from agent.plugins.absorbed import read_absorbed
         from scripts.first_install import choose, preset_extra_rows, render_patch
         rows = preset_extra_rows(distribution, os.environ.get("AKASHIC_PLUGIN_BUNDLE", "base"))
-        choice = choose(repo=extra_repo, home=plugin_home, preset_rows=rows, profile=profile, groups=groups or [], assume_yes=assume_yes)
+        choice = choose(repo=extra_repo, home=plugin_home, preset_rows=rows, profile=profile, groups=groups or [], assume_yes=assume_yes,
+                        absorbed=frozenset(item.partition("@")[0] for item in read_absorbed(distribution)))
         patch = workspace / "bundle.patch.toml"
         if (choice.disable_rows or choice.enable_ids) and not patch.exists():
             _ = patch.write_text(render_patch(choice, rows), encoding="utf-8")

@@ -430,6 +430,7 @@ def activate_release(
         # 首次激活也在服务启动之前联网取好 extra 包与 wheel，并在 --network none 的容器里离线装好：
         # 下载耗时不再落在启动后的健康检查期限内；任何一步失败都在启动前抛错，状态不变、可重跑。
         if extra is not None and extra.enabled:
+            from agent.plugins.absorbed import read_absorbed
             from scripts.first_install import choose, preset_extra_rows, render_patch
 
             inputs_dir = attempt_path.with_suffix(".inputs")
@@ -437,7 +438,8 @@ def activate_release(
             mode = current.get("AKASHIC_PLUGIN_BUNDLE", "base")
             rows = preset_extra_rows(paths.source(target), mode)
             choice = choose(repo=resolve_repo(extra.repo), home=paths.state / "plugin-home", preset_rows=rows, profile=extra.profile,
-                            groups=list(extra.groups), assume_yes=extra.assume_yes)
+                            groups=list(extra.groups), assume_yes=extra.assume_yes,
+                            absorbed=frozenset(item.partition("@")[0] for item in read_absorbed(paths.source(target))))
             _ = (inputs_dir / "profile.patch.toml").write_text(render_patch(choice, rows), encoding="utf-8")
             _ = prepare_extra_inputs(workspace=paths.state / "workspace", plugins_home=paths.state / "plugin-home",
                                          source=paths.source(target), mode=mode, root_ref=None,
