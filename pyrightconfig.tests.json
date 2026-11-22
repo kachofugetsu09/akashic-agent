@@ -10,8 +10,7 @@
     ".venv",
     ".venv-test",
     "mcp_servers",
-    "eval",
-    "private_runtime/scripts"
+    "eval"
   ],
   "reportMissingTypeArgument": "warning",
   "reportPrivateUsage": "warning",
