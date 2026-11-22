@@ -1,7 +1,7 @@
 ---
 name: plugin-system
-description: 当用户要求安装、更新、卸载 Akashic 插件，改变 agent 能力，或询问插件何时生效、如何检查结果时使用。说明正式入口、局部换代、状态核对与数据保留。
-when_to_use: 安装插件、更新插件、卸载插件、停用能力、插件自更新、Skill 或 MCP 更新、确认插件是否生效或已移除。
+description: 当用户要求安装、更新、卸载 Akashic 插件或官方扩展包，改变 agent 能力，或询问插件何时生效、为什么没启用、如何检查结果时使用。说明正式入口、pkg、前置条件与在线启用、局部换代、状态核对与数据保留。
+when_to_use: 安装插件、更新插件、卸载插件、安装扩展包或包组、插件已装但未启用、补齐前置条件后启用、停用能力、插件自更新、Skill 或 MCP 更新、确认插件是否生效或已移除。
 metadata: {"akashic": {"always": false}}
 ---
 
@@ -76,6 +76,32 @@ Host Bridge 的 Shell 会提供固定版本启动器 `AKASHIC_RUNTIME_CLI`，并
 - 最后做与需求相关的能力检查：Skill 要能出现在目录且可由 `load_skill` 读出新正文；MCP 要能列出所需工具；业务功能另验真实结果。ACTIVE 不替代这些检查。
 
 新 Skill/工具在新取得的 prompt/tool binding 中可见，旧绑定仍读原归档。先确认更新 ACTIVE，再在后续新绑定中检查，不承诺固定“下一轮必定成功”。当前架构不再使用 `plugin_latest run/revert`、候选晋升或父 Turn 结束发布。
+
+## 官方扩展包（pkg）与“已装但未启用”
+
+官方 extra 仓库里的插件用 `pkg` 管理，同一个运行时 CLI；下面省略 `--config "$AKASHIC_CONFIG" --workspace "$AKASHIC_WORKSPACE"`，实际执行时照上面带上：
+
+```sh
+"$AKASHIC_RUNTIME_CLI" pkg list            # 已装的包：来源、版本、是否可升级，以及 [未启用: 原因]、[依赖环境需重建]、资源需修复等提示
+"$AKASHIC_RUNTIME_CLI" pkg groups          # 可安装的包组与说明
+"$AKASHIC_RUNTIME_CLI" pkg install <名> | @<组>   # 会自动带上还没装的依赖并提示
+"$AKASHIC_RUNTIME_CLI" pkg upgrade [<名>]  # 升级；也用来修复依赖环境和缺失或损坏的资源（如浏览器）
+```
+
+有些包声明了外部前置条件，不满足时**照装但保持关闭**，原因记在 `pkg list` 的 `[未启用: …]` 和 `plugin-status` 的 `disabled_reason` 里。前置条件只有两种：
+
+- `command:<命令>`：在 Akashic 运行环境里 `command -v <命令>` 能找到才算满足（如 `subagent_codex` 要 `codex`，`subagent_claude_code` 要 `claude`）。先自己检查；能装到当前环境 PATH 里可写的位置就装，装完用 `command -v` 确认。容器部署时根文件系统只读、PATH 里通常没有可写目录，这时告诉用户需要在镜像或宿主侧提供该命令，不要伪称已满足。
+- `docker`：在容器里经 Workload Controller 访问宿主 Docker（`computer` 需要）。不满足说明宿主 Docker 或控制器不可用，只能请用户在宿主处理，不要尝试在容器里装 Docker。
+
+前置条件满足后在线启用（与设置页同一路径，会重新检测前置条件并热重载）：
+
+```sh
+"$AKASHIC_RUNTIME_CLI" plugin-set-enabled '<name>@release' on
+```
+
+- 仍不满足会直接拒绝并说明原因；不要反复重试同一命令。
+- 声明了镜像的插件（如 `computer`）启用前会先确保镜像在宿主上；回“正在拉取 …，稍后再试”时等几分钟再试一次。
+- 验证：`pkg list` 里该包不再有 `[未启用]`，`plugin-status` 显示 ACTIVE，再做一次与需求相关的真实检查。
 
 ## 卸载
 
