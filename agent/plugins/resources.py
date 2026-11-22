@@ -4,7 +4,7 @@
 发布目录按内容寻址（<root>/<sha256>/），一经发布就不再改动，所以多个插件、多个版本可以共存，回退后旧版本仍能找到自己的资源。
 
 发布目录布局：
-  <root>/<sha256>/COMPLETE.json   完成标记：名字、入口、文件清单与大小；没有它就不算已发布
+  <root>/<sha256>/COMPLETE.json   完成标记：只描述归档内容（sha256、文件清单与大小）；没有它就不算已发布
   <root>/<sha256>/content/...     zip 的解压内容（目录 0555、文件去掉写权限，保留可执行位）
 """
 from __future__ import annotations
@@ -29,7 +29,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import IO, cast
-from urllib.parse import urlsplit
+from email.message import Message
+from urllib.parse import urljoin, urlsplit
 
 RESOURCES_FILE = "resources.json"
 MARKER = "COMPLETE.json"
@@ -137,9 +138,10 @@ def entry_path(resource: Resource, root: Path) -> Path:
     return published_path(resource, root) / CONTENT / resource.entry
 
 
-# 已发布目录是否可用：完成标记存在且与声明一致、入口是普通文件、清单里的文件都在且大小相同、没有多出文件。
-# 只比对名字与大小，不重新哈希整个目录；返回 None 表示可用，否则返回原因。
-def verify_resource(resource: Resource, root: Path) -> str | None:
+# 已发布内容是否完好：完成标记存在、sha256 一致、清单里的文件都在且大小相同、没有多出文件。标记只描述归档内容
+# （按 sha256 寻址，与哪个插件、哪个入口无关）；返回 None 表示完好，否则返回原因。
+# 合同：这是受控持久目录的完整性快检，只比对文件名与长度，查不出同长度的字节篡改或执行位变化，也不抵御有目录写权限的攻击者。
+def content_problem(resource: Resource, root: Path) -> str | None:
     target = published_path(resource, root)
     marker = target / MARKER
     if not marker.is_file():
@@ -147,19 +149,27 @@ def verify_resource(resource: Resource, root: Path) -> str | None:
     try:
         record = json.loads(marker.read_text(encoding="utf-8"))
         files = cast(dict[str, int], record["files"])
-        if record["sha256"] != resource.sha256 or record["entry"] != resource.entry:
+        if record["sha256"] != resource.sha256:
             return "完成标记与声明不一致"
     except (OSError, ValueError, KeyError, TypeError):
         return "完成标记损坏"
     content = target / CONTENT
     actual = {path.relative_to(content).as_posix(): path.stat().st_size
               for path in content.rglob("*") if path.is_file() and not path.is_symlink()} if content.is_dir() else {}
-    if actual != files:
-        return "已发布的文件与清单不一致（缺文件、多文件或大小不符）"
+    return None if actual == files else "已发布的文件与清单不一致（缺文件、多文件或大小不符）"
+
+
+# 调用方要用的入口：必须是已发布内容里的普通文件。入口不同不改变内容身份，所以这里只报告，绝不触发删除或重取。
+def entry_problem(resource: Resource, root: Path) -> str | None:
     entry = entry_path(resource, root)
     if entry.is_symlink() or not entry.is_file():
-        return f"入口 {resource.entry} 不是普通文件"
+        return f"入口 {resource.entry} 不在已发布内容里或不是普通文件"
     return None
+
+
+# 资源是否可用（内容完好且入口存在）；返回 None 表示可用。
+def verify_resource(resource: Resource, root: Path) -> str | None:
+    return content_problem(resource, root) or entry_problem(resource, root)
 
 
 # 把 path 所在文件系统的脏数据整体刷盘；没有 syncfs 时逐文件 fsync。真实写回失败直接抛出，不能发布。
@@ -209,23 +219,60 @@ def _locked(root: Path, sha256: str) -> Generator[None]:
             fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
 
 
+_MAX_REDIRECTS = 5
+_MAX_SECONDS = 1800.0
+
+
+# 校验一个下载地址（初始地址与每一跳重定向目标共用）：https、有主机名、不带凭据、不带片段。
+def _check_url(url: str, label: str) -> None:
+    parts = urlsplit(url)
+    if (parts.scheme != "https" or not parts.hostname or parts.username is not None or parts.password is not None
+            or len(url) > _MAX_URL or parts.fragment):
+        raise ResourceError(f"{label} 必须是不带凭据的 https 地址: {url!r}")
+
+
+# 重定向在发出后续请求之前逐跳校验；不读取 30x 响应体（标准库默认实现会无界读入内存），也不转发原请求的其他头。
+class _CheckedRedirects(urllib.request.HTTPRedirectHandler):
+    def __init__(self) -> None:
+        self.hops = 0
+
+    def http_error_302(self, req: urllib.request.Request, fp: IO[bytes], code: int, msg: str, headers: Message) -> IO[bytes] | None:
+        # 1. 必须有目标；跳数有上限。
+        location = headers.get("location") or headers.get("uri")
+        self.hops += 1
+        if not location or self.hops > _MAX_REDIRECTS:
+            fp.close()
+            raise ResourceError(f"重定向缺少目标或超过 {_MAX_REDIRECTS} 跳（第 {self.hops} 跳，来自 {req.full_url}）")
+        # 2. 目标在发请求前校验；失败说明是哪一跳。
+        target = urljoin(req.full_url, location)
+        fp.close()
+        _check_url(target, f"重定向第 {self.hops} 跳目标")
+        return self.parent.open(urllib.request.Request(target, headers={"User-Agent": "akashic-resource-fetch"}), timeout=req.timeout)
+
+    http_error_301 = http_error_303 = http_error_307 = http_error_308 = http_error_302
+
+
+# 默认打开方式：代理按环境变量；每次下载一个新的重定向 handler（跳数不跨下载累计）。
 def _default_open(url: str, timeout: float) -> IO[bytes]:
-    request = urllib.request.Request(url, headers={"User-Agent": "akashic-resource-fetch"})
-    response = urllib.request.urlopen(request, timeout=timeout)  # 代理按环境变量；重定向由 urllib 处理
-    if not response.geturl().startswith("https://"):
-        response.close()
-        raise ResourceError("下载被重定向到非 https 地址")
+    _check_url(url, "下载地址")
+    opener = urllib.request.build_opener(_CheckedRedirects())
+    response = opener.open(urllib.request.Request(url, headers={"User-Agent": "akashic-resource-fetch"}), timeout=timeout)
     return cast(IO[bytes], response)
 
 
 # 下载一次：流式写入、同时计算哈希；超过上限、大小不符、哈希不符都失败。网络类错误由调用方重试。
 def _download(resource: Resource, target: Path, opener: Opener, timeout: float, limit: int) -> int:
-    cap = resource.size if resource.size is not None else limit
+    if resource.size is not None and resource.size > limit:
+        raise ResourceError(f"声明的 size {resource.size} 超过调用方上限 {limit}")
+    cap = limit if resource.size is None else min(limit, resource.size)
     digest = hashlib.sha256()
     total = 0
+    deadline = time.monotonic() + _MAX_SECONDS
     with opener(resource.url, timeout) as response, target.open("wb") as stream:
         while chunk := response.read(_CHUNK):
             total += len(chunk)
+            if time.monotonic() > deadline:
+                raise ResourceError(f"下载超过总时限 {_MAX_SECONDS:.0f} 秒")
             if total > cap:
                 raise ResourceError(f"下载超过上限 {cap} 字节")
             digest.update(chunk)
@@ -285,6 +332,7 @@ def _freeze(stage: Path) -> None:
 
 # 取回并发布一个资源，返回发布目录。已发布且可用则直接复用；同一资源并发取回由文件锁串行化，后到者复用先到者的结果。
 # 网络类错误（连接、超时、大小不符）最多重试 attempts 次；哈希不符、路径穿越、超限等内容问题不重试。
+# timeout 是单次 socket 阻塞操作的超时，不是整个下载的期限；整个下载另有 _MAX_SECONDS 的总时限。
 def fetch_resource(
     resource: Resource, root: Path, *, opener: Opener | None = None, timeout: float = 60.0, attempts: int = 3,
     max_download: int = DEFAULT_MAX_DOWNLOAD, max_extracted: int = DEFAULT_MAX_EXTRACTED, max_files: int = DEFAULT_MAX_FILES,
@@ -292,8 +340,10 @@ def fetch_resource(
     root.mkdir(parents=True, exist_ok=True)
     target = published_path(resource, root)
     with _locked(root, resource.sha256):
-        # 1. 已发布且可用：复用；有目录但不可用（损坏）：清掉重取。
-        if verify_resource(resource, root) is None:
+        # 1. 内容完好：复用（入口不对只报错，不删除，不重取——同一归档的内容不会因换入口而变）；内容损坏：清掉重取。
+        if content_problem(resource, root) is None:
+            if (reason := entry_problem(resource, root)) is not None:
+                raise ResourceError(reason)
             return target
         _remove_tree(target)
         for stale in root.glob(f".stage-{resource.sha256[:16]}-*"):
@@ -315,8 +365,8 @@ def fetch_resource(
             # 3. 入口必须在解压结果里；写完成标记、刷盘、只读化，最后原子 rename 发布。
             if resource.entry not in files:
                 raise ResourceError(f"入口 {resource.entry} 不在压缩包里")
-            marker: dict[str, object] = {"schema_version": 1, "name": resource.name, "sha256": resource.sha256, "entry": resource.entry,
-                      "archive": resource.archive, "downloaded": downloaded, "files": files}
+            marker: dict[str, object] = {"schema_version": 1, "sha256": resource.sha256, "archive": resource.archive,
+                                         "downloaded": downloaded, "files": files}
             _ = (stage / MARKER).write_text(json.dumps(marker, sort_keys=True), encoding="utf-8")
             _sync(root, stage)
             _freeze(stage)
