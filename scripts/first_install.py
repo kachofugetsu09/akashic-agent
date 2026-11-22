@@ -8,6 +8,7 @@ import json
 import os
 import sys
 import tempfile
+import tomllib
 from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -136,14 +137,90 @@ def decide(
                   tuple(f"{name}@{MARKETPLACE}" for name in names if name not in preset_names), tuple(added), groups)
 
 
-# 用户 patch（与 set_plugin_choice 同形）：未选的预设行关掉，非预设的已选包启用。
-def render_patch(choice: Choice, preset_rows: dict[str, str]) -> str:
-    lines = ["schema_version = 1", "[rows]"]
-    for row in choice.disable_rows:
-        lines += [f'[rows."{row}"]', f'plugin = "{preset_rows[row]}"', "disabled = true", ""]
-    for identity in choice.enable_ids:
-        lines += [f'[rows."{identity}"]', f'plugin = "{identity}"', "disabled = false", ""]
-    return "\n".join(lines)
+# 这个选择要写进用户 patch 的行：{行键: (插件身份, disabled)}；未选的预设行关掉，非预设的已选包启用。
+def desired_rows(choice: Choice, preset_rows: dict[str, str]) -> dict[str, tuple[str, bool]]:
+    rows = {row: (preset_rows[row], True) for row in choice.disable_rows}
+    rows.update({identity: (identity, False) for identity in choice.enable_ids})
+    return rows
+
+
+BLOCK_BEGIN = "# >>> akashic 首次安装"
+BLOCK_NOTE = "（自动生成；首装完成前每次重跑会整块重写。要自定义请写在块外）"
+BLOCK_END = "# <<< akashic 首次安装"
+
+
+def _row_text(key: str, plugin: str, disabled: bool) -> str:
+    return f'[rows."{key}"]\nplugin = "{plugin}"\ndisabled = {"true" if disabled else "false"}\n'
+
+
+# 块里只允许首装会写的形状：`[rows."键"]` 表，每个只有 plugin（字符串）与 disabled（布尔）。
+# 安装器在首装过程中会切换 disabled 或删行（前置条件不满足时），这些仍是合法的块；
+# 其余内容（加了 config、字符串碎片等）说明块被别处改过或标记被误认，拒绝。
+def _generated_shape(body: str) -> bool:
+    try:
+        parsed = tomllib.loads(body)
+    except tomllib.TOMLDecodeError:
+        return False
+    rows = parsed.get("rows", {})
+    return set(parsed) <= {"rows"} and isinstance(rows, dict) and all(
+        isinstance(row, dict) and set(cast(dict[str, object], row)) <= {"plugin", "disabled"}
+        and isinstance(cast(dict[str, object], row).get("plugin"), str)
+        and isinstance(cast(dict[str, object], row).get("disabled", False), bool)
+        for row in cast(dict[str, object], rows).values())
+
+
+# 把文本按标记块切成 (块前, 块后)；没有块时整段是块前。标记必须整行一致。
+# 标记缺一个、重复、次序反了，或块里有首装不会写的内容，就报错让人手工整理，不猜。
+# 已知限制：有人把完整的生成块原样粘进 TOML 多行字符串时会被当成真块。
+def _split_block(text: str, path: Path) -> tuple[str, str]:
+    lines = text.splitlines(keepends=True)
+    begins = [i for i, line in enumerate(lines) if line.rstrip("\r\n") == BLOCK_BEGIN + BLOCK_NOTE]
+    ends = [i for i, line in enumerate(lines) if line.rstrip("\r\n") == BLOCK_END]
+    if not begins and not ends:
+        return text, ""
+    if len(begins) != 1 or len(ends) != 1 or begins[0] > ends[0]:
+        raise RuntimeError(f"{path} 里首次安装的标记块不完整或重复（需要恰好一对 '{BLOCK_BEGIN}' 与 '{BLOCK_END}'）；手工整理后重试")
+    if not _generated_shape("".join(lines[begins[0] + 1:ends[0]])):
+        raise RuntimeError(f"{path} 里首次安装的标记块含有首装不会写的内容；把你的设置移到块外、删除整个块后重试，首装没有改动这个文件")
+    return "".join(lines[:begins[0]]), "".join(lines[ends[0] + 1:])
+
+
+# 按意图整块重新生成首装写入的内容（块外文本一字不动）：块外已定义的 row 键，块里跳过（用户的定义优先，也避免重复表）。
+def render_block(choice: Choice, preset_rows: dict[str, str], outside: str, path: Path, out: TextIO) -> tuple[str, set[str]]:
+    try:
+        defined = set(cast(dict[str, object], tomllib.loads(outside).get("rows", {})))
+    except tomllib.TOMLDecodeError as error:
+        raise RuntimeError(f"{path} 不是有效的 TOML（{error}）；修正后重试，首装没有改动它") from error
+    wanted = desired_rows(choice, preset_rows)
+    for key in sorted(defined & set(wanted)):
+        print(f"  {path.name} 里已有你定义的 {key}，首次安装的同名设置跳过", file=out)
+    body = "\n".join(["", *(_row_text(key, *value) for key, value in wanted.items() if key not in defined)])
+    return f"{BLOCK_BEGIN}{BLOCK_NOTE}\n{body}{BLOCK_END}\n", defined
+
+
+# 落盘前按 TOML 语义核对结果：首装要写的每个 row（块外用户已定义的不算）都必须以想要的值生效。
+def _check_written(text: str, expected: dict[str, tuple[str, bool]], path: Path) -> None:
+    try:
+        rows = cast(dict[str, dict[str, object]], tomllib.loads(text).get("rows", {}))
+    except tomllib.TOMLDecodeError as error:
+        raise RuntimeError(f"重写 {path} 的首次安装块后不是有效的 TOML（{error}）；文件没有改动，请手工检查标记块") from error
+    wrong = sorted(key for key, (plugin, disabled) in expected.items()
+                   if key not in rows or (rows[key].get("plugin"), rows[key].get("disabled", False)) != (plugin, disabled))
+    if wrong:
+        raise RuntimeError(f"重写 {path} 的首次安装块后这些设置没有按预期生效: {', '.join(wrong)}；文件没有改动，请手工检查标记块")
+
+
+# 按意图写 patch（start 与 release 共用，临时与落盘 patch 同一规则）。
+def write_patch(choice: Choice, preset_rows: dict[str, str], patch: Path, out: TextIO = sys.stdout) -> None:
+    existing = patch.read_text(encoding="utf-8") if patch.exists() else "schema_version = 1\n"
+    before, after = _split_block(existing, patch)
+    block, defined = render_block(choice, preset_rows, before + after, patch, out)
+    before = before + ("\n" if before and not before.endswith("\n\n") else "")
+    text = before + block + ("\n" + after.lstrip("\n") if after.strip() else "")
+    _check_written(text, {key: value for key, value in desired_rows(choice, preset_rows).items() if key not in defined}, patch)
+    temporary = patch.with_name(patch.name + ".tmp")
+    _ = temporary.write_text(text, encoding="utf-8")
+    os.replace(temporary, patch)
 
 
 # 清单：先列包、数量与总大小；每包一行；自选时自动带上的依赖单独提示。
