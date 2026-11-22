@@ -494,7 +494,7 @@
   .shell-disclosure.is-instant > .shell-disclosure__inner { transition: none; }
   .shell-installable-group + .shell-installable-group { margin-block-start: 16px; }
   .shell-installable-group h5 { display: grid; gap: 2px; margin: 0 0 6px; font-size: 13px; font-weight: 600; color: var(--ak-ink-secondary); }
-  .shell-installable-group h5 small { font-weight: 400; line-height: 18px; color: var(--ak-ink-muted); text-wrap: pretty; }
+  .shell-installable-group h5 small { font-size: 13px; font-weight: 400; line-height: 18px; color: var(--ak-ink-muted); text-wrap: pretty; }
   .shell-installable-row { display: flex; align-items: center; gap: 12px; padding: 4px 16px; }
   .shell-installable-row + .shell-installable-row { border-block-start: 1px solid var(--ak-rule-subtle); }
   .shell-installable-row .shell-inventory-name small { white-space: normal; text-wrap: pretty; overflow-wrap: anywhere; }

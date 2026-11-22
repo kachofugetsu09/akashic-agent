@@ -8,7 +8,7 @@ type Http = WebHostContextV1["http"];
 
 const UNMET = "已安装但未启用";
 const needText = (need: string) => need === "docker" ? "Docker" : `命令 ${need.replace(/^command:/, "")}`;
-const sizeText = (bytes: number) => bytes > 0 ? `${(bytes / 1048576).toFixed(1)} MB` : "";
+const sizeText = (bytes: number) => bytes <= 0 ? "" : bytes < 52429 ? "小于 0.1 MB" : `${(bytes / 1048576).toFixed(1)} MB`;
 
 async function call<T>(http: Http, path: string, init?: RequestInit): Promise<T> {
   const response = await http.request(path, init);
