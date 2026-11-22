@@ -4,7 +4,6 @@
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import sys
@@ -146,7 +145,7 @@ def desired_rows(choice: Choice, preset_rows: dict[str, str]) -> dict[str, tuple
 
 
 BLOCK_BEGIN = "# >>> akashic 首次安装"
-BLOCK_NOTE = "（自动生成；首装完成前每次重跑会整块重写。要自定义请写在块外，不要改块内）"
+BLOCK_NOTE = "（自动生成；首装完成前每次重跑会整块重写。要自定义请写在块外）"
 BLOCK_END = "# <<< akashic 首次安装"
 
 
@@ -154,25 +153,35 @@ def _row_text(key: str, plugin: str, disabled: bool) -> str:
     return f'[rows."{key}"]\nplugin = "{plugin}"\ndisabled = {"true" if disabled else "false"}\n'
 
 
-def _digest(body: str) -> str:
-    return hashlib.sha256(body.encode("utf-8")).hexdigest()[:16]
+# 块里只允许首装会写的形状：`[rows."键"]` 表，每个只有 plugin（字符串）与 disabled（布尔）。
+# 安装器在首装过程中会切换 disabled 或删行（前置条件不满足时），这些仍是合法的块；
+# 其余内容（加了 config、字符串碎片等）说明块被别处改过或标记被误认，拒绝。
+def _generated_shape(body: str) -> bool:
+    try:
+        parsed = tomllib.loads(body)
+    except tomllib.TOMLDecodeError:
+        return False
+    rows = parsed.get("rows", {})
+    return set(parsed) <= {"rows"} and isinstance(rows, dict) and all(
+        isinstance(row, dict) and set(cast(dict[str, object], row)) <= {"plugin", "disabled"}
+        and isinstance(cast(dict[str, object], row).get("plugin"), str)
+        and isinstance(cast(dict[str, object], row).get("disabled", False), bool)
+        for row in cast(dict[str, object], rows).values())
 
 
-# 把文本按标记块切成 (块前, 块后)；没有块时整段是块前。
-# 只替换我们自己写过、逐字节没变的块：起始标记行带块内容的摘要，对不上（块被改过，或标记文本出现在别处，
-# 比如 TOML 多行字符串里）就报错让人手工整理，不猜。标记缺一个、重复或次序反了同样报错。
+# 把文本按标记块切成 (块前, 块后)；没有块时整段是块前。标记必须整行一致。
+# 标记缺一个、重复、次序反了，或块里有首装不会写的内容，就报错让人手工整理，不猜。
+# 已知限制：有人把完整的生成块原样粘进 TOML 多行字符串时会被当成真块。
 def _split_block(text: str, path: Path) -> tuple[str, str]:
     lines = text.splitlines(keepends=True)
-    begins = [i for i, line in enumerate(lines) if line.startswith(BLOCK_BEGIN)]
-    ends = [i for i, line in enumerate(lines) if line.startswith(BLOCK_END)]
+    begins = [i for i, line in enumerate(lines) if line.rstrip("\r\n") == BLOCK_BEGIN + BLOCK_NOTE]
+    ends = [i for i, line in enumerate(lines) if line.rstrip("\r\n") == BLOCK_END]
     if not begins and not ends:
         return text, ""
     if len(begins) != 1 or len(ends) != 1 or begins[0] > ends[0]:
         raise RuntimeError(f"{path} 里首次安装的标记块不完整或重复（需要恰好一对 '{BLOCK_BEGIN}' 与 '{BLOCK_END}'）；手工整理后重试")
-    head, body = lines[begins[0]], "".join(lines[begins[0] + 1:ends[0]])
-    if f"sha256={_digest(body)}" not in head:
-        raise RuntimeError(f"{path} 里首次安装的标记块被改动过（或标记文本出现在块以外的地方）；"
-                           "把你的设置移到块外、删除整个块后重试，首装没有改动这个文件")
+    if not _generated_shape("".join(lines[begins[0] + 1:ends[0]])):
+        raise RuntimeError(f"{path} 里首次安装的标记块含有首装不会写的内容；把你的设置移到块外、删除整个块后重试，首装没有改动这个文件")
     return "".join(lines[:begins[0]]), "".join(lines[ends[0] + 1:])
 
 
@@ -186,7 +195,7 @@ def render_block(choice: Choice, preset_rows: dict[str, str], outside: str, path
     for key in sorted(defined & set(wanted)):
         print(f"  {path.name} 里已有你定义的 {key}，首次安装的同名设置跳过", file=out)
     body = "\n".join(["", *(_row_text(key, *value) for key, value in wanted.items() if key not in defined)])
-    return f"{BLOCK_BEGIN} sha256={_digest(body)}{BLOCK_NOTE}\n{body}{BLOCK_END}\n", defined
+    return f"{BLOCK_BEGIN}{BLOCK_NOTE}\n{body}{BLOCK_END}\n", defined
 
 
 # 落盘前按 TOML 语义核对结果：首装要写的每个 row（块外用户已定义的不算）都必须以想要的值生效。
