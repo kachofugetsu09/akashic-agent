@@ -1424,9 +1424,15 @@ def ensure_bundle(
                 selection = PluginSelection(workspace)
                 expected = selection.read()
                 components, selected = ((), {}) if expected is None else _selected_components(selection, expected, absorbed=frozenset(absorbed_plugin_ids(distribution)))
+            # 发行版可能已被原地替换（Docker 换镜像后 /opt/distribution 是新代码，旧选择记录指向同一路径），
+            # 与下面的候选计算、发布路径同一口径：按"换发行版"核对归属，不拿新代码去比旧记录的来源提交；
+            # 核对过的来源状态交给 runner，check/run 不再按运行态严格口径重读。
+            replaced = distribution_sources(workspace, plugins_home, distribution, replacing_distribution=True)
             runner = MigrationRunner(repo_root=_SOURCE_ROOT, config_path=config_path,
                                      plugins_home=plugins_home, bundle_directory=distribution / "bundles", workspace=workspace,
-                                     fixed_sources=distribution_migration_sources(workspace, plugins_home, distribution))
+                                     fixed_sources=distribution_migration_sources(workspace, plugins_home, distribution,
+                                                                                  replacing_distribution=True),
+                                     distribution_state=replaced)
             with measure("inputs.migrations.core"):
                 pending = runner.check()
                 runner.run_under_maintenance(maintenance, core_only=True)
