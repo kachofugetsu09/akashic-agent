@@ -225,11 +225,12 @@ function renderCreate(host, props) {
   return () => host.replaceChildren();
 }
 
-// 密钥、额度、限流类失败换个型号也过不去，原样报告；其余读目录失败改为引导手填一个型号。
-const CREDENTIAL_FAILURES = new Set([401, 402, 403, 429]);
+// 只有服务商答复了但目录不可用（没有对话模型、不提供或拒绝列表）才引导手填一个型号；
+// 密钥、额度、限流、网络、地址、超时类失败换个型号也过不去，原样报告，让用户检查后重试。
+const CATALOG_MISSES = new Set([404, 409, 422]);
 function catalogMiss(reason, revealManual) {
   const status = reason instanceof Error ? reason.status : undefined;
-  if (typeof status !== "number" || CREDENTIAL_FAILURES.has(status)) return reason;
+  if (typeof status !== "number" || !CATALOG_MISSES.has(status)) return reason;
   revealManual();
   return new Error(`没读到可用的模型列表：${reason.message.replace(/[。.]?$/u, "。")}请在上方填一个型号，再点「添加」；添加前会向它发一条短消息验证。`);
 }
