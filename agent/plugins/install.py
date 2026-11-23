@@ -213,7 +213,7 @@ def install_git_plugin(
         )
         # 只有实例运行中的在线调用方要求拒绝；离线安装放行，新迁移由下次启动的 runner 执行。
         if reject_pending_migrations:
-            _reject_pending_migrations(workspace, clone_root, plugin_name, marketplace)
+            _reject_pending_migrations(workspace, clone_root, plugin_name, marketplace, cache_root / plugin_name)
         plugin_version = _validate_path_segment(
             static_manifest.version,
             "插件 version",
@@ -247,11 +247,15 @@ def install_git_plugin(
 
 
 # 官方来源的新制品带有未执行迁移时拒绝换代：在线实例不跑迁移，须走停机部署或启动。
-def _reject_pending_migrations(workspace: Path, clone_root: Path, plugin_name: str, marketplace: str) -> None:
-    from agent.migrations.runner import pending_artifact_migrations
+# 例外是从没装过的插件（插件目录里没有它的稳定制品、workspace 里没有它的数据目录）：迁移并入新建起点后照常安装。
+def _reject_pending_migrations(workspace: Path, clone_root: Path, plugin_name: str, marketplace: str, plugin_base: Path) -> None:
+    from agent.migrations.runner import adopt_fresh_plugin_migrations, pending_artifact_migrations
 
     source = ResolvedPluginSource(clone_root, "installed", marketplace, plugin_name)
     pending = pending_artifact_migrations(workspace, source)
+    fresh = read_pointers(plugin_base) is None and not workspace_plugin_data_dir(workspace, plugin_name, marketplace).exists()
+    if pending and fresh and adopt_fresh_plugin_migrations(workspace, pending):
+        return
     if pending:
         raise ValueError(
             f"{plugin_name}@{marketplace} 的目标版本带有待执行迁移 {', '.join(pending)}；"
