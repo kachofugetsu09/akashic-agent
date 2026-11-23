@@ -123,21 +123,21 @@ class PackageInstaller:
         marker = self._settle()
         return marker is not None and "task" not in marker
 
-    # 首装任务已经结束（或进程丢了）就删掉标记，关闭首装窗口；返回仍然有效的标记。
+    # 首装任务装成功才删掉标记、关闭首装窗口；失败或进程丢了保留标记，网页重试仍在窗口里。返回仍然有效的标记。
     def _settle(self) -> Row | None:
         marker = self._marker()
         task = None if marker is None else marker.get("task")
-        if task is None:
-            return marker
         record = self._dir() / f"{task}.json"
-        if record.exists() and self._snapshot(cast(Row, json.loads(record.read_text())))["state"] == "running":
+        if task is None or not record.exists():
+            return marker
+        if self._snapshot(cast(Row, json.loads(record.read_text())))["state"] != "succeeded":
             return marker
         self._pending().unlink(missing_ok=True)
         return None
 
     # 校验名字确实是未装的扩展包，再起一个后台任务按依赖顺序装完；同一时间只允许一个任务，占位在第一个 await 之前。
-    # 首装还没挑选时，这次提交就是用户的选择：标记改记任务 id，任务结束时删掉。任务记录的 first_install 供引导跟踪，
-    # 还没挑选或调用方声明是首装挑选的重试时为真。
+    # 首装窗口还开着（还没挑选，或上次首装没装全）时，这次提交就是首装的一部分：标记改记任务 id，装成功时删掉。
+    # 窗口只看服务端标记，不采信调用方；任务记录的 first_install 供引导跟踪，窗口内或调用方声明是重试时为真。
     async def start(self, names: list[str], first_install: bool = False) -> Row:
         if not names or len(set(names)) != len(names):
             raise LookupError("要安装的包不能为空或重复")
@@ -152,7 +152,7 @@ class PackageInstaller:
                 _ = await self.available()
             if unknown := [name for name in names if name not in self._known]:
                 raise LookupError(f"{'、'.join(unknown)} 不在可安装列表里，或已经安装")
-            pending = await run_file_io(self._selecting)
+            pending = await run_file_io(self._settle) is not None
             started = await self._spawn(names, pending or first_install)
             if pending:
                 marker = json.dumps({"schema_version": 1, "task": started["id"]})
