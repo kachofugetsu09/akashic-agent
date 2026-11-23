@@ -694,6 +694,8 @@ export async function startWebHost(host: HTMLElement): Promise<WebHostSession> {
   host.dataset.akashicCatalog = session.bootstrap.catalogId;
   let closed = false;
   let checking = false;
+  // 核对进行中又来了触发（如关闭设置）：当前这次可能读的是旧目录，结束后补查一次。
+  let pending = false;
   let timer: number | undefined;
   let attempts = 0;
   let sawChange = false;
@@ -714,7 +716,8 @@ export async function startWebHost(host: HTMLElement): Promise<WebHostSession> {
     if (!notice.isConnected) document.body.prepend(notice);
   };
   const check = async (): Promise<void> => {
-    if (closed || checking) return;
+    if (closed) return;
+    if (checking) { pending = true; return; }
     checking = true;
     try {
       const state = await session.checkCurrent();
@@ -745,7 +748,10 @@ export async function startWebHost(host: HTMLElement): Promise<WebHostSession> {
         show(error instanceof Error ? error.message : String(error));
       }
     }
-    finally { checking = false; }
+    finally {
+      checking = false;
+      if (pending && !closed) { pending = false; void check(); }
+    }
   };
   const submitted = (): void => {
     window.clearInterval(timer); attempts = 0; sawChange = false;
