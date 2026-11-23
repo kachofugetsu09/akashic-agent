@@ -4,6 +4,7 @@ import "./style.css";
 import { akashicBrandIcon, markup } from "./brand";
 import { PluginInventory, inventoryResource, type InventoryResource } from "./plugin-inventory";
 import { SystemVersion } from "./system-version";
+import { FIRST_INSTALL_ROUTE, mountFirstInstall } from "./first-install";
 import { holdWhileInstalling } from "./install-hold";
 import type {
   WebEntry,
@@ -415,6 +416,7 @@ function Shell({ pages, railActions, settings, settingsPlugins, http, inventory 
   // 设置工作区内的跨目录渲染：初始配置按 route 内嵌任意分节的表单，不关心它属于哪个目录。
   // route 可带「/后缀」：后缀作为 subroute 交给分节自己解释，比如声明式设置卡只渲染某个插件的表单。
   const renderSettingsRoute = useCallback<RenderSettingsRoute>((route, host, props) => {
+    if (route === FIRST_INSTALL_ROUTE) return mountFirstInstall(http, host, props);
     const section = settings.entries.find((entry) => entry.route === route);
     if (section) return settings.render(section.id, host, props);
     const member = settingsPlugins.entries.find((entry) => entry.route === route);
@@ -423,7 +425,7 @@ function Shell({ pages, railActions, settings, settingsPlugins, http, inventory 
     if (slash <= 0) return null;
     const base = settingsPlugins.entries.find((entry) => entry.route === route.slice(0, slash));
     return base ? settingsPlugins.render(base.id, host, { ...(props as object | undefined), subroute: route.slice(slash + 1) }) : null;
-  }, [settings, settingsPlugins]);
+  }, [settings, settingsPlugins, http]);
 
   // 分节内容就地渲染进对话框；关闭或换节即销毁，同一分节不会同时挂载在两处。
   // 顶层分节由 settings 目录渲染；插件配置区把当前 tab 的成员挂进同一滚动页，
