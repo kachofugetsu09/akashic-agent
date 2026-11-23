@@ -172,7 +172,7 @@ def prepare_environment(preparation: Preparation, cache: Path, revision: str) ->
 
 # 首次安装（或上次没做完的首次安装）：返回 True；已有选择而回执缺失等异常存量直接报错，不提问不写文件。
 def _first_install_pending(state: Path, workspace: Path, receipt: Path) -> bool:
-    from scripts.first_install import clear_intent, load_intent, selection_committed
+    from scripts.first_install import finish_first_install, load_intent, selection_committed
 
     committed = selection_committed(workspace)
     if not receipt.exists():
@@ -181,8 +181,9 @@ def _first_install_pending(state: Path, workspace: Path, receipt: Path) -> bool:
         return True
     if load_intent(state) is None:
         return False
+    # 选择已提交但上次没走到收尾（比如在写网页挑选标记之前被终止）：补做收尾再丢意图。
     if committed:
-        clear_intent(state)
+        finish_first_install(state, workspace)
         return False
     return True
 

@@ -482,6 +482,9 @@ def activate_release(
             _first_install_extra(paths=paths, target=target, current=current, candidate=candidate, extra=extra,
                                  inputs_dir=attempt_path.with_suffix(".inputs"), run=run)
     else:
+        # 首次激活已提交 Root 但上次没走到收尾：补写网页挑选标记并丢掉首装意图（没有意图时什么都不做）。
+        from scripts.first_install import finish_first_install
+        finish_first_install(paths.state, paths.state / "workspace")
         if plan is not None and (plan.is_symlink() or not plan.is_file()):
             raise ValueError("部署清单必须是普通文件")
         # 停机之前联网求 extra 包；任何一步失败都在这里抛错，旧服务不动。

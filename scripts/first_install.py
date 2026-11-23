@@ -227,7 +227,7 @@ def write_patch(choice: Choice, preset_rows: dict[str, str], patch: Path, out: T
 # 清单：先列包、数量与总大小；每包一行；自选时自动带上的依赖单独提示。
 def print_listing(index: PackageIndex | None, choice: Choice, out: TextIO) -> None:
     if not choice.install:
-        print("先只装核心；扩展包在网页的新手引导里挑选安装（要一次装全请加 --profile full）。" if choice.profile == "web"
+        print("先只装核心；扩展包在网页的新手引导里挑选安装。" if choice.profile == "web"
               else "最小安装：只装核心，不安装扩展包。", file=out)
         return
     assert index is not None
@@ -277,7 +277,8 @@ def clear_intent(state: Path) -> None:
     _intent_path(state).unlink(missing_ok=True)
 
 
-# 首装成功收尾：意图是 web 时先在 workspace 里留下"待网页挑选"标记，再删意图；标记先落盘，中途退出重跑仍会补写。
+# 首装成功收尾：意图是 web 时先在 workspace 里留下"待网页挑选"标记，再删意图；标记先落盘，
+# 选择已提交而意图还在（上次没走到这里）时，start 与 release 的重跑也调用它补做。幂等。
 def finish_first_install(state: Path, workspace: Path) -> None:
     intent = load_intent(state)
     if intent is not None and intent.profile == "web":

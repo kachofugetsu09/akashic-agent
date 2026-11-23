@@ -109,8 +109,9 @@ class PackageInstaller:
         return Path(os.environ["AKASHIC_WORKSPACE"]) / FIRST_INSTALL_PENDING
 
     # 校验名字确实是未装的扩展包，再起一个后台任务按依赖顺序装完；同一时间只允许一个任务，占位在第一个 await 之前。
-    # 首装还没挑选时，这次提交就是用户的选择：起任务后删掉标记，任务记录带上 first_install 供引导跟踪。
-    async def start(self, names: list[str]) -> Row:
+    # 首装还没挑选时，这次提交就是用户的选择：起任务后删掉标记。任务记录的 first_install 供引导跟踪，
+    # 有标记或调用方声明是首装挑选的重试时为真。
+    async def start(self, names: list[str], first_install: bool = False) -> Row:
         if not names or len(set(names)) != len(names):
             raise LookupError("要安装的包不能为空或重复")
         if self._claimed is not None:
@@ -124,9 +125,9 @@ class PackageInstaller:
                 _ = await self.available()
             if unknown := [name for name in names if name not in self._known]:
                 raise LookupError(f"{'、'.join(unknown)} 不在可安装列表里，或已经安装")
-            first = await run_file_io(self._pending().exists)
-            started = await self._spawn(names, first)
-            if first:
+            pending = await run_file_io(self._pending().exists)
+            started = await self._spawn(names, pending or first_install)
+            if pending:
                 await self.decline()
             return started
         finally:
@@ -217,8 +218,8 @@ class PackageInstaller:
         def read() -> Row:
             pending = self._pending().exists()
             record = self._latest() if self._dir().is_dir() else None
-            # 跟踪最近一个任务（首装挑选或之后的重试）：装着的时候引导要暂缓界面换代。
-            task = self._snapshot(record) if record is not None else None
+            # 只跟踪首装挑选及其重试的任务：普通安装不能让已有实例被当成首装。
+            task = self._snapshot(record) if record is not None and record.get("first_install") else None
             running = task is not None and task["state"] == "running"
             progress = cast(Row | None, task["progress"]) if task is not None else None
             note = f"正在安装（{cast(int, progress['done']) + 1}/{progress['total']}）{progress['current']}" if running and progress else ""
