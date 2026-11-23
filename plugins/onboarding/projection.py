@@ -114,6 +114,7 @@ class Registry:
             result.append({
                 "key": key, "title": self._group_title(key),
                 "required": ability is not None and ability.required,
+                "installs": ability is not None and ability.installs,
                 "pitch": "" if ability is None else ability.pitch,
                 "benefit": "" if ability is None else ability.benefit,
                 "preview": [] if ability is None else [{"speaker": line.speaker, "text": line.text} for line in ability.preview],

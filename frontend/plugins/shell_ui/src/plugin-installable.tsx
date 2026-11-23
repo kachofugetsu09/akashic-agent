@@ -1,16 +1,24 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { WebHostContextV1 } from "@akashic/web-ui-v1";
+import { kickInstallHold } from "./install-hold";
 
-interface Package { name: string; desc: string; requires: string[]; needs: string[]; size_bytes: number }
-interface Group { id: string; title: string; description: string; packages: Package[] }
-interface Task { name: string; state: "running" | "succeeded" | "failed" | "unknown"; exit_code: number | null; outcome: string | null; tail: string[] }
-type Http = WebHostContextV1["http"];
+export interface Package { name: string; desc: string; requires: string[]; needs: string[]; size_bytes: number }
+export interface Group { id: string; title: string; description: string; packages: Package[] }
+export interface Outcome { name: string; result: string; detail: string }
+export interface Task {
+  name: string; names: string[]; state: "running" | "succeeded" | "failed" | "unknown"; exit_code: number | null;
+  outcomes: Outcome[]; progress: { done: number; total: number; current: string } | null; tail: string[];
+}
+export type Http = WebHostContextV1["http"];
 
 const UNMET = "已安装但未启用";
-const needText = (need: string) => need === "docker" ? "Docker" : `命令 ${need.replace(/^command:/, "")}`;
-const sizeText = (bytes: number) => bytes <= 0 ? "" : bytes < 52429 ? "小于 0.1 MB" : `${(bytes / 1048576).toFixed(1)} MB`;
+export const BAD = new Set(["failed", "in-progress", "needs-switch", "inactive"]);
+export const needText = (need: string) => need === "docker" ? "Docker" : `命令 ${need.replace(/^command:/, "")}`;
+export const sizeText = (bytes: number) => bytes <= 0 ? "" : bytes < 52429 ? "小于 0.1 MB" : `${(bytes / 1048576).toFixed(1)} MB`;
+// 一包的结果说明：装上但因前置条件保持关闭时，给出原因。
+export const outcomeText = (item: Outcome) => item.detail.includes(UNMET) ? item.detail.slice(item.detail.indexOf(UNMET)) : "";
 
-async function call<T>(http: Http, path: string, init?: RequestInit): Promise<T> {
+export async function call<T>(http: Http, path: string, init?: RequestInit): Promise<T> {
   const response = await http.request(path, init);
   const body = await response.json().catch(() => ({})) as { detail?: unknown };
   if (!response.ok) throw new Error(typeof body.detail === "string" ? body.detail : `请求失败（${response.status}）`);
@@ -19,13 +27,14 @@ async function call<T>(http: Http, path: string, init?: RequestInit): Promise<T>
 
 // 安装结果：成功时说明未启用原因或需要重启；仍在进行和结果未知不按失败显示；失败给输出尾部。
 function Result({ task }: { task: Task }): React.ReactElement {
-  const held = task.tail.find((line) => line.includes(UNMET));
+  const outcome = task.outcomes[task.outcomes.length - 1];
+  const held = outcome ? outcomeText(outcome) : "";
   const note = (text: string) => <p className="shell-installable-note" role="status">{text}</p>;
   if (task.state === "unknown") return note(`${task.name}：结果未知，请查看已装列表。`);
-  if (task.state === "failed" && task.outcome === "in-progress") return note(`${task.name}：仍在进行，稍后查看已装列表。`);
+  if (task.state === "failed" && outcome?.result === "in-progress") return note(`${task.name}：仍在进行，稍后查看已装列表。`);
   if (task.state === "succeeded") {
-    if (task.outcome === "restart-required") return note(`${task.name} 已安装，需要重启实例后生效。`);
-    return note(held ? `${task.name}：${held.slice(held.indexOf(UNMET))}。满足条件后在上方启用。` : `${task.name} 已安装，在上方列表里。`);
+    if (outcome?.result === "restart-required") return note(`${task.name} 已安装，需要重启实例后生效。`);
+    return note(held ? `${task.name}：${held}。满足条件后在上方启用。` : `${task.name} 已安装，在上方列表里。`);
   }
   return <div role="alert"><p className="shell-inventory-error">{task.name} 安装失败（退出码 {task.exit_code ?? "无"}）</p>
     <pre className="shell-installable-log">{task.tail.join("\n")}</pre></div>;
@@ -82,10 +91,11 @@ export function InstallablePackages({ http, active, onInstalled }: {
     epoch.current += 1;
     try {
       const started = await call<Task>(http, "/api/dashboard/plugins/install", {
-        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name }),
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ names: [name] }),
       });
       epoch.current += 1;
       setTask(started);
+      kickInstallHold();
     } catch (reason) {
       setFailure(reason instanceof Error ? reason.message : String(reason));
       polling.current = false;
@@ -107,7 +117,7 @@ export function InstallablePackages({ http, active, onInstalled }: {
           {group.packages.map((pkg) => {
             const meta = [sizeText(pkg.size_bytes), ...pkg.needs.map((need) => `需要 ${needText(need)}`),
               ...(pkg.requires.length ? [`会一并安装 ${pkg.requires.join("、")}`] : [])].filter(Boolean);
-            const mine = running && task?.name === pkg.name;
+            const mine = running && !!task?.names.includes(pkg.name);
             return <li key={pkg.name} className="shell-installable-row">
               <span className="shell-inventory-name"><strong>{pkg.name}</strong>
                 <small>{pkg.desc}</small>{meta.length > 0 && <small>{meta.join(" · ")}</small>}</span>

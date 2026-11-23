@@ -32,6 +32,8 @@ class Ability:
     benefit: str
     preview: tuple[PreviewLine, ...] = ()
     required: bool = False
+    # 这一组会安装新插件（如首装挑选扩展包）：排在必需项之后、能力挑选之前；状态带 running 时引导暂缓界面换代，装完续在原处。
+    installs: bool = False
 
 
 class Onboarding(Protocol):

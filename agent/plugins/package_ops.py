@@ -307,8 +307,10 @@ def _install_planned(ctx: Context, names: list[str], needs: dict[str, set[str]])
     outcomes: list[Outcome] = []
     not_ready: set[str] = set()
     seen: list[tuple[str, str]] = []
-    for name in names:
+    for number, name in enumerate(names, 1):
         bare = name.partition("@")[0]
+        # 逐包进度写 stderr（结果表仍在 stdout 末尾）：设置页按这一行显示"第几个、正在装谁"。
+        print(f"({number}/{len(names)}) 正在安装 {bare}", file=sys.stderr, flush=True)
         if blocked := sorted(needs.get(bare, set()) & not_ready):
             restart = any(dict(seen).get(dep) == "restart-required" for dep in blocked)
             hint = "（需要先重启实例，再重新安装）" if restart else ""

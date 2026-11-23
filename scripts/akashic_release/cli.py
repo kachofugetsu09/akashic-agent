@@ -190,7 +190,7 @@ def _parser() -> argparse.ArgumentParser:
                                 help="预先下载好的 extra 输入目录（此前联网部署留下的 .inputs 目录），不联网")
     install_parser.add_argument("--allow-retire", action="store_true",
                                 help="确认让在用的内置插件随新发行版消失（发行版不再提供且 extra 上游也没有）；默认拒绝，自部署不传")
-    install_parser.add_argument("--profile", choices=("full", "minimal", "custom"), help="首次安装的扩展包选择；不给且有终端就提问，没有终端等于 full")
+    install_parser.add_argument("--profile", choices=("full", "minimal", "custom"), help="首次安装的扩展包选择；不给且有终端就提问，没有终端（或 --yes）只装核心，扩展包在网页引导里挑选")
     install_parser.add_argument("--groups", default="", help="首次安装自选的包组（逗号分隔，隐含 custom）")
     install_parser.add_argument("--reselect", action="store_true", help="首次安装失败后重跑时重新选择（默认沿用上次的选择，不再提问）")
     install_parser.set_defaults(handler=install)

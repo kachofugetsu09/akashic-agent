@@ -22,9 +22,13 @@ INSTALL_TIMEOUT = 900.0
 # 给 pkg 在线等待终态的时间，略低于外层寿命，免得 120 秒默认值把仍在进行的安装报成失败。
 PKG_WAIT = 840
 TAIL_LINES = 40
+# 无人值守首装留给网页挑选的标记；与启动器写入的 agent.plugins.package_index.FIRST_INSTALL_PENDING 是同一路径。
+FIRST_INSTALL_PENDING = "runtime/first-install-pending.json"
 KEEP_TASKS = 5
 _PKG_ENV = ("AKASHIC_CORE_ROOT", "AKASHIC_WORKSPACE", "AKASHIC_CORE_CONFIG")
-_OUTCOME = re.compile(r"^\S+\s+(installed|upgraded|current|restart-required|in-progress|failed|inactive|needs-switch)\b", re.M)
+_OUTCOME = re.compile(r"^(\S+)\s+(installed|upgraded|current|restart-required|in-progress|failed|inactive|needs-switch)\b[ \t]*(.*)$", re.M)
+# pkg install 逐包写到 stderr 的进度行，见 package_ops._install_planned。
+_PROGRESS = re.compile(r"^\((\d+)/(\d+)\) 正在安装 (\S+)$", re.M)
 # 子进程把退出码写进 .exit 文件，shell_ui 换代后新一代仍能读到。
 _WRAPPER = '"$@"; code=$?; echo "$code" > "$0.tmp" && mv "$0.tmp" "$0"'
 
@@ -99,36 +103,52 @@ class PackageInstaller:
             raise RuntimeError((err.decode(errors="replace").strip().splitlines() or ["命令失败"])[-1])
         groups = uninstalled_groups(cast(Row, json.loads(out.decode())))
         self._known = {cast(str, item["name"]) for group in groups for item in cast(list[Row], group["packages"])}
-        return {"groups": groups}
+        return {"groups": groups, "first_install": await run_file_io(self._pending().exists)}
 
-    # 校验名字确实是未装的扩展包，再起后台安装；同一时间只允许一个任务，占位在第一个 await 之前。
-    async def start(self, name: str) -> Row:
+    def _pending(self) -> Path:
+        return Path(os.environ["AKASHIC_WORKSPACE"]) / FIRST_INSTALL_PENDING
+
+    # 校验名字确实是未装的扩展包，再起一个后台任务按依赖顺序装完；同一时间只允许一个任务，占位在第一个 await 之前。
+    # 首装还没挑选时，这次提交就是用户的选择：起任务后删掉标记，任务记录带上 first_install 供引导跟踪。
+    async def start(self, names: list[str]) -> Row:
+        if not names or len(set(names)) != len(names):
+            raise LookupError("要安装的包不能为空或重复")
         if self._claimed is not None:
             raise InstallBusy(f"正在安装 {self._claimed}，请等它结束")
-        self._claimed = name
+        self._claimed = names[0] if len(names) == 1 else f"{names[0]} 等 {len(names)} 个包"
         try:
             running = await run_file_io(self._running_task)
             if running is not None:
-                raise InstallBusy(f"正在安装 {running['name']}，请等它结束")
-            if name not in self._known:
+                raise InstallBusy(f"正在安装 {_title(running)}，请等它结束")
+            if not set(names) <= self._known:
                 _ = await self.available()
-            if name not in self._known:
-                raise LookupError(f"{name} 不在可安装列表里，或已经安装")
-            return await self._spawn(name)
+            if unknown := [name for name in names if name not in self._known]:
+                raise LookupError(f"{'、'.join(unknown)} 不在可安装列表里，或已经安装")
+            first = await run_file_io(self._pending().exists)
+            started = await self._spawn(names, first)
+            if first:
+                await self.decline()
+            return started
         finally:
             self._claimed = None
 
-    async def _spawn(self, name: str) -> Row:
+    # 首装不装扩展包（只用核心）：删掉待挑选标记，引导不再出现这一步；以后仍可在插件页安装。
+    async def decline(self) -> None:
+        await run_file_io(lambda: self._pending().unlink(missing_ok=True))
+
+    async def _spawn(self, names: list[str], first: bool) -> Row:
         task_id = f"{time.time_ns():020d}"
         base = self._dir() / task_id
         await run_file_io(lambda: base.parent.mkdir(parents=True, exist_ok=True))
-        wrapper = ["sh", "-c", _WRAPPER, f"{base}.exit", *pkg_command("install", name, "--timeout", str(PKG_WAIT))]
+        wrapper = ["sh", "-c", _WRAPPER, f"{base}.exit", *pkg_command("install", *names, "--timeout", str(PKG_WAIT))]
         with open(f"{base}.log", "wb") as log:
             process = await asyncio.create_subprocess_exec(
                 *wrapper, stdin=asyncio.subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
-        record: Row = {"id": task_id, "name": name, "pid": process.pid, "started_at": time.time()}
+        # 寿命按包数放宽：pkg 逐包在线等待终态，一次装全套时总时长远超单包。
+        record: Row = {"id": task_id, "names": names, "pid": process.pid, "started_at": time.time(),
+                       "lifetime": INSTALL_TIMEOUT * len(names), "first_install": first}
         await run_file_io(lambda: Path(f"{base}.json").write_text(json.dumps(record)))
-        watcher = asyncio.create_task(self._watch(task_id, process))
+        watcher = asyncio.create_task(self._watch(task_id, process, cast(float, record["lifetime"])))
         self._watchers.add(watcher)
         watcher.add_done_callback(self._watchers.discard)
         await run_file_io(self._prune)
@@ -136,9 +156,9 @@ class PackageInstaller:
 
     # 只有持有 Process 的这一代在超时时杀进程组（进程未被回收，PID 不会被复用）；本代被换掉（取消）时
     # 不动正在装的进程，状态仍可由新一代从磁盘读到。
-    async def _watch(self, task_id: str, process: asyncio.subprocess.Process) -> None:
+    async def _watch(self, task_id: str, process: asyncio.subprocess.Process, lifetime: float) -> None:
         try:
-            _ = await asyncio.wait_for(process.wait(), INSTALL_TIMEOUT)
+            _ = await asyncio.wait_for(process.wait(), lifetime)
         except TimeoutError:
             await run_file_io(lambda: self._expire(task_id, process.pid))
             _ = await process.wait()
@@ -165,23 +185,53 @@ class PackageInstaller:
     # 磁盘记录加进程存活判断：有退出码就是终态；进程不在又没退出码，是换代等原因丢了结果。
     # 超过寿命仍无退出码只报 unknown、不发信号：磁盘记录里的 PID 可能已被无关进程复用；
     # pkg 自己带 --timeout，正常会在寿命内结束。
+    # outcomes 是 pkg 末尾结果表的逐包结果，progress 是最近一行逐包进度；两者都从完整日志里取。
     def _snapshot(self, record: Row) -> Row:
         base = self._dir() / cast(str, record["id"])
         code = base.with_suffix(".exit").read_text().strip() if base.with_suffix(".exit").exists() else None
         pid = cast(int, record["pid"])
         elapsed = time.time() - cast(float, record["started_at"])
-        live = code is None and elapsed <= INSTALL_TIMEOUT and _alive(pid)
+        lifetime = cast(float, record.get("lifetime", INSTALL_TIMEOUT))
+        live = code is None and elapsed <= lifetime and _alive(pid)
         state = "running" if live else "unknown" if code is None else (
             "succeeded" if code == "0" else "failed")
-        tail = deque(base.with_suffix(".log").read_text(errors="replace").splitlines(), maxlen=TAIL_LINES)
+        log = base.with_suffix(".log").read_text(errors="replace")
+        tail = deque(log.splitlines(), maxlen=TAIL_LINES)
         if code == "timeout":
-            tail.append(f"超过 {int(INSTALL_TIMEOUT // 60)} 分钟仍未结束，已终止")
-        found = _OUTCOME.findall("\n".join(tail))
-        return {"name": record["name"], "state": state, "exit_code": int(code) if code and code.lstrip("-").isdigit() else None,
-                "outcome": found[-1] if found else None, "tail": list(tail), "elapsed": round(elapsed, 1)}
+            tail.append(f"超过 {int(lifetime // 60)} 分钟仍未结束，已终止")
+        steps = _PROGRESS.findall(log)
+        return {"name": _title(record), "names": _names(record), "state": state, "first_install": bool(record.get("first_install")),
+                "exit_code": int(code) if code and code.lstrip("-").isdigit() else None,
+                "outcomes": [{"name": name, "result": result, "detail": detail.strip()} for name, result, detail in _OUTCOME.findall(log)],
+                "progress": {"done": int(steps[-1][0]) - 1, "total": int(steps[-1][1]), "current": steps[-1][2]} if steps else None,
+                "tail": list(tail), "elapsed": round(elapsed, 1)}
 
     async def status(self) -> Row:
         def read() -> Row:
             record = self._latest() if self._dir().is_dir() else None
             return {"task": None if record is None else self._snapshot(record)}
         return await run_file_io(read)
+
+    # 新手引导"选择功能"一步的状态：还没挑选、或首装挑的包还在装，都算未完成；进度给一句人话。
+    async def onboarding_status(self) -> Row:
+        def read() -> Row:
+            pending = self._pending().exists()
+            record = self._latest() if self._dir().is_dir() else None
+            # 跟踪最近一个任务（首装挑选或之后的重试）：装着的时候引导要暂缓界面换代。
+            task = self._snapshot(record) if record is not None else None
+            running = task is not None and task["state"] == "running"
+            progress = cast(Row | None, task["progress"]) if task is not None else None
+            note = f"正在安装（{cast(int, progress['done']) + 1}/{progress['total']}）{progress['current']}" if running and progress else ""
+            return {"enabled": True, "ready": not pending and not running, "blocked": False, "running": running,
+                    "reason": "挑选要安装的功能" if pending else note}
+        return await run_file_io(read)
+
+
+# 任务记录里的包名：#2219 的单包记录只有 name。
+def _names(record: Row) -> list[str]:
+    return cast(list[str], record.get("names") or [record["name"]])
+
+
+def _title(record: Row) -> str:
+    names = _names(record)
+    return names[0] if len(names) == 1 else f"{names[0]} 等 {len(names)} 个包"

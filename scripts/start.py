@@ -295,8 +295,8 @@ def prepare_install(preparation: Preparation, core: Path, distribution: Path,
         if prefetched is not None:
             shutil.rmtree(prefetched, ignore_errors=True)
         if first:
-            from scripts.first_install import clear_intent
-            clear_intent(state)
+            from scripts.first_install import finish_first_install
+            finish_first_install(state, workspace)
         _print_closed_summary(workspace)
     except RuntimeError as error:
         # 子进程的原因在日志里；补装失败时把"缺哪些包、怎么办"带到终端。
@@ -441,7 +441,7 @@ def main() -> int:
     parser.add_argument("--extra-repo", help="extra 插件仓库地址（可为本地路径）；默认取 AKASHIC_EXTRA_REPO 或官方仓库")
     parser.add_argument("--extra-inputs", type=Path,
                         help="预先下载好的 extra 输入目录，不联网；用于离线环境和 CI")
-    parser.add_argument("--profile", choices=("full", "minimal", "custom"), help="首次安装的扩展包选择；不给且有终端就提问，没有终端等于 full")
+    parser.add_argument("--profile", choices=("full", "minimal", "custom"), help="首次安装的扩展包选择；不给且有终端就提问，没有终端（或 --yes）只装核心，扩展包在网页引导里挑选")
     parser.add_argument("--groups", default="", help="自选的包组（逗号分隔，隐含 custom）")
     parser.add_argument("--yes", action="store_true", help="首次安装不提问不确认")
     parser.add_argument("--login", action="store_true", help="只打印一条一次性登录链接（2 分钟内有效）后退出，不启动服务")
