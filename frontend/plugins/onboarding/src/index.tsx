@@ -101,7 +101,8 @@ export function activate(ctx: WebHostContextV1): WebUiDisposer {
       const releaseStyle = pages.style("onboarding", surfaceHost);
       document.body.appendChild(surfaceHost);
       const root = createRoot(host);
-      const auto = firstRun.pending;
+      // 换代时新模块先激活、旧引导后写续接记录，所以续接要在真正渲染时再看一次。
+      const auto = firstRun.pending || hasResume();
       firstRun.pending = false;
       root.render(<OnboardingSection data={data} renderRoute={renderRoute} close={close} surfaceHost={surfaceHost} auto={auto} />);
       return () => { root.unmount(); releaseStyle(); surfaceHost.remove(); };

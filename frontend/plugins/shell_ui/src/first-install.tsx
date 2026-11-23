@@ -61,17 +61,24 @@ function FirstInstall({ http, changed }: { http: Http; changed?: () => void }) {
     setError("");
     try {
       if (names.length) setTask(await call<Task>(http, "/api/dashboard/plugins/install", {
-        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ names }) }));
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ names, first_install: true }) }));
       if (names.length) kickInstallHold();
       else await call(http, "/api/dashboard/plugins/first-install", { method: "DELETE" });
       await load(); changed?.();
     } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
   };
-  if (!listing) return error ? <p className="shell-inventory-error" role="alert">读不到扩展包列表：{error}</p> : <p role="status">正在读取官方扩展包…</p>;
+  // 列表读不到（官方仓库暂时不可达）时仍可重试，或者直接只用核心。
+  if (!listing) return error ? <div className="shell-setup">
+    <p className="shell-inventory-error" role="alert">读不到扩展包列表：{error}</p>
+    <div className="shell-setup-actions">
+      <button type="button" className="shell-setup-primary" onClick={() => void load()}>重试</button>
+      <button type="button" className="shell-setup-link" onClick={() => void submit([])}>只用核心，不装扩展包</button>
+    </div>
+  </div> : <p role="status">正在读取官方扩展包…</p>;
   return <div className="shell-setup">
     {error && <p className="shell-inventory-error" role="alert">{error}</p>}
     {listing.first_install && !running ? <Picker groups={listing.groups} submit={submit} />
-      : task ? <Progress task={task} groups={listing.groups} retry={submit} />
+      : task && (task.first_install || running) ? <Progress task={task} groups={listing.groups} retry={submit} />
       : <p className="shell-installable-note">首次安装的扩展包已经处理过了。以后需要时，在设置的「插件」页里安装。</p>}
   </div>;
 }
@@ -88,18 +95,19 @@ function Picker({ groups, submit }: { groups: Group[]; submit: (names: string[])
     const next = new Set(current); for (const name of items) { if (on) next.add(name); else next.delete(name); } return next;
   });
   const go = async (list: string[]) => { setBusy(true); try { await submit(list); } finally { setBusy(false); } };
+  // 操作放在列表上方：直接装全部不用滚到底；下面的清单供核对与取消。
   return <>
+    <div className="shell-setup-actions">
+      <button type="button" className="shell-setup-primary" disabled={busy || names.length === 0} onClick={() => void go(names)}>
+        {names.length ? `安装 ${names.length} 个包` : "没有选择任何包"}</button>
+      <button type="button" className="shell-setup-link" disabled={busy} onClick={() => void go([])}>只用核心，不装扩展包</button>
+    </div>
     <div className="shell-setup-bar">
       <span>已选 <strong>{names.length}</strong> / {packages.size} 个包{size > 0 && ` · 约 ${sizeText(size)}`}</span>
       <button type="button" className="shell-setup-link" onClick={() => flip([...packages.keys()], selected.size < packages.size)}>
         {selected.size < packages.size ? "全选" : "全不选"}</button>
     </div>
     {groups.map(group => <GroupBlock key={group.id} group={group} selected={selected} deps={deps} flip={flip} />)}
-    <div className="shell-setup-actions">
-      <button type="button" className="shell-setup-primary" disabled={busy || names.length === 0} onClick={() => void go(names)}>
-        {names.length ? `安装 ${names.length} 个包` : "没有选择任何包"}</button>
-      <button type="button" className="shell-setup-link" disabled={busy} onClick={() => void go([])}>只用核心，不装扩展包</button>
-    </div>
   </>;
 }
 

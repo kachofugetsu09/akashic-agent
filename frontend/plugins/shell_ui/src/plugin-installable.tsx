@@ -6,7 +6,7 @@ export interface Package { name: string; desc: string; requires: string[]; needs
 export interface Group { id: string; title: string; description: string; packages: Package[] }
 export interface Outcome { name: string; result: string; detail: string }
 export interface Task {
-  name: string; names: string[]; state: "running" | "succeeded" | "failed" | "unknown"; exit_code: number | null;
+  name: string; names: string[]; state: "running" | "succeeded" | "failed" | "unknown"; exit_code: number | null; first_install: boolean;
   outcomes: Outcome[]; progress: { done: number; total: number; current: string } | null; tail: string[];
 }
 export type Http = WebHostContextV1["http"];
