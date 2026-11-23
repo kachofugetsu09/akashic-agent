@@ -1,8 +1,8 @@
 # 非核心插件外移与包管理：迁移计划
 
 - 日期：2026-11-22
-- 状态：Phase 0–3 已完成（2026-11-22，29 个插件由 extra 仓库提供）；Phase 4 未开始
-- 关系：修订 ADR 0148。0148 撤回 #1973 的原因是安装与更新流程没有跟上（插件 PR、升 lock、部署三步；镜像、制品库、覆盖三处来源）。本计划先重做初始化、安装、更新流程，再外移插件；迁移完成后写新 ADR 取代 0148。
+- 状态：Phase 0–6 已完成（2026-11-22）。结论见 [ADR 0167](../decisions/0167-plugins-ship-from-extra.md)，它取代 0148。本文保留为过程记录：下面的“已知约束”“已定决策”是动手前的状态，后续阶段的记录写明了怎么解决的。
+- 关系：0148 撤回 #1973 的原因是安装与更新流程没有跟上（插件 PR、升 lock、部署三步；镜像、制品库、覆盖三处来源）。本计划先重做初始化、安装、更新流程，再外移插件。
 
 ## 目标
 
@@ -26,9 +26,9 @@ Phase 5 之前默认组合不变：新装实例仍然装齐今天 `bundles/base.
 
 ## 已知约束
 
-- 插件自带的 Python 环境只对子进程命令生效，加载器不会把它加进主进程的 import 路径。进程内 import 第三方包的插件（`akasha`：numba、numpy、jieba；`design`、`visuals`：playwright；`telegram_channel`：telegram）在依赖方案确定前不能外移。
+- 插件自带的 Python 环境只对子进程命令生效，加载器不会把它加进主进程的 import 路径。进程内 import 第三方包的插件（`akasha`：numba、numpy、jieba；`design`、`visuals`：playwright；`telegram_channel`：telegram）在依赖方案确定前不能外移。（已由 Phase 4 的 `requirements.inprocess.txt` 解决。）
 - `visuals` 没有浏览器时工具直接返回错误，没有降级路径。
-- playwright 和 Chromium 由 `design`、`visuals` 使用，与 `computer` 无关。
+- playwright 和 Chromium 由 `design`、`visuals` 使用，与 `computer` 无关。（Chromium 已改由两个插件的 `resources.json` 提供，镜像不再自带，见 Phase 4 记录。）
 - 容器镜像不在本地时启动会失败（2026-11-21 事故）。声明镜像的包必须在安装和升级时先拉取再激活。
 - 一个插件只有一个来源。来源优先级覆盖、临时试用暂不做，并且不得让“现在跑的是哪份”变模糊。
 
@@ -39,7 +39,7 @@ Phase 5 之前默认组合不变：新装实例仍然装齐今天 `bundles/base.
 - 重依赖：插件声明自己的依赖，装进插件自己的环境并挂进主进程；安装时检查与已装插件的包版本冲突。
 - 进程内依赖必须**显式声明**：插件根放 `requirements.inprocess.txt`（存在且非空才算），它是主进程依赖的全部清单，装进独立的环境（与根 `requirements.txt` 的子进程 runtime 各自独立，两者可并存）。只有它参与挂载（`sys.path` 末尾，Core 的包优先）、版本约束（Core 锁 + 其他插件的进程内环境）和按 requirements 复用环境。根 `requirements.txt` 语义不变：只给子进程命令，不挂载、不加约束。理由：生产上已装的外置插件有根 `requirements.txt` 但从不在主进程用，隐式约定会让它们的包变得可 import，并让钉了不同版本（如 `numpy==2.4.4`）的插件被拒。不改 manifest schema 与内容摘要。
 - 数据目录：统一成 `plugin-data/<name>`。归一化是显式命令，不在启动流程里；遗留的非在用目录原地不动。
-- Phase 5 先做包组和 Web 首次引导，其余做完后再定。
+- Phase 5 先做包组和 Web 首次引导，其余做完后再定。（后来改为终端选装，网页引导不动，见 Phase 5 记录。）
 
 ## 分层
 
@@ -197,7 +197,7 @@ Core 侧一个 PR，extra 侧先行或同时：
 - 不用动：`docker/host-runtime/requirements.production.in`（只引用 `requirements.txt`）、`benchmark/computer_driver/*.lock`（评测自己的环境）；Core 里没有任何 `aiohttp`/`telegram`/`telegramify_markdown`/`pyromark` 的 Python import（评测脚本除外）。
 - 删之前必须满足：(1) `telegram_channel` 与 `telegram_sender` 的新版本都已在生产运行（`pkg list` 显示来源 extra、带进程内环境引用）；(2) 本机用"去掉这些包的 Core 解释器"启动同一实例，两个插件仍 active、原生扩展来自插件环境（已演练，见 #本 PR 说明）；(3) 在目标镜像里重新求 wheel 通过（部署的 `pip download --only-binary` 不失败）；(4) 确认没有其他已装插件依赖这些包（`grep` 其源码与 extra 仓库 CI 的 `check_inprocess.py --hints`）；(5) 删除作为独立 PR，随后用 `pkg upgrade` 之外的完整部署演练一次回退。
 
-#### Phase 4 进展：`visuals`、`design`（playwright 进程内依赖；Chromium 暂时仍用镜像里那份）
+#### Phase 4 进展：`visuals`、`design`（playwright 进程内依赖；Chromium 后来改为插件资源）
 
 - 迁出：两个插件进 extra 仓库，`[tiers].extra` → `external`，preset 行保留；Core 里没有对它们的 import、服务键或宿主前端点名（`frontend/plugins/ui/dashboard` 里的 `./design/runtime` 是仪表盘自己的模块，与插件无关）。没有涉及它们的测试。`visuals` 的 `frame.html`、`preview-theme.css`、`bootstrap.html` 是入库的构建产物，release 分支取的是入库版本（`stage_plugin_package` 只用构建产物覆盖 `web_module.*`、`plugin_ui.*`、`message_ui.*`、`static/`），所以随插件一起迁，改前端源码后要重新生成并提交。
 - 依赖声明：两者的 `requirements.inprocess.txt` 都是 `playwright==1.59.0`（纯 ASCII）。与 Core 的 `requirements.txt`（`playwright==1.59.0`）和锁完全一致；不用范围，因为 playwright 的版本决定它期望的 Chromium 构建号（1.59.0 对应 1217），镜像里的浏览器是按 Core 的 playwright 装的。两份声明逐字节相同，共用一个环境（实测同一个环境引用，约 240 MB，主要是 playwright 自带的 driver）。`fastapi`、`starlette`、`httpx`、`pydantic` 是 Core 永久依赖，不声明。
@@ -223,12 +223,27 @@ Core 侧一个 PR，extra 侧先行或同时：
 - `requirements.txt`：`jieba>=0.42.1`（第 9 行）、`numba>=0.68.1`（第 12 行）、`numpy>=2.4.0`（第 13 行）、`threadpoolctl>=3.6.0`（第 14 行）；`docker/host-runtime/requirements.lock` 重新生成后少掉 `jieba`、`numba`、`llvmlite`、`numpy`、`threadpoolctl`（Core 里没有任何这些包的 import）。
 - 前提：(1) akasha 新版本在生产运行，`pkg list` 显示来源 extra 且带进程内环境；(2) 用去掉这些包的 Core 解释器启动并真实召回（已演练）；(3) 目标镜像里求 wheel 通过（numpy、numba、llvmlite、threadpoolctl 都要有 manylinux wheel，jieba 走 `wheels/`）；(4) 在线升级 akasha 默认走部署（环境 420 MB，依赖变化需重启）；(5) Python 小版本变化时环境必须在同一个停机窗口里重建（#2194 与后续）；(6) 记下 `numpy` 与 Core 其他可能的 numpy 使用（目前没有）。
 
+#### Phase 4 完成记录
+
+- Chromium 由插件拥有：`visuals`、`design` 在插件根声明 `resources.json`（chrome-headless-shell，与 playwright 1.59.0 的构建号配对），安装时取回并发布到 `runtime/plugin-resources/<sha>/content/`，写 `COMPLETE.json` 后才可用；两个插件经 `PluginRuntime.resource(name)` 定位浏览器，共用同一份资源。启动时缺失或损坏的资源在 60 秒内尽力修复，`pkg upgrade <名>` 做单包修复（300 秒）。
+- 验收技能的截图脚本（`skills/verify-akashic-plugin/scripts/shoot_page.py`）不再假设镜像里有浏览器：依次试 Playwright 自带、插件资源（最近发布的在前）、系统浏览器。
+- 上面三份“之后从 Core 删除”的清单已在 #2211 一次执行：`requirements.txt` 与 `docker/host-runtime/requirements.lock` 去掉 html2text、jieba、llvmlite、lxml、numba、numpy、pyromark、python-telegram-bot、telegramify-markdown、threadpoolctl；`Dockerfile.distribution` 去掉 `/opt/playwright` 与 Chromium 安装（playwright 包本身保留）。镜像 2.25 GB → 1.63 GB。生产部署前后能力快照一致（只有 `session_reference` 并回 Core 的预期变化）。
+
 ### Phase 5：新用户体验
 
-先做：包组与默认组合；Web 首次引导里按场景选装。
+实际做法按 2026-11-22 的定稿，取代下面原来的“先做 / 做完后再定”：
 
-做完后再定：终端 `akashic init`、插件目录页、缺能力提示、Agent 查包工具、`try`、`rollback`、`export/apply`。
+- 首次安装在终端里选（`scripts/first_install.py`，经 `start.py`、`akashic-release install`）：有 TTY 时问全部（默认）/ 最小 / 自选组，没有 TTY 时全装；`--profile`、`--groups`、`--yes`、`--reselect` 可显式指定。先列出要装的包，再逐包显示 `(i/N)`。联网或安装失败就退出，状态不变，可以重跑。未选的 preset 行以 `disabled=true` 写进用户 `bundle.patch.toml` 里一个带标记的自动生成块，块外用户写的行优先。已有实例的升级不走首装。
+- extra 仓库加 `index` 分支（`groups.toml` → `scripts/extra_index.py`）：包组、说明、包间依赖、外部前置条件、镜像声明。Core 端 `agent/plugins/package_index.py` 读取并缓存。
+- 外部前置条件（`docker`、`command:<命令>`）不满足的包照装但保持关闭，原因写进 `runtime/disabled-reasons.json`（带制品 head）；`pkg list`、`plugin-status`、设置页显示原因，启用时重新检测；声明了镜像的插件启用前先确认镜像在宿主上。
+- `pkg install` 按 index 自动补上未装的依赖，依赖没有就绪时不装依赖它的包（#2214）。
+- `session_reference` 并回 Core 的 `conversation`，登记在 `bundles/absorbed.toml`。
+- Agent 自助：内置 `plugin-system` 技能写明查原因、补前置条件、在线启用（#2215）。
+- 设置“插件”页加“可安装”分组。
+
+原计划里的终端 `akashic init`、插件目录页、缺能力提示、`try`、`rollback`、`export/apply` 不做。
 
 ### Phase 6：收尾
 
-更新插件开发与验收技能和文档；删除旧的 `plugin-install` 冗余路径；写新 ADR 取代 0148。
+- 写 [ADR 0167](../decisions/0167-plugins-ship-from-extra.md) 取代 0148。
+- `plugin-install` 不删：它是私人插件和其他来源的入口（`pkg` 只管官方仓库），与 `pkg` 共用同一套安装制品与选择。
