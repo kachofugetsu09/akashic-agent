@@ -71,10 +71,10 @@ def _limit_tool_text(
     if can_read:
         address = json.dumps({"message_id": message.message_id, "part_index": 0},
                              ensure_ascii=False, separators=(",", ":"))
-        recovery = f"回读位置 read_content({address})；调用时按需调整 part_index，并指定较小的 start/end 字符区间。"
+        recovery = f"回读位置 read_content({address})；调用时按需调整 part_index，并按原文字符位置指定较小的 start/end。展示文本长度可能与结构化原文不同。"
     else:
         recovery = "请缩小查询范围；当前工具目录没有 read_content，需获授该工具后才能按原消息回读。"
-    notice = (f"结果已截断：原结果有 {len(parts)} 个内容块、文本共 {total_chars} 字符（{size} UTF-8 字节）。"
+    notice = (f"结果已截断：原结果有 {len(parts)} 个内容块、展示文本共 {total_chars} 字符（{size} UTF-8 字节）。"
               f"全文保留在原消息，part_index 从 0 开始。{recovery}"
               "不要为找回结果重复执行原操作。\n")
     part_sections: list[str] = []
@@ -82,7 +82,7 @@ def _limit_tool_text(
         group_texts = [block["text"] for block in group if block.get("type") == "text"]
         if group_texts:
             joined = "\n".join(group_texts)
-            part_sections.append(f"[part_index={index}, chars={len(joined)}]\n{joined}")
+            part_sections.append(f"[part_index={index}, preview_chars={sum(map(len, group_texts))}]\n{joined}")
     text = "\n".join(part_sections).encode("utf-8")
     remaining = max(0, budget - len(notice.encode("utf-8")) - len("\n…\n".encode("utf-8")))
     head = text[:remaining // 2].decode("utf-8", errors="ignore")
