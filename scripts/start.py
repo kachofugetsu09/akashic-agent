@@ -322,15 +322,41 @@ def _login_url(core: Path, python: Path, state: Path, url: str) -> str:
     return lines[-1] if result.returncode == 0 and lines and "/_auth/login#t=" in lines[-1] else url
 
 
-# ./start --login：用本源码提交已准备好的环境要一条登录链接；服务在不在运行都可以。
-def print_login(cache: Path, state: Path, url: str) -> int:
-    revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
-    ready = cache / revision
-    if not (ready / "complete").is_file() or not (state / "config.toml").is_file():
+# 最近一次成功启动用的 Core、解释器和地址；--login 以它为准，换端口或更新源码后未重启也能拿到对的链接。
+LAUNCH_RECORD = "launch.json"
+
+
+def _record_launch(state: Path, core: Path, python: Path, url: str) -> None:
+    record = {"core": str(core.resolve()), "python": str(python), "url": url}
+    (state / LAUNCH_RECORD).write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+
+
+def _launched(state: Path) -> tuple[Path, Path, str] | None:
+    try:
+        record = json.loads((state / LAUNCH_RECORD).read_text(encoding="utf-8"))
+        core, python, url = Path(record["core"]), Path(record["python"]), str(record["url"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return (core, python, url) if (core / "main.py").is_file() and python.exists() else None
+
+
+# ./start --login：用这个数据目录最近一次启动的环境要一条登录链接；服务在不在运行都可以。
+def print_login(cache: Path, state: Path, port: int | None, host: str) -> int:
+    # 1. 优先用启动记录；没有记录时退回本源码提交已准备好的环境。
+    launched = _launched(state)
+    if launched is None:
+        revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+        ready = (cache / revision).resolve()
+        if (ready / "complete").is_file():
+            launched = (ready / "core", ready / "env/bin/python", f"http://{host}:{port or 2236}")
+    if launched is None or not (state / "config.toml").is_file():
         print("还没有安装完成。先运行 ./start，装好后再用 ./start --login。", file=sys.stderr)
         return 1
-    ready = ready.resolve()
-    link = _login_url(ready / "core", ready / "env/bin/python", state, url)
+    # 2. 显式给了 --port 就按它拼地址，否则用启动时的地址。
+    core, python, url = launched
+    if port is not None:
+        url = f"http://{host}:{port}"
+    link = _login_url(core, python, state, url)
     if "/_auth/login#t=" not in link:
         print("没能生成登录链接：网页登录插件可能没有启用。直接打开 " + url, file=sys.stderr)
         return 1
@@ -384,12 +410,14 @@ def run_service(preparation: Preparation, core: Path, python: Path,
                 preparation.step(f"WebUI 已就绪：http://localhost:{public}。登录链接用 docker compose exec akashic python main.py web-login 获取。")
             else:
                 preparation.step(f"WebUI 已就绪：{url}")
+                _record_launch(state, core, python, url)
                 if open_browser:
                     try:
                         webbrowser.open(_login_url(core, python, state, url))
                     except webbrowser.Error as error:
                         print(f"无法自动打开浏览器：{error}。请手动打开上方地址。", flush=True)
-            print(f"按 Ctrl+C 停止服务。运行日志：{preparation.log}", flush=True)
+            if not container:
+                print(f"按 Ctrl+C 停止服务。运行日志：{preparation.log}", flush=True)
             return child.wait()
         finally:
             # 3. Keep shutdown and the state lock under the same launch owner.
@@ -407,7 +435,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state", type=Path, default=Path.home() / ".akashic")
     parser.add_argument("--cache", type=Path, default=ROOT / ".akashic-start")
-    parser.add_argument("--port", type=int, default=int(os.environ.get("AKASHIC_WEB_PORT", "2236")))
+    parser.add_argument("--port", type=int)
     parser.add_argument("--no-browser", action="store_true")
     parser.add_argument("--distribution", type=Path, help="Use the distribution shipped in the container")
     parser.add_argument("--extra-repo", help="extra 插件仓库地址（可为本地路径）；默认取 AKASHIC_EXTRA_REPO 或官方仓库")
@@ -425,11 +453,13 @@ def main() -> int:
     args = parser.parse_args()
     if args.extra_inputs and (args.profile or args.groups):
         parser.error("--extra-inputs 是预先下载好的输入目录，已经决定了要装的包，不能同时给 --profile/--groups")
-    if not 1 <= args.port <= 65535:
+    if args.port is not None and not 1 <= args.port <= 65535:
         parser.error("--port 必须在 1 到 65535 之间")
     state = args.state.expanduser().resolve()
     if args.login:
-        return print_login(args.cache.expanduser().resolve(), state, f"http://{args.host}:{args.port}")
+        return print_login(args.cache.expanduser().resolve(), state, args.port, args.host)
+    if args.port is None:
+        args.port = int(os.environ.get("AKASHIC_WEB_PORT", "2236"))
     os.umask(0o077)
     # Existing direct-runtime owners also block preparation, even on another port.
     for name in (".supervisor.lock", ".instance.lock"):
