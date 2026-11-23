@@ -127,18 +127,27 @@ jobs:
         run: |
           IMAGE_REF=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["image"])' "$RUNNER_TEMP/release/release.json")
           docker buildx imagetools create --tag "$IMAGE:$VERSION" "$IMAGE_REF"
+          # 本版改动写在附注 tag 的说明里；轻量 tag 没有说明时只给源码提交。
+          git fetch --no-tags --depth=1 origin "+refs/tags/$VERSION:refs/tags/$VERSION"
+          CHANGES=$(git tag -l --format='%(contents)' "$VERSION")
+          [ -n "$CHANGES" ] || CHANGES="见下方源码提交。"
           cat > "$RUNNER_TEMP/release-notes.md" <<EOF
           下载 Assets 中的 compose.yaml，放入专用目录后运行：
 
           \`\`\`bash
           docker compose up -d --wait
+          docker compose exec akashic python main.py web-login
           \`\`\`
 
-          成功返回后打开 http://localhost:2236/#onboarding，完成初始配置。无需先配置模型 Key。
+          第二条命令打印一次性登录链接；在浏览器里打开后按引导设置密码、连接模型，再挑选要安装的功能。
+          已在用旧版本：按[使用手册的更新步骤](https://github.com/$GITHUB_REPOSITORY/blob/$SOURCE_REVISION/docs/user-guide.md#更新)先备份，再换上新的 compose.yaml。
           镜像支持 AMD64、ARM64，Compose 固定到已验证镜像的 digest。
           已通过两种架构的首次安装和保留数据卷重建，以及匿名镜像拉取验收。
-          修复 #955 的默认插件源码读取权限，同时保留发行代码只读边界。
           配置、会话和插件选择写入 data 卷；不要使用 docker compose down -v。
+
+          ## 本版改动
+
+          $CHANGES
 
           源码提交：$SOURCE_REVISION
           镜像：$IMAGE_REF
