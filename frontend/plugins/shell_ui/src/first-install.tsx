@@ -147,6 +147,8 @@ function Progress({ task, groups, retry }: { task: Task; groups: Group[]; retry:
   const step = task.progress;
   const available = new Set(groups.flatMap(group => group.packages.map(item => item.name)));
   const failed = task.outcomes.filter(item => BAD.has(item.result));
+  // 失败的排在最前，长清单里不用滚动去找。
+  const outcomes = [...failed, ...task.outcomes.filter(item => !BAD.has(item.result))];
   const again = task.names.filter(name => available.has(name));
   return <div className="shell-setup-progress" aria-live="polite">
     {running ? <>
@@ -155,7 +157,7 @@ function Progress({ task, groups, retry }: { task: Task; groups: Group[]; retry:
       <p className="shell-installable-note">按依赖顺序逐个安装，装好的功能会在这一步结束后出现。也可以先关掉引导去聊天，安装不会中断。</p>
     </> : <p><strong>{failed.length ? `${failed.length} 个包没有装好` : task.state === "succeeded" ? `已安装 ${task.outcomes.length} 个包` : "安装结果未知，请到「插件」页查看"}</strong></p>}
     {task.outcomes.length > 0 && <ul className="shell-setup-results">
-      {task.outcomes.map(item => <li key={item.name} className={BAD.has(item.result) ? "is-bad" : ""}>
+      {outcomes.map(item => <li key={item.name} className={BAD.has(item.result) ? "is-bad" : ""}>
         <code>{item.name}</code><span>{BAD.has(item.result) ? `失败：${item.detail}` : outcomeText(item) || (item.result === "restart-required" ? "需要重启实例后生效" : "已安装")}</span>
       </li>)}
     </ul>}
