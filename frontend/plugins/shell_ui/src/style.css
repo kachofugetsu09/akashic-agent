@@ -505,6 +505,42 @@
   .shell-inventory-group .shell-inventory-error { font-size: 13px; }
   .shell-installable-note { margin: 0; font-size: 13px; text-wrap: pretty; color: var(--ak-ink-secondary); }
   .shell-installable-log { max-height: 240px; margin: 6px 0 0; padding: 10px 12px; overflow: auto; font-size: 12px; line-height: 18px; white-space: pre-wrap; overflow-wrap: anywhere; border: 1px solid var(--ak-rule-subtle); border-radius: var(--ak-radius-sm); background: var(--ak-paper-sheet); color: var(--ak-ink-secondary); }
+  /* 新手引导里的“选择功能”：按组列包，勾选即装；进度与结果逐包列出。 */
+  .shell-setup { display: grid; gap: 16px; }
+  .shell-setup-bar { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; font-size: 14px; color: var(--ak-ink-secondary); }
+  .shell-setup-bar strong { color: var(--ak-ink-primary); font-variant-numeric: tabular-nums; }
+  .shell-setup-link { min-height: 32px; padding: 0; border: 0; background: transparent; font: inherit; font-size: 14px; color: var(--ak-color-action-primary); cursor: pointer; }
+  .shell-setup-link:disabled { opacity: 0.5; cursor: default; }
+  .shell-setup-group { min-width: 0; margin: 0; padding: 0; border: 0; }
+  .shell-setup-group legend { display: grid; gap: 2px; width: 100%; padding: 0 0 6px; }
+  .shell-setup-group legend label { display: flex; align-items: center; gap: 8px; font-size: 14px; cursor: pointer; }
+  .shell-setup-group legend em { padding: 0 6px; font-size: 12px; font-style: normal; line-height: 18px; border-radius: var(--ak-radius-xs); background: var(--ak-paper-quiet); color: var(--ak-ink-secondary); }
+  .shell-setup-group legend small { margin-inline-start: auto; font-size: 13px; color: var(--ak-ink-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .shell-setup-group legend p { margin: 0 0 0 24px; font-size: 13px; line-height: 18px; color: var(--ak-ink-muted); text-wrap: pretty; }
+  .shell-setup-group ul,
+  .shell-setup-results { margin: 0; padding: 0; overflow: hidden; list-style: none; border: 1px solid var(--ak-rule-subtle); border-radius: var(--ak-radius-md); background: var(--ak-paper-sheet); }
+  .shell-setup-group li + li,
+  .shell-setup-results li + li { border-block-start: 1px solid var(--ak-rule-subtle); }
+  .shell-setup-group li label { display: flex; align-items: flex-start; gap: 10px; padding: 8px 14px; cursor: pointer; }
+  .shell-setup-group input { flex: 0 0 auto; width: 16px; height: 16px; margin: 2px 0 0; accent-color: var(--ak-color-action-primary); }
+  .shell-setup-group li span { display: grid; gap: 1px; min-width: 0; }
+  .shell-setup-group code,
+  .shell-setup-results code { font-size: 13px; color: var(--ak-ink-primary); overflow-wrap: anywhere; }
+  .shell-setup-group li small { font-size: 13px; line-height: 18px; color: var(--ak-ink-muted); text-wrap: pretty; overflow-wrap: anywhere; }
+  .shell-setup-group .shell-setup-pulled { color: var(--ak-ink-secondary); }
+  .shell-setup-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 20px; }
+  .shell-setup-primary { min-height: 36px; padding: 0 18px; border: 0; border-radius: var(--ak-radius-sm); background: var(--ak-color-action-primary); color: var(--ak-color-on-action-primary); font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; }
+  .shell-setup-primary:disabled { opacity: 0.5; cursor: default; }
+  .shell-setup-primary:focus-visible,
+  .shell-setup-link:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 2px; }
+  .shell-setup-progress { display: grid; gap: 10px; justify-items: start; }
+  .shell-setup-progress p { margin: 0; font-size: 14px; }
+  .shell-setup-progress progress { width: 100%; height: 6px; accent-color: var(--ak-color-action-primary); }
+  .shell-setup-progress .shell-setup-results { width: 100%; }
+  .shell-setup-results li { display: flex; align-items: baseline; gap: 12px; padding: 6px 14px; font-size: 13px; color: var(--ak-ink-secondary); }
+  .shell-setup-results li.is-bad span { color: var(--ak-color-status-error); }
+  .shell-setup-progress details { width: 100%; font-size: 13px; color: var(--ak-ink-muted); }
+  .shell-setup-progress summary { cursor: pointer; }
   .shell-inventory-empty { display: grid; justify-items: start; gap: 4px; font-size: 13px; color: var(--ak-ink-muted); }
   .shell-inventory-empty p { margin: 0; }
 
@@ -694,6 +730,9 @@
   }
 
   .shell-installable-row button { min-height: 44px; }
+  .shell-setup-link,
+  .shell-setup-primary { min-height: 44px; }
+  .shell-setup-group li label { padding-block: 12px; }
 
   .shell-inventory-filter button,
   .shell-inventory-empty button {

@@ -4,6 +4,7 @@ import "./style.css";
 import { akashicBrandIcon, markup } from "./brand";
 import { PluginInventory, inventoryResource, type InventoryResource } from "./plugin-inventory";
 import { SystemVersion } from "./system-version";
+import { FIRST_INSTALL_ROUTE, mountFirstInstall } from "./first-install";
 import { holdWhileInstalling } from "./install-hold";
 import type {
   WebEntry,
@@ -33,6 +34,7 @@ const SETTINGS_PLUGINS_MOUNT = "shell.settings-plugins.v1";
 const SETTINGS_PLUGINS_ORDER = 40;
 const SETTINGS_PLUGINS_LABEL = "插件";
 const SETTINGS_PLUGINS_ROUTE = "plugins";
+const SETTINGS_RAIL_ACTION = "shell.settings";
 /** “版本与更新”展示当前运行提交、上次更新时间与最近部署记录，位置在新手引导（90）之前。 */
 const SETTINGS_VERSION_ORDER = 80;
 const SETTINGS_VERSION_LABEL = "版本与更新";
@@ -131,7 +133,7 @@ export function activate(ctx: WebHostContextV1): WebUiDisposer {
       },
     })),
     ctx.ui.inject(RAIL_ACTIONS_MOUNT, (mount) => mount.register({
-      id: "shell.settings",
+      id: SETTINGS_RAIL_ACTION,
       order: 100,
       label: "功能设置",
       iconSvg: SETTINGS_ICON,
@@ -415,6 +417,12 @@ function Shell({ pages, railActions, settings, settingsPlugins, http, inventory 
   // 设置工作区内的跨目录渲染：初始配置按 route 内嵌任意分节的表单，不关心它属于哪个目录。
   // route 可带「/后缀」：后缀作为 subroute 交给分节自己解释，比如声明式设置卡只渲染某个插件的表单。
   const renderSettingsRoute = useCallback<RenderSettingsRoute>((route, host, props) => {
+    // 外框自己的表单嵌在别人的图层里（引导对话框）时没有外框样式：借外框自己注册的底栏条目把样式表绑到宿主元素上。
+    if (route === FIRST_INSTALL_ROUTE) {
+      const releaseStyle = railActions.style(SETTINGS_RAIL_ACTION, host);
+      const dispose = mountFirstInstall(http, host, props);
+      return () => { dispose(); releaseStyle(); };
+    }
     const section = settings.entries.find((entry) => entry.route === route);
     if (section) return settings.render(section.id, host, props);
     const member = settingsPlugins.entries.find((entry) => entry.route === route);
@@ -423,7 +431,7 @@ function Shell({ pages, railActions, settings, settingsPlugins, http, inventory 
     if (slash <= 0) return null;
     const base = settingsPlugins.entries.find((entry) => entry.route === route.slice(0, slash));
     return base ? settingsPlugins.render(base.id, host, { ...(props as object | undefined), subroute: route.slice(slash + 1) }) : null;
-  }, [settings, settingsPlugins]);
+  }, [settings, settingsPlugins, railActions, http]);
 
   // 分节内容就地渲染进对话框；关闭或换节即销毁，同一分节不会同时挂载在两处。
   // 顶层分节由 settings 目录渲染；插件配置区把当前 tab 的成员挂进同一滚动页，

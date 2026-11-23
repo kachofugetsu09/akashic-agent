@@ -15,18 +15,45 @@ const brandMask = { WebkitMaskImage: `url(${akashicBrandIcon})`, maskImage: `url
 
 interface Step { id: string; title: string; group: string; group_title: string; route: string; }
 interface PreviewLine { speaker: string; text: string; }
-interface Group { key: string; title: string; required: boolean; pitch: string; benefit: string; preview: PreviewLine[]; }
+interface Group { key: string; title: string; required: boolean; installs: boolean; pitch: string; benefit: string; preview: PreviewLine[]; }
 interface Catalog { steps: Step[]; groups: Group[]; }
-interface StepStatus extends Partial<Status> { fault?: string; }
+interface StepStatus extends Partial<Status> { fault?: string; running?: boolean; }
 type Statuses = Record<string, StepStatus>;
 type Snapshot = {catalog: Catalog; statuses: Statuses};
 type Phase = { kind: "welcome" } | { kind: "group"; key: string } | { kind: "abilities" } | { kind: "done" };
+/** 界面换代会重建整个外框：换代前记下走到哪一步，新外框里接着走（只认一分钟内的记录）。 */
+const RESUME_KEY = "akashic.onboarding.resume";
+interface Resume { phase: string; planned: string[] | null; installs: string[]; at: number; }
 
 function ready(status?: StepStatus): boolean {
   return !!status && !status.fault && status.enabled === true && status.ready === true;
 }
 function settled(status?: StepStatus): boolean {
   return !!status && !status.fault && (status.ready === true || status.enabled === false || status.blocked === true);
+}
+// 能力卡只列可选能力；“会安装插件”的分组（选择功能）是单独一步。
+function isAbility(group: Group): boolean {
+  return !group.required && !group.installs;
+}
+function phaseId(phase: Phase): string {
+  return phase.kind === "group" ? `group:${phase.key}` : phase.kind;
+}
+function saveResume(resume: Omit<Resume, "at">): void {
+  try { window.sessionStorage.setItem(RESUME_KEY, JSON.stringify({...resume, at: Date.now()})); } catch { /* 存不了就从头开始 */ }
+}
+function takeResume(): Resume | null {
+  try {
+    const raw = window.sessionStorage.getItem(RESUME_KEY);
+    window.sessionStorage.removeItem(RESUME_KEY);
+    const resume = raw ? JSON.parse(raw) as Resume : null;
+    return resume && Date.now() - resume.at < 60_000 ? resume : null;
+  } catch { return null; }
+}
+function hasResume(): boolean {
+  try {
+    const raw = window.sessionStorage.getItem(RESUME_KEY);
+    return !!raw && Date.now() - (JSON.parse(raw) as Resume).at < 60_000;
+  } catch { return false; }
 }
 function readSeen(): boolean {
   try { return window.localStorage.getItem(SEEN_KEY) === "1"; } catch { return false; }
@@ -50,11 +77,14 @@ async function readCatalog(ctx: WebHostContextV1, signal: AbortSignal): Promise<
 const firstRun = { pending: false };
 
 // 首次打开且必需能力未就绪时，经 hash 深链接让 Shell 打开本分节；不抢已有的深链接。
+// 界面换代前引导正在进行时，换代后直接续上（hash 由宿主保留）。
 async function openOnFirstRun(data: WebResource<Snapshot>): Promise<void> {
+  if (hasResume()) { firstRun.pending = true; if (!window.location.hash) window.location.hash = "onboarding"; return; }
   if (readSeen() || window.location.hash) return;
   const {catalog, statuses} = await data.refresh();
   const required = new Set(catalog.groups.filter(group => group.required).map(group => group.key));
-  const missing = catalog.steps.some(step => required.has(step.group) && !ready(statuses[step.id]) && !statuses[step.id]?.fault);
+  const installs = new Set(catalog.groups.filter(group => group.installs).map(group => group.key));
+  const missing = catalog.steps.some(step => (required.has(step.group) || installs.has(step.group)) && !ready(statuses[step.id]) && !statuses[step.id]?.fault);
   if (missing && !window.location.hash) { firstRun.pending = true; window.location.hash = "onboarding"; }
 }
 
@@ -71,7 +101,8 @@ export function activate(ctx: WebHostContextV1): WebUiDisposer {
       const releaseStyle = pages.style("onboarding", surfaceHost);
       document.body.appendChild(surfaceHost);
       const root = createRoot(host);
-      const auto = firstRun.pending;
+      // 换代时新模块先激活、旧引导后写续接记录，所以续接要在真正渲染时再看一次。
+      const auto = firstRun.pending || hasResume();
       firstRun.pending = false;
       root.render(<OnboardingSection data={data} renderRoute={renderRoute} close={close} surfaceHost={surfaceHost} auto={auto} />);
       return () => { root.unmount(); releaseStyle(); surfaceHost.remove(); };
@@ -79,14 +110,16 @@ export function activate(ctx: WebHostContextV1): WebUiDisposer {
   }));
 }
 
-// 由目录推导流程：欢迎 → 必需分组 → 能力挑选 → 待设置的分组 → 完成。
-// planned 在离开能力页时定格，保存成功后不会因分组变为就绪而跳步。
-function phasesOf(catalog: Catalog, statuses: Statuses, chosen: ReadonlySet<string>, planned: ReadonlySet<string> | null): Phase[] {
-  const optional = catalog.groups.filter(group => !group.required);
+// 由目录推导流程：欢迎 → 必需分组 → 选择功能（安装插件）→ 能力挑选 → 待设置的分组 → 完成。
+// planned 在离开能力页时定格，保存成功后不会因分组变为就绪而跳步；installs 在打开时定格，装完也不消失。
+function phasesOf(catalog: Catalog, statuses: Statuses, chosen: ReadonlySet<string>, planned: ReadonlySet<string> | null,
+  installs: ReadonlySet<string>): Phase[] {
+  const optional = catalog.groups.filter(isAbility);
   const pending = optional.filter(group => planned ? planned.has(group.key) : chosen.has(group.key) && !groupReady(catalog, statuses, group.key));
   return [
     {kind: "welcome"},
     ...catalog.groups.filter(group => group.required).map(group => ({kind: "group", key: group.key}) as const),
+    ...catalog.groups.filter(group => installs.has(group.key)).map(group => ({kind: "group", key: group.key}) as const),
     ...(optional.length ? [{kind: "abilities"} as const] : []),
     ...pending.map(group => ({kind: "group", key: group.key}) as const),
     {kind: "done"},
@@ -95,7 +128,7 @@ function phasesOf(catalog: Catalog, statuses: Statuses, chosen: ReadonlySet<stri
 
 // 默认选中：未被明确关闭的可选能力；已关闭的保持关闭，尊重之前的决定。
 function initialChoice(catalog: Catalog, statuses: Statuses): Set<string> {
-  return new Set(catalog.groups.filter(group => !group.required && !catalog.steps
+  return new Set(catalog.groups.filter(group => isAbility(group) && !catalog.steps
     .filter(step => step.group === group.key).some(step => statuses[step.id]?.enabled === false)).map(group => group.key));
 }
 
@@ -129,7 +162,8 @@ function OnboardingSection({data, renderRoute, close, surfaceHost, auto}: {
   const {catalog, statuses, error, refresh} = useCatalog(data);
   const failedSteps = catalog?.steps.filter(step => statuses[step.id]?.fault) ?? [];
   // 1. 首跑流程结束连同设置一起关闭，回到对话；2. 从设置里重走的流程结束后回到概览。
-  const exit = useCallback(() => { markSeen(); if (auto) close?.(); else { setRunning(false); void refresh(); } }, [auto, close, refresh]);
+  // 结束时丢掉换代续接记录：之后的换代不该把引导重新打开。
+  const exit = useCallback(() => { markSeen(); void takeResume(); if (auto) close?.(); else { setRunning(false); void refresh(); } }, [auto, close, refresh]);
   return <>
     <div className="onboarding-overview">
       <p className="onboarding-overview-intro">首次使用时的引导。这里能看到每项能力的状态，也可以重新走一遍。</p>
@@ -140,7 +174,7 @@ function OnboardingSection({data, renderRoute, close, surfaceHost, auto}: {
       </div>}
       {!catalog && !error && <p role="status">正在检查已安装的功能…</p>}
       {catalog && <ul className="onboarding-overview-list">
-        {catalog.groups.map(group => {
+        {catalog.groups.filter(group => !group.installs).map(group => {
           const on = groupReady(catalog, statuses, group.key);
           const step = catalog.steps.find(item => item.group === group.key);
           const failed = failedSteps.some(item => item.group === group.key);
@@ -161,13 +195,17 @@ function Onboarding({data, renderRoute, exit, surfaceHost}: {
   data: WebResource<Snapshot>; renderRoute?: RenderSettingsRoute; exit: () => void; surfaceHost: HTMLElement;
 }) {
   const {catalog, statuses, chosen, setChosen, error, refresh} = useCatalog(data);
-  const [planned, setPlanned] = useState<Set<string> | null>(null);
+  const [resume] = useState(takeResume);
+  const [planned, setPlanned] = useState<Set<string> | null>(() => resume?.planned ? new Set(resume.planned) : null);
   const [index, setIndex] = useState(0);
   const [dirty, setDirty] = useState<Record<string, boolean>>({});
   const [leave, setLeave] = useState<(() => void) | null>(null);
-  const phases = useMemo(() => catalog && chosen ? phasesOf(catalog, statuses, chosen, planned) : [{kind: "welcome"} as Phase], [catalog, statuses, chosen, planned]);
+  const installs = useFrozenInstalls(catalog, statuses, resume);
+  const phases = useMemo(() => catalog && chosen && installs ? phasesOf(catalog, statuses, chosen, planned, installs) : [{kind: "welcome"} as Phase],
+    [catalog, statuses, chosen, planned, installs]);
   const at = Math.min(index, phases.length - 1);
   const phase = phases[at];
+  useResume(resume, phases, setIndex, () => ({phase: phaseId(phase), planned: planned && [...planned], installs: [...(installs ?? [])]}));
   const editing = Object.values(dirty).some(Boolean);
   const guard = (go: () => void) => { if (editing) setLeave(() => go); else go(); };
   const move = (delta: number) => guard(() => {
@@ -176,7 +214,7 @@ function Onboarding({data, renderRoute, exit, surfaceHost}: {
     if (phase.kind === "abilities" && delta > 0 && catalog && chosen) {
       const plan = new Set([...chosen].filter(key => !groupReady(catalog, statuses, key)));
       setPlanned(plan);
-      setIndex(Math.min(phasesOf(catalog, statuses, chosen, plan).length - 1, at + 1));
+      setIndex(Math.min(phasesOf(catalog, statuses, chosen, plan, installs ?? new Set()).length - 1, at + 1));
       return;
     }
     const target = Math.max(0, Math.min(phases.length - 1, at + delta));
@@ -203,6 +241,37 @@ function Onboarding({data, renderRoute, exit, surfaceHost}: {
       {leave && <Confirm title="未保存的修改将会丢失，确定离开吗？" accept={() => { const go = leave; setLeave(null); setDirty({}); go(); }}
         cancel={() => setLeave(null)}>当前页包含未保存的内容，离开后修改将不会生效。</Confirm>}
     </Surface>, surfaceHost);
+}
+
+// 会安装插件的分组（选择功能）在打开引导时定格：当时还没完成的才进流程，装完留在原处显示结果。
+function useFrozenInstalls(catalog: Catalog | null, statuses: Statuses, resume: Resume | null): ReadonlySet<string> | null {
+  const [frozen, setFrozen] = useState<Set<string> | null>(() => resume ? new Set(resume.installs) : null);
+  useEffect(() => {
+    if (!catalog || frozen) return;
+    setFrozen(new Set(catalog.groups.filter(group => group.installs && !groupReady(catalog, statuses, group.key)).map(group => group.key)));
+  }, [catalog, statuses, frozen]);
+  return frozen;
+}
+
+// 界面换代会重建外框：换代前记下当前一步与定格的计划，新外框打开引导后跳回那一步。
+function useResume(resume: Resume | null, phases: Phase[], setIndex: (index: number) => void, snapshot: () => Omit<Resume, "at">): void {
+  const latest = useRef(snapshot);
+  latest.current = snapshot;
+  const target = useRef(resume?.phase ?? null);
+  useEffect(() => {
+    if (!target.current || phases.length < 2) return;
+    const found = phases.findIndex(item => phaseId(item) === target.current);
+    target.current = null;
+    if (found >= 0) setIndex(found);
+  }, [phases, setIndex]);
+  useEffect(() => {
+    const onNavigate = (event: Event) => {
+      // 被别处（如安装中的暂缓）拦下的换代不记：那次不会真的重建外框。
+      if (!event.defaultPrevented && (event as CustomEvent<{reason?: string}>).detail?.reason === "catalog") saveResume(latest.current());
+    };
+    window.addEventListener("akashic:before-navigate", onNavigate);
+    return () => window.removeEventListener("akashic:before-navigate", onNavigate);
+  }, []);
 }
 
 // 换步沿用展开时长；样式表不能声明 @keyframes，短位移动效走 Web Animations。
@@ -243,7 +312,7 @@ interface PhaseProps {
 
 function PhaseView(props: PhaseProps) {
   const {phase, catalog} = props;
-  if (phase.kind === "welcome") return <Welcome catalog={catalog} start={props.start} skip={props.skipAll} />;
+  if (phase.kind === "welcome") return <Welcome catalog={catalog} statuses={props.statuses} start={props.start} skip={props.skipAll} />;
   if (phase.kind === "abilities") return <Abilities {...props} />;
   if (phase.kind === "done") return <Done catalog={catalog} statuses={props.statuses} chosen={props.chosen} />;
   const group = catalog.groups.find(item => item.key === phase.key);
@@ -252,15 +321,17 @@ function PhaseView(props: PhaseProps) {
     renderRoute={props.renderRoute} changed={props.changed} markDirty={props.markDirty} />;
 }
 
-function Welcome({catalog, start, skip}: {catalog: Catalog; start: () => void; skip: () => void}) {
-  const optional = catalog.groups.filter(group => !group.required).length;
+function Welcome({catalog, statuses, start, skip}: {catalog: Catalog; statuses: Statuses; start: () => void; skip: () => void}) {
+  const optional = catalog.groups.filter(isAbility).length;
   const required = catalog.groups.filter(group => group.required);
+  const installs = catalog.groups.filter(group => group.installs && !groupReady(catalog, statuses, group.key));
   return <div className="onboarding-welcome">
     <i className="onboarding-mark is-large" style={brandMask} aria-hidden="true" />
     <h2 tabIndex={-1}>你好，我是 Akashic</h2>
     <p className="onboarding-lead">先花两三分钟让我能说话，其余能力随时可以再开。</p>
     <ol className="onboarding-promise">
       {required.map(group => <li key={group.key}><span>{group.pitch || group.title}</span><em>必需</em></li>)}
+      {installs.map(group => <li key={group.key}><span>{group.pitch || group.title}</span><em>默认全部</em></li>)}
       {optional > 0 && <li><span>挑选你想要的能力</span><em>{optional} 项可选</em></li>}
       <li><span>开始第一段对话</span><em>马上</em></li>
     </ol>
@@ -281,7 +352,7 @@ function Heading({eyebrow, title, lead}: {eyebrow?: string; title: string; lead:
 }
 
 function Abilities({catalog, statuses, chosen, toggle}: PhaseProps) {
-  const optional = catalog.groups.filter(group => !group.required);
+  const optional = catalog.groups.filter(isAbility);
   const pending = optional.filter(group => chosen.has(group.key) && !groupReady(catalog, statuses, group.key)).length;
   return <>
     <Heading eyebrow="可选 · 随时可改" title="还想让它做什么？" lead="每一项都来自一个已安装的插件。打开的项接下来做简单设置，没打开的不会打扰你。" />
@@ -356,7 +427,7 @@ function Done({catalog, statuses, chosen}: {catalog: Catalog; statuses: Statuses
     <Heading title={missing ? "还差一步才能对话" : "说第一句话吧"}
       lead={missing ? "还没有可用的对话模型。可以随时在功能设置里连接。" : "这些设置都可以在功能设置里随时修改，新装的插件也会出现在那里。"} />
     <ul className="onboarding-summary">
-      {catalog.groups.map(group => {
+      {catalog.groups.filter(group => !group.installs).map(group => {
         const on = groupReady(catalog, statuses, group.key);
         const state = on ? "已开启" : group.required ? "未连接" : chosen.has(group.key) ? "未完成" : "未开启";
         return <li key={group.key} className={on ? "is-on" : group.required ? "is-missing" : ""}>
@@ -376,13 +447,14 @@ function Footer({phase, at, catalog, statuses, chosen, editing, back, next}: {
   const steps = group ? catalog.steps.filter(step => step.group === group.key) : [];
   const complete = steps.every(step => group?.required ? ready(statuses[step.id]) : settled(statuses[step.id]));
   const blocked = !!group && (editing || !complete);
-  const optional = catalog.groups.filter(item => !item.required && chosen.has(item.key)).length;
+  const optional = catalog.groups.filter(item => isAbility(item) && chosen.has(item.key)).length;
+  const running = steps.some(step => statuses[step.id]?.running);
   const label = phase.kind === "done" ? "开始对话" : phase.kind === "abilities" && optional === 0 ? "先不用，直接开始" : "继续";
-  const hint = editing ? "先保存当前设置" : group?.required ? complete ? "已连接，点「继续」进入下一步" : "连接成功后继续" : "";
+  const hint = editing ? "先保存当前设置" : running ? "装完后继续" : group?.required ? complete ? "已连接，点「继续」进入下一步" : "连接成功后继续" : "";
   return <footer className="onboarding-footer">
     <button type="button" className="onboarding-text-button" hidden={at <= 1} onClick={back}>上一步</button>
     <span className="onboarding-hint">
-      {group && !group.required && !complete && !editing ? <button type="button" className="onboarding-text-button" onClick={next}>跳过这项</button> : hint}
+      {group && !group.required && !complete && !editing && !running ? <button type="button" className="onboarding-text-button" onClick={next}>跳过这项</button> : hint}
     </span>
     <button type="button" className="onboarding-primary" disabled={blocked} onClick={next}>{label}</button>
   </footer>;
