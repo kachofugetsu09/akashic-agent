@@ -349,7 +349,7 @@ class BrowserCatalogSession implements WebHostSession {
   private dashboardUrl(owner: ModuleActivation, path: string): URL {
     if (this.closed) throw new Error("web catalog session is closed");
     if (owner.disposed) throw new Error("web module is disposed");
-    if (this.staleCatalog) throw new Error("web catalog is stale");
+    if (this.staleCatalog) throw new Error("界面刚更新过，这个操作没有发出。请刷新页面后再试。");
     const url = new URL(path, window.location.origin);
     if (url.origin !== window.location.origin || !url.pathname.startsWith("/api/dashboard/")) {
       throw new Error("web modules may only call their own dashboard API");
@@ -694,6 +694,8 @@ export async function startWebHost(host: HTMLElement): Promise<WebHostSession> {
   host.dataset.akashicCatalog = session.bootstrap.catalogId;
   let closed = false;
   let checking = false;
+  // 核对进行中又来了触发（如关闭设置）：当前这次可能读的是旧目录，结束后补查一次。
+  let pending = false;
   let timer: number | undefined;
   let attempts = 0;
   let sawChange = false;
@@ -714,7 +716,8 @@ export async function startWebHost(host: HTMLElement): Promise<WebHostSession> {
     if (!notice.isConnected) document.body.prepend(notice);
   };
   const check = async (): Promise<void> => {
-    if (closed || checking) return;
+    if (closed) return;
+    if (checking) { pending = true; return; }
     checking = true;
     try {
       const state = await session.checkCurrent();
@@ -745,7 +748,10 @@ export async function startWebHost(host: HTMLElement): Promise<WebHostSession> {
         show(error instanceof Error ? error.message : String(error));
       }
     }
-    finally { checking = false; }
+    finally {
+      checking = false;
+      if (pending && !closed) { pending = false; void check(); }
+    }
   };
   const submitted = (): void => {
     window.clearInterval(timer); attempts = 0; sawChange = false;
@@ -765,11 +771,14 @@ export async function startWebHost(host: HTMLElement): Promise<WebHostSession> {
     sawChange = true;
   };
   window.addEventListener("akashic:configuration-submitted", submitted);
+  // 设置面板里的未保存修改会暂缓更换目录；面板关上就立即再核对一次，不必等窗口重新获得焦点。
+  window.addEventListener("akashic:settings-closed", focus);
   window.addEventListener("focus", focus);
   document.addEventListener("visibilitychange", focus);
   return {close: once(() => {
     closed = true; window.clearInterval(timer); notice.remove();
     window.removeEventListener("akashic:configuration-submitted", submitted);
+    window.removeEventListener("akashic:settings-closed", focus);
     window.removeEventListener("focus", focus);
     document.removeEventListener("visibilitychange", focus);
     session.close();
