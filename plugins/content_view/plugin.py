@@ -114,9 +114,12 @@ class ReadContent:
             text = text_part(messages, target.message_id, requested.part_index)
             original = ReadReference(message_id=target.message_id, part_index=requested.part_index,
                                      start=0, end=len(text))
-        end = len(text) if requested.end is None else requested.end
-        if not 0 <= requested.start <= end <= len(text):
-            return "范围必须满足 0 <= start <= end <= 原文字符数；不会静默截断"
+        total_chars = len(text)
+        if requested.start > total_chars:
+            return f"起始位置 start={requested.start} 超出原文长度（共 {total_chars} 字符，合法范围 0 <= start <= {total_chars}）"
+        end = total_chars if requested.end is None else min(requested.end, total_chars)
+        if end < requested.start:
+            return f"结束位置 end={requested.end} 小于起始位置 start={requested.start}（原文共 {total_chars} 字符）"
         # 2. 持久准备只含原文坐标；invoke 无文件、网络或消息写入副作用。
         return ReadReference(message_id=original.message_id, part_index=original.part_index,
                              start=original.start + requested.start,
@@ -171,7 +174,7 @@ async def apply(ctx: Context) -> None:
         description=("回读当前会话的工具结果。message_id/part_index 指向已有工具结果；"
                      "省略 start/end 读取全文，或指定字符区间 [start,end)。"
                      "结构内容按 JSON 读取。结果过大时请缩小字符范围；模型视图仍受统一容量上限约束。"
-                     "超出范围明确拒绝，不静默截断。不要重新执行原工具来找回结果。"),
+                     "end 超出原文末尾时自动读到末尾，start 越界或 end < start 时明确拒绝并告知原文字符数。不要重新执行原工具来找回结果。"),
         parameters=ReadInput.model_json_schema(), open=open_tool, idempotent=True, parallel=True,
         icon="file-search",
     )
