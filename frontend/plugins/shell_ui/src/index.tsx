@@ -4,6 +4,7 @@ import "./style.css";
 import { akashicBrandIcon, markup } from "./brand";
 import { PluginInventory, inventoryResource, type InventoryResource } from "./plugin-inventory";
 import { SystemVersion } from "./system-version";
+import { holdWhileInstalling } from "./install-hold";
 import type {
   WebEntry,
   WebHostContextV1,
@@ -107,6 +108,7 @@ const settingsLauncher = { open: () => {} };
 export function activate(ctx: WebHostContextV1): WebUiDisposer {
   const inventory = inventoryResource(ctx);
   const disposers = [
+    holdWhileInstalling(ctx.http),
     ctx.ui.inject("web.root.v1", (mount) => mount.register({
       id: "shell",
       children: [

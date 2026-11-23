@@ -16,6 +16,8 @@ from agent.plugins.static_manifest import is_plugin_name
 
 SCHEMA_VERSION = 1
 _TIMEOUT_S = 60
+# 无人值守的首装只装核心、把挑选扩展包留给网页引导时，在 workspace 里留下的标记；用户在网页上决定后删除。
+FIRST_INSTALL_PENDING = "runtime/first-install-pending.json"
 
 
 @dataclass(frozen=True)

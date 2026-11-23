@@ -89,6 +89,8 @@ def _json_of(done: subprocess.CompletedProcess[str]) -> dict[str, object]:
 # 在线：plugin-install 只回执"已受理"，用 update_id 轮询 plugin-status 到终态或超时。
 def _install_online(ctx: Context, plugin_id: str, sha: str) -> tuple[Result, str]:
     update_id = uuid4().hex
+    before = _live_view(ctx, plugin_id)
+    prior = None if before is None else before.get("generation_id")
     done = _main(ctx, "plugin-install", "--source", ctx.repo, "--marketplace", plugin_id.partition("@")[2],
                  "--ref", sha, "--update-id", update_id)
     if done.returncode != 0:
@@ -96,8 +98,9 @@ def _install_online(ctx: Context, plugin_id: str, sha: str) -> tuple[Result, str
     deadline = time.monotonic() + ctx.timeout
     while True:
         status = _main(ctx, "plugin-status", update_id)
-        state = str(_json_of(status).get("state", "")) if status.returncode == 0 else ""
-        if state == "active":
+        view = _json_of(status) if status.returncode == 0 else {}
+        state = str(view.get("state", ""))
+        if state == "active" or _settled_elsewhere(ctx, view, prior, plugin_id, sha):
             return "installed", ""
         if state == "restart_required":
             return "restart-required", "公共合同变化，需要重启实例后生效"
@@ -106,6 +109,15 @@ def _install_online(ctx: Context, plugin_id: str, sha: str) -> tuple[Result, str
         if time.monotonic() >= deadline:
             return "in-progress", f"{ctx.timeout:.0f} 秒内未到终态（state={state or 'unknown'}）；plugin-status {update_id} 查询"
         time.sleep(1.0)
+
+
+# 更新已到终态却报 unknown：新建了 Python 环境的包，选择里落的输入与更新记下的不是同一个，plugin-status 对不上号。
+# 这时以事实为准：换出了新一代且在运行、stable 指针指向目标提交，就是装好了；否则照常等到期限。
+def _settled_elsewhere(ctx: Context, view: dict[str, object], prior: object, plugin_id: str, sha: str) -> bool:
+    if view.get("state") != "unknown" or view.get("terminal") is not True or view.get("fiber_state") != "active":
+        return False
+    generation = view.get("generation_id")
+    return generation is not None and generation != prior and _landed(ctx, plugin_id.partition("@")[0], plugin_id, sha)
 
 
 # 离线：直接调用安装器，下次启动生效；身份必须是普通外置身份，不传 takeover。
@@ -307,8 +319,10 @@ def _install_planned(ctx: Context, names: list[str], needs: dict[str, set[str]])
     outcomes: list[Outcome] = []
     not_ready: set[str] = set()
     seen: list[tuple[str, str]] = []
-    for name in names:
+    for number, name in enumerate(names, 1):
         bare = name.partition("@")[0]
+        # 逐包进度写 stderr（结果表仍在 stdout 末尾）：设置页按这一行显示"第几个、正在装谁"。
+        print(f"({number}/{len(names)}) 正在安装 {bare}", file=sys.stderr, flush=True)
         if blocked := sorted(needs.get(bare, set()) & not_ready):
             restart = any(dict(seen).get(dep) == "restart-required" for dep in blocked)
             hint = "（需要先重启实例，再重新安装）" if restart else ""

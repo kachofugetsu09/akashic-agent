@@ -619,7 +619,7 @@ CORE_KEYS = frozenset({
 # 这里只允许宿主 journal、迁移回执、完整 release 备份；不授予业务表写入权。
 SQLITE_OWNERS = {
     "agent/plugins/reload_journal.py": {"inspect_existing", "_check_existing_schema", "_connect"},
-    "agent/migrations/runner.py": {"_read_baseline", "_save_baseline", "_read_applied_ids"},
+    "agent/migrations/runner.py": {"_read_baseline", "_save_baseline", "_read_applied_ids", "replace_workspace_baseline"},
     "agent/migrations/release_backup.py": {"_copy_db"},
     "migrations/core/20260921_01_plugin_update_input_ref.py": {"_copy_database", "_upgrade"},
     "migrations/core/20260928_01_plugin_config_updates.py": {"upgrade"},

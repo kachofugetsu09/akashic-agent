@@ -12,7 +12,21 @@ inject = (UI, PLUGIN_UPDATES, RUNTIME_CATALOG)
 
 
 async def apply(ctx: Context) -> None:
-    _ = await ctx.provide(inventory.INVENTORY, inventory.bind(ctx))
+    service = inventory.bind(ctx)
+    _ = await ctx.provide(inventory.INVENTORY, service)
+    from plugins.onboarding.contract import ONBOARDING, Ability, Step
+
+    # 首装把挑选扩展包留给网页时，引导里多出"选择功能"一步；表单是插件页的 plugins/setup 子路由。
+    async def contribute(child: Context) -> None:
+        _ = await child.require(ONBOARDING).group(child, "packages", "选择功能", Ability(
+            pitch="选择要安装的功能",
+            benefit="核心已经装好。下面是官方仓库里的扩展包，默认全部安装；不需要的可以取消，以后也能在设置的插件页里再装。",
+            installs=True,
+        ))
+        _ = await child.require(ONBOARDING).register(child, Step("packages", "选择功能", "packages", "plugins/setup",
+                                                                  service.installer.onboarding_status))
+
+    _ = await ctx.inject((ONBOARDING,), contribute, name="onboarding")
 
     async def register_ui(child: Context) -> None:
         _ = await child.require(UI).register(

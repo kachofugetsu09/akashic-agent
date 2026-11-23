@@ -420,7 +420,7 @@ def _record_failure(
 def _first_install_extra(*, paths: ReleasePaths, target: str, current: Mapping[str, str], candidate: Mapping[str, str],
                          extra: ExtraOptions, inputs_dir: Path, run: Run) -> None:
     from agent.plugins.absorbed import read_absorbed
-    from scripts.first_install import Progress, choose, clear_intent, preset_extra_rows, write_patch
+    from scripts.first_install import Progress, choose, finish_first_install, preset_extra_rows, write_patch
 
     mode = current.get("AKASHIC_PLUGIN_BUNDLE", "base")
     if extra.inputs is not None:
@@ -442,7 +442,7 @@ def _first_install_extra(*, paths: ReleasePaths, target: str, current: Mapping[s
                              out=inputs_dir, run=run)
     _ensure_first_install(paths=paths, candidate=candidate, inputs=inputs_dir, run=run, install_extra=choice.install, bundle=mode,
                           progress=Progress(len(found.targets)))  # N 取预取实际产出的目标数
-    clear_intent(paths.state)
+    finish_first_install(paths.state, paths.state / "workspace")
 
 
 def activate_release(
@@ -482,6 +482,9 @@ def activate_release(
             _first_install_extra(paths=paths, target=target, current=current, candidate=candidate, extra=extra,
                                  inputs_dir=attempt_path.with_suffix(".inputs"), run=run)
     else:
+        # 首次激活已提交 Root 但上次没走到收尾：补写网页挑选标记并丢掉首装意图（没有意图时什么都不做）。
+        from scripts.first_install import finish_first_install
+        finish_first_install(paths.state, paths.state / "workspace")
         if plan is not None and (plan.is_symlink() or not plan.is_file()):
             raise ValueError("部署清单必须是普通文件")
         # 停机之前联网求 extra 包；任何一步失败都在这里抛错，旧服务不动。

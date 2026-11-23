@@ -14,7 +14,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TextIO, cast
 
-from agent.plugins.package_index import PackageIndex, closure, load_index
+from agent.plugins.package_index import FIRST_INSTALL_PENDING, PackageIndex, closure, load_index
 from scripts.akashic_release.extra import MARKETPLACE, provided_ids, _read_rows  # pyright: ignore[reportPrivateUsage]
 
 PROFILES = ("full", "minimal", "custom")
@@ -114,8 +114,9 @@ def decide(
     absorbed: frozenset[str] = frozenset(),
 ) -> Choice:
     preset_names = {identity.partition("@")[0]: row for row, identity in preset_rows.items()}
-    if profile == "minimal":
-        return Choice("minimal", (), tuple(sorted(preset_rows)), ())
+    # web 与最小档装的一样（只有核心），区别只在完成后留下标记，让网页引导接着挑扩展包。
+    if profile in ("minimal", "web"):
+        return Choice(profile, (), tuple(sorted(preset_rows)), ())
     if index is None:
         raise RuntimeError("需要读取扩展包组信息才能确定要安装的包，但现在取不到；联网后重试，或选择最小安装（--profile minimal）")
     groups = tuple(groups)
@@ -226,7 +227,8 @@ def write_patch(choice: Choice, preset_rows: dict[str, str], patch: Path, out: T
 # 清单：先列包、数量与总大小；每包一行；自选时自动带上的依赖单独提示。
 def print_listing(index: PackageIndex | None, choice: Choice, out: TextIO) -> None:
     if not choice.install:
-        print("最小安装：只装核心，不安装扩展包。", file=out)
+        print("先只装核心；扩展包在网页的新手引导里挑选安装。" if choice.profile == "web"
+              else "最小安装：只装核心，不安装扩展包。", file=out)
         return
     assert index is not None
     size = sum(index.packages[name].size_bytes for name in choice.install)
@@ -275,6 +277,17 @@ def clear_intent(state: Path) -> None:
     _intent_path(state).unlink(missing_ok=True)
 
 
+# 首装成功收尾：意图是 web 时先在 workspace 里留下"待网页挑选"标记，再删意图；标记先落盘，
+# 选择已提交而意图还在（上次没走到这里）时，start 与 release 的重跑也调用它补做。幂等。
+def finish_first_install(state: Path, workspace: Path) -> None:
+    intent = load_intent(state)
+    if intent is not None and intent.profile == "web":
+        marker = workspace / FIRST_INSTALL_PENDING
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        _ = marker.write_text(json.dumps({"schema_version": 1}) + "\n", encoding="utf-8")
+    clear_intent(state)
+
+
 # 已提交的选择（有 root_ref）：判断"是否首次安装"的唯一依据之一，与 ensure 的拒绝条件同一个判定。
 def selection_committed(workspace: Path) -> bool:
     path = workspace / "runtime/plugin-stable.json"
@@ -298,8 +311,11 @@ def choose(
         return pending
     if groups and profile in (None, "custom"):
         profile = "custom"
+    # 没人在终端前（容器、systemd、--yes）：只装核心，挑扩展包交给网页引导，那里能看到每个包的大小与依赖。
+    if profile is None and (assume_yes or not interactive()):
+        profile = "web"
     index: PackageIndex | None = None
-    if profile != "minimal":
+    if profile not in ("minimal", "web"):
         try:
             index = load_index(repo, home)
         except RuntimeError as error:
@@ -307,13 +323,9 @@ def choose(
         # 首装只接受这一次取到的 index：用本机缓存的旧包组信息会把过期的包集合当成"全部"。
         if index.note:
             raise RuntimeError(f"取不到最新的包组信息（{index.note}）；未做任何改动，联网后重试，或选择最小安装（--profile minimal）")
-    asked = False
+    asked = profile is None
     if profile is None:
-        if interactive() and not assume_yes:
-            profile, groups = ask_profile(index, ask, out)
-            asked = True
-        else:
-            profile = "full"
+        profile, groups = ask_profile(index, ask, out)
     choice = decide(index, preset_rows, profile, groups, absorbed)
     print_listing(index, choice, out)
     if asked and choice.install and ask("继续？[Y/n] ").strip().lower() in ("n", "no"):

@@ -39,7 +39,9 @@ INVENTORY = ServiceKey[PluginInventory]("shell-ui.plugin_inventory")
 
 class InstallRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
-    name: str
+    names: list[str]
+    # 来自引导里的"选择功能"（首次挑选或其重试）：引导据此跟踪这次任务，普通安装不算。
+    first_install: bool = False
 
 
 class EnabledRequest(BaseModel):
@@ -186,10 +188,16 @@ def register(app: FastAPI, context: DashboardContext) -> None:
     @app.post("/api/dashboard/plugins/install")
     async def install(request: InstallRequest) -> Row:
         try:
-            return await context.require(INVENTORY).installer.start(request.name)
+            return await context.require(INVENTORY).installer.start(request.names, request.first_install)
         except InstallBusy as error:
             raise HTTPException(409, str(error)) from error
         except LookupError as error:
             raise HTTPException(404, str(error)) from error
         except (RuntimeError, ValueError, OSError) as error:
             raise HTTPException(502, str(error)) from error
+
+    # 首装只用核心：不装扩展包，引导里的"选择功能"一步就此完成。
+    @app.delete("/api/dashboard/plugins/first-install")
+    async def decline_first_install() -> Row:
+        await context.require(INVENTORY).installer.decline()
+        return {"first_install": False}

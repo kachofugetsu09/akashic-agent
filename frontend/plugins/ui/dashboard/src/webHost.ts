@@ -737,8 +737,11 @@ export async function startWebHost(host: HTMLElement): Promise<WebHostSession> {
         window.clearInterval(timer); notice.remove();
       };
       // 仅在正式目录稳定后更换宿主；保留路由与非敏感回执，不重载浏览器。
-      if (window.dispatchEvent(new CustomEvent("akashic:before-navigate", {cancelable: true, detail: {go, reason: "catalog"}}))) go();
-      if (!applied) { available = false; next.close(); show("界面已更新，当前页面暂时阻止切换。请等待原操作结果或处理页面提示，再重新核对。"); }
+      // 拦下换代的一方调 wait() 表示自己会在就绪后调 go()（如安装进行中的引导），这时不弹“暂时阻止切换”。
+      let waiting = false;
+      const wait = (): void => { waiting = true; };
+      if (window.dispatchEvent(new CustomEvent("akashic:before-navigate", {cancelable: true, detail: {go, wait, reason: "catalog"}}))) go();
+      if (!applied) { available = false; next.close(); if (!waiting) show("界面已更新，当前页面暂时阻止切换。请等待原操作结果或处理页面提示，再重新核对。"); }
     } catch (error) {
       if (closed) return;
       if (error instanceof WebHostUnauthorizedError) {

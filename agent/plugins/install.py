@@ -31,6 +31,7 @@ from agent.plugins.artifacts import (
     relative_artifact_pointer,
     write_pointers,
 )
+from agent.plugins.package_index import FIRST_INSTALL_PENDING
 from agent.plugins.manifest import (
     ensure_workspace_plugin_data_dir,
     installed_plugin_ids,
@@ -212,51 +213,67 @@ def install_git_plugin(
             source=source,
         )
         # 只有实例运行中的在线调用方要求拒绝；离线安装放行，新迁移由下次启动的 runner 执行。
-        if reject_pending_migrations:
-            _reject_pending_migrations(workspace, clone_root, plugin_name, marketplace)
-        plugin_version = _validate_path_segment(
-            static_manifest.version,
-            "插件 version",
-        )
-        previous_enabled = choices.get(f"{plugin_name}@{marketplace}")
-        activation = _activate_plugin_version(
-            plugin_name=plugin_name,
-            plugin_version=plugin_version,
-            static_manifest=static_manifest,
-            marketplace=marketplace,
-            clone_root=clone_root,
-            cache_root=cache_root,
-            data_root=workspace.resolve(strict=False) / "plugin-data",
-            workspace=workspace,
-            source_revision=source_revision,
-            refresh_existing_artifact=refresh_existing_artifact,
-            journal=journal, update_id=update_id,
-            previous_enabled=previous_enabled,
-            offline_wheels=offline_wheels,
-            dependency_batch=dependency_batch,
-        )
-        plugin_id = f"{plugin_name}@{marketplace}"
+        # 首装窗口里并入了起点时，安装没有提交就还原：失败的尝试不能替以后的版本宣告“无须迁移”。
+        adopted = (_reject_pending_migrations(workspace, clone_root, plugin_name, marketplace, cache_root / plugin_name)
+                   if reject_pending_migrations else None)
         try:
-            # 2. 安装在当前 workspace 显式启用，其他 workspace 的选择不变。
-            _ = set_plugin_choice(workspace, plugin_id, enabled=True)
+            plugin_version = _validate_path_segment(
+                static_manifest.version,
+                "插件 version",
+            )
+            previous_enabled = choices.get(f"{plugin_name}@{marketplace}")
+            activation = _activate_plugin_version(
+                plugin_name=plugin_name,
+                plugin_version=plugin_version,
+                static_manifest=static_manifest,
+                marketplace=marketplace,
+                clone_root=clone_root,
+                cache_root=cache_root,
+                data_root=workspace.resolve(strict=False) / "plugin-data",
+                workspace=workspace,
+                source_revision=source_revision,
+                refresh_existing_artifact=refresh_existing_artifact,
+                journal=journal, update_id=update_id,
+                previous_enabled=previous_enabled,
+                offline_wheels=offline_wheels,
+                dependency_batch=dependency_batch,
+            )
+            plugin_id = f"{plugin_name}@{marketplace}"
+            try:
+                # 2. 安装在当前 workspace 显式启用，其他 workspace 的选择不变。
+                _ = set_plugin_choice(workspace, plugin_id, enabled=True)
+            except BaseException:
+                activation.rollback()
+                raise
+            journal.commit_update(update_id)
         except BaseException:
-            activation.rollback()
+            if adopted is not None:
+                from agent.migrations.runner import replace_workspace_baseline
+                replace_workspace_baseline(workspace, adopted)
             raise
-        journal.commit_update(update_id)
     return activation.result
 
 
 # 官方来源的新制品带有未执行迁移时拒绝换代：在线实例不跑迁移，须走停机部署或启动。
-def _reject_pending_migrations(workspace: Path, clone_root: Path, plugin_name: str, marketplace: str) -> None:
-    from agent.migrations.runner import pending_artifact_migrations
+# 例外只在首装挑选窗口（无人值守首装留下的标记还在，见 FIRST_INSTALL_PENDING）：workspace 刚建好、扩展包只来自这次挑选，
+# 从没装过的插件（没有稳定制品、没有数据目录）不可能有旧数据，迁移并入新建起点后照常安装。返回并入前的起点供失败还原。
+def _reject_pending_migrations(
+    workspace: Path, clone_root: Path, plugin_name: str, marketplace: str, plugin_base: Path,
+) -> tuple[str, ...] | None:
+    from agent.migrations.runner import adopt_fresh_plugin_migrations, pending_artifact_migrations
 
     source = ResolvedPluginSource(clone_root, "installed", marketplace, plugin_name)
     pending = pending_artifact_migrations(workspace, source)
-    if pending:
-        raise ValueError(
-            f"{plugin_name}@{marketplace} 的目标版本带有待执行迁移 {', '.join(pending)}；"
-            "在线安装不执行迁移，请停机后离线安装或走停机部署"
-        )
+    if not pending:
+        return None
+    fresh = ((workspace / FIRST_INSTALL_PENDING).exists() and read_pointers(plugin_base) is None
+             and not workspace_plugin_data_dir(workspace, plugin_name, marketplace).exists())
+    if fresh and (previous := adopt_fresh_plugin_migrations(workspace, pending)) is not None:
+        return previous
+    raise ValueError(
+        f"{plugin_name}@{marketplace} 的目标版本带有待执行迁移 {', '.join(pending)}；"
+        "在线安装不执行迁移，请停机后离线安装或走停机部署"
+    )
 
 
 # 把 artifact 的 origin 改成真实上游地址；artifact 内容摘要不含 .git，不影响身份。
