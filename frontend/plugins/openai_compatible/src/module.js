@@ -186,13 +186,14 @@ function renderCreate(host, props) {
   form.elements.thinkingFormat.value = defaults.thinkingFormat ?? "none";
   const manualBox = host.querySelector("[data-manual-box]");
   const manualToggle = host.querySelector("[data-manual]");
-  const revealManual = () => {
+  // 用户主动手填时型号必填；读目录失败后自动展开时只是可选，留空再点「添加」会重新读目录。
+  const revealManual = (required) => {
     manualBox.hidden = false;
     manualToggle.hidden = true;
-    form.elements.manualModel.required = true;
+    form.elements.manualModel.required = required;
     form.elements.manualModel.focus();
   };
-  manualToggle.addEventListener("click", revealManual);
+  manualToggle.addEventListener("click", () => revealManual(true));
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     // 1. 名称和地址在「高级」里也必须有效；无效时展开让用户看到。
@@ -225,14 +226,14 @@ function renderCreate(host, props) {
   return () => host.replaceChildren();
 }
 
-// 只有服务商答复了但目录不可用（没有对话模型、不提供或拒绝列表）才引导手填一个型号；
-// 密钥、额度、限流、网络、地址、超时类失败换个型号也过不去，原样报告，让用户检查后重试。
+// 目录不可用（没有对话模型、不提供或拒绝列表；422 也含本地地址校验失败）时展开可选的型号框；
+// 密钥、额度、限流、网络、超时类失败换个型号也过不去，原样报告，让用户检查后重试。
 const CATALOG_MISSES = new Set([404, 409, 422]);
 function catalogMiss(reason, revealManual) {
   const status = reason instanceof Error ? reason.status : undefined;
   if (typeof status !== "number" || !CATALOG_MISSES.has(status)) return reason;
-  revealManual();
-  return new Error(`没读到可用的模型列表：${reason.message.replace(/[。.]?$/u, "。")}请在上方填一个型号，再点「添加」；添加前会向它发一条短消息验证。`);
+  revealManual(false);
+  return new Error(`没读到可用的模型列表：${reason.message.replace(/[。.]?$/u, "。")}检查地址后直接再点「添加」重试；或在上方填一个型号再点「添加」，添加前会向它发一条短消息验证。`);
 }
 
 function keyField(placeholder, required) {
