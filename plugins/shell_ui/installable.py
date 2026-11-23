@@ -103,14 +103,41 @@ class PackageInstaller:
             raise RuntimeError((err.decode(errors="replace").strip().splitlines() or ["命令失败"])[-1])
         groups = uninstalled_groups(cast(Row, json.loads(out.decode())))
         self._known = {cast(str, item["name"]) for group in groups for item in cast(list[Row], group["packages"])}
-        return {"groups": groups, "first_install": await run_file_io(self._pending().exists)}
+        return {"groups": groups, "first_install": await run_file_io(self._selecting)}
 
     def _pending(self) -> Path:
         return Path(os.environ["AKASHIC_WORKSPACE"]) / FIRST_INSTALL_PENDING
 
+    # 标记的两段：还没挑选（没有 task）、挑好了正在装（记着任务 id）。标记一直留到首装任务结束，
+    # Core 以它判断首装窗口（从没装过的插件可以把迁移并入新建起点）。读不懂的标记按还没挑选处理。
+    def _marker(self) -> Row | None:
+        try:
+            value = json.loads(self._pending().read_text())
+        except FileNotFoundError:
+            return None
+        except (OSError, ValueError):
+            return {}
+        return cast(Row, value) if isinstance(value, dict) else {}
+
+    def _selecting(self) -> bool:
+        marker = self._settle()
+        return marker is not None and "task" not in marker
+
+    # 首装任务已经结束（或进程丢了）就删掉标记，关闭首装窗口；返回仍然有效的标记。
+    def _settle(self) -> Row | None:
+        marker = self._marker()
+        task = None if marker is None else marker.get("task")
+        if task is None:
+            return marker
+        record = self._dir() / f"{task}.json"
+        if record.exists() and self._snapshot(cast(Row, json.loads(record.read_text())))["state"] == "running":
+            return marker
+        self._pending().unlink(missing_ok=True)
+        return None
+
     # 校验名字确实是未装的扩展包，再起一个后台任务按依赖顺序装完；同一时间只允许一个任务，占位在第一个 await 之前。
-    # 首装还没挑选时，这次提交就是用户的选择：起任务后删掉标记。任务记录的 first_install 供引导跟踪，
-    # 有标记或调用方声明是首装挑选的重试时为真。
+    # 首装还没挑选时，这次提交就是用户的选择：标记改记任务 id，任务结束时删掉。任务记录的 first_install 供引导跟踪，
+    # 还没挑选或调用方声明是首装挑选的重试时为真。
     async def start(self, names: list[str], first_install: bool = False) -> Row:
         if not names or len(set(names)) != len(names):
             raise LookupError("要安装的包不能为空或重复")
@@ -125,10 +152,11 @@ class PackageInstaller:
                 _ = await self.available()
             if unknown := [name for name in names if name not in self._known]:
                 raise LookupError(f"{'、'.join(unknown)} 不在可安装列表里，或已经安装")
-            pending = await run_file_io(self._pending().exists)
+            pending = await run_file_io(self._selecting)
             started = await self._spawn(names, pending or first_install)
             if pending:
-                await self.decline()
+                marker = json.dumps({"schema_version": 1, "task": started["id"]})
+                await run_file_io(lambda: self._pending().write_text(marker + "\n"))
             return started
         finally:
             self._claimed = None
@@ -163,6 +191,7 @@ class PackageInstaller:
         except TimeoutError:
             await run_file_io(lambda: self._expire(task_id, process.pid))
             _ = await process.wait()
+        _ = await run_file_io(self._settle)
 
     def _expire(self, task_id: str, pid: int) -> None:
         exit_file = self._dir() / f"{task_id}.exit"
@@ -201,7 +230,7 @@ class PackageInstaller:
         if code == "timeout":
             tail.append(f"超过 {int(lifetime // 60)} 分钟仍未结束，已终止")
         steps = _PROGRESS.findall(log)
-        return {"name": _title(record), "names": _names(record), "state": state, "first_install": bool(record.get("first_install")),
+        return {"id": record["id"], "name": _title(record), "names": _names(record), "state": state, "first_install": bool(record.get("first_install")),
                 "exit_code": int(code) if code and code.lstrip("-").isdigit() else None,
                 "outcomes": [{"name": name, "result": result, "detail": detail.strip()} for name, result, detail in _OUTCOME.findall(log)],
                 "progress": {"done": int(steps[-1][0]) - 1, "total": int(steps[-1][1]), "current": steps[-1][2]} if steps else None,
@@ -209,6 +238,7 @@ class PackageInstaller:
 
     async def status(self) -> Row:
         def read() -> Row:
+            _ = self._settle()
             record = self._latest() if self._dir().is_dir() else None
             return {"task": None if record is None else self._snapshot(record)}
         return await run_file_io(read)
@@ -216,7 +246,7 @@ class PackageInstaller:
     # 新手引导"选择功能"一步的状态：还没挑选、或首装挑的包还在装，都算未完成；进度给一句人话。
     async def onboarding_status(self) -> Row:
         def read() -> Row:
-            pending = self._pending().exists()
+            pending = self._selecting()
             record = self._latest() if self._dir().is_dir() else None
             # 只跟踪首装挑选及其重试的任务：普通安装不能让已有实例被当成首装。
             task = self._snapshot(record) if record is not None and record.get("first_install") else None

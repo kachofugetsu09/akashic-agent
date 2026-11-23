@@ -372,18 +372,22 @@ def initialize_empty_workspace(*, repo_root: Path, workspace: Path, config_path:
         lock.release()
 
 
-# 从没在这个 workspace 装过的插件在线安装时，把它目标版本的迁移并入新建起点：它的数据还不存在，由当前代码直接建成
-# 最新形态，历史迁移不适用（与新 workspace 记录起点同一口径）。只扩展已有起点；没有起点的旧 workspace 返回 False。
-def adopt_fresh_plugin_migrations(workspace: Path, ids: tuple[str, ...]) -> bool:
-    ledger = workspace / "migrations.sqlite3"
-    baseline = _read_baseline(ledger)
+# 首装挑选窗口里在线安装从没装过的插件时，把它目标版本的迁移并入新建起点：它的数据还不存在，由当前代码直接建成
+# 最新形态，历史迁移不适用（与新 workspace 记录起点同一口径）。返回并入前的起点，安装失败时用它还原；
+# 没有起点的旧 workspace 不改动并返回 None。
+def adopt_fresh_plugin_migrations(workspace: Path, ids: tuple[str, ...]) -> tuple[str, ...] | None:
+    baseline = _read_baseline(workspace / "migrations.sqlite3")
     if baseline is None:
-        return False
-    merged = [*baseline, *(item for item in ids if item not in baseline)]
-    with closing(sqlite3.connect(ledger)) as connection, connection:
+        return None
+    replace_workspace_baseline(workspace, (*baseline, *(item for item in ids if item not in baseline)))
+    return baseline
+
+
+# 整体改写已有的新建起点：只用于上面的并入，以及安装失败后的还原。
+def replace_workspace_baseline(workspace: Path, ids: tuple[str, ...]) -> None:
+    with closing(sqlite3.connect(workspace / "migrations.sqlite3")) as connection, connection:
         connection.execute("BEGIN IMMEDIATE")
-        connection.execute("UPDATE _akashic_workspace_origin SET baseline_ids=?", (json.dumps(merged),))
-    return True
+        connection.execute("UPDATE _akashic_workspace_origin SET baseline_ids=?", (json.dumps(list(ids)),))
 
 
 def _read_applied_ids(path: Path) -> tuple[str, ...]:
