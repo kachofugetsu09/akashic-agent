@@ -1,6 +1,6 @@
 # 0167 · 非核心插件由官方 extra 仓库提供，Core 用 pkg 管理
 
-- 状态：accepted / implemented for review
+- 状态：accepted / implemented
 - 日期：2026-11-22
 - 取代：[0148](0148-plugins-stay-in-core.md)
 - 过程记录：[插件外移与包管理迁移计划](../design/plugin-packages-migration.md)
@@ -22,6 +22,7 @@
 - 命令：`list`、`groups`、`install <名>|@<组>`、`upgrade [<名>]`、`remove`、`sync`。
 - 在线实例上，命令经 Gateway 安装并热重载；离线时持插件目录的发布锁直接安装。
 - `install` 按 index 补上还没装的依赖，依赖在前；依赖没有就绪时，不装依赖它的包。
+- 设置页“插件”里的“可安装”分组列出 index 里还没装的包，一键安装走同一条 `pkg install`（后台任务，跨换代可查结果）。
 - `pkg` 只管官方仓库；私人插件和其他来源继续用 `plugin-install --marketplace`。两条路径共用同一套安装制品、选择和生命周期。
 
 **重依赖由插件自己声明。**
@@ -63,5 +64,5 @@
 - 依赖补全读 index 的本地缓存；index 过期时可能漏掉新增的依赖，安装本身仍以 release 提交为准。
 - 已选中但当前加载失败或被关闭的依赖不会被 `install` 修复；`pkg list` 会显示它们的状态。
 - 首装自动生成块的两个边界：用户把一模一样的块粘进多行字符串；用 tomlkit 删掉块里最后一行时丢了结束标记。两种情况都会被识别为“块已损坏”并拒绝重写，需要手动修。
-- `command:` 前置条件在 Akashic 运行环境里检测。容器部署的根文件系统只读，这类命令通常要由镜像或宿主提供，Agent 无法自己补齐。
+- `command:` 前置条件在 Akashic 运行环境里检测。容器部署的根文件系统只读，这类命令通常要由镜像或宿主提供，Agent 无法自己补齐；让 Agent 能给 Core 装命令行工具的路径见 issue #2223。
 - 只改插件不再需要发布 Core；只改 Core 仍要完整发布并重启一次。
