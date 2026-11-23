@@ -70,7 +70,7 @@ cd akashic-agent
   - `docker compose up -d --wait` 返回 0 就表示已就绪。如果返回非 0，运行 `docker compose logs --tail=200 akashic` 查看原因。
   - 把 `web-login` 打印的链接交给用户。这个链接 2 分钟内有效，只能用一次。
 - **源码**：运行 `./start --no-browser --yes`。
-  - `--yes` 表示首次安装不提问，装上全部默认功能。
+  - `--yes` 表示首次安装不提问，装上全部扩展包。
   - 看到 “WebUI 已就绪” 就表示完成。进程会一直运行，需要放到后台。
   - 登录链接用 `./start --login` 获取，交给用户。
 - **换端口**：

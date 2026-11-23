@@ -60,7 +60,7 @@ docker compose exec akashic python main.py web-passwd # Docker：重置为临时
 <form id="change" hidden>
   <div class="brand"><i></i>Akashic</div>
   <h1>设置你自己的密码</h1>
-  <p>初始或临时密码出现在日志或聊天里，保存新密码后就会失效。以后在任何设备上都用这个密码登录。</p>
+  <p>以后在任何设备上都用这个密码登录。保存后，之前的登录链接和临时密码都会失效。</p>
   <input type="text" autocomplete="username" value="akashic" hidden>
   <label>新密码<input id="new1" type="password" autocomplete="new-password" minlength="10" required></label>
   <label>再输入一次<input id="new2" type="password" autocomplete="new-password" required></label>

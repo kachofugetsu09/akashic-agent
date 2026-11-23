@@ -40,7 +40,7 @@ git checkout <新版本号，例如 v0.3.0>
 
 ### 插件
 
-功能插件单独更新，不需要更新整个程序。可以直接对 Akashic 说“检查一下插件更新”，也可以在“功能设置”→“插件”里操作。命令行用法：
+功能插件单独更新，不需要更新整个程序。可以直接对 Akashic 说“检查一下插件更新”，也可以在“功能设置”→“插件”里操作。不用 Docker 时用这两种方式即可；Docker 的命令行用法：
 
 ```bash
 docker compose exec akashic python main.py pkg list --remote   # 看哪些可以升级
