@@ -50,17 +50,17 @@ pre { margin: 8px 0; max-width: 100%; padding: 8px 10px; border-radius: 7px; bac
   <div class="msg" role="alert"></div>
   <details>
     <summary>第一次使用或忘记密码？</summary>
-    <p>第一次使用时，初始密码在启动日志里。也可以在服务器上运行下面的命令，免密进入或重置：</p>
-    <pre>python main.py web-login      # 打印一次性登录链接
-python main.py web-passwd     # 重置为临时密码，所有设备退出
-docker compose exec akashic python main.py web-login</pre>
+    <p>在运行 Akashic 的机器上运行下面的命令，拿一条一次性登录链接免密进入；第一次进入后会让你设置自己的密码。</p>
+    <pre>./start --login                                       # 源码安装：打印一次性登录链接
+docker compose exec akashic python main.py web-login  # Docker：打印一次性登录链接
+docker compose exec akashic python main.py web-passwd # Docker：重置为临时密码，所有设备退出</pre>
     <p>也可以在 Telegram/QQ 里让 Akashic 帮你重置网页密码。</p>
   </details>
 </form>
 <form id="change" hidden>
   <div class="brand"><i></i>Akashic</div>
   <h1>设置你自己的密码</h1>
-  <p>初始或临时密码出现在日志或聊天里，保存新密码后就会失效。以后在任何设备上都用这个密码登录。</p>
+  <p>以后在任何设备上都用这个密码登录。保存后，临时密码就会失效。</p>
   <input type="text" autocomplete="username" value="akashic" hidden>
   <label>新密码<input id="new1" type="password" autocomplete="new-password" minlength="10" required></label>
   <label>再输入一次<input id="new2" type="password" autocomplete="new-password" required></label>

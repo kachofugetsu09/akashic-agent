@@ -2,92 +2,91 @@
 
 # Akashic Agent
 
-Akashic 是一个会主动找你的 AI 伙伴。它可以对话，也能根据订阅的信息源判断何时主动发消息，并在空闲时执行后台任务。
+Akashic 是一个会主动找你的 AI 伙伴：能聊天，能根据你订阅的信息主动发消息，空闲时还会在后台帮你做事。
 
-## 快速开始
+## 安装
 
-只需要 [Docker](https://docs.docker.com/get-docker/)（Compose 2.20+）。Windows 和 macOS 使用 Docker Desktop 即可。
+两种方式选一种。不确定选哪个，就用 Docker。
+
+### 方式一：Docker（Windows、macOS、Linux 都可以）
+
+先安装 [Docker Desktop](https://docs.docker.com/get-docker/)，并打开它。然后在终端里依次运行：
 
 ```bash
 mkdir akashic && cd akashic
 curl -fsSLO https://github.com/kachofugetsu09/akashic-agent/releases/latest/download/compose.yaml
 docker compose up -d --wait
+docker compose exec akashic python main.py web-login
 ```
 
-首次启动会拉取镜像并安装默认功能，需要几分钟。命令返回后打开 <http://localhost:2236>，在“功能设置”→“初始配置”里连接模型，然后开始对话。
+第一次启动要下载和安装，大约需要 10 分钟，期间终端只显示等待；想看进度，另开一个终端运行 `docker compose logs -f`。最后一条命令会打印一个登录链接，在浏览器里打开它就能进入。
 
-启动失败时查看 `docker compose logs --tail=200`，处理后重新运行同一条启动命令。
+如果报错 `address already in use`，说明 2236 端口被别的程序占了：在同一目录创建 `.env` 文件，写一行 `AKASHIC_PORT=2237`，再运行一次 `docker compose up -d --wait`。
 
-## 日常使用
-
-```bash
-docker compose stop            # 停止
-docker compose up -d --wait    # 启动
-docker compose logs -f         # 查看日志
-```
-
-- 配置、会话和插件都保存在 `data` 数据卷里。**不要运行 `docker compose down -v`，它会删除所有数据。**
-- 端口 2236 被占用时，在同一目录创建 `.env`，写入 `AKASHIC_PORT=2237`，再重新启动。
-- 更新：先停止并备份数据，再下载新版 `compose.yaml` 覆盖旧文件，运行启动命令。
-
-```bash
-docker compose stop
-docker run --rm -v akashic_data:/data -v "$PWD":/backup alpine tar czf /backup/akashic-data.tgz -C /data .
-curl -fsSLO https://github.com/kachofugetsu09/akashic-agent/releases/latest/download/compose.yaml
-docker compose up -d --wait
-```
-
-数据卷名是“目录名_data”，上例目录为 `akashic`。
-
-## 通过域名访问
-
-网页默认只在本机开放：在运行 Akashic 的机器上打开 `http://localhost:2236` 即可，不需要额外配置。
-
-想在其他设备上通过域名访问时，用 Cloudflare Tunnel、nginx、Caddy 等工具把域名转发到这台机器的 `localhost:2236`。
-
-### 网页登录
-
-网页可以执行 Shell 和读写文件，所以默认带登录门（`web-auth` 插件），只有主人能进：
-
-- **第一次**：启动时随机生成初始密码，只写在启动日志里（`docker compose logs akashic | grep 初始密码`），不会发到任何聊天渠道。用户名 `akashic`。首次登录后需要设置自己的密码（至少 10 个字符）。
-- **本机免密**：在运行 Akashic 的机器上，`./start` 会自动帮浏览器登录。也可以运行下面的命令，得到一条 2 分钟内有效、只能用一次的登录链接：
-
-  ```bash
-  python main.py web-login                              # ./start 安装
-  docker compose exec akashic python main.py web-login  # Docker
-  ```
-
-- **记住设备**：默认 90 天内免登录，到期后重新登录一次。在别人的电脑上登录时，取消勾选“记住这台设备”。
-- **忘记密码**：运行 `python main.py web-passwd`（Docker 前面加 `docker compose exec akashic`），会重置为临时密码，所有设备退出。也可以在 Telegram/QQ 里让 Akashic 帮你执行。
-
-程序调用（SDK、CLI、programmatic）走本机 unix socket，不经过这道门。反向代理需要把原始 Host 转给 Akashic，例如 nginx 写 `proxy_set_header Host $host;`，否则网页的写操作和实时连接会被同源检查拒绝。公网访问请用 HTTPS。
-
-## 其他启动方式
-
-<details>
-<summary>不使用 Docker：<code>./start</code>（Linux / WSL2）</summary>
+### 方式二：不用 Docker（Linux 或 WSL2）
 
 需要 Git、Python 3.12+ 和 Node.js 20+。
 
 ```bash
-git clone --branch v0.2.0 https://github.com/kachofugetsu09/akashic-agent.git
+git clone --branch v0.3.0 https://github.com/kachofugetsu09/akashic-agent.git
 cd akashic-agent
 ./start
 ```
 
-首次运行会安装依赖并构建网页，就绪后自动打开 <http://127.0.0.1:2236>。按 Ctrl+C 停止；`--no-browser` 不打开浏览器，`--port 2237` 换端口。运行数据在 `~/.akashic`。
+第一次运行会安装依赖，大约需要 10 分钟。装好后浏览器会自动打开，并且已经登录。按 Ctrl+C 停止。
 
-</details>
+## 第一次打开
 
-源码构建镜像、开发调试与升级细节见[启动与部署说明](./docs/design/product-startup.md)；已有 Host Bridge 部署见[部署操作手册](./docs/design/operator-deployment.md)。
+1. **设置密码**：页面会让你设置一个自己的密码，至少 10 个字符。以后在其他设备上登录时使用。
+2. **跟着引导走**：只有“连接模型”是必须的。选一个模型服务，填入它的 API Key：内置 DeepSeek、智谱 GLM 等预设；其他兼容 OpenAI 接口的服务选“自定义 API”，再填地址。聊天软件、记忆等后面几步都可以先跳过，以后在“功能设置”里随时开。
+3. **开始对话**。
+
+想要更多功能，可以直接对 Akashic 说“帮我装上某某功能”，也可以在“功能设置”→“插件”里安装。
+
+## 常用操作
+
+| 想做的事 | Docker（在 `akashic` 目录里运行） | 不用 Docker（在 `akashic-agent` 目录里运行） |
+| --- | --- | --- |
+| 停止 | `docker compose stop` | 按 Ctrl+C |
+| 再次启动 | `docker compose up -d --wait` | `./start` |
+| 看日志 | `docker compose logs --tail=200` | 终端里会显示日志文件的位置 |
+| 拿登录链接 | `docker compose exec akashic python main.py web-login` | `./start --login` |
+
+**不要运行 `docker compose down -v`**，它会删除你的全部数据。
+
+更新、备份、换端口、从其他设备访问、忘记密码等操作，见[使用手册](./docs/user-guide.md)。
+
+## 出问题了
+
+1. 先看日志（见上表）里最后的报错。
+2. 处理后重新运行启动命令。中途失败了，直接再运行一次即可，已完成的步骤不会重做。
+3. 还是不行，就带上日志的最后 200 行，到 [Issues](https://github.com/kachofugetsu09/akashic-agent/issues) 提问，或者加[交流群](./COMMUNICATION.md)。
+
+## 给 AI 助手的安装说明
+
+如果你是正在帮用户安装 Akashic 的 AI 助手，按下面做：
+
+- **Docker**：按“方式一”的命令依次运行。
+  - `docker compose up -d --wait` 返回 0 就表示已就绪。如果返回非 0，运行 `docker compose logs --tail=200 akashic` 查看原因。
+  - 把 `web-login` 打印的链接交给用户。这个链接 2 分钟内有效，只能用一次。
+- **源码**：运行 `./start --no-browser --yes`。
+  - `--yes` 表示首次安装不提问，装上全部扩展包。
+  - 看到 “WebUI 已就绪” 就表示完成。进程会一直运行，需要放到后台。
+  - 登录链接用 `./start --login` 获取，交给用户。
+- **换端口**：
+  - Docker：在 `compose.yaml` 同目录创建 `.env`，写入 `AKASHIC_PORT=2237`。
+  - 源码：运行 `./start --port 2237`。
+- **不要替用户做的事**：
+  - 不要替用户填写 API Key 或密码，这两步留给用户在网页上完成。
+  - 不要运行 `docker compose down -v`。
 
 ## 文档
 
 | 主题 | 文档 |
 | --- | --- |
-| 插件开发与安装 | [插件能力手册](./docs/design/plugin-v3-capabilities.md)；Agent 自己扩展能力用内置 Skill [`develop-akashic-plugin`](./skills/develop-akashic-plugin/SKILL.md) |
+| 使用手册（更新、备份、远程访问、登录） | [使用手册](./docs/user-guide.md) |
+| 插件开发与安装 | [插件能力手册](./docs/design/plugin-v3-capabilities.md)；也可以让 Akashic 用内置 Skill [`develop-akashic-plugin`](./skills/develop-akashic-plugin/SKILL.md) 自己扩展能力 |
 | 手机接入 | [Android Shell](https://github.com/kachofugetsu09/akashic-android-shell) |
-| 记忆 | [记忆手册](./_handbook/memory-markdown.md) |
 | Python 客户端与协议 | [Python SDK](./sdk/python/README.md)、[协议 schema](./schema/app-server-v2.json) |
-| 数据位置与恢复 | [持久状态地图](./docs/design/persistence-state-map.md) |
+| 源码构建镜像、开发与部署 | [启动与部署说明](./docs/design/product-startup.md)、[部署操作手册](./docs/design/operator-deployment.md) |
 | 项目需求与开发流程 | [工作手册索引](./docs/INDEX.md) |

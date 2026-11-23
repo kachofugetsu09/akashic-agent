@@ -8,6 +8,9 @@ services:
         AKASHIC_REVISION: ${AKASHIC_REVISION:?请先按 README 设置当前源码提交}
     ports:
       - "127.0.0.1:${AKASHIC_PORT:-2236}:2236"
+    environment:
+      # 容器内固定监听 2236；登录链接和启动提示要打印本机实际映射的端口。
+      AKASHIC_PUBLIC_PORT: ${AKASHIC_PORT:-2236}
     volumes:
       - data:/data
     init: true
