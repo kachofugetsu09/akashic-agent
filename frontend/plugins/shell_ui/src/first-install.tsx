@@ -38,11 +38,12 @@ function FirstInstall({ http, changed }: { http: Http; changed?: () => void }) {
   const [error, setError] = useState("");
   const running = task?.state === "running";
   const seen = useRef(false);
+  // 任务状态先到先用：换代后回到这一步只看结果，不必等读官方仓库的列表。
   const load = useCallback(async () => {
     try {
-      const [next, status] = await Promise.all([call<Listing>(http, "/api/dashboard/plugins/installable"),
-        call<{ task: Task | null }>(http, "/api/dashboard/plugins/install")]);
-      setListing(next); setTask(status.task); setError("");
+      const status = call<{ task: Task | null }>(http, "/api/dashboard/plugins/install").then(body => setTask(body.task));
+      const [next] = await Promise.all([call<Listing>(http, "/api/dashboard/plugins/installable"), status]);
+      setListing(next); setError("");
     } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
   }, [http]);
   useEffect(() => { void load(); }, [load]);
@@ -67,6 +68,10 @@ function FirstInstall({ http, changed }: { http: Http; changed?: () => void }) {
       await load(); changed?.();
     } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
   };
+  // 列表还没到但已有首装任务：先显示进度或结果（重试按钮等列表到了再出现）。
+  if (!listing && !error && task?.first_install) return <div className="shell-setup">
+    <Progress task={task} groups={[]} retry={submit} />
+  </div>;
   // 列表读不到（官方仓库暂时不可达）时仍可重试，或者直接只用核心。
   if (!listing) return error ? <div className="shell-setup">
     <p className="shell-inventory-error" role="alert">读不到扩展包列表：{error}</p>
