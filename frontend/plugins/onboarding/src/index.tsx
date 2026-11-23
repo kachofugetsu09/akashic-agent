@@ -378,7 +378,7 @@ function Footer({phase, at, catalog, statuses, chosen, editing, back, next}: {
   const blocked = !!group && (editing || !complete);
   const optional = catalog.groups.filter(item => !item.required && chosen.has(item.key)).length;
   const label = phase.kind === "done" ? "开始对话" : phase.kind === "abilities" && optional === 0 ? "先不用，直接开始" : "继续";
-  const hint = editing ? "先保存当前设置" : group?.required && !complete ? "连接成功后继续" : "";
+  const hint = editing ? "先保存当前设置" : group?.required ? complete ? "已连接，点「继续」进入下一步" : "连接成功后继续" : "";
   return <footer className="onboarding-footer">
     <button type="button" className="onboarding-text-button" hidden={at <= 1} onClick={back}>上一步</button>
     <span className="onboarding-hint">
