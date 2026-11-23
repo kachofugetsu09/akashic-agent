@@ -43,6 +43,15 @@ cd akashic-agent
 
 想要更多功能，可以直接对 Akashic 说“帮我装上某某功能”，也可以在“功能设置”→“插件”里安装。
 
+## 插件与扩展
+
+Akashic 把“核心闭环”和“功能扩展”拆开维护：
+
+- **核心仓库（本仓库，Core）**：只保留长程主循环（账本、上下文、压缩、基础文件与 Shell）、Web 宿主与包管理，更新 Core 需要重新部署并重启一次。
+- **官方扩展仓库（[akashic-plugins](https://github.com/kachofugetsu09/akashic-plugins)，`extra`）**：浏览器、记忆、值班、子任务、画布、手机端侧等非核心功能都在这里，按单个插件的 `release/<插件名>` 分支发布，Core 镜像默认不内置。
+- **安装与热更新**：在网页端“功能设置”→“插件”→“可安装”里可一键安装；也可以让 Akashic 帮忙装，或在容器/终端里用 `akashic pkg` 管理（`list` / `groups` / `install <名|@组>` / `upgrade`）。官方扩展插件与私人插件都支持**热安装与热更新**，改完或升级不需要重启 Core。
+- **自建插件**：想让 Akashic 自己扩展新能力时，它会按内置 Skill [`develop-akashic-plugin`](./skills/develop-akashic-plugin/SKILL.md) 写插件源码并热加载。
+
 ## 常用操作
 
 | 想做的事 | Docker（在 `akashic` 目录里运行） | 不用 Docker（在 `akashic-agent` 目录里运行） |
@@ -85,7 +94,8 @@ cd akashic-agent
 | 主题 | 文档 |
 | --- | --- |
 | 使用手册（更新、备份、远程访问、登录） | [使用手册](./docs/user-guide.md) |
-| 插件开发与安装 | [插件能力手册](./docs/design/plugin-v3-capabilities.md)；也可以让 Akashic 用内置 Skill [`develop-akashic-plugin`](./skills/develop-akashic-plugin/SKILL.md) 自己扩展能力 |
+| 官方插件仓库（extra） | [akashic-plugins](https://github.com/kachofugetsu09/akashic-plugins) |
+| 插件开发与安装 | [插件能力手册](./docs/design/plugin-v3-capabilities.md)、[`develop-akashic-plugin`](./skills/develop-akashic-plugin/SKILL.md)、[`plugin-system`](./plugins/plugin_update/skills/plugin-system/SKILL.md) |
 | 手机接入 | [Android Shell](https://github.com/kachofugetsu09/akashic-android-shell) |
 | Python 客户端与协议 | [Python SDK](./sdk/python/README.md)、[协议 schema](./schema/app-server-v2.json) |
 | 源码构建镜像、开发与部署 | [启动与部署说明](./docs/design/product-startup.md)、[部署操作手册](./docs/design/operator-deployment.md) |
