@@ -169,10 +169,11 @@ class QueryMirror:
 
 
 async def register_query_mirrors(
-    ctx: Context, operations: Operations, *, plugin: str, query: QueryHandler,
+    ctx: Context, operations: Operations, *, query: QueryHandler,
     mirrors: Sequence[QueryMirror],
 ) -> None:
-    """逐个注册镜像 operation；参数名即界面载荷键，入口 ID 默认为 rpc:<plugin>/<method>。"""
+    """逐个注册镜像 operation；参数名即界面载荷键，入口 ID 默认为 rpc:<插件 ID>/<method>。"""
+    plugin = ctx.runtime.plugin_id
     for mirror in mirrors:
         await operations.register(ctx, OperationSpec(
             operation_id=f"{plugin}.{mirror.method}",
