@@ -30,6 +30,7 @@ from plugins.ledger.contract import (
 from plugins.reply.contract import REPLY_PROGRAM_V3 as REPLY_PROGRAM
 from plugins.sources.contract import SourceGuard
 from plugins.ui.contract import UI_SLOTS, Configuration, ModelSettings, PluginUiDefinition, PluginUiRpcInvalidRequest, mount_settings
+from plugins.operations.contract import OPERATIONS_V1, OptionSpec, QueryHandler, QueryMirror, register_query_mirrors
 
 from core.common.file_io import run_file_io
 
@@ -562,15 +563,28 @@ async def apply(ctx: Context) -> None:
     _ = await ctx.require(MATERIALS).register(ctx, name="job-notices", kind="context", prepare=jobs.materials)
     _ = await ctx.inject((UI_SLOTS,), lambda child: register_ui(child, jobs), name="plugin-ui")
 
+    async def register_ops(child: Context) -> None:
+        await register_query_mirrors(child, child.require(OPERATIONS_V1), query=_stop_query(jobs), mirrors=(
+            QueryMirror("job.stop", ("job", "stop"), "停止当前会话里一个运行中的后台任务",
+                        (OptionSpec("job_id", "任务 ID", required=True),)),))
 
-# 后台任务列表是本插件自己的界面：会话快照经 follow 推送，停止经界面查询，宿主不认识任务。
-async def register_ui(ctx: Context, jobs: Jobs) -> None:
+    _ = await ctx.inject((OPERATIONS_V1,), register_ops, name="operations")
+
+
+# 停止只经这一个查询入口：界面按钮与 Self-CLI 共用。
+def _stop_query(jobs: Jobs) -> QueryHandler:
     async def query(method: str, payload: dict[str, object], *,
                     session_id: str | None, turn_id: str | None) -> dict[str, object]:
         job_id = payload.get("job_id")
         if method != "job.stop" or set(payload) != {"job_id"} or not isinstance(job_id, str) or not job_id or not session_id:
             raise PluginUiRpcInvalidRequest("停止任务需要会话与 job_id")
         return {"accepted": await jobs.stop_job(session_id, job_id)}
+    return query
+
+
+# 后台任务列表是本插件自己的界面：会话快照经 follow 推送，停止经界面查询，宿主不认识任务。
+async def register_ui(ctx: Context, jobs: Jobs) -> None:
+    query = _stop_query(jobs)
 
     async def follow(session_id: str) -> AsyncGenerator[Mapping[str, object], None]:
         async with aclosing(jobs.follow_jobs(session_id)) as snapshots:

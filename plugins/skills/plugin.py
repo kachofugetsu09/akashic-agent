@@ -4,6 +4,7 @@ from plugins.assets.contract import INSTALLED_ASSETS
 from plugins.context.contract import MATERIALS_V4
 from plugins.host_execution.contract import PROCESSES
 from plugins.ui.contract import UI_SLOTS, PluginUiDefinition, PluginUiRpcInvalidRequest
+from plugins.operations.contract import OPERATIONS_V1, QueryMirror, register_query_mirrors
 
 from plugins.tools.contract import TOOLS
 from .skills import register_skills
@@ -20,16 +21,22 @@ async def apply(ctx: Context) -> None:
     _ = await ctx.require(TOOLS).declare_group(ctx, always_on=True, description=desc)
     skills = await register_skills(ctx)
 
+    async def query(method: str, payload: dict[str, object], *,
+                    session_id: str | None, turn_id: str | None) -> dict[str, object]:
+        if method != "skills.list" or payload:
+            raise PluginUiRpcInvalidRequest("技能界面只支持读取技能目录")
+        return {"items": list(await skills.list_skills())}
+
     # 输入框的 / 与 @ 技能建议是本插件自己的界面；宿主只提供插槽。
     async def plugin_ui(child: Context) -> None:
-        async def query(method: str, payload: dict[str, object], *,
-                        session_id: str | None, turn_id: str | None) -> dict[str, object]:
-            if method != "skills.list" or payload:
-                raise PluginUiRpcInvalidRequest("技能界面只支持读取技能目录")
-            return {"items": list(await skills.list_skills())}
-
         _ = await child.require(UI_SLOTS).register_plugin_ui(
             child, PluginUiDefinition(module="plugin_ui.js", slots=("composer.suggest",)), query=query,
         )
 
     _ = await ctx.inject((UI_SLOTS,), plugin_ui, name="plugin-ui")
+
+    async def register_ops(child: Context) -> None:
+        await register_query_mirrors(child, child.require(OPERATIONS_V1), query=query, mirrors=(
+            QueryMirror("skills.list", ("skill", "list"), "列出可用技能目录（与输入框技能建议同一份）"),))
+
+    _ = await ctx.inject((OPERATIONS_V1,), register_ops, name="operations")

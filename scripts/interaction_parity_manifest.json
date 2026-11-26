@@ -51,17 +51,6 @@
     "http:akashic_clients:POST /api/chat/sessions/{session_key:path}/delete",
     "http:akashic_clients:POST /api/chat/sessions/{session_key:path}/rename",
     "http:akashic_clients:POST /api/chat/sessions/{session_key:path}/undelete",
-    "http:akashic_clients:POST /api/chat/uploads",
-    "http:host_execution:GET /api/runtime/host-bridge",
-    "http:shell_ui:DELETE /api/dashboard/plugins/first-install",
-    "http:shell_ui:GET /api/dashboard/plugins",
-    "http:shell_ui:GET /api/dashboard/plugins/install",
-    "http:shell_ui:GET /api/dashboard/plugins/installable",
-    "http:shell_ui:GET /api/dashboard/runtime-version",
-    "http:shell_ui:POST /api/dashboard/plugins/install",
-    "http:shell_ui:POST /api/dashboard/plugins/{plugin_id}/enabled",
-    "rpc:host_execution/bridge.state",
-    "rpc:jobs/job.stop",
-    "rpc:skills/skills.list"
+    "http:akashic_clients:POST /api/chat/uploads"
   ]
 }

@@ -1,8 +1,10 @@
 from agent.plugin_composition import Context
 from agent.plugin_composition.plugin_updates import PLUGIN_UPDATES
 from agent.plugin_composition.runtime_catalog import RUNTIME_CATALOG
+from plugins.operations.contract import OPERATIONS_V1
 from plugins.ui.contract import UI
 from . import inventory
+from .operations import register_ops
 api_version = 3
 name = "shell-ui"
 version = "1.0.0"
@@ -42,3 +44,6 @@ async def apply(ctx: Context) -> None:
         )
 
     _ = await ctx.inject((UI, inventory.INVENTORY), register_ui, name="ui")
+
+    # Self-CLI 与插件页共用同一个 PluginInventory；没有 operations 插件时照常工作。
+    _ = await ctx.inject((OPERATIONS_V1,), lambda child: register_ops(child, service), name="operations")
