@@ -26,7 +26,7 @@ export interface ConversationTab extends WebEntry {
   hint?: string;
   /**
    * 切到（或打开）这个工具并把焦点移进去的快捷键："Ctrl+`" 或 "Mod+Shift+字母"（Mod 在 macOS 是 ⌘）。
-   * 浏览器、对话页与宿主占用的组合（Mod+Shift+A/B/C/I/J/N/O/P/Q/R/T/V/W/Z）不能用，工具之间不能重复；
+   * 浏览器、对话页与宿主占用的组合（Mod+Shift+A/B/C/I/J/N/O/P/Q/R/T/V/W/Z）不能用；工具之间重复时按 order 先到先得，后来者的标签保留但不响应快捷键；
    * 标签自己处理过的按键（preventDefault）、按住不放的自动重复都不触发。宿主另占 Mod+J（开关工具区）与 Mod+\（上下分屏）。
    */
   shortcut?: string;
