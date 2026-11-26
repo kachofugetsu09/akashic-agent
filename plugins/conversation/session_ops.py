@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 from typing import cast
 from uuid import NAMESPACE_URL, uuid4, uuid5
@@ -343,10 +343,12 @@ async def provide_session_operations(ctx: Context, ports: SessionPorts) -> None:
     """软挂载：有 operations 时注册六个会话动作；有上下文材料时把交接卡交给新会话的模型。"""
     _ = await ctx.provide(part_display_key(CROSS_KIND), hidden_part)
     ops = SessionOperations(ctx, ports)
+    # 处理函数用会话插件自己的 Context 接纳会话、写入来源，因此绑定到它的执行入口。
+    specs = tuple(replace(spec, handler=ctx.entrypoint(spec.handler)) for spec in _specs(ops))
 
     async def register(child: Context) -> None:
         operations = child.require(OPERATIONS_V1)
-        for spec in _specs(ops):
+        for spec in specs:
             _ = await operations.register(child, spec)
 
     async def materials(child: Context) -> None:
