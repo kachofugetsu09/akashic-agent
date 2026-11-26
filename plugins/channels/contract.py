@@ -6,17 +6,25 @@ import math
 import re
 from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
 from contextlib import AbstractAsyncContextManager
 from pathlib import Path
 from enum import StrEnum
 from types import MappingProxyType
 from typing import Any, Literal, Protocol, TypeAlias, cast
 
-from plugins.ledger.contract import Message
 from plugins.ledger.contract import (
     AttachmentKind, AttachmentRef, AttachmentReadLease,
     AttachmentReadPort as ChannelAttachmentReadPort,
+    ChannelInboundMessage as ChannelInboundMessage,
+    ContentPart, ContentReferences,
+    DURABLE_ATTACHMENT_REFS as DURABLE_ATTACHMENT_REFS,
+    DURABLE_HANDOFF_ID as DURABLE_HANDOFF_ID,
+    DURABLE_INBOUND_MARKER as DURABLE_INBOUND_MARKER,
+    DURABLE_PROVIDER_MESSAGE_ID as DURABLE_PROVIDER_MESSAGE_ID,
+    InboundEnvelope as InboundEnvelope,
+    JsonValue as JsonValue,
+    Message, MessageReader,
+    RawInbound as RawInbound,
 )
 
 from agent.plugin_composition.context import Context
@@ -58,55 +66,18 @@ class ChannelTerminalStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
-JsonValue: TypeAlias = (
-    None
-    | bool
-    | int
-    | float
-    | str
-    | tuple["JsonValue", ...]
-    | Mapping[str, "JsonValue"]
-)
-
-# These keys describe the transport handoff itself.  A provider message ID
-# remains the identity source; metadata only carries the durable reservation.
-DURABLE_INBOUND_MARKER = "durable_inbound"
-DURABLE_HANDOFF_ID = "durable_handoff_id"
-DURABLE_PROVIDER_MESSAGE_ID = "provider_message_id"
-DURABLE_ATTACHMENT_REFS = "durable_attachment_refs"
-
-
-@dataclass(frozen=True, slots=True)
-class ChannelInboundMessage:
-    """Represent one provider text message without retaining mutable input state."""
-
-    channel: str
-    sender: str
-    chat_id: str
-    content: str
-    timestamp: datetime
-    metadata: Mapping[str, JsonValue]
-    attachments: tuple[AttachmentRef, ...] = ()
-
-    def __post_init__(self) -> None:
-        _text(self.channel, "channel")
-        _text(self.sender, "sender")
-        _text(self.chat_id, "chat_id")
-        _content_string(self.content, "content")
-        if not isinstance(self.timestamp, datetime):
-            raise TypeError("timestamp 必须是 datetime")
-        if self.timestamp.tzinfo is None or self.timestamp.utcoffset() is None:
-            raise ValueError("timestamp 必须是 timezone-aware datetime")
-        object.__setattr__(self, "metadata", _freeze_json_mapping(self.metadata))
-        object.__setattr__(
-            self,
-            "attachments",
-            _attachment_refs(self.attachments, "attachments"),
-        )
-
-
 class InputPartRejected(ValueError):
     """客户端附带的片段被拒收；渠道把它作为该请求的错误回给发送者。"""
+
+
+class InputPartCheck(Protocol):
+    def __call__(self, part: ContentPart, reader: MessageReader) -> ContentReferences: ...
+
+
+# 客户端随输入附带的片段（例如模型选择）由片段 owner 声明并在目标会话里校验；没有 owner 的 kind 一律拒收。
+# 值不合格时 owner 抛 InputPartRejected，渠道把它作为该请求的错误回给发送者；其他异常按程序错误处理。
+def input_part_key(kind: str) -> ServiceKey[InputPartCheck]:
+    return ServiceKey[InputPartCheck](f"conversation.input_part:{kind}")
 
 
 INPUT_PARTS_MAX_ITEMS = 8
@@ -236,48 +207,6 @@ class ChannelAttachmentImportPort(Protocol):
         filename: str | None,
         media_type: str | None,
     ) -> AttachmentRef: ...
-
-
-class InboundEnvelope(Protocol):
-    """借用一次已接纳输入；Channels 独占实际 lease 和关闭状态。"""
-
-    @property
-    def message_id(self) -> str: ...
-
-    @property
-    def session_key(self) -> str: ...
-
-    @property
-    def message(self) -> ChannelInboundMessage: ...
-
-    @property
-    def closed(self) -> bool: ...
-
-    @property
-    def metadata(self) -> Mapping[str, JsonValue]: ...
-
-    async def close(self) -> None: ...
-
-
-@dataclass(frozen=True, slots=True)
-class RawInbound:
-    """Carry provider identity and a frozen text projection to Core admission."""
-
-    message_id: str
-    message: ChannelInboundMessage
-    provider_identity: str | None = None
-    recipient: str | None = None
-
-    def __post_init__(self) -> None:
-        _message_id(self.message_id)
-        if not isinstance(self.message, ChannelInboundMessage):
-            raise TypeError("message 必须是 ChannelInboundMessage")
-        if self.provider_identity is not None:
-            _text(self.provider_identity, "provider_identity")
-        if self.recipient is not None:
-            _text(self.recipient, "recipient")
-        if (self.provider_identity is None) != (self.recipient is None):
-            raise ValueError("provider_identity 与 recipient 必须同时提供")
 
 
 @dataclass(frozen=True, slots=True)

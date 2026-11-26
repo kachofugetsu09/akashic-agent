@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 
 from agent.plugin_composition import Context
 from plugins.host_execution.contract import WORKLOAD_CONTROLLER
+from plugins.ledger.contract import WORKLOAD_URLS
 from agent.plugin_composition.model import FiberState
 from plugins.workloads.contract import WORKLOADS, Workload
 
@@ -110,4 +111,6 @@ class Workloads:
 
 
 async def apply(ctx: Context):
-    await ctx.provide(WORKLOADS, Workloads(ctx))
+    workloads = Workloads(ctx)
+    await ctx.provide(WORKLOADS, workloads)
+    await ctx.provide(WORKLOAD_URLS, workloads.urls)

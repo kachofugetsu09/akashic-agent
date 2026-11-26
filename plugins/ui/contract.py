@@ -35,8 +35,19 @@ from agent.plugin_composition.plugin_config import PLUGIN_CONFIG
 
 from plugins.ledger.contract import MessagePage, MessageReader, SessionEntry
 from plugins.ledger.contract import ContentPart, Control, Input, Message, Output, ToolCall, ToolResult, json_value
-from plugins.ledger.contract import has_partial_text, origin
-from plugins.tools.contract import ToolDisplay
+from plugins.ledger.contract import (
+    NAMES as NAMES,
+    RequestTransport as RequestTransport,
+    RpcMethod as RpcMethod,
+    RpcNames as RpcNames,
+    TOOL_DISPLAY as TOOL_DISPLAY,
+    ToolDisplay as ToolDisplay,
+    TransportCall as TransportCall,
+    WORKLOAD_URLS as WORKLOAD_URLS,
+    WorkloadUrlLookup as WorkloadUrlLookup,
+    has_partial_text,
+    origin,
+)
 
 DashboardRoute = APIRoute | WebSocketRoute
 

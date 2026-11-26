@@ -20,8 +20,11 @@ from plugins.host_execution.contract import LIST_DIR_MAX_ENTRIES, LIST_DIR_MAX_B
 
 from core.common.file_io import run_file_io as _run_file_io
 
-from plugins.ledger.contract import detect_supported_image_mime
-from plugins.models.contract import encode_image_bytes, validate_image_attachment_budget
+from plugins.ledger.contract import (
+    detect_supported_image_mime,
+    encode_image_bytes,
+    validate_image_attachment_budget,
+)
 from plugins.host_execution.contract import FileError, FileImage, FileResult, FileChunk, FILE_CHUNK_BYTES, FILE_IMPORT_BYTES
 from infra.persistence.json_store import atomic_write_text
 

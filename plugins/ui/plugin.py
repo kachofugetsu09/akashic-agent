@@ -30,8 +30,7 @@ from plugins.ui.contract import (
     WebModuleDescriptor,
     WebUiCatalog,
 )
-from plugins.ui.contract import UI_SLOTS
-from plugins.workloads.contract import WORKLOADS
+from plugins.ui.contract import UI_SLOTS, WORKLOAD_URLS
 
 from .dashboard import DashboardResources, _server_routes, _require_routes_available
 from .dashboard_app import create_dashboard_app
@@ -180,10 +179,10 @@ class Ui:
                         continue
                     _require_routes_available(entry.binding, occupied)
                     occupied.extend(entry.binding.routes)
-                with self._ctx.borrow(WORKLOADS) as workloads:
+                with self._ctx.borrow(WORKLOAD_URLS) as workload_urls:
                     registration.binding = resources.build(
                         occupied=occupied,
-                        workload_urls={} if workloads is None else workloads.urls(ctx),
+                        workload_urls={} if workload_urls is None else workload_urls(ctx),
                         validation=self._ctx.require(HOST_INFO).validation,
                     )
             registration.initialized = True
