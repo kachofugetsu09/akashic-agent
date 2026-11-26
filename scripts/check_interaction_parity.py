@@ -17,7 +17,7 @@ import sys
 from typing import Literal, TypedDict
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_MANIFEST = ROOT / "docs/interaction-parity.json"
+DEFAULT_MANIFEST = ROOT / "scripts/interaction_parity_manifest.json"
 ALLOWED_EXEMPTION_KINDS = frozenset({"transport", "view_only", "user_only", "auth_security"})
 HTTP_VERBS = frozenset({"get", "post", "put", "patch", "delete", "websocket"})
 
