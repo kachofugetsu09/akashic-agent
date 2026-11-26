@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import heapq
 import json
 import subprocess
 import sys
@@ -25,10 +26,10 @@ from agent.plugins.install import (
     prefetch_git_commits,
 )
 from agent.plugins.manifest import plugins_root
-from agent.plugins.package_index import closure, expand, load_index
+from agent.plugins.package_index import PackageIndex, closure, expand, load_index
 from agent.plugins.prerequisites import clear_disabled, describe, read_disabled, record_declared, record_disabled, unmet
 from agent.plugins.packages import InstalledPackage, PackageState, list_release_heads, read_state, sync_rows
-from agent.plugins.resources import ResourceError, repair_resources
+from agent.plugins.resources import ResourceError, ensure_resources, repair_resources
 from agent.plugins.selection import PluginSelection
 from agent.plugins.static_manifest import load_static_plugin_manifest
 from bootstrap.workspace_lock import PluginPublicationLock, WorkspaceMaintenanceLock
@@ -72,7 +73,9 @@ def identity_of(name: str) -> str:
 
 
 # 取远端提交并读静态 manifest，校验 name 与 api_version；不写 cache。
-def _check_remote_source(repo: str, sha: str, name: str) -> None:
+# 传入 workspace 时在 Manager 操作锁外提前取回 resources.json 的外部大资源到内容寻址目录：
+# 既避免大文件下载触发 Core 单操作截止时间熔断锁死后续包，又让真正进入 Core 安装时瞬间命中缓存。
+def _check_remote_source(repo: str, sha: str, name: str, *, workspace: Path | None = None) -> None:
     with tempfile.TemporaryDirectory(prefix="pkg-check-") as directory:
         target = Path(directory)
         if not fetch_sha_shallow(repo, target, sha, plugins_home=plugins_root()):
@@ -82,6 +85,8 @@ def _check_remote_source(repo: str, sha: str, name: str) -> None:
         manifest = load_static_plugin_manifest(target)
         if manifest.name != name:
             raise ValueError(f"release/{name} 里的插件名是 {manifest.name}，与分支名不一致")
+        if workspace is not None:
+            _ = ensure_resources(target, workspace)
 
 
 # 调用既有管理命令（plugin-install、plugin-status、plugin-uninstall），经 Gateway 工作。
@@ -269,8 +274,8 @@ def install_one(ctx: Context, state: PackageState, plugin_id: str, sha: str, upg
     if state.requires_switch(plugin_id):
         return Outcome(name, "needs-switch", f"{plugin_id} 属于发行版身份，需要换来源操作")
     try:
-        # 2. 取代码前先校验 name 和 api_version，失败时什么都没写。
-        _check_remote_source(ctx.repo, sha, name)
+        # 2. 取代码前先校验 name 和 api_version，并在在线安装进入 Manager 锁前预取外部资源；失败时什么都没写。
+        _check_remote_source(ctx.repo, sha, name, workspace=ctx.workspace if ctx.online else None)
         # 3. 在线等到终态，离线只写 cache 与选择 patch。
         if ctx.online:
             result, detail = _install_online(ctx, plugin_id, sha)
@@ -285,7 +290,7 @@ def install_one(ctx: Context, state: PackageState, plugin_id: str, sha: str, upg
             return Outcome(name, "upgraded" if upgrade and result == "installed" else result,
                            detail or sha[:12])
         _ = _install_offline(ctx, plugin_id, sha)
-    except (RuntimeError, ValueError, OSError, subprocess.CalledProcessError) as error:
+    except (RuntimeError, ValueError, OSError, ResourceError, subprocess.CalledProcessError) as error:
         return Outcome(name, "failed", _last_line(error))
     return Outcome(name, "upgraded" if upgrade else "installed", _hold_closed(ctx, name, plugin_id, sha) or sha[:12])
 
@@ -392,6 +397,40 @@ def _expand_groups(ctx: Context, names: list[str]) -> tuple[list[str], dict[str,
     return full, heads
 
 
+# 在严格保持依赖在前的前提下，把小包排前面、大包（如带大资源的 design、akasha）排最后：
+# 首装批量装全套时轻量核心能力先在几十秒内全部生效，大包不挡在最前面。
+def _order_light_first(ordered: list[str], index: PackageIndex) -> list[str]:
+    if len(ordered) <= 1:
+        return ordered
+    present = set(ordered)
+    rank = {name: i for i, name in enumerate(ordered)}
+    indegree = {name: 0 for name in ordered}
+    dependents: dict[str, list[str]] = {name: [] for name in ordered}
+    for name in ordered:
+        pkg = index.packages.get(name)
+        if pkg is None:
+            continue
+        for dep in pkg.requires:
+            if dep in present and dep != name:
+                indegree[name] += 1
+                dependents[dep].append(name)
+    heap: list[tuple[int, int, str]] = [
+        (index.packages[name].size_bytes if name in index.packages else 0, rank[name], name)
+        for name in ordered if indegree[name] == 0
+    ]
+    heapq.heapify(heap)
+    result: list[str] = []
+    while heap:
+        _, _, current = heapq.heappop(heap)
+        result.append(current)
+        for child in dependents[current]:
+            indegree[child] -= 1
+            if indegree[child] == 0:
+                size = index.packages[child].size_bytes if child in index.packages else 0
+                heapq.heappush(heap, (size, rank[child], child))
+    return result if len(result) == len(ordered) else ordered
+
+
 # 不带 @ 的安装也按 index 补上还没装的依赖，像 pacman 一样：返回（依赖在前的安装顺序, 每个包在本次计划里的传递依赖）。
 # index 只用来找依赖：取不到、或名字不在 index 里时，那些名字照旧原样安装（逐个处理的既有语义）。
 def _dependency_plan(ctx: Context, names: list[str]) -> tuple[list[str], dict[str, set[str]]]:
@@ -407,6 +446,7 @@ def _dependency_plan(ctx: Context, names: list[str]) -> tuple[list[str], dict[st
         return names, {}
     selected = {item.name for item in read_state(ctx.workspace, ctx.repo).packages if item.selected}
     ordered = [name for name in closure(index, known) if name in known or name not in selected]
+    ordered = _order_light_first(ordered, index)
     added = [name for name in ordered if name not in known]
     if added:
         print(f"自动带上依赖: {', '.join(added)}", file=sys.stderr)
