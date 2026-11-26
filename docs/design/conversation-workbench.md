@@ -76,8 +76,8 @@ type QuoteStatus = "inserted" | "stale" | "rejected";
 5. 宿主把当前可接受的意图名集合以 `akashic.workbench-intents {names}` 告诉聊天端，只用来决定是否显示“在侧栏打开”，不代表一定成功。
 6. 意图名带版本（`.v1`）。payload 的结构由该意图的领域 owner 在自己的 README 与 `contract.py` 里定义，例如
    `workspace.changes.open.v1` 由 workspace_changes 定义 `{path}`（2026-10 起，原为 `{turn_id, path?}`）。接收标签校验领域引用和读取权限。
-   通用的 `workspace.file.open.v1 {path, line?}` 表示“打开该服务端路径的文件（可定位行号）”，由聊天端对回复里像文件路径的行内代码发出，优先交给 `markdown_reader`（「文件」，`order: 25`），见 2.4。
-   Markdown（`.md`/`.markdown`/`.mdown`，大小写不敏感）发 `workspace.document.open.v1 {path, line?}`，同样由 `markdown_reader` 接收；`path` 可在工作目录、服务端 `workspace/` 或任意可读服务端路径下，带 `line` 时切到源码行视图并定位行。
+   通用的 `workspace.file.open.v1 {path, line?}` 表示“打开该服务端路径的文件（可定位行号）”，由聊天端对回复里像文件路径的行内代码发出，优先交给 `file_viewer`（「文件」，`order: 25`），见 2.4。
+   Markdown（`.md`/`.markdown`/`.mdown`，大小写不敏感）发 `workspace.document.open.v1 {path, line?}`，同样由 `file_viewer` 接收；`path` 可在工作目录、服务端 `workspace/` 或任意可读服务端路径下，带 `line` 时切到源码行视图并定位行。
    聊天插槽上下文增加 `workbench: { accepts(name): boolean; open(name, payload): Promise<status> }`，由聊天端转发。
 
 ### 2.2 引用回输入框
