@@ -1,6 +1,8 @@
 """OperationRegistry：统一注册、正交扩展解析、动态自省与两阶段执行。"""
 from __future__ import annotations
 
+import logging
+
 from collections.abc import Mapping
 from dataclasses import dataclass
 import json
@@ -21,6 +23,8 @@ from .contract import (
     OptionSpec,
     cli_node_key,
 )
+
+logger = logging.getLogger(__name__)
 
 _IDENT = re.compile(r"^[a-z][a-z0-9_-]{0,47}$")
 
@@ -293,6 +297,10 @@ class OperationRegistry:
                 result = await spec.handler(req)
         except (ValueError, LookupError, PermissionError) as err:
             return OperationResult(False, str(err) or type(err).__name__, error_code="rejected")
+        except Exception as err:
+            # 能力不可用等意外失败如实回给调用方，不让一次 self 调用拖垮工具循环。
+            logger.exception("operation %s 执行失败", op_id)
+            return OperationResult(False, f"{type(err).__name__}: {err}", error_code="failed")
         if not result.ok:
             return result
         ext_outputs: dict[str, object] = {}

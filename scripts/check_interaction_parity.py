@@ -91,6 +91,16 @@ def _call_name(node: ast.Call) -> str | None:
     return None
 
 
+# Slash 命令入口：无子动作为 slash:<name>；有子动作时每个子动作一个 slash:<name>#<sub>。
+def _slash_entries(name: str, subs: ast.expr | None, errors: list[str]) -> list[str]:
+    if subs is None:
+        return [f"slash:{name}"]
+    names = _string_literals(subs)
+    if not isinstance(subs, ast.Tuple) or len(names) != len(subs.elts):
+        errors.append(f"/{name} 的 CommandDefinition.subcommands 必须是字符串字面量元组")
+    return [f"slash:{name}#{sub}" for sub in names] or [f"slash:{name}"]
+
+
 # `app.get("/x")` / `router.post("/x")` 这类路由注册调用 → (动词, 调用节点)。
 def _route_call(node: ast.AST) -> tuple[str, ast.Call] | None:
     if (
@@ -169,6 +179,7 @@ def _route_actions(tree: ast.Module) -> dict[int, list[str]]:
 # 用户入口：按协议采集一个 AST 节点里出现的入口 ID。
 def _user_entries(
     node: ast.AST, plugin: str, consts: dict[str, str], ui_plugin: bool, actions: dict[int, list[str]],
+    errors: list[str],
 ) -> list[str]:
     found: list[str] = []
     # 1. FastAPI / Starlette HTTP 与 WebSocket 路由；多动作端点只计子动作，不再计父入口。
@@ -194,11 +205,11 @@ def _user_entries(
             )
     if isinstance(node, ast.Call):
         name = _call_name(node)
-        # 4. Slash 命令注册
+        # 4. Slash 命令注册；声明了 subcommands 的命令按子动作逐个计数。
         if name == "CommandDefinition":
             value = _keyword(node, "name", 0)
             if isinstance(value, ast.Constant) and isinstance(value.value, str):
-                found.append(f"slash:{value.value}")
+                found.extend(_slash_entries(value.value, _keyword(node, "subcommands"), errors))
         # 5. Gateway 动态 RPC
         if (
             name == "key" and isinstance(node.func, ast.Attribute)
@@ -266,7 +277,7 @@ def collect_surface(plugins_dir: Path) -> Surface:
         }
         actions = _route_actions(tree)
         for node in ast.walk(tree):
-            surface.entries.update(_user_entries(node, plugin, consts, plugin in ui_plugins, actions))
+            surface.entries.update(_user_entries(node, plugin, consts, plugin in ui_plugins, actions, surface.errors))
             decl = _operation_decl(node, plugin, rel, surface.errors)
             if decl is None:
                 continue
@@ -349,11 +360,12 @@ def load_manifest(paths: list[Path]) -> ParityManifest:
     merged = ParityManifest(version=2, explicit_exemption={}, agent_only={}, legacy_backlog=[])
     for path in paths:
         part = _load_one(path)
-        for key in ("explicit_exemption", "agent_only"):
-            clash = set(merged[key]) & set(part[key])
-            if clash:
-                raise SystemExit(f"清单条目重复 ({path}): {sorted(clash)}")
-            merged[key].update(part[key])
+        clash = (set(merged["explicit_exemption"]) & set(part["explicit_exemption"])) | (
+            set(merged["agent_only"]) & set(part["agent_only"]))
+        if clash:
+            raise SystemExit(f"清单条目重复 ({path}): {sorted(clash)}")
+        merged["explicit_exemption"].update(part["explicit_exemption"])
+        merged["agent_only"].update(part["agent_only"])
         merged["legacy_backlog"].extend(part["legacy_backlog"])
     return merged
 

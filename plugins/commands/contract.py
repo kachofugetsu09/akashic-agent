@@ -42,6 +42,9 @@ class CommandDefinition:
     input_hint: str | None = None
     read_only: bool = False
     recover: CommandHandler | None = None
+    # 一条命令内的子动作名（如 /goal 的 set/pause/budget）；必须写成字面量元组，
+    # Interaction Parity 门禁据此把 slash:<name> 展开为 slash:<name>#<子动作>，每个子动作各对一个 operation。
+    subcommands: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
