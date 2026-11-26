@@ -43,6 +43,7 @@ from .navigation import NavigationPreferences
 from .read_marks import ReadMarks
 from .web_chat import WebChatChannel
 from .chat_api import build_chat_server
+from .chat_service import ChatService, ChatSlot
 from .services import (
     ActiveSessionsFollowPort,
     MessageCatalogPort,
@@ -192,10 +193,12 @@ class _ClientGeneration:
     adapters: dict[str, "_GenerationAkashicAdapter"]
     navigation: NavigationPreferences | None
     read_marks: ReadMarks | None
+    chat_slot: ChatSlot | None
 
     def __init__(self, config: AkashicClientsConfig, workspace: Any, navigation: NavigationPreferences | None,
-                 read_marks: ReadMarks | None = None) -> None:
+                 read_marks: ReadMarks | None = None, chat_slot: ChatSlot | None = None) -> None:
         self.navigation = navigation
+        self.chat_slot = chat_slot
         self.read_marks = read_marks
         self.config = config
         self.workspace = workspace
@@ -203,9 +206,9 @@ class _ClientGeneration:
 
 
 def build_akashic_channel_factory(owner: Context, config: AkashicClientsConfig, workspace: Any, navigation: NavigationPreferences | None = None,
-                                  read_marks: ReadMarks | None = None):
+                                  read_marks: ReadMarks | None = None, chat_slot: ChatSlot | None = None):
     """为本次 apply 保留固定输入，实际 binding 由贡献 Scope 关闭。"""
-    state = _ClientGeneration(config, workspace, navigation, read_marks)
+    state = _ClientGeneration(config, workspace, navigation, read_marks, chat_slot)
 
     def build(context: ChannelFactoryContext) -> _GenerationAkashicAdapter:
         if state.adapters:
@@ -249,6 +252,8 @@ class _GenerationAkashicAdapter:
         )
         self._artifact_store: _ChannelArtifactStore | None = None
         self._web = WebChatChannel("akashic")
+        self._chat = ChatService(channel=self._web, open_catalog=self._message_scope, open_admin=self._session_admin_scope,
+                                 navigation=state.navigation, check_scope=self._check_scope)
         self._web_adapter = self._web.build_v3_adapter(context)
         self._runtime_ports: ChannelRuntimePorts | None = None
         self._servers: list[tuple[uvicorn.Server, asyncio.Task[None]]] = []
@@ -462,6 +467,7 @@ class _GenerationAkashicAdapter:
             follow_active_sessions=self._follow_active_sessions,
             message_scope=self._message_scope,
             session_admin_scope=self._session_admin_scope,
+            chat=self._chat,
             uds=str(socket_path),
         )
         await self._start_server(server, name="akashic-web")
@@ -475,6 +481,8 @@ class _GenerationAkashicAdapter:
 
         self._endpoint = await self._owner.endpoint("client", protocol="http+unix",
             address=str(socket_path), routes=("/chat", "/settings", "/assets", "/api/chat", "/api/shell/state", "/api/client", "/ws"))
+        if self._state.chat_slot is not None:
+            self._state.chat_slot.bind(self._chat)
 
     def _close_socket_nodes(self) -> None:
         """listener 排空后只移除本次创建且身份未变的临时节点。"""
@@ -638,6 +646,8 @@ class _GenerationAkashicAdapter:
     def _release_generation_binding(self) -> None:
         """Release this exact adapter only after every owned resource settled."""
 
+        if self._state.chat_slot is not None:
+            self._state.chat_slot.release(self._chat)
         current = self._state.adapters.get(self._binding_token)
         if current is self:
             self._state.adapters.pop(self._binding_token, None)

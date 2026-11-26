@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from contextlib import AbstractContextManager
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -50,11 +51,13 @@ def _references(value: Mapping[str, object] | None) -> list[PinReference]:
 class NavigationPreferences:
     """One ordered owner record; only explicit operations add/remove references."""
 
-    def __init__(self, open_store: Callable[[], OwnerStore]):
+    # 每次读写短借 owner store；调用可能来自其他插件的 operation，不依赖调用方持有本插件作用域。
+    def __init__(self, open_store: Callable[[], AbstractContextManager[OwnerStore]]):
         self._open_store = open_store
 
     def read(self) -> list[PinReference]:
-        record = self._open_store().read(_KEY)
+        with self._open_store() as store:
+            record = store.read(_KEY)
         return _references(None if record is None else record.value)
 
     def update(self, reference: PinReference, *, pinned: bool) -> None:
@@ -69,7 +72,8 @@ class NavigationPreferences:
                 refs.remove(reference)
             transaction.save(_KEY, {"pins": [ref.model_dump() for ref in refs]},
                              expected_version=None if current is None else current.version)
-        self._open_store().transact(save)
+        with self._open_store() as store:
+            store.transact(save)
 
 
 async def session_pin_row(catalog: MessageCatalogPort, session_id: str) -> dict[str, object] | None:

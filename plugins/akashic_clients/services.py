@@ -6,8 +6,11 @@ Protocol；客户端插件不导入 bootstrap、Core runtime 或其他插件实�
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator, Callable, Mapping
+from collections.abc import AsyncGenerator, AsyncIterable, Callable, Mapping
+from dataclasses import dataclass
 from typing import Literal, Protocol, TypeVar, runtime_checkable
+
+from agent.plugin_composition.model import ServiceKey
 
 from plugins.channels.contract import AttachmentRef, ChannelInboundMessage
 from plugins.ui.contract import MessageDisplayReader
@@ -153,3 +156,62 @@ __all__ = [
 # 通道停止接纳（停机或插件重载）；长连接据此正常结束，由客户端重连。
 class ChannelClosed(RuntimeError):
     pass
+
+
+# 聊天目录领域操作的公开合同；外部插件经 contract.py 取用，本插件内部直接引用此处。
+class ChatRequestError(Exception):
+    """领域拒绝：status 沿用界面入口的 HTTP 语义，detail 是给人看的原因。"""
+
+    def __init__(self, status: int, detail: str) -> None:
+        super().__init__(detail)
+        self.status = status
+        self.detail = detail
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactContent:
+    artifact_id: str
+    data: bytes
+    media_type: str | None
+    filename: str | None
+
+
+class ChatSessions(Protocol):
+    """当前聊天通道的领域操作；返回值与对应界面入口的 JSON 载荷相同。"""
+
+    @property
+    def channel_name(self) -> str: ...
+
+    async def list_sessions(
+        self, *, page_size: int = 50, after_time: str | None = None, after_key: str | None = None,
+    ) -> dict[str, object]: ...
+
+    async def list_messages(
+        self, session_key: str, *, page_size: int = 50, before_seq: int | None = None,
+        through_seq: int | None = None, after_seq: int | None = None,
+    ) -> dict[str, object]: ...
+
+    async def search_messages(self, session_key: str, *, q: str = "", limit: int = 200) -> dict[str, object]: ...
+
+    async def ensure_listed(self, session_key: str) -> None: ...
+
+    async def set_deleted(self, session_key: str, *, deleted: bool) -> dict[str, object]: ...
+
+    async def rename(self, session_key: str, title: str) -> dict[str, object]: ...
+
+    async def read_pins(self) -> dict[str, object]: ...
+
+    async def update_pin(self, *, kind: str, id: str, pinned: bool) -> dict[str, object]: ...
+
+    async def save_upload(self, chunks: AsyncIterable[bytes], filename: str) -> dict[str, object]: ...
+
+    async def read_artifact(self, artifact_id: str) -> ArtifactContent: ...
+
+
+class ChatSessionsHost(Protocol):
+    """通道换代时领域服务随之更替；current 在通道未就绪时抛 ChatRequestError(503)。"""
+
+    def current(self) -> ChatSessions: ...
+
+
+CHAT_SESSIONS = ServiceKey[ChatSessionsHost]("akashic_clients.chat_sessions.v1")
