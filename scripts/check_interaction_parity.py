@@ -379,6 +379,29 @@ def run_self_test(surface: Surface, manifest: ParityManifest) -> int:
     return 0
 
 
+GUIDE = "docs/design/self-cli-plugin-authoring.md"
+
+
+# 给一个未归属入口写出可直接粘贴的修法：镜像为 operation 是默认，豁免只在四类之内。
+def scaffold(entry_id: str) -> str:
+    kind, _, rest = entry_id.partition(":")
+    plugin, method = (rest.split("/", 1) + [""])[:2] if kind in ("rpc", "ws") else (rest.split(":", 1)[0], "")
+    path = " ".join(f'"{part}"' for part in (method or rest).replace("/", ".").split(".") if part)
+    if kind == "rpc":
+        code = (f'QueryMirror("{method}", ({path.replace(" ", ", ")},), "<一句话说明>", (OptionSpec(...),))\n'
+                f"# 加进本插件的 MIRRORS，并在 apply 里软挂载：\n"
+                f"# await ctx.inject((OPERATIONS_V1,), lambda child: register_query_mirrors(child, child.require(OPERATIONS_V1), query=query, mirrors=MIRRORS), name=\"operations\")")
+    else:
+        code = (f'OperationSpec(operation_id="{plugin}.<资源>.<动词>", path=(<命令路径>), summary="<一句话说明>",\n'
+                f'              handler=ctx.entrypoint(<与界面入口共用的领域函数>), mirrors=("{entry_id}",), options=(...))')
+    exemption = (f'"{entry_id}": {{"kind": "transport|view_only|user_only|auth_security", '
+                 f'"reason": "<为什么助手不需要或不能做>", "decision": "<ADR 编号，可空>"}}')
+    return (f"入口 {entry_id}\n"
+            f"  默认：镜像为 operation（界面与助手调同一段领域代码）：\n    {code.replace(chr(10), chr(10) + '    ')}\n"
+            f"  或：确属四类豁免时写进清单 explicit_exemption：\n    {exemption}\n"
+            f"  详见 {GUIDE}")
+
+
 # 运行期对账：实例里注册的每个 operation 都必须能被静态采集看到，否则它的镜像声明逃过了门禁。
 def check_runtime(surface: Surface, workspace: Path) -> int:
     import asyncio
@@ -398,7 +421,8 @@ def check_runtime(surface: Surface, workspace: Path) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="检查用户界面入口与 Self-CLI operation 一对一")
-    parser.add_argument("command", nargs="?", default="check", choices=("check", "report", "self-test", "runtime"))
+    parser.add_argument("command", nargs="?", default="check", choices=("check", "report", "self-test", "runtime", "scaffold"))
+    parser.add_argument("entries", nargs="*", help="scaffold：要生成修法的入口 ID；省略时取全部未归属入口")
     parser.add_argument("--plugins-dir", type=Path, default=ROOT / "plugins")
     parser.add_argument("--manifest", type=Path, action="append")
     parser.add_argument("--workspace", type=Path, help="runtime：运行中实例的 workspace，经 Gateway 读 self describe")
@@ -424,10 +448,20 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "report":
         for op_id, mirrors in sorted(surface.operations.items()):
             print(f"{op_id}: {', '.join(mirrors) or '(agent_only)'}")
+    unowned = [err.split(": ", 1)[1] for err in errors if err.startswith("未归属的用户交互入口: ")]
+    if args.command == "scaffold":
+        for entry_id in args.entries or unowned:
+            print(scaffold(entry_id) + "\n")
+        return 0
     if errors:
         print(f"Interaction Parity 检查失败（共 {len(errors)} 项）：{stats}", file=sys.stderr)
         for err in errors:
             print(f"  - {err}", file=sys.stderr)
+        if unowned:
+            print("\n新入口须在同一个 PR 里让助手也能做到。可直接参考：\n", file=sys.stderr)
+            for entry_id in unowned[:5]:
+                print(scaffold(entry_id) + "\n", file=sys.stderr)
+            print("全部修法：python scripts/check_interaction_parity.py scaffold", file=sys.stderr)
         return 1
     print(f"Interaction Parity 检查通过：{stats}")
     return 0
