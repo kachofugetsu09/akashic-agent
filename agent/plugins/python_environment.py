@@ -271,19 +271,31 @@ class PythonEnvironments:
             venv = root / runtime.runtime_root / ".venv"
             requirements_path = source / runtime.requirements
             has_requirements = bool(requirements_path.read_text().strip())
-            options = [] if has_requirements else ["--without-pip"]
-            _run(
-                [
-                    str(executable),
-                    "-I",
-                    "-m",
-                    "venv",
-                    "--copies",
-                    *options,
-                    str(venv),
-                ],
-                source,
-            )
+            uv = _uv_binary()
+            uv_cache = self.path / ".uv-cache" if uv and offline_wheels is None else None
+            if uv is not None:
+                _run(
+                    [
+                        uv, "venv", "--quiet", "--no-project", "--no-config", "--no-python-downloads",
+                        "--python", str(executable), "--link-mode=copy", str(venv),
+                    ],
+                    source,
+                    env=_installer_env(isolated=True, uv_cache=uv_cache),
+                )
+            else:
+                options = [] if has_requirements else ["--without-pip"]
+                _run(
+                    [
+                        str(executable),
+                        "-I",
+                        "-m",
+                        "venv",
+                        "--copies",
+                        *options,
+                        str(venv),
+                    ],
+                    source,
+                )
             if has_requirements:
                 # 构建副本用于本地包和 editable 的绝对路径，运行代码仍来自安装目录。
                 build_source = source
@@ -292,7 +304,21 @@ class PythonEnvironments:
                     _ = shutil.copytree(source, build_source, symlinks=True,
                                         ignore=shutil.ignore_patterns(".git", ".venv", "node_modules", "__pycache__", ENVIRONMENT_FILE))
                     requirements_path = build_source / runtime.requirements
-                    if isinstance(runtime, InprocessRuntime):
+                    if uv is not None:
+                        if isinstance(runtime, InprocessRuntime):
+                            command = [
+                                uv, "pip", "install", "--quiet", "--python", str(venv / "bin/python"),
+                                "--no-config", "--only-binary=:all:", "--link-mode=copy",
+                                "-r", str(requirements_path),
+                                *_constraint_options(constraints, constrained), *_bundled_options(build_source),
+                            ]
+                        else:
+                            command = [
+                                uv, "pip", "install", "--quiet", "--python", str(venv / "bin/python"),
+                                "--no-config", "--link-mode=copy", "-r", str(requirements_path),
+                                *_constraint_options(constraints, constrained),
+                            ]
+                    elif isinstance(runtime, InprocessRuntime):
                         # 进程内依赖与部署路径一致：只装 wheel（不现编源码包），pip 选项与环境变量不能改写行为，
                         # 插件自带的纯 Python wheel 由 Core 拼成 --find-links。
                         command = [
@@ -308,18 +334,27 @@ class PythonEnvironments:
                         ]
                 else:
                     _ = _verify_offline_wheels(offline_wheels)
-                    command = [
-                        str(venv / "bin/python"), "-I", "-m", "pip", "--isolated",
-                        "--disable-pip-version-check", "install", "--no-index",
-                        f"--find-links={offline_wheels.directory}", "--only-binary=:all:",
-                        "--no-cache-dir", "--no-input", "-r", str(requirements_path),
-                        *_constraint_options(constraints, constrained),
-                    ]
+                    if uv is not None:
+                        command = [
+                            uv, "pip", "install", "--quiet", "--python", str(venv / "bin/python"),
+                            "--no-config", "--offline", "--no-index",
+                            f"--find-links={offline_wheels.directory}", "--only-binary=:all:",
+                            "--no-cache", "--link-mode=copy", "-r", str(requirements_path),
+                            *_constraint_options(constraints, constrained),
+                        ]
+                    else:
+                        command = [
+                            str(venv / "bin/python"), "-I", "-m", "pip", "--isolated",
+                            "--disable-pip-version-check", "install", "--no-index",
+                            f"--find-links={offline_wheels.directory}", "--only-binary=:all:",
+                            "--no-cache-dir", "--no-input", "-r", str(requirements_path),
+                            *_constraint_options(constraints, constrained),
+                        ]
                 with measure("plugin.pip", plugin=code.name, runtime=runtime.runtime_root):
                     if constrained:
-                        _run_pip(command, build_source, constraints, isolated=isinstance(runtime, InprocessRuntime))
+                        _run_pip(command, build_source, constraints, isolated=isinstance(runtime, InprocessRuntime), uv_cache=uv_cache)
                     else:
-                        _run(command, build_source)
+                        _run(command, build_source, env=_installer_env(isolated=isinstance(runtime, InprocessRuntime), uv_cache=uv_cache) if uv is not None else None)
             with measure("plugin.environment.sync", plugin=code.name):
                 # 1. 先逐个设只读权限（权限是元数据，随后整体落盘），2. 再对环境所在文件系统做一次整体刷盘，替代逐文件 fsync。
                 for current, _, files in os.walk(root, topdown=False):
@@ -556,12 +591,38 @@ def _matches(environment: Path, constraints: Constraints) -> bool:
         return False
 
 
-# pip 失败时保留输出：版本冲突翻译成可操作的说明，其他失败带上 pip 输出末尾（均为 ValueError，网关会传回原文）。
-def _run_pip(command: list[str], cwd: Path, constraints: Constraints | None, *, isolated: bool = False) -> None:
+def _uv_binary() -> str | None:
+    if os.environ.get("AKASHIC_DISABLE_UV", "").strip().lower() in {"1", "true", "yes"}:
+        return None
+    return shutil.which("uv")
+
+
+# 隔离时清掉继承来的 PIP_* 与 UV_*（不能改写源、二进制策略或约束）；代理变量保留，在线 uv 共享同 workspace 缓存。
+def _installer_env(*, isolated: bool, uv_cache: Path | None = None) -> dict[str, str] | None:
+    if not isolated and uv_cache is None:
+        return None
+    if isolated:
+        environment = {key: value for key, value in os.environ.items() if not key.startswith(("PIP_", "UV_"))}
+    else:
+        environment = dict(os.environ)
+    if uv_cache is not None:
+        uv_cache.mkdir(parents=True, exist_ok=True)
+        environment["UV_CACHE_DIR"] = str(uv_cache)
+    return environment
+
+
+# pip / uv 失败时保留输出：版本冲突翻译成可操作的说明，其他失败带上输出末尾（均为 ValueError，网关会传回原文）。
+def _run_pip(
+    command: list[str],
+    cwd: Path,
+    constraints: Constraints | None,
+    *,
+    isolated: bool = False,
+    uv_cache: Path | None = None,
+) -> None:
     from agent.plugins.dependency_constraints import explain_failure
 
-    # 隔离时清掉继承来的 PIP_*（PIP_NO_BINARY、PIP_INDEX_URL 等不能改写安装行为）；代理变量保留。
-    environment = {key: value for key, value in os.environ.items() if not key.startswith("PIP_")} if isolated else None
+    environment = _installer_env(isolated=isolated, uv_cache=uv_cache)
     result = subprocess.run(command, cwd=cwd, check=False, capture_output=True, text=True, env=environment)
     if result.returncode == 0:
         return
@@ -572,5 +633,5 @@ def _run_pip(command: list[str], cwd: Path, constraints: Constraints | None, *, 
     raise ValueError("pip 安装依赖失败: " + " ".join(output.strip().splitlines()[-6:]))
 
 
-def _run(command: list[str], cwd: Path) -> None:
-    _ = subprocess.run(command, cwd=cwd, check=True, stdout=subprocess.DEVNULL)
+def _run(command: list[str], cwd: Path, *, env: dict[str, str] | None = None) -> None:
+    _ = subprocess.run(command, cwd=cwd, check=True, stdout=subprocess.DEVNULL, env=env)

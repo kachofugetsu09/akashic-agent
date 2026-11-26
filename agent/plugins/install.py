@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import fcntl
+import hashlib
 import os
 import json
 import re
 import shutil
 import subprocess
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from typing import cast
 from uuid import uuid4
 
@@ -192,6 +195,7 @@ def install_git_plugin(
             destination=clone_root,
             ref_name=ref_name,
             sparse_paths=sparse,
+            plugins_home=home,
         )
         _validate_source_tree(clone_root)
         source_revision = _run_git(["rev-parse", "HEAD"], cwd=clone_root)
@@ -365,6 +369,7 @@ def _clone_git_source(
     destination: Path,
     ref_name: str,
     sparse_paths: list[str],
+    plugins_home: Path | None = None,
 ) -> None:
     if sparse_paths:
         _ = _run_git(
@@ -387,7 +392,9 @@ def _clone_git_source(
             cwd=destination,
         )
         return
-    if re.fullmatch(r"[0-9a-f]{40}", ref_name) and fetch_sha_shallow(source, destination, ref_name):
+    if re.fullmatch(r"[0-9a-f]{40}", ref_name) and fetch_sha_shallow(
+        source, destination, ref_name, plugins_home=plugins_home
+    ):
         return
     _ = _run_git(["clone", "--", source, str(destination)])
     if ref_name:
@@ -395,19 +402,127 @@ def _clone_git_source(
         _ = _run_git(["checkout", "--detach", checkout_ref], cwd=destination)
 
 
-# 按 40 位 SHA 浅取单个提交；服务器不允许按 SHA 取时返回 False，由调用方回退到完整克隆。
-def fetch_sha_shallow(source: str, destination: Path, sha: str) -> bool:
+# 共享裸仓库只按 origin 与 40 位 SHA 缓存对象，不替代 origin 地址；读写经同目录锁协调。
+def _git_prefetch_paths(source: str, plugins_home: Path) -> tuple[Path, Path]:
+    key = hashlib.sha256(source.strip().rstrip("/").encode("utf-8")).hexdigest()[:16]
+    root = plugins_home.resolve(strict=False) / ".git-prefetch"
+    return root / f"{key}.git", root / f"{key}.lock"
+
+
+def _missing_commits(repo_dir: Path, shas: list[str]) -> list[str]:
+    if not shas or not (repo_dir / "HEAD").is_file():
+        return list(shas)
+    result = subprocess.run(
+        ["git", "-C", str(repo_dir), "cat-file", "--batch-check=%(objecttype)"],
+        input="".join(f"{sha}^{{commit}}\n" for sha in shas),
+        capture_output=True, text=True, check=False,
+        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+    )
+    if result.returncode != 0:
+        return list(shas)
+    lines = result.stdout.splitlines()
+    if len(lines) != len(shas):
+        return list(shas)
+    return [sha for sha, kind in zip(shas, lines) if kind.strip() != "commit"]
+
+
+# 批量安装前一次性预取全部 40 位 SHA 到共享裸仓库：把 N×2 次远程 fetch 压成 1 次；失败不阻断后续单包回退。
+def prefetch_git_commits(
+    source: str,
+    shas: Iterable[str],
+    *,
+    plugins_home: Path | None = None,
+) -> int:
+    unique = list(dict.fromkeys(sha for sha in shas if re.fullmatch(r"[0-9a-f]{40}", sha)))
+    if not unique:
+        return 0
+    home = (plugins_home or plugins_root()).resolve(strict=False)
+    repo_dir, lock_path = _git_prefetch_paths(source, home)
+    try:
+        repo_dir.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return 0
+    with lock_path.open("a+", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            if not (repo_dir / "HEAD").is_file():
+                repo_dir.mkdir(parents=True, exist_ok=True)
+                _ = _run_git(["init", "--bare", "--quiet"], cwd=repo_dir)
+                _ = _run_git(["config", "gc.auto", "0"], cwd=repo_dir)
+            missing = _missing_commits(repo_dir, unique)
+            if not missing:
+                return 0
+            try:
+                # 1. 首选单次连接把全部目标提交一次拉齐（共享 packfile 与 delta 压缩）。
+                _ = _run_git(
+                    ["fetch", "--quiet", "--no-tags", "--depth", "1", "--", source, *missing],
+                    cwd=repo_dir,
+                )
+                return len(missing) - len(_missing_commits(repo_dir, missing))
+            except RuntimeError:
+                pass
+            # 2. 服务端拒绝单次多 SHA fetch 时，并发逐个拉取到独立临时仓再并入，失败的留给单包路径回退。
+            def _fetch_one(sha: str) -> None:
+                try:
+                    _ = _run_git(
+                        ["fetch", "--quiet", "--no-tags", "--depth", "1", "--", source, sha],
+                        cwd=repo_dir,
+                    )
+                except RuntimeError:
+                    return
+
+            with ThreadPoolExecutor(max_workers=min(6, len(missing))) as pool:
+                _ = list(pool.map(_fetch_one, missing))
+            return len(missing) - len(_missing_commits(repo_dir, missing))
+        except (OSError, RuntimeError):
+            return 0
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def _fetch_from_prefetch_cache(source: str, destination: Path, sha: str, plugins_home: Path | None) -> bool:
+    home = (plugins_home or plugins_root()).resolve(strict=False)
+    repo_dir, lock_path = _git_prefetch_paths(source, home)
+    if not (repo_dir / "HEAD").is_file():
+        return False
+    try:
+        with lock_path.open("a+", encoding="utf-8") as lock_file:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_SH)
+            try:
+                if _missing_commits(repo_dir, [sha]):
+                    return False
+                _ = _run_git(
+                    ["fetch", "--quiet", "--no-tags", "--depth", "1", "--", str(repo_dir), sha],
+                    cwd=destination,
+                )
+                return True
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+    except (OSError, RuntimeError):
+        return False
+
+
+# 按 40 位 SHA 浅取单个提交；优先命中本地预取缓存，未命中再向远端浅取；服务器不允许按 SHA 取时返回 False。
+def fetch_sha_shallow(
+    source: str,
+    destination: Path,
+    sha: str,
+    *,
+    plugins_home: Path | None = None,
+) -> bool:
     # 1. 空仓库加 origin，让 origin.url 与完整克隆一致。
     _ = _run_git(["init", "--quiet"], cwd=destination)
     _ = _run_git(["remote", "add", "origin", "--", source], cwd=destination)
-    try:
-        # 2. 只取这一个提交，深度 1。
-        _ = _run_git(["fetch", "--quiet", "--depth", "1", "origin", sha], cwd=destination)
-    except RuntimeError:
-        # 3. 服务器拒绝按 SHA 取：清空目录交给完整克隆路径。
-        for child in destination.iterdir():
-            _remove_path(child)
-        return False
+    fetched = _fetch_from_prefetch_cache(source, destination, sha, plugins_home)
+    if not fetched:
+        try:
+            # 2. 只取这一个提交，深度 1。
+            _ = _run_git(["fetch", "--quiet", "--no-tags", "--depth", "1", "origin", sha], cwd=destination)
+        except RuntimeError:
+            # 3. 服务器拒绝按 SHA 取：清空目录交给完整克隆路径。
+            for child in destination.iterdir():
+                _remove_path(child)
+            return False
     _ = _run_git(["checkout", "--quiet", "--detach", sha], cwd=destination)
     return True
 

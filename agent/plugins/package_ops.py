@@ -1,6 +1,7 @@
 """包管理器的写命令：install、upgrade、remove、sync；在线走 Gateway，离线持锁直装。"""
 from __future__ import annotations
 
+import asyncio
 import json
 import subprocess
 import sys
@@ -11,11 +12,18 @@ from pathlib import Path
 from typing import Literal, cast
 from uuid import uuid4
 
+from agent.plugin_composition import load_endpoint_plan
 from agent.plugins.artifacts import read_pointers, resolve_pointer
 from agent.plugins.bundles import absorbed_plugin_ids, composition_rows, set_plugin_choice
 from agent.plugins.extra_repo import is_official_repo, official_marketplace
 from agent.plugins.distribution_sources import distribution_sources
-from agent.plugins.install import PluginInstallResult, finalize_uninstall_plugin, fetch_sha_shallow, install_git_plugin
+from agent.plugins.install import (
+    PluginInstallResult,
+    finalize_uninstall_plugin,
+    fetch_sha_shallow,
+    install_git_plugin,
+    prefetch_git_commits,
+)
 from agent.plugins.manifest import plugins_root
 from agent.plugins.package_index import closure, expand, load_index
 from agent.plugins.prerequisites import clear_disabled, describe, read_disabled, record_declared, record_disabled, unmet
@@ -67,7 +75,7 @@ def identity_of(name: str) -> str:
 def _check_remote_source(repo: str, sha: str, name: str) -> None:
     with tempfile.TemporaryDirectory(prefix="pkg-check-") as directory:
         target = Path(directory)
-        if not fetch_sha_shallow(repo, target, sha):
+        if not fetch_sha_shallow(repo, target, sha, plugins_home=plugins_root()):
             _ = subprocess.run(["git", "clone", "--quiet", "--", repo, str(target)], check=True, capture_output=True)
             _ = subprocess.run(["git", "-C", str(target), "checkout", "--quiet", "--detach", sha],
                                check=True, capture_output=True)
@@ -86,11 +94,103 @@ def _json_of(done: subprocess.CompletedProcess[str]) -> dict[str, object]:
     return cast(dict[str, object], json.loads(done.stdout.strip().splitlines()[-1]))
 
 
+# 直连已发布 Gateway 端点：复用单条连接避免每包轮询反复冷启动 Python 子进程；不可用时返回 None 由调用方回退 _main。
+def _gateway_endpoint(workspace: Path) -> tuple[str, str | None] | None:
+    plan_path = workspace / "runtime/endpoints.json"
+    if not plan_path.is_file():
+        return None
+    try:
+        endpoints = tuple(
+            endpoint for endpoint in load_endpoint_plan(plan_path)
+            if endpoint.protocol in {"jsonrpc+unix", "jsonrpc+tcp"}
+        )
+    except (OSError, ValueError):
+        return None
+    if len(endpoints) != 1:
+        return None
+    address = endpoints[0].address
+    token: str | None = None
+    if endpoints[0].protocol == "jsonrpc+tcp":
+        token_path = workspace / ".app-server-token"
+        if not token_path.is_file():
+            return None
+        token = token_path.read_text(encoding="utf-8").strip() or None
+    return address, token
+
+
+def _rpc_status(ctx: Context) -> dict[str, object] | None:
+    target = _gateway_endpoint(ctx.workspace)
+    if target is None:
+        return None
+    address, token = target
+    try:
+        from akashic_sdk import AsyncAkashic, RemoteError
+    except ImportError:
+        return None
+
+    async def _call() -> dict[str, object]:
+        async with await AsyncAkashic.connect(address, workspace_token=token) as client:
+            result = await client.request("plugin/status", {})
+            return cast(dict[str, object], result) if isinstance(result, dict) else {}
+
+    try:
+        return asyncio.run(_call())
+    except (OSError, ConnectionError, TimeoutError, ValueError, RuntimeError, RemoteError):
+        return None
+
+
+def _install_online_rpc(ctx: Context, plugin_id: str, sha: str, update_id: str, prior: object) -> tuple[Result, str] | None:
+    target = _gateway_endpoint(ctx.workspace)
+    if target is None:
+        return None
+    address, token = target
+    try:
+        from akashic_sdk import AsyncAkashic, RemoteError
+    except ImportError:
+        return None
+
+    async def _run_install() -> tuple[Result, str]:
+        async with await AsyncAkashic.connect(address, workspace_token=token) as client:
+            _ = await client.request("plugin/install", {
+                "source": ctx.repo,
+                "marketplace": plugin_id.partition("@")[2],
+                "ref": sha,
+                "sparse": [],
+                "update_id": update_id,
+            })
+            deadline = time.monotonic() + ctx.timeout
+            while True:
+                try:
+                    raw = await client.request("plugin/update", {"update_id": update_id})
+                    view = cast(dict[str, object], raw) if isinstance(raw, dict) else {}
+                except RemoteError:
+                    view = {}
+                state = str(view.get("state", ""))
+                if state == "active" or _settled_elsewhere(ctx, view, prior, plugin_id, sha):
+                    return "installed", ""
+                if state == "restart_required":
+                    return "restart-required", "公共合同变化，需要重启实例后生效"
+                if state == "failed":
+                    return "failed", str(view.get("error", "")) or "激活失败"
+                if time.monotonic() >= deadline:
+                    return "in-progress", f"{ctx.timeout:.0f} 秒内未到终态（state={state or 'unknown'}）；plugin-status {update_id} 查询"
+                await asyncio.sleep(0.25)
+
+    try:
+        return asyncio.run(_run_install())
+    except RemoteError as error:
+        raise RuntimeError(str(error)) from error
+    except (OSError, ConnectionError):
+        return None
+
+
 # 在线：plugin-install 只回执"已受理"，用 update_id 轮询 plugin-status 到终态或超时。
 def _install_online(ctx: Context, plugin_id: str, sha: str) -> tuple[Result, str]:
     update_id = uuid4().hex
     before = _live_view(ctx, plugin_id)
     prior = None if before is None else before.get("generation_id")
+    if (direct := _install_online_rpc(ctx, plugin_id, sha, update_id, prior)) is not None:
+        return direct
     done = _main(ctx, "plugin-install", "--source", ctx.repo, "--marketplace", plugin_id.partition("@")[2],
                  "--ref", sha, "--update-id", update_id)
     if done.returncode != 0:
@@ -130,10 +230,13 @@ def _install_offline(ctx: Context, plugin_id: str, sha: str) -> PluginInstallRes
 def _live_view(ctx: Context, plugin_id: str) -> dict[str, object] | None:
     if not ctx.online:
         return None
-    done = _main(ctx, "plugin-status")
-    if done.returncode != 0:
-        return None
-    for item in cast(list[dict[str, object]], _json_of(done).get("plugins", [])):
+    payload = _rpc_status(ctx)
+    if payload is None:
+        done = _main(ctx, "plugin-status")
+        if done.returncode != 0:
+            return None
+        payload = _json_of(done)
+    for item in cast(list[dict[str, object]], payload.get("plugins", [])):
         if item.get("plugin_id") == plugin_id:
             return item
     return None
@@ -316,6 +419,10 @@ def _dependency_plan(ctx: Context, names: list[str]) -> tuple[list[str], dict[st
 # 免得装上却加载失败。要重启的依赖：当前进程仍是旧合同，提示重启后再装。
 def _install_planned(ctx: Context, names: list[str], needs: dict[str, set[str]]) -> list[Outcome]:
     heads = list_release_heads(ctx.repo)
+    # 批量安装前一次性预取全部目标提交，避免每个包校验+安装各连一次 GitHub。
+    target_shas = [heads[bare] for name in names if (bare := name.partition("@")[0]) in heads]
+    if target_shas:
+        _ = prefetch_git_commits(ctx.repo, target_shas, plugins_home=plugins_root())
     outcomes: list[Outcome] = []
     not_ready: set[str] = set()
     seen: list[tuple[str, str]] = []
@@ -341,6 +448,10 @@ def _install_planned(ctx: Context, names: list[str], needs: dict[str, set[str]])
 def install_many(ctx: Context, plugin_ids: list[str], heads: dict[str, str] | None = None) -> list[Outcome]:
     # 组安装把预检用的那份 heads 快照传进来：核对的全集与安装用的是同一份，两次读取之间分支消失不会部分安装。
     heads = list_release_heads(ctx.repo) if heads is None else heads
+    if len(plugin_ids) > 1:
+        target_shas = [heads[name] for plugin_id in plugin_ids if (name := plugin_id.partition("@")[0]) in heads]
+        if target_shas:
+            _ = prefetch_git_commits(ctx.repo, target_shas, plugins_home=plugins_root())
     state = read_state(ctx.workspace, ctx.repo)
     here = {item.plugin_id: item for item in state.packages if item.source == "extra"}
     outcomes: list[Outcome] = []
@@ -364,9 +475,16 @@ def upgrade_many(ctx: Context, names: list[str]) -> list[Outcome]:
     state = read_state(ctx.workspace, ctx.repo)
     installed = {item.name: item for item in state.packages if item.source == "extra"}
     heads = list_release_heads(ctx.repo)
+    targets = names or sorted(installed)
+    upgrade_shas = [
+        heads[name] for name in targets
+        if (pkg := installed.get(name)) is not None and name in heads and (heads[name] != pkg.head or pkg.repair)
+    ]
+    if len(upgrade_shas) > 1:
+        _ = prefetch_git_commits(ctx.repo, upgrade_shas, plugins_home=plugins_root())
     outcomes: list[Outcome] = []
     absorbed = absorbed_plugin_ids()
-    for name in names or sorted(installed):
+    for name in targets:
         package = installed.get(name)
         # 已并入 Core 的身份不升级：不带名字的 pkg upgrade 直接略过遗留包，点名时明确说明。
         if package is not None and package.plugin_id in absorbed:
