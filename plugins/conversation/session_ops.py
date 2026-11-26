@@ -41,7 +41,7 @@ from plugins.operations.contract import (
     OperationSpec,
     OptionSpec,
 )
-from plugins.sources.contract import GuardedSourceSession as SourceSession
+from plugins.sources.contract import SourceBusy, GuardedSourceSession as SourceSession
 from plugins.ui.contract import hidden_part, part_display_key
 
 AUTOMATION_AUTHOR = "self-cli"
@@ -190,7 +190,7 @@ class SessionOperations:
         data: dict[str, object] = {"session_id": session_id, "url": f"?session={session_id}", "mode": req.args.get("mode")}
         if req.args.get("mode") == "start":
             text = "请按本会话的交接卡开始处理；遇到需要用户决定的事先停下说明。"
-            accepted = await self._accept(session_id, _stable_id(req, "start"), text, await self._cross_part(req))
+            accepted = await self._accept(session_id, _stable_id(req, "start"), text, req)
             data["input_id"] = accepted.message_id
         return OperationResult(True, f"已开会话 {session_id}，{_link(session_id)}", data=data)
 
@@ -214,11 +214,20 @@ class SessionOperations:
         current = self._store.read(_HANDOFF_PREFIX + session_id)
         return None if current is None else current.value
 
-    async def _accept(self, session_id: str, message_id: str, text: str, cross: ContentPart) -> Message:
-        session = self._ports.open_automated(session_id)
-        if await session.active_task() is not None:
-            raise MessageConflict("目标会话正在回复；可改用 session steer 在下一步插话，或稍后再发")
-        return await session.accept(message_id, Input((ContentPart("text", text), cross)))
+    async def _accept(
+        self, session_id: str, message_id: str, text: str, req: OperationRequest, extra: tuple[ContentPart, ...] = (),
+    ) -> Message:
+        # 1. 重放：同一稳定 ID 已提交就返回原消息，不再判忙、不重算跳数（正文须与首次一致）。
+        reader = self._catalog.reader(session_id)
+        existing = await reader.read_async(lambda r: r.get(message_id))
+        if existing is not None:
+            return existing
+        # 2. 空闲判定与提交在同一次准入里：用户刚开始的回复不会被自动输入撤权。
+        body = Input((ContentPart("text", text), *extra, await self._cross_part(req)))
+        try:
+            return await self._ports.open_automated(session_id).accept(message_id, body, when_idle=True)
+        except SourceBusy as error:
+            raise MessageConflict("目标会话正在回复；可改用 session steer 在下一步插话，或稍后再发") from error
 
     # 2. session send：目标空闲时提交自动输入并唤醒回复；可有界等待回复正文。
     async def send(self, req: OperationRequest) -> OperationResult:
@@ -231,7 +240,7 @@ class SessionOperations:
             message = await self._ports.open(target).resume(_stable_id(req, "retry"), latest.message_id)
             return OperationResult(True, f"已请求重试 {target}", data={"session_id": target, "message_id": message.message_id})
         text = _text(req.args.get("text"), "text", required=True)
-        accepted = await self._accept(target, _stable_id(req, "send"), text, await self._cross_part(req))
+        accepted = await self._accept(target, _stable_id(req, "send"), text, req, _send_parts(req))
         data: dict[str, object] = {"session_id": target, "message_id": accepted.message_id, "seq": accepted.seq}
         wait = req.args.get("wait") or 0
         if isinstance(wait, int) and wait > 0:
@@ -280,11 +289,22 @@ class SessionOperations:
         return OperationResult(True, f"已放弃 {target} 未完成的工作", data={"message_id": message.message_id})
 
 
+# 与界面发送同样的附件与引用片段；校验由对话来源的 artifact_ref / reply_ref owner 完成。
+def _send_parts(req: OperationRequest) -> tuple[ContentPart, ...]:
+    attachments = req.args.get("attachments") or []
+    if not isinstance(attachments, list) or not all(isinstance(item, str) and item for item in cast(list[object], attachments)):
+        raise ValueError("--attachments 需要附件 ID 的 JSON 数组（attachment add 返回的 artifact_id）")
+    parts = tuple(ContentPart("artifact_ref", item) for item in cast(list[str], attachments))
+    reply = req.args.get("reply_to")
+    return parts + ((ContentPart("reply_ref", reply),) if isinstance(reply, str) and reply else ())
+
+
 def stopped_after(reader: MessageReader, seq: int) -> bool:
-    """用户在 seq 之后停止或放弃过本来源的回合：自动插话随之作废，不再唤醒。"""
-    latest = reader.latest_control("conversation", through_seq=reader.head())
-    return latest is not None and latest.seq > seq and isinstance(latest.body, Control) \
-        and latest.body.action in ("pause", "abandon")
+    """用户在 seq 之后停止或放弃过本来源的回合（之后又恢复也算）：自动插话随之作废，不再唤醒。"""
+    return any(
+        isinstance(row.body, Control) and row.body.action in ("pause", "abandon")
+        for row in reader.read(after_seq=seq, source="conversation")
+    )
 
 
 _SESSION = OptionSpec("session", "目标会话 ID", required=True)
@@ -313,6 +333,8 @@ def _specs(ops: SessionOperations) -> tuple[OperationSpec, ...]:
             handler=ops.send, mirrors=("ws:akashic_clients/message.send",),
             options=(
                 _SESSION, OptionSpec("text", "消息正文"),
+                OptionSpec("attachments", "JSON 数组：随消息发送的附件 ID（attachment add 返回）", value_type="json"),
+                OptionSpec("reply_to", "引用回复目标会话里的一条消息 ID"),
                 OptionSpec("wait", "最多等待回复的秒数（0 不等）", value_type="int", default=0),
                 OptionSpec("retry", "重试目标会话最近一条失败的输入", value_type="bool"),
             ),

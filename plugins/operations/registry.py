@@ -1,6 +1,7 @@
 """OperationRegistry：统一注册、正交扩展解析、动态自省与两阶段执行。"""
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from collections.abc import Mapping
@@ -26,6 +27,9 @@ from .contract import (
 
 logger = logging.getLogger(__name__)
 
+_Fingerprint = tuple[str, str | None, tuple[str, ...]]
+_ID_CONFLICT = OperationResult(False, "该请求 ID 已用于另一条调用；换一个 ID 重试", error_code="conflict")
+
 _IDENT = re.compile(r"^[a-z][a-z0-9_-]{0,47}$")
 
 
@@ -48,7 +52,8 @@ def _coerce_value(opt: OptionSpec, raw: str) -> object:
         try:
             return json.loads(raw)
         except json.JSONDecodeError as err:
-            raise ValueError(f"选项 --{opt.name} 需要 JSON 值，收到 {raw!r}") from err
+            # 不回显原值：JSON 参数可能是凭据。
+            raise ValueError(f"选项 --{opt.name} 需要 JSON 值（第 {err.lineno} 行第 {err.colno} 列解析失败）") from None
     if opt.value_type == "bool":
         if raw.lower() in ("true", "1", "yes"):
             return True
@@ -103,7 +108,9 @@ class OperationRegistry:
         self._ops: dict[str, _RegisteredOp] = {}
         self._by_path: dict[tuple[str, ...], str] = {}
         self._exts: list[_RegisteredExt] = []
-        self._receipts: dict[str, OperationResult] = {}
+        # 回执与进行中的调用都绑定调用指纹（身份、会话、argv）：换身份或换参数不能借同一 ID 取结果。
+        self._receipts: dict[str, tuple[_Fingerprint, OperationResult]] = {}
+        self._inflight: dict[str, tuple[_Fingerprint, asyncio.Future[OperationResult]]] = {}
 
     async def register(self, ctx: Context, spec: OperationSpec) -> Effect:
         if not spec.path or any(_IDENT.fullmatch(seg) is None for seg in spec.path):
@@ -201,22 +208,53 @@ class OperationRegistry:
         return "\n".join(lines)
 
     def receipt(self, request_id: str) -> OperationResult | None:
-        return self._receipts.get(request_id)
+        saved = self._receipts.get(request_id)
+        return None if saved is None else saved[1]
 
     async def invoke(
         self, argv: list[str], *, actor: ActorKind,
         session_id: str | None = None, request_id: str | None = None,
     ) -> OperationResult:
-        if request_id and request_id in self._receipts:
-            return self._receipts[request_id]
+        if not request_id:
+            return await self._invoke(argv, actor=actor, session_id=session_id, request_id=None)
+        fingerprint: _Fingerprint = (actor, session_id, tuple(argv))
+        # 1. 已完成：同一调用重放回执；同 ID 换了调用就是冲突。
+        saved = self._receipts.get(request_id)
+        if saved is not None:
+            return saved[1] if saved[0] == fingerprint else _ID_CONFLICT
+        # 2. 进行中：同一调用等同一个结果，不重复执行副作用。
+        running = self._inflight.get(request_id)
+        if running is not None:
+            return await asyncio.shield(running[1]) if running[0] == fingerprint else _ID_CONFLICT
+        # 3. 首次：执行并记下回执。
+        future: asyncio.Future[OperationResult] = asyncio.get_running_loop().create_future()
+        self._inflight[request_id] = (fingerprint, future)
+        try:
+            result = await self._invoke(argv, actor=actor, session_id=session_id, request_id=request_id)
+            self._receipts[request_id] = (fingerprint, result)
+            future.set_result(result)
+            return result
+        except BaseException as err:
+            future.set_exception(err)
+            _ = future.exception()
+            raise
+        finally:
+            _ = self._inflight.pop(request_id, None)
+
+    async def _invoke(
+        self, argv: list[str], *, actor: ActorKind, session_id: str | None, request_id: str | None,
+    ) -> OperationResult:
         if not argv or argv[0] in ("help", "--help", "-h"):
             return OperationResult(True, self.render_help(tuple(argv[1:]), actor=actor))
         if argv[0] == "describe":
             data = self.describe(tuple(argv[1:]), actor=actor)
             return OperationResult(True, json.dumps(data, ensure_ascii=False, indent=2), data=data)
         if argv[0] == "receipt" and len(argv) == 2:
-            saved = self.receipt(argv[1])
-            return saved or OperationResult(False, f"未找到回执: {argv[1]}", error_code="not_found")
+            # 只有原调用者（同身份、同会话）能取回执。
+            saved = self._receipts.get(argv[1])
+            if saved is None or saved[0][:2] != (actor, session_id):
+                return OperationResult(False, f"未找到回执: {argv[1]}", error_code="not_found")
+            return saved[1]
 
         split = next((i for i, tok in enumerate(argv) if tok.startswith("--")), len(argv))
         path, flag_tokens = tuple(argv[:split]), argv[split:]
@@ -314,6 +352,4 @@ class OperationRegistry:
             OperationResult(True, result.summary, data={**dict(result.data), "extensions": ext_outputs}, parts=result.parts)
             if ext_outputs else result
         )
-        if request_id:
-            self._receipts[request_id] = final
         return final

@@ -1,6 +1,15 @@
 {
   "version": 3,
   "explicit_exemption": {
+    "gateway:jobs/host-notice": {"kind": "transport", "reason": "执行主机桥向任务插件回报宿主进程事件，机器对机器通道，无人工入口", "decision": "0168"},
+    "gateway:models/command": {"kind": "transport", "reason": "与 HTTP POST /command 同一 _command_body 的 Gateway 传输；每个动作已按 http:models:POST /command#<type> 逐个镜像", "decision": "0168"},
+    "gateway:programmatic/message/abandon": {"kind": "transport", "reason": "akashic exec / SDK 程序客户端协议，作用于 programmatic 来源；助手侧等价能力为 session open/send/stop/abandon（对话来源）", "decision": "0168"},
+    "gateway:programmatic/message/pause": {"kind": "transport", "reason": "akashic exec / SDK 程序客户端协议，作用于 programmatic 来源；助手侧等价能力为 session open/send/stop/abandon（对话来源）", "decision": "0168"},
+    "gateway:programmatic/message/result": {"kind": "transport", "reason": "akashic exec / SDK 程序客户端协议，作用于 programmatic 来源；助手侧等价能力为 session open/send/stop/abandon（对话来源）", "decision": "0168"},
+    "gateway:programmatic/message/resume": {"kind": "transport", "reason": "akashic exec / SDK 程序客户端协议，作用于 programmatic 来源；助手侧等价能力为 session open/send/stop/abandon（对话来源）", "decision": "0168"},
+    "gateway:programmatic/message/send": {"kind": "transport", "reason": "akashic exec / SDK 程序客户端协议，作用于 programmatic 来源；助手侧等价能力为 session open/send/stop/abandon（对话来源）", "decision": "0168"},
+    "gateway:programmatic/session/admit": {"kind": "transport", "reason": "akashic exec / SDK 程序客户端协议，作用于 programmatic 来源；助手侧等价能力为 session open/send/stop/abandon（对话来源）", "decision": "0168"},
+    "gateway:self/invoke": {"kind": "transport", "reason": "终端 akashic self 的传输，本身就是整张操作表（actor=user）", "decision": "0168"},
     "http:akashic_clients:GET /api/chat/downloads/{token}": {"kind": "transport", "reason": "兑现 POST /api/chat/downloads 发出的一次性票据，以 Content-Disposition: attachment 把同一份字节交付浏览器；纯交付通道", "decision": ""},
     "http:akashic_clients:GET /api/chat/health": {"kind": "transport", "reason": "HTTP 健康检查探针", "decision": ""},
     "http:akashic_clients:GET /api/chat/navigation": {"kind": "view_only", "reason": "常量 {dashboard_path: \"/\"}，只告诉页面控制台链接指向哪里；无领域事实，前端源码已无调用", "decision": ""},

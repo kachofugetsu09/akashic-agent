@@ -44,6 +44,9 @@ class ParityManifest(TypedDict):
     agent_only: dict[str, AgentOnlyEntry]
 
 
+_DYNAMIC_RPC = "dynamic-rpc:"
+
+
 @dataclass(slots=True)
 class Surface:
     """两侧采集结果：用户入口集合与 operation → 镜像入口。"""
@@ -51,6 +54,7 @@ class Surface:
     entries: set[str] = field(default_factory=set)
     operations: dict[str, tuple[str, ...]] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
+    rpc_tables: set[str] = field(default_factory=set)
 
 
 def _eval_str(expr: ast.expr, consts: dict[str, str]) -> str | None:
@@ -178,8 +182,9 @@ def _route_actions(tree: ast.Module) -> dict[int, list[str]]:
 # 用户入口：按协议采集一个 AST 节点里出现的入口 ID。
 def _user_entries(
     node: ast.AST, plugin: str, consts: dict[str, str], ui_plugin: bool, actions: dict[int, list[str]],
-    errors: list[str],
+    errors: list[str], tables: dict[str, list[str]] | None = None,
 ) -> list[str]:
+    tables = tables or {}
     found: list[str] = []
     # 1. FastAPI / Starlette HTTP 与 WebSocket 路由；多动作端点只计子动作，不再计父入口。
     if (route_call := _route_call(node)) is not None:
@@ -209,14 +214,50 @@ def _user_entries(
             value = _keyword(node, "name", 0)
             if isinstance(value, ast.Constant) and isinstance(value.value, str):
                 found.extend(_slash_entries(value.value, _keyword(node, "subcommands"), errors))
-        # 5. Gateway 动态 RPC
-        if (
-            name == "key" and isinstance(node.func, ast.Attribute)
-            and isinstance(node.func.value, ast.Name) and node.func.value.id == "RpcMethod"
-            and node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str)
+        # 5. Gateway 动态 RPC：provide(RpcMethod.key(<字面量或模块常量>))；变量名由 rpc_methods() 表另行采集。
+        if name == "provide" and node.args and isinstance(key := node.args[0], ast.Call) and (
+            isinstance(key.func, ast.Attribute) and key.func.attr == "key"
+            and isinstance(key.func.value, ast.Name) and key.func.value.id == "RpcMethod" and key.args
         ):
-            found.append(f"gateway:{node.args[0].value}")
+            # 只认大写模块常量：小写名多半是循环变量（与插件清单里的 name 等同名会误解析）。
+            arg = key.args[0]
+            method = None if isinstance(arg, ast.Name) and not arg.id.isupper() else _eval_str(arg, consts)
+            if method is not None:
+                found.append(f"gateway:{method}")
+            elif not isinstance(key.args[0], ast.Name):
+                errors.append(f"{plugin}: RpcMethod.key 的参数无法静态解析（line {node.lineno}）")
+            else:
+                found.append(f"{_DYNAMIC_RPC}{plugin}:{node.lineno}")
+    # 6. `def rpc_methods(...)` 返回的方法表：字典字面量的键就是 Gateway 方法名。
+    if isinstance(node, ast.FunctionDef) and node.name == "rpc_methods":
+        names = _rpc_table(node, tables)
+        if names is None:
+            errors.append(f"{plugin}: rpc_methods() 须直接返回字典字面量，或对模块级字典字面量 .items() 的推导（line {node.lineno}）")
+        found.extend(f"gateway:{name}" for name in names or ())
     return found
+
+
+# rpc_methods() 本层（不进嵌套函数）的 return：字典字面量的键，或 `{k: ... for k, v in TABLE.items()}` 里 TABLE 的键。
+def _rpc_table(fn: ast.FunctionDef, tables: dict[str, list[str]]) -> list[str] | None:
+    pending: list[ast.AST] = list(fn.body)
+    names: list[str] = []
+    while pending:
+        item = pending.pop()
+        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+            continue
+        if isinstance(item, ast.Return) and item.value is not None:
+            value = item.value
+            if isinstance(value, ast.Dict) and all(isinstance(k, ast.Constant) and isinstance(k.value, str) for k in value.keys):
+                names += [cast(str, cast(ast.Constant, k).value) for k in value.keys]
+                continue
+            gen = value.generators[0].iter if isinstance(value, ast.DictComp) and len(value.generators) == 1 else None
+            if (isinstance(gen, ast.Call) and isinstance(gen.func, ast.Attribute) and gen.func.attr == "items"
+                    and isinstance(gen.func.value, ast.Name) and gen.func.value.id in tables):
+                names += tables[gen.func.value.id]
+                continue
+            return None
+        pending.extend(ast.iter_child_nodes(item))
+    return names
 
 
 # Agent 入口：OperationSpec / QueryMirror 声明 → (operation_id, mirrors)。
@@ -238,6 +279,12 @@ def _operation_decl(node: ast.AST, plugin: str, rel: str, errors: list[str]) -> 
         ):
             errors.append(f"{rel}:{node.lineno} OperationSpec.mirrors 必须是字符串字面量元组")
         return op_value.value, mirrors
+    if name == "RpcMirror":
+        method = _keyword(node, "method", 0)
+        if not (isinstance(method, ast.Constant) and isinstance(method.value, str)):
+            errors.append(f"{rel}:{node.lineno} RpcMirror.method 必须是字面量")
+            return None
+        return f"{plugin}.{method.value}", (f"gateway:{method.value}",)
     if name == "QueryMirror":
         method = _keyword(node, "method", 0)
         if not (isinstance(method, ast.Constant) and isinstance(method.value, str)):
@@ -249,9 +296,21 @@ def _operation_decl(node: ast.AST, plugin: str, rel: str, errors: list[str]) -> 
     return None
 
 
+# operation 的命令路径（字面量元组）；拿不到时返回 None，由运行期注册兜底。
+def _op_path(node: ast.Call) -> tuple[str, ...] | None:
+    name = _call_name(node)
+    value = _keyword(node, "path", 1) if name in ("QueryMirror", "RpcMirror") else _keyword(node, "path") \
+        if name == "OperationSpec" else None
+    if not isinstance(value, ast.Tuple):
+        return None
+    parts = _string_literals(value)
+    return tuple(parts) if len(parts) == len(value.elts) else None
+
+
 def collect_surface(plugins_dir: Path) -> Surface:
     """从插件目录独立采集两侧入口。"""
     surface = Surface()
+    paths: dict[tuple[str, ...], str] = {}
     py_files = sorted(plugins_dir.rglob("*.py"))
     ui_plugins = {
         py.relative_to(plugins_dir).parts[0]
@@ -275,8 +334,22 @@ def collect_surface(plugins_dir: Path) -> Surface:
             and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str)
         }
         actions = _route_actions(tree)
+        if any(isinstance(n, ast.FunctionDef) and n.name == "rpc_methods" for n in tree.body):
+            surface.rpc_tables.add(plugin)
+        tables = {
+            node.target.id: [cast(str, cast(ast.Constant, k).value) for k in node.value.keys]
+            for node in tree.body
+            if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and isinstance(node.value, ast.Dict)
+            and all(isinstance(k, ast.Constant) and isinstance(k.value, str) for k in node.value.keys)
+        } | {
+            node.targets[0].id: [cast(str, cast(ast.Constant, k).value) for k in node.value.keys]
+            for node in tree.body
+            if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name)
+            and isinstance(node.value, ast.Dict)
+            and all(isinstance(k, ast.Constant) and isinstance(k.value, str) for k in node.value.keys)
+        }
         for node in ast.walk(tree):
-            surface.entries.update(_user_entries(node, plugin, consts, plugin in ui_plugins, actions, surface.errors))
+            surface.entries.update(_user_entries(node, plugin, consts, plugin in ui_plugins, actions, surface.errors, tables))
             decl = _operation_decl(node, plugin, rel, surface.errors)
             if decl is None:
                 continue
@@ -284,6 +357,18 @@ def collect_surface(plugins_dir: Path) -> Surface:
             if op_id in surface.operations:
                 surface.errors.append(f"operation 重复声明: {op_id}")
             surface.operations[op_id] = mirrors
+            path = _op_path(cast(ast.Call, node))
+            if path is not None:
+                owner = paths.setdefault(path, op_id)
+                if owner != op_id:
+                    surface.errors.append(f"命令路径重名: {' '.join(path)} ← {owner}, {op_id}")
+    # 变量名注册的 Gateway 方法须由同插件的 rpc_methods() 表给出名字，否则无法证明一对一。
+    dynamic = {e for e in surface.entries if e.startswith(_DYNAMIC_RPC)}
+    surface.entries -= dynamic
+    for marker in sorted(dynamic):
+        plugin = marker[len(_DYNAMIC_RPC):].rsplit(":", 1)[0]
+        if plugin not in surface.rpc_tables:
+            surface.errors.append(f"{plugin}: RpcMethod.key(变量) 注册的方法须写在 def rpc_methods() 的字典字面量里")
     return surface
 
 

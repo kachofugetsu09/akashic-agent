@@ -130,7 +130,9 @@ async def run_commands(ctx: Context, task: Task, reader: MessageReader, source: 
     if selected is None:
         assert isinstance(latest.body, Input)
         texts = [cast(str, part.value) for part in latest.body.parts if part.kind == "text"]
-        identity = registry.bind(bindings, texts[0]) if len(texts) == 1 else None
+        # 只有带渠道身份的用户输入才执行 Slash；自动作者（self-cli）以 / 开头的文本交给模型。
+        from_user = any(part.kind == "channel.origin" for part in latest.body.parts)
+        identity = registry.bind(bindings, texts[0]) if len(texts) == 1 and from_user else None
         if identity is not None:
             selected = CommandIntent(session_id=reader.session_id, source=source,
                                      input_id=latest.message_id, binding_id=identity)

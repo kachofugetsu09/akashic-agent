@@ -9,6 +9,18 @@ from agent.plugin_composition.runtime_catalog import RUNTIME_CATALOG
 from plugins.gateway.contract import RpcMethod
 from plugins.runtime_inspection.contract import DOCUMENTS
 from .rpc import rpc_methods
+from plugins.operations.contract import OPERATIONS_V1, OptionSpec, RpcMirror, register_rpc_mirrors
+
+# 运行时自省对终端/SDK 与助手一视同仁：同一处理函数。
+MIRRORS = (
+    RpcMirror("inspection/capabilities.get", ("inspection", "capabilities"), "读取当前组合的能力快照（插件、工具、命令、技能）"),
+    RpcMirror("inspection/documents.list", ("inspection", "documents"), "列出运行时文档"),
+    RpcMirror("inspection/documents.get", ("inspection", "document"), "读取一篇运行时文档",
+              (OptionSpec("document_id", "文档 ID", required=True),)),
+    RpcMirror("inspection/jobs.list", ("inspection", "jobs"), "列出定时任务"),
+    RpcMirror("inspection/jobs.get", ("inspection", "job"), "读取一个定时任务", (OptionSpec("job_id", "任务 ID", required=True),)),
+    RpcMirror("inspection/skills.list", ("inspection", "skills"), "列出技能与本地技能来源的探测状态"),
+)
 
 from plugins.skills.contract import SKILL_INSPECTION
 from .inspection import (
@@ -55,8 +67,13 @@ async def apply(ctx: Context) -> None:
 
     provider = RuntimeInspectionProvider(ctx)
     _ = await ctx.provide(DOCUMENTS, provider)
-    for name, operation in rpc_methods(ctx, provider).items():
+    methods = rpc_methods(ctx, provider)
+    for name, operation in methods.items():
         _ = await ctx.provide(RpcMethod.key(name), operation)
+
+    async def register(child: Context) -> None:
+        await register_rpc_mirrors(child, child.require(OPERATIONS_V1), methods=methods, mirrors=MIRRORS)
+    _ = await ctx.inject((OPERATIONS_V1,), register, name="operations")
     await _bind_optional(
         ctx,
         provider,
