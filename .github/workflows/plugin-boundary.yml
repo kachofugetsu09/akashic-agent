@@ -25,3 +25,7 @@ jobs:
         env:
           BOUNDARY_BASE: ${{ github.event.pull_request.base.sha || 'origin/main' }}
         run: python scripts/plugin_boundary.py check --base "$BOUNDARY_BASE"
+      - name: User interface and agent operations stay one-to-one
+        run: |
+          python scripts/check_interaction_parity.py self-test
+          python scripts/check_interaction_parity.py check

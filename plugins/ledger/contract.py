@@ -512,10 +512,20 @@ class MessageWriters(Protocol):
         ...
 
 
+# 联合事务的一个参与者：owner 用自己打开的 store 交出本空间内的同步写入。
+@dataclass(frozen=True, slots=True)
+class OwnerWrite:
+    store: "OwnerStore"
+    write: Callable[["OwnerTransaction"], object]
+
+
 class OwnerState(Protocol):
     def open(self, ctx: Context) -> OwnerStore: ...
 
     def open_scoped(self, ctx: Context, scope: str) -> OwnerStore: ...
+
+    # 多个 owner 在同一次写事务内提交各自的记录；任一参与者失败整体回滚，结果按参与者顺序返回。
+    async def transact_joint(self, writes: Sequence[OwnerWrite]) -> tuple[object, ...]: ...
 
 
 class SessionAdmin(Protocol):
