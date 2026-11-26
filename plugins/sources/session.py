@@ -20,6 +20,7 @@ from plugins.ledger.contract import (
 from agent.plugin_composition.tasks import RestartGate, Task, TaskAdmission, TaskSlot
 from plugins.ledger.contract import Control, Input, Message, Output
 from plugins.sources.contract import (
+    SourceBusy,
     CompletionProgram,
 )
 
@@ -183,10 +184,12 @@ class SourceSession:
                     # 普通新输入只撤权，已开始的工具照常出结果，下一轮连同新输入一起推理。
                     current.cancel()
 
-    async def accept(self, message_id: str, body: Input) -> Message:
+    async def accept(self, message_id: str, body: Input, *, when_idle: bool = False) -> Message:
         """先持久接纳，再使旧回复失效；ACK 不等待回复或旧工具排空。"""
         async def admit(slot: TaskSlot) -> Message:
             existing = await self._reader.read_async(lambda reader: reader.get(message_id) is not None)
+            if not existing and when_idle and slot.current is not None and slot.current.active:
+                raise SourceBusy("目标会话正在回复")
             if not existing and self._restart_gate is not None:
                 self._restart_gate.check_open()
             return await self._inputs.append_async(

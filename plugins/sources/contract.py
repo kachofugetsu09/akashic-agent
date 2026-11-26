@@ -13,7 +13,12 @@ from plugins.ledger.contract import (
     Control,
     Input,
     Message,
+    MessageConflict,
 )
+
+
+class SourceBusy(MessageConflict):
+    """`accept(when_idle=True)` 时来源正在回复；未提交，调用者可稍后重试或改为插话。"""
 
 
 @dataclass(frozen=True)
@@ -37,7 +42,8 @@ CompletionProgram = Callable[[Task, MessageReader, SourceGuard], Awaitable[Messa
 
 
 class GuardedSourceSession(Protocol):
-    async def accept(self, message_id: str, body: Input) -> Message: ...
+    # when_idle：来源正在回复时拒收（SourceBusy），判定与提交在同一次准入里，回复无法插到两者之间。
+    async def accept(self, message_id: str, body: Input, *, when_idle: bool = False) -> Message: ...
     async def control(
         self, message_id: str, body: Control, *, expected_head: int, handle: str | None
     ) -> Message: ...

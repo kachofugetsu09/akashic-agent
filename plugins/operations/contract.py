@@ -9,12 +9,14 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 import inspect
-from typing import Literal, Protocol
+from typing import Literal, Protocol, cast
 
 from agent.plugin_composition.context import Context
 from agent.plugin_composition.effect import Effect
 from agent.plugin_composition.model import ServiceKey
-from plugins.ledger.contract import ContentPart, OwnerWrite
+from pydantic import ValidationError
+
+from plugins.ledger.contract import ContentPart, OwnerWrite, RpcMethod
 
 ActorKind = Literal["agent", "user"]
 AudienceKind = Literal["agent_and_user", "user_only"]
@@ -199,3 +201,53 @@ def _query_handler(query: QueryHandler, mirror: QueryMirror) -> OperationHandler
         data = value if isinstance(value, Mapping) else {"value": value}
         return OperationResult(True, f"{' '.join(mirror.path)} 完成", data=data)
     return handle
+
+
+@dataclass(frozen=True, slots=True)
+class RpcMirror:
+    """把插件已发布的一个 Gateway RPC 方法原样发布为 operation：终端/SDK 与 self 调同一个处理函数。"""
+
+    method: str
+    path: tuple[str, ...]
+    summary: str
+    options: tuple[OptionSpec, ...] = ()
+    audience: AudienceKind = "agent_and_user"
+
+
+async def register_rpc_mirrors(
+    ctx: Context, operations: Operations, *, methods: Mapping[str, RpcMethod],
+    mirrors: Sequence[RpcMirror],
+) -> None:
+    """参数名即 RPC 参数模型的字段名；入口 ID 为 gateway:<method>，operation id 为 <插件>.<method>。"""
+    plugin = ctx.runtime.plugin_id.split("@", 1)[0]
+    for mirror in mirrors:
+        await operations.register(ctx, OperationSpec(
+            operation_id=f"{plugin}.{mirror.method}", path=mirror.path, summary=mirror.summary,
+            handler=_rpc_handler(methods[mirror.method], mirror), options=mirror.options,
+            audience=mirror.audience, mirrors=(f"gateway:{mirror.method}",),
+        ))
+
+
+def _rpc_handler(method: RpcMethod, mirror: RpcMirror) -> OperationHandler:
+    async def handle(req: OperationRequest) -> OperationResult:
+        try:
+            params = method.params.model_validate({key: value for key, value in req.args.items() if value is not None})
+        except ValidationError as error:
+            # 只报字段与原因，不回显输入值。
+            reasons = "; ".join(f"{'.'.join(str(p) for p in item['loc'])}: {item['msg']}" for item in error.errors())
+            return OperationResult(False, f"参数无效：{reasons}", error_code="invalid_arguments")
+        value = await method.invoke(params, None)
+        data = value if isinstance(value, Mapping) else {"value": value}
+        return OperationResult(True, f"{' '.join(mirror.path)} 完成", data=cast(Mapping[str, object], data))
+    return handle
+
+
+def session_of(req: OperationRequest, option: str = "session") -> str:
+    """会话作用域操作的目标会话：用户可指定任意会话；助手只能作用于自己所在的会话，跨会话走 session send。"""
+    given = req.args.get(option)
+    target = given if isinstance(given, str) and given else req.session_id
+    if not target:
+        raise ValueError(f"需要 --{option} 或在会话内调用")
+    if req.actor != "user" and target != req.session_id:
+        raise PermissionError("助手只能对当前会话执行这个操作；要和别的会话协作请用 session send")
+    return target

@@ -223,9 +223,12 @@ async def apply(ctx: Context) -> None:
         return open(session_id, author=AUTOMATION_AUTHOR)
 
     # 自动插话在回合结束后才转成输入：用户期间停止或放弃过就作废，不再唤醒目标。
-    async def accept_automated(session_id: str, message_id: str, body: Input, staged_at: int) -> None:
+    async def stopped_since(session_id: str, staged_at: int) -> bool:
         reader = ctx.require(MESSAGE_CATALOG).reader(session_id)
-        if await reader.read_async(lambda current: stopped_after(current, staged_at)):
+        return await reader.read_async(lambda current: stopped_after(current, staged_at))
+
+    async def accept_automated(session_id: str, message_id: str, body: Input, staged_at: int) -> None:
+        if await stopped_since(session_id, staged_at):
             return
         _ = await open_automated(session_id).accept(message_id, body)
 
@@ -234,6 +237,7 @@ async def apply(ctx: Context) -> None:
         accept=accept, body=lambda message: Input((origin_part(message), ContentPart("text", message.content))),
         scope=ctx.runtime_scope, accept_automated=accept_automated,
         head=lambda session_id: ctx.require(MESSAGE_CATALOG).reader(session_id).head(),
+        open_automated=open_automated, stopped_after=stopped_since,
     )
     _ = await ctx.spawn(steers.run(), name="conversation-steers")
     _ = await ctx.provide(CONVERSATION_STEER, steers)

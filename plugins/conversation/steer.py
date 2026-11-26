@@ -39,8 +39,12 @@ class Steers:
         scope: Callable[[], AbstractAsyncContextManager[object]],
         accept_automated: Callable[[str, str, Input, int], Awaitable[None]],
         head: Callable[[str], int],
+        open_automated: Callable[[str], SourceSession],
+        stopped_after: Callable[[str, int], Awaitable[bool]],
     ):
         self._accept_automated = accept_automated
+        self._open_automated = open_automated
+        self._stopped_after = stopped_after
         self._head = head
         self._open = open_session
         self._scope = scope
@@ -106,11 +110,15 @@ class Steers:
         # 先清除：写入失败交还暂存时不再叫醒，避免退避被反复跳过；下一次新插话才重新置位。
         self._bound[task].clear()
         items = self._staged.pop(session_id, [])
-        session = self._open(session_id)
         for index, item in enumerate(items):
             try:
-                body = item.body if item.message is None else self._body(item.message)
-                _ = await session.steer(item.message_id, cast(Input, body), task)
+                # 自动插话以 self-cli 作者写入；暂存后用户停止过就作废。
+                if item.message is None:
+                    if await self._stopped_after(session_id, item.staged_at):
+                        continue
+                    _ = await self._open_automated(session_id).steer(item.message_id, cast(Input, item.body), task)
+                    continue
+                _ = await self._open(session_id).steer(item.message_id, self._body(item.message), task)
             except Exception:
                 # 任务已撤权或来源暂不接纳：剩下的交还暂存，由回合结局决定去向。
                 logger.info("插话未能在本步写入 session=%s", session_id, exc_info=True)
