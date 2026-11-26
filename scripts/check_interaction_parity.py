@@ -102,14 +102,15 @@ def _user_entries(node: ast.AST, plugin: str, consts: dict[str, str], ui_plugin:
         if route is not None:
             found.append(f"http:{plugin}:{node.func.attr.upper()} {route}")
     # 2. WebSocket 入站帧分派与 Plugin UI RPC method 分派
-    if isinstance(node, ast.Compare) and isinstance(node.left, ast.Name):
+    if isinstance(node, ast.Compare):
         names = [name for comp in node.comparators for name in _string_literals(comp)]
-        if node.left.id == "frame_type":
+        left = node.left.id if isinstance(node.left, ast.Name) else None
+        if left == "frame_type":
             found.extend(f"ws:{plugin}/{name}" for name in names)
-        elif node.left.id == "method" and ui_plugin:
+        elif left == "method" and ui_plugin:
             found.extend(f"rpc:{plugin}/{name}" for name in names if "." in name)
-        # 3. Conversation 接纳快路径 (/stop, /abandon)
-        elif plugin == "conversation" and node.left.id in ("command", "text", "stripped"):
+        # 3. Conversation 接纳快路径：任何与 "/xxx" 字面量的比较都是不经命令目录的文本命令（如 /stop）
+        elif plugin == "conversation":
             found.extend(
                 f"slash:{name.lstrip('/')}" for name in names
                 if name.startswith("/") and len(name) > 1 and " " not in name

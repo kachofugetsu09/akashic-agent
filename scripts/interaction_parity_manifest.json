@@ -33,7 +33,6 @@
     "http:web_auth:POST /_auth/ticket": {"kind": "auth_security", "reason": "一次性登录票据仅限人工签发", "decision": ""},
     "ws:akashic_clients/ping": {"kind": "transport", "reason": "WebSocket 保活心跳", "decision": ""},
     "ws:akashic_clients/session.attach": {"kind": "transport", "reason": "绑定当前 WebSocket 连接至会话", "decision": ""},
-    "ws:akashic_clients/session.create": {"kind": "transport", "reason": "仅分配草稿会话 ID 并绑定 socket，不落持久账本", "decision": ""},
     "ws:akashic_clients/session.follow": {"kind": "transport", "reason": "订阅会话实时增量事件流", "decision": ""},
     "ws:akashic_clients/session.unfollow": {"kind": "transport", "reason": "取消订阅会话实时增量事件流", "decision": ""}
   },
@@ -89,10 +88,6 @@
     "rpc:models/usage.session",
     "rpc:models/usage.spread",
     "rpc:models/usage.status",
-    "rpc:skills/skills.list",
-    "slash:abandon",
-    "ws:akashic_clients/message.send",
-    "ws:akashic_clients/message.steer",
-    "ws:akashic_clients/message.steer.withdraw"
+    "rpc:skills/skills.list"
   ]
 }

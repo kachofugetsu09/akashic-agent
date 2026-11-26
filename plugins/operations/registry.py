@@ -29,12 +29,14 @@ _IDENT = re.compile(r"^[a-z][a-z0-9_-]{0,47}$")
 class _RegisteredOp:
     owner: str
     spec: OperationSpec
+    context: Context
 
 
 @dataclass(frozen=True, slots=True)
 class _RegisteredExt:
     owner: str
     spec: ExtensionSpec
+    context: Context
 
 
 def _coerce_value(opt: OptionSpec, raw: str) -> object:
@@ -104,7 +106,7 @@ class OperationRegistry:
             raise ValueError(f"无效的 CLI 路径: {spec.path!r}")
         if spec.operation_id in self._ops or spec.path in self._by_path:
             raise ValueError(f"重复注册 operation 或路径: {spec.operation_id}")
-        entry = _RegisteredOp(owner=ctx.runtime.plugin_id, spec=spec)
+        entry = _RegisteredOp(owner=ctx.runtime.plugin_id, spec=spec, context=ctx)
 
         def attach() -> object:
             self._ops[spec.operation_id] = entry
@@ -137,7 +139,7 @@ class OperationRegistry:
                 and existing.spec.namespace == spec.namespace
             ):
                 raise ValueError(f"扩展命名空间冲突: {spec.namespace}")
-        entry = _RegisteredExt(owner=ctx.runtime.plugin_id, spec=spec)
+        entry = _RegisteredExt(owner=ctx.runtime.plugin_id, spec=spec, context=ctx)
 
         def attach() -> object:
             self._exts.append(entry)
@@ -266,7 +268,8 @@ class OperationRegistry:
             writes: list[OwnerWrite] = []
             for ext, vals in active:
                 if ext.spec.stage is not None:
-                    write = await ext.spec.stage(req, vals, target)
+                    async with ext.context.runtime_scope():
+                        write = await ext.spec.stage(req, vals, target)
                     if write is not None:
                         writes.append(write)
             return tuple(writes)
@@ -280,11 +283,14 @@ class OperationRegistry:
             if ext.spec.validate is None:
                 continue
             try:
-                await ext.spec.validate(req, vals)
+                async with ext.context.runtime_scope():
+                    await ext.spec.validate(req, vals)
             except Exception as err:
                 return OperationResult(False, f"扩展 {ext.spec.namespace} 校验失败: {err}", error_code="validation_failed")
         try:
-            result = await spec.handler(req)
+            # 处理函数在注册者自己的作用域里运行：它的能力借用与 owner 身份不经总线转手。
+            async with self._ops[op_id].context.runtime_scope():
+                result = await spec.handler(req)
         except (ValueError, LookupError, PermissionError) as err:
             return OperationResult(False, str(err) or type(err).__name__, error_code="rejected")
         if not result.ok:
@@ -292,7 +298,8 @@ class OperationRegistry:
         ext_outputs: dict[str, object] = {}
         for ext, vals in active:
             if ext.spec.apply is not None:
-                applied = await ext.spec.apply(req, result, vals)
+                async with ext.context.runtime_scope():
+                    applied = await ext.spec.apply(req, result, vals)
                 if applied is not None:
                     ext_outputs[ext.spec.namespace] = applied
         final = (

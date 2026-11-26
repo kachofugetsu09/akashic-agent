@@ -40,6 +40,9 @@ plugin = "goal@release"
 [rows."commands"]
 plugin = "commands@release"
 
+[rows."operations"]
+plugin = "operations@release"
+
 [rows."ui"]
 plugin = "ui@release"
 

@@ -53,6 +53,10 @@ disabled = true
 plugin = "commands@release"
 disabled = true
 
+[rows."operations"]
+plugin = "operations@release"
+disabled = true
+
 [rows."ui"]
 plugin = "ui@release"
 disabled = true
