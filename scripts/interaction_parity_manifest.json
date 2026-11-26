@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "explicit_exemption": {
     "http:akashic_clients:GET /api/chat/downloads/{token}": {"kind": "transport", "reason": "兑现 POST /api/chat/downloads 发出的一次性票据，以 Content-Disposition: attachment 把同一份字节交付浏览器；纯交付通道", "decision": ""},
     "http:akashic_clients:GET /api/chat/health": {"kind": "transport", "reason": "HTTP 健康检查探针", "decision": ""},
@@ -40,6 +40,5 @@
     "ws:akashic_clients/session.follow": {"kind": "transport", "reason": "订阅会话实时增量事件流", "decision": ""},
     "ws:akashic_clients/session.unfollow": {"kind": "transport", "reason": "取消订阅会话实时增量事件流", "decision": ""}
   },
-  "agent_only": {},
-  "legacy_backlog": []
+  "agent_only": {}
 }
