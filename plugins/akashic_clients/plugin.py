@@ -9,7 +9,9 @@ from plugins.channels.contract import CHANNELS, ChannelCapability, ChannelDefini
 from .capabilities import CLIENT_CAPABILITIES, CHANNEL_STEER, REPLY_STATUS
 from .channel import build_akashic_channel_factory
 from plugins.channels.contract import CHANNEL_INPUT_V2 as CHANNEL_INPUT
+from .chat_service import ChatSlot
 from .config import AkashicClientsConfig
+from .services import CHAT_SESSIONS
 from .navigation import NavigationPreferences
 from .read_marks import ReadMarks
 from plugins.ledger.contract import OWNER_STATE, SESSION_ADMISSION, OwnerStore
@@ -38,6 +40,10 @@ async def apply(ctx: Context) -> None:
         with ctx.call_scope():
             yield ctx.require(OWNER_STATE).open(ctx)
 
+    # 聊天目录领域操作随当代通道 binding 发布；其他插件经 CHAT_SESSIONS 调用同一实现。
+    chat_slot = ChatSlot()
+    _ = await ctx.provide(CHAT_SESSIONS, chat_slot)
+
     await ctx.require(CHANNELS).register(
         ctx,
         ChannelDefinition(
@@ -52,8 +58,8 @@ async def apply(ctx: Context) -> None:
             ),
             factory=build_akashic_channel_factory(
                 ctx, config, ctx.runtime.workspace,
-                NavigationPreferences(lambda: ctx.require(OWNER_STATE).open(ctx)),
-                ReadMarks(read_store),
+                NavigationPreferences(read_store),
+                ReadMarks(read_store), chat_slot,
             ),
             inbound_identity=InboundIdentity.PROVIDER_MESSAGE_ID,
             optional_services=frozenset((REPLY_STATUS, SESSION_ADMISSION, CHANNEL_STEER)),

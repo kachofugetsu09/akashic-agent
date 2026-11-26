@@ -19,16 +19,17 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from core.common.file_io import run_file_io
 
+from .chat_service import ChatService
 from .client_diagnostics import register_client_diagnostics
+from .services import ChatRequestError
 from .static import current_chat_build, current_runtime_commit, register_chat_assets
-from plugins.ui.contract import PluginUiSlot, PromptShutdownServer, accepts_gzip_header, read_message_rows, session_row
-from .navigation import NavigationPreferences, PinUpdate, session_pin_row
+from plugins.ui.contract import PluginUiSlot, PromptShutdownServer, accepts_gzip_header
+from .navigation import NavigationPreferences, PinUpdate
 from .notifications import NotificationFeed, NotificationRequest, notification_events
 from .read_marks import ReadMarks
 from .session_activity import follow_session_activity
 from .services import (
     ActiveSessionsFollowPort,
-    InvalidPage,
     MessageCatalogPort as MessageCatalog,
     MessageDisplayReader,
     PluginUiPluginUnavailable,
@@ -41,11 +42,7 @@ from .services import (
     SessionAdminPort,
 )
 from .services import ArtifactStorePort as ChannelAttachmentArtifactStore
-from .web_chat import (
-    MAX_UPLOAD_BYTES,
-    UploadTooLargeError,
-    WebChatChannel,
-)
+from .web_chat import MAX_UPLOAD_BYTES, WebChatChannel
 
 
 class WebPluginUiQueryPayload(BaseModel):
@@ -137,6 +134,7 @@ def create_chat_app(
     message_scope: Callable[[], Any] | None = None,
     session_admin_scope: Callable[[], Any] | None = None,
     artifact_store: ChannelAttachmentArtifactStore | None = None,
+    chat: ChatService | None = None,
 ) -> FastAPI:
     if messages is not None and message_scope is not None:
         raise ValueError("chat API 不能同时绑定直接消息 provider 与 request scope")
@@ -214,6 +212,14 @@ def create_chat_app(
             raise HTTPException(status_code=503, detail="会话管理暂不可用")
         async with session_admin_scope() as admin:
             yield cast(SessionAdminPort, admin)
+
+    # 会话目录、消息、置顶与附件的领域逻辑在 ChatService；路由只做 HTTP 适配。
+    service = chat or ChatService(channel=channel, open_catalog=open_message_catalog, open_admin=open_session_admin,
+                                  navigation=navigation, check_scope=check_scope)
+
+    @app.exception_handler(ChatRequestError)
+    async def chat_request_error(_request: Request, error: ChatRequestError) -> JSONResponse:
+        return JSONResponse({"detail": error.detail}, status_code=error.status)
 
     static_dir = Path(__file__).resolve().parent / "static/chat"
     register_chat_assets(app, static_dir)
@@ -321,58 +327,24 @@ def create_chat_app(
         after_time: str | None = Query(default=None),
         after_key: str | None = Query(default=None),
     ) -> dict[str, object]:
-        if (after_time is None) != (after_key is None):
-            raise HTTPException(status_code=422, detail="目录 cursor 需要时间与会话 ID")
-        after = None if after_time is None or after_key is None else (after_time, after_key)
-        async with open_message_catalog() as catalog:
-            # 纪元在查询前读取：客户端据此判断首连基线通知是否已被这次读取覆盖。
-            epoch = catalog.metadata_epoch
-            try:
-                page = await catalog.sessions_async(
-                    prefix=f"{channel.name}:", visibility="listed", after=after, limit=page_size)
-            except InvalidPage as error:
-                raise HTTPException(status_code=422, detail=str(error)) from error
-        return {"items": [session_row(cast(Any, entry)) for entry in page.items], "total": page.total,
-                "catalog_epoch": epoch,
-                "next_cursor": None if page.next_cursor is None else {
-                    "updated_at": page.next_cursor[0], "session_id": page.next_cursor[1]}}
-
-    async def _set_session_deleted(session_key: str, *, deleted: bool) -> dict[str, object]:
-        if not session_key.startswith(f"{channel.name}:"):
-            raise HTTPException(status_code=400, detail="只能管理当前聊天目录中的会话")
-        try:
-            async with open_session_admin() as admin:
-                result = await admin.set_deleted(session_key, deleted=deleted)
-        except KeyError as error:
-            raise HTTPException(status_code=404, detail="会话不存在") from error
-        return {"key": result.session_key, "deleted": result.deleted,
-                "deleted_at": result.deleted_at}
+        return await service.list_sessions(page_size=page_size, after_time=after_time, after_key=after_key)
 
     @app.post("/api/chat/sessions/{session_key:path}/delete")
     async def delete_session(session_key: str) -> dict[str, object]:
         """软删当前聊天目录中的会话；幂等，消息物理保留，可随时恢复。"""
 
-        return await _set_session_deleted(session_key, deleted=True)
+        return await service.set_deleted(session_key, deleted=True)
 
     @app.post("/api/chat/sessions/{session_key:path}/undelete")
     async def undelete_session(session_key: str) -> dict[str, object]:
         """恢复已软删的会话；幂等，只清除 deleted_at 标记。"""
 
-        return await _set_session_deleted(session_key, deleted=False)
+        return await service.set_deleted(session_key, deleted=False)
 
     @app.post("/api/chat/sessions/{session_key:path}/rename")
     async def rename_session(session_key: str, payload: RenameSessionRequest) -> dict[str, object]:
         """覆盖会话显示标题；空标题清除覆盖回到首条消息推导，幂等。"""
-        if not session_key.startswith(f"{channel.name}:"):
-            raise HTTPException(status_code=400, detail="只能管理当前聊天目录中的会话")
-        try:
-            async with open_session_admin() as admin:
-                result = await admin.set_title(session_key, payload.title)
-        except KeyError as error:
-            raise HTTPException(status_code=404, detail="会话不存在") from error
-        except ValueError as error:
-            raise HTTPException(status_code=422, detail=str(error)) from error
-        return {"key": result.session_key, "title": result.title}
+        return await service.rename(session_key, payload.title)
 
     @app.post("/api/chat/notifications/stream")
     async def notification_stream(payload: NotificationRequest) -> StreamingResponse:
@@ -406,34 +378,13 @@ def create_chat_app(
         seq = await marks.mark(payload.session_id, min(payload.seq, head))
         return {"session_id": payload.session_id, "seq": seq}
 
-    async def read_pins() -> dict[str, object]:
-        if navigation is None:
-            raise HTTPException(status_code=503, detail="置顶偏好暂不可用")
-        async with open_message_catalog() as catalog:
-            refs = navigation.read()
-            sessions = [row for ref in refs if ref.kind == "session"
-                        if (row := await session_pin_row(catalog, ref.id)) is not None]
-        return {"pins": [ref.model_dump() for ref in refs], "sessions": sessions}
-
     @app.get("/api/chat/navigation/pins")
     async def navigation_pins() -> JSONResponse:
-        return JSONResponse(await read_pins(), headers={"Cache-Control": "no-store"})
+        return JSONResponse(await service.read_pins(), headers={"Cache-Control": "no-store"})
 
     @app.post("/api/chat/navigation/pins")
     async def update_navigation_pin(request: PinUpdate) -> dict[str, object]:
-        if navigation is None:
-            raise HTTPException(status_code=503, detail="置顶偏好暂不可用")
-        async with open_message_catalog() as catalog:
-            reference = request.reference()
-            # Replaying an already committed pin must not revalidate a temporarily missing target.
-            if request.pinned and reference not in navigation.read():
-                if reference.kind == "session":
-                    if await session_pin_row(catalog, reference.id) is None:
-                        raise HTTPException(status_code=400, detail="只能置顶可见的会话")
-                else:
-                    await _check_scope_pin(check_scope, reference.kind, reference.id)
-            navigation.update(reference, pinned=request.pinned)
-        return await read_pins()
+        return await service.update_pin(kind=request.kind, id=request.id, pinned=request.pinned)
 
     @app.get("/api/chat/navigation")
     def chat_navigation() -> dict[str, str]:
@@ -543,34 +494,8 @@ def create_chat_app(
         through_seq: int | None = Query(default=None, ge=-1),
         after_seq: int | None = Query(default=None, ge=-1),
     ) -> dict[str, object]:
-        # after_seq 往新的方向读（查找跳到较早位置后向下补齐）；不带时照旧从尾部往前翻。
-        if after_seq is not None and before_seq is not None:
-            raise HTTPException(status_code=422, detail="after_seq 与 before_seq 不能同时使用")
-        async with open_message_catalog() as catalog:
-            try:
-                reader = catalog.reader(session_key)
-                if after_seq is not None:
-                    newer = await reader.read_async(lambda current: current.read_page(
-                        after_seq=after_seq, through_seq=through_seq, limit=page_size))
-                    rows = await read_message_rows(cast(Any, newer), display_only=True, reader=channel.message_display)
-                    return {"version": 2, "items": rows, "through_seq": newer.through_seq,
-                            "has_more": newer.has_more, "after_seq": after_seq}
-                page = await reader.read_tail_async(
-                    before_seq=before_seq, through_seq=through_seq, limit=page_size)
-                items = await read_message_rows(
-                    cast(Any, page),
-                    display_only=True,
-                    reader=channel.message_display,
-                )
-                # 软删会话仍物理存在：如实返回消息并标记 deleted，供前端只读展示。
-                deleted = await reader.deleted_async()
-            except KeyError as error:
-                raise HTTPException(status_code=404, detail="会话不存在") from error
-            except InvalidPage as error:
-                raise HTTPException(status_code=422, detail=str(error)) from error
-        return {"version": 2, "items": items, "through_seq": page.through_seq,
-                "has_more": page.has_more, "deleted": deleted,
-                "before_seq": page.messages[0].seq if page.has_more else None}
+        return await service.list_messages(session_key, page_size=page_size, before_seq=before_seq,
+                                           through_seq=through_seq, after_seq=after_seq)
 
     # 会话内查找：服务端按完整历史匹配正文，返回命中消息的位置与摘要，前端据此预览并跳转。
     # 空查询只建好索引（打开查找框时预热，长会话首建约半秒，输入完成前就绪）。
@@ -580,16 +505,7 @@ def create_chat_app(
         q: str = Query(default="", max_length=200),
         limit: int = Query(200, ge=1, le=500),
     ) -> dict[str, object]:
-        async with open_message_catalog() as catalog:
-            try:
-                found = await catalog.reader(session_key).find_text_async(q, limit=limit)
-            except KeyError as error:
-                raise HTTPException(status_code=404, detail="会话不存在") from error
-        return {"version": 1, "query": q, "total": found.total, "capped": found.capped,
-                "through_seq": found.through_seq,
-                "items": [{"message_id": hit.message_id, "seq": hit.seq, "kind": hit.kind,
-                           "timestamp": hit.timestamp, "count": hit.count,
-                           "before": hit.before, "match": hit.match, "after": hit.after} for hit in found.hits]}
+        return await service.search_messages(session_key, q=q, limit=limit)
 
     @app.websocket("/ws")
     async def chat_ws(websocket: WebSocket, watch_sessions: bool = False) -> None:
@@ -610,24 +526,12 @@ def create_chat_app(
                     raise HTTPException(status_code=413, detail="上传内容超过 50MB 限制")
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail="Content-Length 非法") from exc
-        clean_name = Path(filename).name or "upload.bin"
-        try:
-            return await channel.save_upload_stream(
-                request.stream(),
-                clean_name,
-                max_bytes=MAX_UPLOAD_BYTES,
-            )
-        except UploadTooLargeError as exc:
-            raise HTTPException(status_code=413, detail=str(exc)) from exc
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return await service.save_upload(request.stream(), filename)
 
     @app.get("/api/chat/artifacts/{artifact_id}")
     async def read_artifact(artifact_id: str, request: Request) -> Response:
-        try:
-            data, media_type, filename = await channel.read_artifact(artifact_id)
-        except (RuntimeError, ValueError) as error:
-            raise HTTPException(status_code=404, detail="附件不存在") from error
+        artifact = await service.read_artifact(artifact_id)
+        data, media_type, filename = artifact.data, artifact.media_type, artifact.filename
         headers: dict[str, str] = {}
         if filename:
             safe_filename = Path(filename).name.replace('"', "").replace("\r", "").replace("\n", "")
@@ -738,6 +642,7 @@ def build_chat_server(
     message_scope: Callable[[], Any] | None = None,
     session_admin_scope: Callable[[], Any] | None = None,
     artifact_store: ChannelAttachmentArtifactStore | None = None,
+    chat: ChatService | None = None,
     uds: str,
 ) -> uvicorn.Server:
     config = uvicorn.Config(
@@ -757,6 +662,7 @@ def build_chat_server(
             message_scope=message_scope,
             session_admin_scope=session_admin_scope,
             artifact_store=artifact_store,
+            chat=chat,
         ),
         uds=uds,
         log_level="warning",
@@ -768,20 +674,6 @@ def build_chat_server(
 
 
 ChatApiServer = PromptShutdownServer
-
-
-# 维度值置顶交给该维度 owner 的接纳判定；owner 缺席或判定拒绝都不写入偏好。
-async def _check_scope_pin(
-    check: Callable[[str, str], Awaitable[None]] | None, dimension: str, value: str,
-) -> None:
-    if check is None:
-        raise HTTPException(status_code=503, detail="会话维度判定暂不可用")
-    try:
-        await check(dimension, value)
-    except PermissionError as error:
-        raise HTTPException(status_code=400, detail=f"没有插件负责这个维度: {dimension}") from error
-    except ValueError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
 
 
 def _require_plugin_ui_provider(
