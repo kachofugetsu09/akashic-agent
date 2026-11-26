@@ -312,6 +312,11 @@ def _validate_definition(definition: CommandDefinition) -> CommandDefinition:
         raise TypeError("Command read_only 必须是 bool")
     if definition.recover is not None and not callable(definition.recover):
         raise TypeError("Command recover 必须是 callable")
+    subcommands = definition.subcommands
+    if not isinstance(subcommands, tuple) or len(set(subcommands)) != len(subcommands) or any(
+        not isinstance(item, str) or not _COMMAND_NAME.fullmatch(item) for item in subcommands
+    ):
+        raise ValueError(f"Command subcommands 必须是不重复的命令名元组: {definition.name}")
 
     # 2. 发布前复制定义中的元数据。
     return CommandDefinition(
@@ -322,6 +327,7 @@ def _validate_definition(definition: CommandDefinition) -> CommandDefinition:
         input_hint=definition.input_hint,
         read_only=definition.read_only,
         recover=definition.recover,
+        subcommands=subcommands,
     )
 
 

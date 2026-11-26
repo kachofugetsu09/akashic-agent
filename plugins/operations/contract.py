@@ -173,7 +173,8 @@ async def register_query_mirrors(
     mirrors: Sequence[QueryMirror],
 ) -> None:
     """逐个注册镜像 operation；参数名即界面载荷键，入口 ID 默认为 rpc:<插件 ID>/<method>。"""
-    plugin = ctx.runtime.plugin_id
+    # 运行期身份带来源后缀（models@release），operation id 只用插件名，与门禁采集一致。
+    plugin = ctx.runtime.plugin_id.split("@", 1)[0]
     for mirror in mirrors:
         await operations.register(ctx, OperationSpec(
             operation_id=f"{plugin}.{mirror.method}",

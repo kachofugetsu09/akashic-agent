@@ -2,13 +2,14 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Mapping
+from typing import cast
 from contextlib import asynccontextmanager
 import json
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from agent.plugin_composition import Context
-from plugins.ledger.contract import ContentPart, json_value
+from plugins.ledger.contract import ContentPart, RpcMethod, json_value
 from plugins.operations.contract import OPERATIONS_V1, OperationResult, Operations
 from plugins.tools.contract import TOOLS, CallSource, Result
 
@@ -16,6 +17,8 @@ api_version = 3
 name = "self_cli"
 version = "1.0.0"
 desc = "Self-CLI 模型工具 self：通过统一内省式 CLI 调用 Akashic 自身能力"
+# 终端里的 `akashic self ...` 经 Gateway 调同一张操作表，操作者是用户本人。
+INVOKE_METHOD = "self/invoke"
 
 
 class SelfCliInput(BaseModel):
@@ -84,3 +87,26 @@ async def apply(ctx: Context) -> None:
         )
 
     _ = await ctx.inject((TOOLS, OPERATIONS_V1), register_tool, name="self-cli-tool")
+    _ = await ctx.inject((OPERATIONS_V1,), _register_shell, name="self-cli-shell")
+
+
+class SelfInvokeParams(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    argv: list[str] = Field(max_length=256)
+    request_id: str | None = Field(default=None, min_length=1, max_length=128)
+    session_id: str | None = Field(default=None, min_length=1, max_length=512)
+
+
+# 终端入口与模型工具共用一张操作表；差别只有 actor，user_only 操作因此只在这里可用。
+async def _register_shell(child: Context) -> None:
+    registry = child.require(OPERATIONS_V1)
+
+    async def invoke(params: BaseModel) -> dict[str, object]:
+        call = cast(SelfInvokeParams, params)
+        res = await registry.invoke(call.argv, actor="user", session_id=call.session_id, request_id=call.request_id)
+        return {
+            "ok": res.ok, "summary": res.summary, "data": json_value(dict(res.data)),
+            "error_code": res.error_code, "parts": [json_value({"kind": p.kind, "value": p.value}) for p in res.parts],
+        }
+
+    _ = await child.provide(RpcMethod.key(INVOKE_METHOD), RpcMethod(SelfInvokeParams, child.entrypoint(invoke)))

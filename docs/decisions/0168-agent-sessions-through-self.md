@@ -12,7 +12,11 @@
 
 **一个工具，一份操作表。** 插件把操作注册到 `OPERATIONS_V1`，模型只看到一个工具 `self(argv)`，按 `help`/`describe` 现查。界面入口与 operation 调用同一段领域代码，不准 HTTP 自调用或复制业务逻辑。依赖插件用命名空间参数（`--akasha.learn`）挂到主操作上，需要原子性的经 Ledger 联合事务（`OwnerState.transact_joint`）与主记录同一次提交。
 
-**一对一由 CI 保证。** `scripts/check_interaction_parity.py` 从源码独立采集用户入口（HTTP/WS 路由、WS 帧、Plugin UI RPC、Slash、Gateway RPC）与 operation 声明（`OperationSpec.mirrors`、`QueryMirror`）。每个入口恰好一个 operation 镜像，或写进 `explicit_exemption` 并给出类型与理由；每个 operation 至少镜像一个入口，或写进 `agent_only` 并给出理由。不允许通配。Core 与 extra 各有一份清单，在合成树里合并检查。
+**一对一由 CI 保证。** `scripts/check_interaction_parity.py` 从源码独立采集用户入口（HTTP/WS 路由、WS 帧、Plugin UI RPC、Slash、Gateway RPC）与 operation 声明（`OperationSpec.mirrors`、`QueryMirror`）。每个入口恰好一个 operation 镜像，或写进 `explicit_exemption` 并给出类型与理由；每个 operation 至少镜像一个入口，或写进 `agent_only` 并给出理由。不允许通配。Core 与 extra 各有一份清单，在合成树里合并检查。没有欠账清单：新入口在同一个 PR 里镜像或豁免，否则 CI 失败。
+
+一个入口里按 `type`/`kind` 分出多个动作的（如模型设置的 `/command`），门禁按 `<入口>#<动作>` 逐个计数；Slash 命令的子动作由 `CommandDefinition.subcommands` 显式声明，同样逐个计数。`check_interaction_parity.py runtime --workspace W` 用 `self describe` 对账运行中实例：运行期注册了、静态采集看不到的 operation 判失败。
+
+**三个入口，一张表。** 模型工具 `self`（`self_cli` 插件，actor=agent）、终端 `akashic self …`（Gateway `self/invoke`，actor=user）、界面按钮（各插件领域函数，与 operation 同一段代码）。`user_only` 的 operation 只对用户身份可见。处理函数在注册插件自己的执行作用域里运行，不经总线转手 owner 身份；意外异常回成 `failed`，不拖垮工具循环。
 
 **豁免只有四类。** transport（心跳、订阅流、视频/信令、静态资产）、view_only（页面壳、只改一个客户端视图的状态）、user_only（代表人本人的动作或既有决定禁止模型读取，如 0120 运行诊断、0122 交互终端）、auth_security（口令、登录票据、OAuth 回填）。
 
@@ -23,7 +27,10 @@
 - 用户优先：目标正在回复时 `send` 返回 busy，不抢占；`steer` 暂存到下一步，用户在此期间停止或放弃则作废，不在 `/stop` 之后再唤醒目标。
 - 防死循环：自动输入带 `cross_session` 片段（来源会话、根请求、剩余跳数），从用户原话起最多 3 次自动往返，禁止发给自己。
 - 记忆边界：交接只带显式写进交接卡的内容；来源会话只记 ID，不授予新会话回读权。
-- 受限子任务看不到 `self`。
+- 只读子任务看不到 `self`。
+- 没给标题时，会话标题取 goal 首行。
+
+**附加设置随主记录原子提交。** 新建项目时，akasha 等插件在 `scope.fields` 里只登记取值（`contribute(namespace, read)`），不自己写；项目插件把它们翻成 `--<ns>.<opt>`，走与 `self project create` 相同的 operation，扩展的写入与项目记录经 `transact_joint` 同一次提交。
 
 ## 已知限制
 

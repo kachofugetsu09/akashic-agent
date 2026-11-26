@@ -57,6 +57,14 @@ disabled = true
 plugin = "operations@release"
 disabled = true
 
+[rows."self_cli"]
+plugin = "self_cli@release"
+disabled = true
+
+[rows."chat_ops"]
+plugin = "chat_ops@release"
+disabled = true
+
 [rows."ui"]
 plugin = "ui@release"
 disabled = true

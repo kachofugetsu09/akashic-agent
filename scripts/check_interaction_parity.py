@@ -5,7 +5,7 @@
   - Agent 入口：每个 `OperationSpec(operation_id=..., mirrors=(...))` 与 `QueryMirror(...)` 声明。
 每个用户入口必须恰好被一个 operation 镜像，或写进 explicit_exemption（禁止通配，须写类型与理由）；
 每个 operation 必须镜像至少一个用户入口，或写进 agent_only（须写理由）。
-legacy_backlog 只是迁移期冻结欠账，`--strict` 要求为空。
+没有欠账清单：新入口在同一个 PR 里镜像或豁免，否则 CI 失败。
 """
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 import json
 from pathlib import Path
 import sys
-from typing import Literal, TypedDict
+from typing import cast, Literal, TypedDict
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MANIFEST = ROOT / "scripts/interaction_parity_manifest.json"
@@ -42,7 +42,6 @@ class ParityManifest(TypedDict):
     version: int
     explicit_exemption: dict[str, ExemptionEntry]
     agent_only: dict[str, AgentOnlyEntry]
-    legacy_backlog: list[str]
 
 
 @dataclass(slots=True)
@@ -89,6 +88,16 @@ def _call_name(node: ast.Call) -> str | None:
     if isinstance(node.func, ast.Attribute):
         return node.func.attr
     return None
+
+
+# Slash 命令入口：无子动作为 slash:<name>；有子动作时每个子动作一个 slash:<name>#<sub>。
+def _slash_entries(name: str, subs: ast.expr | None, errors: list[str]) -> list[str]:
+    if subs is None:
+        return [f"slash:{name}"]
+    names = _string_literals(subs)
+    if not isinstance(subs, ast.Tuple) or len(names) != len(subs.elts):
+        errors.append(f"/{name} 的 CommandDefinition.subcommands 必须是字符串字面量元组")
+    return [f"slash:{name}#{sub}" for sub in names] or [f"slash:{name}"]
 
 
 # `app.get("/x")` / `router.post("/x")` 这类路由注册调用 → (动词, 调用节点)。
@@ -169,6 +178,7 @@ def _route_actions(tree: ast.Module) -> dict[int, list[str]]:
 # 用户入口：按协议采集一个 AST 节点里出现的入口 ID。
 def _user_entries(
     node: ast.AST, plugin: str, consts: dict[str, str], ui_plugin: bool, actions: dict[int, list[str]],
+    errors: list[str],
 ) -> list[str]:
     found: list[str] = []
     # 1. FastAPI / Starlette HTTP 与 WebSocket 路由；多动作端点只计子动作，不再计父入口。
@@ -194,11 +204,11 @@ def _user_entries(
             )
     if isinstance(node, ast.Call):
         name = _call_name(node)
-        # 4. Slash 命令注册
+        # 4. Slash 命令注册；声明了 subcommands 的命令按子动作逐个计数。
         if name == "CommandDefinition":
             value = _keyword(node, "name", 0)
             if isinstance(value, ast.Constant) and isinstance(value.value, str):
-                found.append(f"slash:{value.value}")
+                found.extend(_slash_entries(value.value, _keyword(node, "subcommands"), errors))
         # 5. Gateway 动态 RPC
         if (
             name == "key" and isinstance(node.func, ast.Attribute)
@@ -266,7 +276,7 @@ def collect_surface(plugins_dir: Path) -> Surface:
         }
         actions = _route_actions(tree)
         for node in ast.walk(tree):
-            surface.entries.update(_user_entries(node, plugin, consts, plugin in ui_plugins, actions))
+            surface.entries.update(_user_entries(node, plugin, consts, plugin in ui_plugins, actions, surface.errors))
             decl = _operation_decl(node, plugin, rel, surface.errors)
             if decl is None:
                 continue
@@ -277,19 +287,13 @@ def collect_surface(plugins_dir: Path) -> Surface:
     return surface
 
 
-def validate_parity(surface: Surface, manifest: ParityManifest, *, strict: bool = False) -> list[str]:
+def validate_parity(surface: Surface, manifest: ParityManifest) -> list[str]:
     """一对一核对：入口恰好一个归宿、operation 必有对应入口或 agent_only 理由。"""
     errors = list(surface.errors)
     exempt, agent_only = manifest["explicit_exemption"], manifest["agent_only"]
-    backlog_list = manifest["legacy_backlog"]
-    backlog = set(backlog_list)
 
     # 1. 清单自身：无重复、无通配、理由齐全。
-    if len(backlog_list) != len(backlog):
-        errors.append("legacy_backlog 存在重复项")
-    if strict and backlog:
-        errors.append(f"legacy_backlog 必须清零（剩余 {len(backlog)} 项）")
-    for entry_id in (*exempt, *backlog, *agent_only):
+    for entry_id in (*exempt, *agent_only):
         if "*" in entry_id:
             errors.append(f"禁止通配符条目: {entry_id}")
     for entry_id, info in exempt.items():
@@ -301,7 +305,7 @@ def validate_parity(surface: Surface, manifest: ParityManifest, *, strict: bool 
         if not info["reason"].strip():
             errors.append(f"agent_only 缺少理由: {op_id}")
 
-    # 2. 用户入口 → operation：恰好一个镜像，且不与豁免/欠账重叠。
+    # 2. 用户入口 → operation：恰好一个镜像，且不与豁免重叠。
     mirrored: dict[str, list[str]] = {}
     for op_id, mirrors in surface.operations.items():
         for entry_id in mirrors:
@@ -311,14 +315,12 @@ def validate_parity(surface: Surface, manifest: ParityManifest, *, strict: bool 
             errors.append(f"入口被多个 operation 镜像（须一对一）: {entry_id} ← {', '.join(sorted(ops))}")
         if entry_id not in surface.entries:
             errors.append(f"operation 镜像了不存在的入口: {', '.join(ops)} → {entry_id}")
-        if entry_id in exempt or entry_id in backlog:
-            errors.append(f"已镜像入口不应再豁免或列欠账: {entry_id}")
-    for label, group in (("exempt 与 backlog 重复", set(exempt) & backlog),):
-        errors.extend(f"{label}: {item}" for item in sorted(group))
-    classified = set(mirrored) | set(exempt) | backlog
+        if entry_id in exempt:
+            errors.append(f"已镜像入口不应再豁免: {entry_id}")
+    classified = set(mirrored) | set(exempt)
     errors.extend(f"未归属的用户交互入口: {item}" for item in sorted(surface.entries - classified))
     errors.extend(
-        f"已消失的陈旧清单条目: {item}" for item in sorted((set(exempt) | backlog) - surface.entries)
+        f"已消失的陈旧清单条目: {item}" for item in sorted(set(exempt) - surface.entries)
     )
 
     # 3. operation → 用户入口：没有镜像的必须是有理由的 agent_only。
@@ -336,25 +338,26 @@ def validate_parity(surface: Surface, manifest: ParityManifest, *, strict: bool 
 
 def _load_one(path: Path) -> ParityManifest:
     raw = json.loads(path.read_text(encoding="utf-8"))
+    if raw.get("legacy_backlog"):
+        raise SystemExit(f"清单不再接受 legacy_backlog（{path}）：入口须镜像为 operation 或写明豁免")
     return ParityManifest(
         version=int(raw["version"]),
         explicit_exemption=dict(raw.get("explicit_exemption", {})),
         agent_only=dict(raw.get("agent_only", {})),
-        legacy_backlog=list(raw.get("legacy_backlog", [])),
     )
 
 
 def load_manifest(paths: list[Path]) -> ParityManifest:
     """合并 Core 与 extra 的清单；同一条目在两份清单出现即视为冲突。"""
-    merged = ParityManifest(version=2, explicit_exemption={}, agent_only={}, legacy_backlog=[])
+    merged = ParityManifest(version=3, explicit_exemption={}, agent_only={})
     for path in paths:
         part = _load_one(path)
-        for key in ("explicit_exemption", "agent_only"):
-            clash = set(merged[key]) & set(part[key])
-            if clash:
-                raise SystemExit(f"清单条目重复 ({path}): {sorted(clash)}")
-            merged[key].update(part[key])
-        merged["legacy_backlog"].extend(part["legacy_backlog"])
+        clash = (set(merged["explicit_exemption"]) & set(part["explicit_exemption"])) | (
+            set(merged["agent_only"]) & set(part["agent_only"]))
+        if clash:
+            raise SystemExit(f"清单条目重复 ({path}): {sorted(clash)}")
+        merged["explicit_exemption"].update(part["explicit_exemption"])
+        merged["agent_only"].update(part["agent_only"])
     return merged
 
 
@@ -376,12 +379,53 @@ def run_self_test(surface: Surface, manifest: ParityManifest) -> int:
     return 0
 
 
+GUIDE = "docs/design/self-cli-plugin-authoring.md"
+
+
+# 给一个未归属入口写出可直接粘贴的修法：镜像为 operation 是默认，豁免只在四类之内。
+def scaffold(entry_id: str) -> str:
+    kind, _, rest = entry_id.partition(":")
+    plugin, method = (rest.split("/", 1) + [""])[:2] if kind in ("rpc", "ws") else (rest.split(":", 1)[0], "")
+    path = " ".join(f'"{part}"' for part in (method or rest).replace("/", ".").split(".") if part)
+    if kind == "rpc":
+        code = (f'QueryMirror("{method}", ({path.replace(" ", ", ")},), "<一句话说明>", (OptionSpec(...),))\n'
+                f"# 加进本插件的 MIRRORS，并在 apply 里软挂载：\n"
+                f"# await ctx.inject((OPERATIONS_V1,), lambda child: register_query_mirrors(child, child.require(OPERATIONS_V1), query=query, mirrors=MIRRORS), name=\"operations\")")
+    else:
+        code = (f'OperationSpec(operation_id="{plugin}.<资源>.<动词>", path=(<命令路径>), summary="<一句话说明>",\n'
+                f'              handler=ctx.entrypoint(<与界面入口共用的领域函数>), mirrors=("{entry_id}",), options=(...))')
+    exemption = (f'"{entry_id}": {{"kind": "transport|view_only|user_only|auth_security", '
+                 f'"reason": "<为什么助手不需要或不能做>", "decision": "<ADR 编号，可空>"}}')
+    return (f"入口 {entry_id}\n"
+            f"  默认：镜像为 operation（界面与助手调同一段领域代码）：\n    {code.replace(chr(10), chr(10) + '    ')}\n"
+            f"  或：确属四类豁免时写进清单 explicit_exemption：\n    {exemption}\n"
+            f"  详见 {GUIDE}")
+
+
+# 运行期对账：实例里注册的每个 operation 都必须能被静态采集看到，否则它的镜像声明逃过了门禁。
+def check_runtime(surface: Surface, workspace: Path) -> int:
+    import asyncio
+    from plugins.gateway.cli import request
+
+    result = asyncio.run(request(workspace, "self/invoke", {"argv": ["describe"]}))
+    data = result.get("data")
+    rows = cast(list[dict[str, object]], data.get("operations", [])) if isinstance(data, dict) else []
+    live = {str(row["operation_id"]) for row in rows}
+    unseen = sorted(live - set(surface.operations))
+    absent = sorted(set(surface.operations) - live)
+    print(f"运行期 operation={len(live)}，静态声明={len(surface.operations)}，本实例未启用={len(absent)}")
+    for op_id in unseen:
+        print(f"  - 运行期有、静态采集看不到: {op_id}", file=sys.stderr)
+    return 1 if unseen else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="检查用户界面入口与 Self-CLI operation 一对一")
-    parser.add_argument("command", nargs="?", default="check", choices=("check", "report", "self-test"))
+    parser.add_argument("command", nargs="?", default="check", choices=("check", "report", "self-test", "runtime", "scaffold"))
+    parser.add_argument("entries", nargs="*", help="scaffold：要生成修法的入口 ID；省略时取全部未归属入口")
     parser.add_argument("--plugins-dir", type=Path, default=ROOT / "plugins")
     parser.add_argument("--manifest", type=Path, action="append")
-    parser.add_argument("--strict", action="store_true", help="要求 legacy_backlog 清零")
+    parser.add_argument("--workspace", type=Path, help="runtime：运行中实例的 workspace，经 Gateway 读 self describe")
     args = parser.parse_args(argv)
 
     paths: list[Path] = args.manifest or [p for p in (DEFAULT_MANIFEST, EXTRA_MANIFEST) if p.is_file()]
@@ -389,21 +433,35 @@ def main(argv: list[str] | None = None) -> int:
     manifest = load_manifest(paths)
     if args.command == "self-test":
         return run_self_test(surface, manifest)
+    if args.command == "runtime":
+        if args.workspace is None:
+            parser.error("runtime 需要 --workspace")
+        return check_runtime(surface, args.workspace)
 
-    errors = validate_parity(surface, manifest, strict=args.strict)
+    errors = validate_parity(surface, manifest)
     mirrored = {entry for mirrors in surface.operations.values() for entry in mirrors}
     stats = (
         f"用户入口={len(surface.entries)} operation={len(surface.operations)} "
         f"(镜像入口={len(mirrored)}, exempt={len(manifest['explicit_exemption'])}, "
-        f"agent_only={len(manifest['agent_only'])}, legacy_backlog={len(manifest['legacy_backlog'])})"
+        f"agent_only={len(manifest['agent_only'])})"
     )
     if args.command == "report":
         for op_id, mirrors in sorted(surface.operations.items()):
             print(f"{op_id}: {', '.join(mirrors) or '(agent_only)'}")
+    unowned = [err.split(": ", 1)[1] for err in errors if err.startswith("未归属的用户交互入口: ")]
+    if args.command == "scaffold":
+        for entry_id in args.entries or unowned:
+            print(scaffold(entry_id) + "\n")
+        return 0
     if errors:
         print(f"Interaction Parity 检查失败（共 {len(errors)} 项）：{stats}", file=sys.stderr)
         for err in errors:
             print(f"  - {err}", file=sys.stderr)
+        if unowned:
+            print("\n新入口须在同一个 PR 里让助手也能做到。可直接参考：\n", file=sys.stderr)
+            for entry_id in unowned[:5]:
+                print(scaffold(entry_id) + "\n", file=sys.stderr)
+            print("全部修法：python scripts/check_interaction_parity.py scaffold", file=sys.stderr)
         return 1
     print(f"Interaction Parity 检查通过：{stats}")
     return 0
