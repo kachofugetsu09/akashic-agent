@@ -72,9 +72,10 @@ def identity_of(name: str) -> str:
     return f"{name}@{marketplace}"
 
 
-# 取远端提交并读静态 manifest，校验 name 与 api_version；不写 cache。
+# 取远端提交并读静态 manifest，校验 name 与 api_version；不写 cache、选择、指针与安装记录。
 # 传入 workspace 时在 Manager 操作锁外提前取回 resources.json 的外部大资源到内容寻址目录：
-# 既避免大文件下载触发 Core 单操作截止时间熔断锁死后续包，又让真正进入 Core 安装时瞬间命中缓存。
+# 既避免大文件下载触发 Core 单操作截止时间熔断锁死后续包，又让真正进入 Core 安装时瞬间命中缓存
+# （内容寻址目录只增不改；即使后续安装失败也不影响已安装状态）。
 def _check_remote_source(repo: str, sha: str, name: str, *, workspace: Path | None = None) -> None:
     with tempfile.TemporaryDirectory(prefix="pkg-check-") as directory:
         target = Path(directory)
@@ -397,21 +398,17 @@ def _expand_groups(ctx: Context, names: list[str]) -> tuple[list[str], dict[str,
     return full, heads
 
 
-# 在严格保持依赖在前的前提下，把小包排前面、大包（如带大资源的 design、akasha）排最后：
-# 首装批量装全套时轻量核心能力先在几十秒内全部生效，大包不挡在最前面。
-def _order_light_first(ordered: list[str], index: PackageIndex) -> list[str]:
+# 在严格保持计划内传递依赖在前的前提下，把小包排前面、大包（如带大资源的 design、akasha）排最后：
+# 用与执行门禁同一份传递依赖 needs 建边，即使中间依赖已安装被过滤出计划，传递依赖顺序也不会被打断。
+def _order_light_first(ordered: list[str], index: PackageIndex, needs: dict[str, set[str]]) -> list[str]:
     if len(ordered) <= 1:
         return ordered
-    present = set(ordered)
     rank = {name: i for i, name in enumerate(ordered)}
     indegree = {name: 0 for name in ordered}
     dependents: dict[str, list[str]] = {name: [] for name in ordered}
     for name in ordered:
-        pkg = index.packages.get(name)
-        if pkg is None:
-            continue
-        for dep in pkg.requires:
-            if dep in present and dep != name:
+        for dep in needs.get(name, set()):
+            if dep in indegree and dep != name:
                 indegree[name] += 1
                 dependents[dep].append(name)
     heap: list[tuple[int, int, str]] = [
@@ -446,12 +443,12 @@ def _dependency_plan(ctx: Context, names: list[str]) -> tuple[list[str], dict[st
         return names, {}
     selected = {item.name for item in read_state(ctx.workspace, ctx.repo).packages if item.selected}
     ordered = [name for name in closure(index, known) if name in known or name not in selected]
-    ordered = _order_light_first(ordered, index)
+    plan = set(ordered)
+    needs = {name: (set(closure(index, [name])) - {name}) & plan for name in ordered}
+    ordered = _order_light_first(ordered, index, needs)
     added = [name for name in ordered if name not in known]
     if added:
         print(f"自动带上依赖: {', '.join(added)}", file=sys.stderr)
-    plan = set(ordered)
-    needs = {name: (set(closure(index, [name])) - {name}) & plan for name in ordered}
     return ordered + [name for name in names if name.partition("@")[0] not in index.packages], needs
 
 
