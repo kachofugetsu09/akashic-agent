@@ -261,8 +261,8 @@ disabled = true
 plugin = "workspace_changes@release"
 disabled = true
 
-[rows."markdown_reader"]
-plugin = "markdown_reader@release"
+[rows."file_viewer"]
+plugin = "file_viewer@release"
 disabled = true
 
 [rows."codemode"]
