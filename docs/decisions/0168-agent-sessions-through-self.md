@@ -27,12 +27,20 @@
 - 用户优先：目标正在回复时 `send` 返回 busy，不抢占；`steer` 暂存到下一步，用户在此期间停止或放弃则作废，不在 `/stop` 之后再唤醒目标。
 - 防死循环：自动输入带 `cross_session` 片段（来源会话、根请求、剩余跳数），从用户原话起最多 3 次自动往返，禁止发给自己。
 - 记忆边界：交接只带显式写进交接卡的内容；来源会话只记 ID，不授予新会话回读权。
-- 只读子任务看不到 `self`。
+- 子任务看不到 `self`（`self` 能触达插件安装、部署等子任务被禁的能力，权限未落到 operation 粒度前一律不给）。
+- 会话作用域的操作（消息读取与查找、子任务工作台、终端、设计文档）经 `session_of(req)` 取目标：用户可指定任意会话，助手只能作用于自己所在的会话；跨会话协作走 `session send --wait`。
+- 回执绑定调用指纹（身份、会话、argv）：同一请求 ID 换身份或换参数返回 `conflict`，并发的同一调用只执行一次；`receipt` 只对原调用者可见。
+- `send` 的空闲判定与提交在同一次来源准入里（`accept(when_idle=True)`）；已提交的同 ID 消息直接重放。`--retry` 同样消耗跳数，用户停止或放弃过的输入不由助手恢复。
+- 自动输入不带渠道身份，不执行 Slash 命令；以 `/` 开头的文本交给模型。
 - 没给标题时，会话标题取 goal 首行。
 
 **附加设置随主记录原子提交。** 新建项目时，akasha 等插件在 `scope.fields` 里只登记取值（`contribute(namespace, read)`），不自己写；项目插件把它们翻成 `--<ns>.<opt>`，走与 `self project create` 相同的 operation，扩展的写入与项目记录经 `transact_joint` 同一次提交。
 
 ## 已知限制
+
+- 终端 `akashic self` 经 Gateway 以 user 身份调用：能到达 Gateway 的进程都被当作用户。助手的 shell 工具若能访问本机 Gateway，就能以用户身份调用 `user_only` 操作；这与 shell 本身能读写工作区属于同一级风险，Gateway 调用凭据的身份区分留待后续。
+- 静态门禁只证明声明存在：写在从不执行的函数里的 `OperationSpec` 也能通过；`runtime` 子命令只能发现运行期多出来的 operation，未启用的插件无法区分。
+- HTTP 路由只认 `app`/`router` 接收者，Gateway 方法只认 `RpcMethod.key(大写常量)` 与 `def rpc_methods()` 字典；其他写法会漏采，新增写法时须同步采集器。
 
 - operation 回执只在进程内保留；重启后重放依赖各写操作自身的稳定 ID（会话 ID 由请求 ID 派生）。
 - `session send` 不在目标回复中途注入；需要中途插话用 `session steer`。

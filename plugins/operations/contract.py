@@ -240,3 +240,14 @@ def _rpc_handler(method: RpcMethod, mirror: RpcMirror) -> OperationHandler:
         data = value if isinstance(value, Mapping) else {"value": value}
         return OperationResult(True, f"{' '.join(mirror.path)} 完成", data=cast(Mapping[str, object], data))
     return handle
+
+
+def session_of(req: OperationRequest, option: str = "session") -> str:
+    """会话作用域操作的目标会话：用户可指定任意会话；助手只能作用于自己所在的会话，跨会话走 session send。"""
+    given = req.args.get(option)
+    target = given if isinstance(given, str) and given else req.session_id
+    if not target:
+        raise ValueError(f"需要 --{option} 或在会话内调用")
+    if req.actor != "user" and target != req.session_id:
+        raise PermissionError("助手只能对当前会话执行这个操作；要和别的会话协作请用 session send")
+    return target

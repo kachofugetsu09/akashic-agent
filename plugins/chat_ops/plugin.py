@@ -8,6 +8,7 @@ from plugins.akashic_clients.contract import CHAT_SESSIONS, ChatRequestError, Ch
 from plugins.host_execution.contract import FILES, FileByteReader, FileError, Files
 from plugins.ledger.contract import ContentPart
 from plugins.operations.contract import (
+    session_of,
     OPERATIONS_V1, OperationRequest, OperationResult, OperationSpec, OptionSpec,
 )
 
@@ -59,19 +60,23 @@ def _session_read_specs(host: ChatSessionsHost) -> tuple[OperationSpec, ...]:
         return await _run(host, "会话目录", lambda chat: chat.list_sessions(
             page_size=_int_or(req, "page_size", 50), after_time=_text(req, "after_time"), after_key=_text(req, "after_key")))
 
-    # 只读消息与查找先按侧栏可见性（本通道前缀 + listed）核对，与界面能打开的会话一致。
+    # 只读消息与查找先按侧栏可见性（本通道前缀 + listed）核对；助手只能读自己所在的会话（跨会话读回复用 session send --wait）。
     async def messages(req: OperationRequest) -> OperationResult:
+        target = session_of(req, "session_key")
+
         async def call(chat: ChatSessions) -> Mapping[str, object]:
-            await chat.ensure_listed(_session(req))
+            await chat.ensure_listed(target)
             return await chat.list_messages(
-                _session(req), page_size=_int_or(req, "page_size", 50), before_seq=_int(req, "before_seq"),
+                target, page_size=_int_or(req, "page_size", 50), before_seq=_int(req, "before_seq"),
                 through_seq=_int(req, "through_seq"), after_seq=_int(req, "after_seq"))
         return await _run(host, "会话消息页", call)
 
     async def search(req: OperationRequest) -> OperationResult:
+        target = session_of(req, "session_key")
+
         async def call(chat: ChatSessions) -> Mapping[str, object]:
-            await chat.ensure_listed(_session(req))
-            return await chat.search_messages(_session(req), q=_text(req, "q") or "", limit=_int_or(req, "limit", 200))
+            await chat.ensure_listed(target)
+            return await chat.search_messages(target, q=_text(req, "q") or "", limit=_int_or(req, "limit", 200))
         return await _run(host, "会话内查找结果", call)
 
     return (

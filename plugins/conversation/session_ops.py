@@ -179,10 +179,15 @@ class SessionOperations:
             req.session_id.split(":", 1)[0] if req.session_id and ":" in req.session_id else "akashic")
         session_id = f"{channel}:{_stable_id(req, 'open')}"
         attributes = SessionAttributes.scoped(cast(Mapping[str, str], scope))
-        _ = await self._ctx.require(SESSION_ADMISSION).ensure_async(self._ctx, session_id, attributes)
-        await self._write_handoff(session_id, record)
         # 没给标题时用目标的首行当标题，侧栏不退回交接卡原文。
         title = _text(req.args.get("title"), "title") or goal.splitlines()[0][:40]
+        if len(title) > 80:
+            raise ValueError("--title 最多 80 字")
+        # 参数与跳数预算都在首次持久化之前判定，拒绝时不留下半开的会话。
+        if req.args.get("mode") == "start":
+            _ = await self._cross_part(req)
+        _ = await self._ctx.require(SESSION_ADMISSION).ensure_async(self._ctx, session_id, attributes)
+        await self._write_handoff(session_id, record)
         if title:
             with self._ctx.borrow(SESSION_ADMIN) as admin:
                 if admin is not None:
@@ -237,6 +242,10 @@ class SessionOperations:
             latest = await reader.read_async(lambda r: r.latest_input("conversation", through_seq=r.head()))
             if latest is None:
                 raise LookupError("目标会话没有可重试的输入")
+            # 重试也消耗跳数；用户主动停止或放弃过的输入不由助手代为恢复。
+            _ = await self._cross_part(req)
+            if req.actor != "user" and await reader.read_async(lambda r: stopped_after(r, latest.seq)):
+                raise PermissionError("用户停止过这条输入；是否继续由用户决定")
             message = await self._ports.open(target).resume(_stable_id(req, "retry"), latest.message_id)
             return OperationResult(True, f"已请求重试 {target}", data={"session_id": target, "message_id": message.message_id})
         text = _text(req.args.get("text"), "text", required=True)
