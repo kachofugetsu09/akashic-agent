@@ -65,6 +65,10 @@ class Authorize:
         return {"label": self.label, "hint": self.hint}
 
 
+class AuthorizeUndeclared(LookupError):
+    """表单所属插件没有声明授权。"""
+
+
 @dataclass(frozen=True, slots=True)
 class SettingsForm:
     title: str
@@ -88,6 +92,19 @@ class SettingsEntry:
     settings: Configuration
     context: Context
     authorize: Authorize | None = None
+
+    # 授权在贡献插件的运行作用域里执行；没有声明授权抛 AuthorizeUndeclared，ValueError 是用户能改正的错误（回调网址不对、授权已过期）。
+    async def authorize_start(self) -> str:
+        if self.authorize is None:
+            raise AuthorizeUndeclared("这个插件没有声明授权")
+        async with self.context.runtime_scope():
+            return await self.authorize.start()
+
+    async def authorize_finish(self, callback: str) -> None:
+        if self.authorize is None:
+            raise AuthorizeUndeclared("这个插件没有声明授权")
+        async with self.context.runtime_scope():
+            await self.authorize.finish(callback.strip())
 
     def body(self) -> dict[str, object]:
         form = self.form

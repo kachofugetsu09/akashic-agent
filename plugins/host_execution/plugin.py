@@ -15,6 +15,7 @@ from plugins.host_execution.contract import (
 )
 from .bridge.factory import HostBridgeRpcError, build_file_bridge
 from plugins.ui.contract import UI, UI_SLOTS, PluginUiDefinition, PluginUiRpcInvalidRequest
+from plugins.operations.contract import OPERATIONS_V1, OperationRequest, OperationResult, OperationSpec
 from .processes import PluginProcesses, PluginTerminals, PluginProcessStreams
 from .files import Files
 from .bridge.boot import claim_host_bridge_boot
@@ -113,3 +114,17 @@ async def start_monitor(ctx: Context) -> None:
             child, PluginUiDefinition(module="plugin_ui.js", slots=("chat.notice",)), query=query)
 
     _ = await ctx.inject((UI_SLOTS, HOST_STATUS), register_notice, name="host-status-notice")
+
+    # 5. Dashboard 路由与输入框提示读的是同一份 generation 快照，一个 operation 同时镜像这两条传输。
+    async def register_ops(child: Context) -> None:
+        status = child.require(HOST_STATUS)
+
+        async def read(_req: OperationRequest) -> OperationResult:
+            snapshot = status.snapshot()
+            return OperationResult(True, f"宿主执行桥: {snapshot.get('state')}", data=snapshot)
+
+        _ = await child.require(OPERATIONS_V1).register(child, OperationSpec(
+            "host_execution.bridge_status", ("host", "bridge", "status"), "读取宿主执行桥（Bridge）的健康状态", read,
+            mirrors=("http:host_execution:GET /api/runtime/host-bridge", "rpc:host_execution/bridge.state")))
+
+    _ = await ctx.inject((OPERATIONS_V1, HOST_STATUS), register_ops, name="host-status-operations")
