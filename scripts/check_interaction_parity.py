@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 import json
 from pathlib import Path
 import sys
-from typing import Literal, TypedDict
+from typing import cast, Literal, TypedDict
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MANIFEST = ROOT / "scripts/interaction_parity_manifest.json"
@@ -388,12 +388,30 @@ def run_self_test(surface: Surface, manifest: ParityManifest) -> int:
     return 0
 
 
+# 运行期对账：实例里注册的每个 operation 都必须能被静态采集看到，否则它的镜像声明逃过了门禁。
+def check_runtime(surface: Surface, workspace: Path) -> int:
+    import asyncio
+    from plugins.gateway.cli import request
+
+    result = asyncio.run(request(workspace, "self/invoke", {"argv": ["describe"]}))
+    data = result.get("data")
+    rows = cast(list[dict[str, object]], data.get("operations", [])) if isinstance(data, dict) else []
+    live = {str(row["operation_id"]) for row in rows}
+    unseen = sorted(live - set(surface.operations))
+    absent = sorted(set(surface.operations) - live)
+    print(f"运行期 operation={len(live)}，静态声明={len(surface.operations)}，本实例未启用={len(absent)}")
+    for op_id in unseen:
+        print(f"  - 运行期有、静态采集看不到: {op_id}", file=sys.stderr)
+    return 1 if unseen else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="检查用户界面入口与 Self-CLI operation 一对一")
-    parser.add_argument("command", nargs="?", default="check", choices=("check", "report", "self-test"))
+    parser.add_argument("command", nargs="?", default="check", choices=("check", "report", "self-test", "runtime"))
     parser.add_argument("--plugins-dir", type=Path, default=ROOT / "plugins")
     parser.add_argument("--manifest", type=Path, action="append")
     parser.add_argument("--strict", action="store_true", help="要求 legacy_backlog 清零")
+    parser.add_argument("--workspace", type=Path, help="runtime：运行中实例的 workspace，经 Gateway 读 self describe")
     args = parser.parse_args(argv)
 
     paths: list[Path] = args.manifest or [p for p in (DEFAULT_MANIFEST, EXTRA_MANIFEST) if p.is_file()]
@@ -401,6 +419,10 @@ def main(argv: list[str] | None = None) -> int:
     manifest = load_manifest(paths)
     if args.command == "self-test":
         return run_self_test(surface, manifest)
+    if args.command == "runtime":
+        if args.workspace is None:
+            parser.error("runtime 需要 --workspace")
+        return check_runtime(surface, args.workspace)
 
     errors = validate_parity(surface, manifest, strict=args.strict)
     mirrored = {entry for mirrors in surface.operations.values() for entry in mirrors}
