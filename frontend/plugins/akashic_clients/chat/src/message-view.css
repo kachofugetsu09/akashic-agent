@@ -2941,6 +2941,21 @@ button.tool-step-summary:active {
   white-space: nowrap;
 }
 
+.composer-reference > button.composer-reference__jump {
+  display: inline-block;
+  width: auto;
+  height: auto;
+  flex: 1 1 auto;
+  padding: 0;
+  border-radius: 0;
+  text-align: left;
+}
+
+.composer-reference > button.composer-reference__jump:hover {
+  background: transparent;
+  text-decoration: underline;
+}
+
 .composer-reference > button {
   display: inline-flex;
   width: 22px;
