@@ -2,8 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
-import io
 import json
 import math
 import re
@@ -20,7 +18,6 @@ from plugins.ledger.contract import (
     MAX_IMAGE_FILE_BYTES as MAX_IMAGE_FILE_BYTES,
     MAX_IMAGE_PIXELS as MAX_IMAGE_PIXELS,
     MAX_IMAGE_TOTAL_BYTES as MAX_IMAGE_TOTAL_BYTES,
-    detect_supported_image_mime,
     encode_image_bytes as encode_image_bytes,
     validate_image_attachment_budget as validate_image_attachment_budget,
 )
