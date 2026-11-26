@@ -161,13 +161,16 @@ function OnboardingSection({data, renderRoute, close, surfaceHost, auto}: {
   const [running, setRunning] = useState(auto);
   const {catalog, statuses, error, refresh} = useCatalog(data);
   const failedSteps = catalog?.steps.filter(step => statuses[step.id]?.fault) ?? [];
+  const installing = runningInstallPhaseOf(catalog, statuses) !== null;
   // 1. 首跑流程结束连同设置一起关闭，回到对话；2. 从设置里重走的流程结束后回到概览。
   // 结束时丢掉换代续接记录：之后的换代不该把引导重新打开。
   const exit = useCallback(() => { markSeen(); void takeResume(); if (auto) close?.(); else { setRunning(false); void refresh(); } }, [auto, close, refresh]);
   return <>
     <div className="onboarding-overview">
       <p className="onboarding-overview-intro">首次使用时的引导。这里能看到每项能力的状态，也可以重新走一遍。</p>
-      <button type="button" className="onboarding-primary" onClick={() => setRunning(true)}>重新走一遍引导</button>
+      <button type="button" className="onboarding-primary" onClick={() => setRunning(true)}>
+        {installing ? "查看安装进度" : "重新走一遍引导"}
+      </button>
       {(error || failedSteps.length > 0) && <div className="config-error" role="alert">
         {error ? <p>{error}</p> : failedSteps.map(step => <p key={step.id}>{step.title}：{statuses[step.id]?.fault}</p>)}
         <button type="button" className="onboarding-text-button" onClick={() => void refresh()}>重试</button>
@@ -200,15 +203,19 @@ function Onboarding({data, renderRoute, exit, surfaceHost}: {
   const [index, setIndex] = useState(0);
   const [dirty, setDirty] = useState<Record<string, boolean>>({});
   const [leave, setLeave] = useState<(() => void) | null>(null);
+  const userActed = useRef(false);
   const installs = useFrozenInstalls(catalog, statuses, resume);
   const phases = useMemo(() => catalog && chosen && installs ? phasesOf(catalog, statuses, chosen, planned, installs) : [{kind: "welcome"} as Phase],
     [catalog, statuses, chosen, planned, installs]);
   const at = Math.min(index, phases.length - 1);
   const phase = phases[at];
-  useResume(resume, phases, setIndex, () => ({phase: phaseId(phase), planned: planned && [...planned], installs: [...(installs ?? [])]}));
+  const runningInstallPhase = useMemo(() => runningInstallPhaseOf(catalog, statuses), [catalog, statuses]);
   const editing = Object.values(dirty).some(Boolean);
+  if (editing) userActed.current = true;
+  useResume(resume, runningInstallPhase, userActed, phases, setIndex, () => ({phase: phaseId(phase), planned: planned && [...planned], installs: [...(installs ?? [])]}));
   const guard = (go: () => void) => { if (editing) setLeave(() => go); else go(); };
   const move = (delta: number) => guard(() => {
+    userActed.current = true;
     setDirty({});
     // 1. 离开能力页时定格待设置分组；2. 回到能力页时解除定格，允许重新挑选。
     if (phase.kind === "abilities" && delta > 0 && catalog && chosen) {
@@ -253,17 +260,50 @@ function useFrozenInstalls(catalog: Catalog | null, statuses: Statuses, resume: 
   return frozen;
 }
 
+function runningInstallPhaseOf(catalog: Catalog | null, statuses: Statuses): string | null {
+  if (!catalog) return null;
+  const requiredReady = catalog.groups.filter(group => group.required).every(group => groupReady(catalog, statuses, group.key));
+  if (!requiredReady) return null;
+  const group = catalog.groups.find(item => item.installs
+    && catalog.steps.some(step => step.group === item.key && statuses[step.id]?.running));
+  return group ? `group:${group.key}` : null;
+}
+
 // 界面换代会重建外框：换代前记下当前一步与定格的计划，新外框打开引导后跳回那一步。
-function useResume(resume: Resume | null, phases: Phase[], setIndex: (index: number) => void, snapshot: () => Omit<Resume, "at">): void {
+// 刷新或从聊天切回引导时若后台首装仍在运行，同样直接落到正在安装的进度页；用户一旦手动导航或开始编辑即停止自动跳转。
+function useResume(
+  resume: Resume | null,
+  runningInstallPhase: string | null,
+  userActed: {current: boolean},
+  phases: Phase[],
+  setIndex: (index: number) => void,
+  snapshot: () => Omit<Resume, "at">,
+): void {
   const latest = useRef(snapshot);
   latest.current = snapshot;
   const target = useRef(resume?.phase ?? null);
+  const settledInitial = useRef(false);
   useEffect(() => {
-    if (!target.current || phases.length < 2) return;
-    const found = phases.findIndex(item => phaseId(item) === target.current);
-    target.current = null;
-    if (found >= 0) setIndex(found);
-  }, [phases, setIndex]);
+    if (phases.length < 2) return;
+    if (target.current) {
+      const found = phases.findIndex(item => phaseId(item) === target.current);
+      target.current = null;
+      settledInitial.current = true;
+      if (found >= 0) { setIndex(found); return; }
+      if (!userActed.current && runningInstallPhase) {
+        const fallback = phases.findIndex(item => phaseId(item) === runningInstallPhase);
+        if (fallback >= 0) setIndex(fallback);
+      }
+      return;
+    }
+    if (!settledInitial.current) {
+      settledInitial.current = true;
+      if (!userActed.current && runningInstallPhase) {
+        const found = phases.findIndex(item => phaseId(item) === runningInstallPhase);
+        if (found >= 0) setIndex(found);
+      }
+    }
+  }, [phases, runningInstallPhase, userActed, setIndex]);
   useEffect(() => {
     const onNavigate = (event: Event) => {
       // 被别处（如安装中的暂缓）拦下的换代不记：那次不会真的重建外框。
