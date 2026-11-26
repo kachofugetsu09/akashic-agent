@@ -182,9 +182,10 @@ export interface NavigationNotice {
 export interface NavigationFormControls {
   /**
    * 登记提交：宿主按钮调用，抛错时表单保持打开并显示原因。
-   * 新建时 commitFields 让 scope.fields 插件为新取值保存设置，须在创建前调用；返回新分组 id，宿主随即在其中开始新对话。
+   * 新建时 extensions() 给出 scope.fields 插件填好的附加设置（按命名空间），随创建请求一起交给维度 owner，
+   * 由它与主记录同一事务提交；返回新分组 id，宿主随即在其中开始新对话。
    */
-  onSubmit(submit: (commitFields: (value: string) => Promise<void>) => Promise<string | void>): () => void;
+  onSubmit(submit: (extensions: () => ScopeFieldValues) => Promise<string | void>): () => void;
   /** 提交按钮是否可用，例如名称为空时不可用。 */
   setReady(ready: boolean): void;
   /** 正在提交；变化时经 onInvalidate 通知。 */
@@ -352,10 +353,13 @@ export interface HeaderMetaControls {
   closePanel(): void;
 }
 
-/** 新建表单里的附加设置：表单确定了新取值、在它被创建之前，宿主依次调用各插件登记的提交。 */
+/** 新建表单的附加设置：命名空间 → 选项取值，对应 `self` 命令行上的 `--<命名空间>.<选项>`。 */
+export type ScopeFieldValues = Record<string, Record<string, string | number | boolean>>;
+
+/** 新建表单里的附加设置：插件只登记取值，不自己写入；维度 owner 随创建一起原子提交。 */
 export interface ScopeFieldControls {
-  /** 登记本挂载的提交；拒绝时整次新建失败，表单保持打开。返回取消登记。 */
-  onCommit(commit: (value: string) => Promise<void>): () => void;
+  /** 登记本挂载在 namespace 下的取值读取；提交时读一次。同一命名空间只能登记一个，返回取消登记。 */
+  contribute(namespace: string, read: () => Record<string, string | number | boolean>): () => void;
   /** 表单正在提交；变化时经 onInvalidate 通知。 */
   busy(): boolean;
 }
