@@ -1,6 +1,7 @@
 """显式选择的 Commands 服务入口。"""
 from agent.plugin_composition import Context
 from plugins.commands.contract import COMMANDS
+from plugins.operations.contract import OPERATIONS_V1, OperationRequest, OperationResult, OperationSpec
 from plugins.ui.contract import UI_SLOTS, PluginUiDefinition, PluginUiRpcInvalidRequest
 
 from .registry import PluginCommands
@@ -32,3 +33,23 @@ async def apply(ctx: Context) -> None:
         )
 
     await ctx.inject((UI_SLOTS,), plugin_ui, name="plugin-ui")
+
+    async def register_ops(child: Context) -> None:
+        async def handle_list(_req: OperationRequest) -> OperationResult:
+            items = [
+                {"name": row.name, "description": row.description, "input_hint": row.input_hint}
+                for row in commands.freeze().descriptors
+            ]
+            return OperationResult(True, f"共 {len(items)} 个 Slash 命令", data={"items": items})
+
+        _ = await child.require(OPERATIONS_V1).register(
+            child,
+            OperationSpec(
+                operation_id="commands.list",
+                path=("commands", "list"),
+                summary="列出当前已注册的 Slash 命令目录",
+                handler=handle_list,
+            ),
+        )
+
+    await ctx.inject((OPERATIONS_V1,), register_ops, name="operations")
