@@ -467,7 +467,7 @@ export function GroupFormDialog({ request, groups, onClose, onCloseFocus }: {
     settle(true);
     setError("");
     try {
-      const created = await handler((value) => fields.commit(value));
+      const created = await handler(() => fields.values());
       settle(false);
       onClose();
       // 新建表单返回新取值：宿主随即在其中开始新对话。

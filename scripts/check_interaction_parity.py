@@ -22,6 +22,8 @@ DEFAULT_MANIFEST = ROOT / "scripts/interaction_parity_manifest.json"
 EXTRA_MANIFEST = ROOT / "interaction_parity.extra.json"
 ALLOWED_EXEMPTION_KINDS = frozenset({"transport", "view_only", "user_only", "auth_security"})
 HTTP_VERBS = frozenset({"get", "post", "put", "patch", "delete", "websocket"})
+# 多动作端点的判别字段名。
+DISCRIMINATOR_FIELDS = frozenset({"type", "kind"})
 # 契约里的通用注册函数动态拼 OperationSpec，具体声明由调用方的 QueryMirror 提供。
 GENERIC_SPEC_FILES = frozenset({"operations/contract.py"})
 
@@ -89,18 +91,93 @@ def _call_name(node: ast.Call) -> str | None:
     return None
 
 
-# 用户入口：按协议采集一个 AST 节点里出现的入口 ID。
-def _user_entries(node: ast.AST, plugin: str, consts: dict[str, str], ui_plugin: bool) -> list[str]:
-    found: list[str] = []
-    # 1. FastAPI / Starlette HTTP 与 WebSocket 路由
+# `app.get("/x")` / `router.post("/x")` 这类路由注册调用 → (动词, 调用节点)。
+def _route_call(node: ast.AST) -> tuple[str, ast.Call] | None:
     if (
         isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
         and node.func.attr in HTTP_VERBS and isinstance(node.func.value, ast.Name)
         and node.func.value.id in ("app", "router") and node.args
     ):
-        route = _eval_str(node.args[0], consts)
+        return node.func.attr.upper(), node
+    return None
+
+
+# 判别联合 `Annotated[A | B, Field(discriminator="type")]`：别名 → 各成员类判别字段的 Literal 值。
+def _discriminated_unions(tree: ast.Module, classes: dict[str, ast.ClassDef]) -> dict[str, set[str]]:
+    unions: dict[str, set[str]] = {}
+    for node in tree.body:
+        if not (isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name)):
+            continue
+        calls = [n for n in ast.walk(node.value) if isinstance(n, ast.Call) and _call_name(n) == "Field"]
+        fields = [v.value for c in calls if isinstance(v := _keyword(c, "discriminator"), ast.Constant)]
+        field_name = next((f for f in fields if f in DISCRIMINATOR_FIELDS), None)
+        if field_name is None:
+            continue
+        members = {n.id for n in ast.walk(node.value) if isinstance(n, ast.Name) and n.id in classes}
+        unions[node.targets[0].id] = {
+            value for member in members for stmt in classes[member].body
+            if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name) and stmt.target.id == field_name
+            for literal in ast.walk(stmt.annotation) if isinstance(literal, ast.Subscript)
+            and isinstance(literal.value, ast.Name) and literal.value.id == "Literal"
+            for value in _string_literals(literal.slice)
+        }
+    return unions
+
+
+def _discriminator_read(expr: ast.expr) -> bool:
+    if isinstance(expr, ast.Subscript):
+        return isinstance(expr.slice, ast.Constant) and expr.slice.value in DISCRIMINATOR_FIELDS
+    if isinstance(expr, ast.Attribute):
+        return expr.attr in DISCRIMINATOR_FIELDS
+    return (
+        isinstance(expr, ast.Call) and isinstance(expr.func, ast.Attribute) and expr.func.attr == "get"
+        and bool(expr.args) and isinstance(expr.args[0], ast.Constant) and expr.args[0].value in DISCRIMINATOR_FIELDS
+    )
+
+
+# 多动作端点：路由处理函数按 type/kind 判别字段分派子动作时，入口按值展开为 `<路由>#<值>`。
+# 判别来源两种：处理函数里对判别字段的字面量比较；处理函数（经同模块类的基类/泛型实参）用到的判别联合。
+# 只出现一个值是校验分支（如「只能置顶会话」），不算子动作。
+def _route_actions(tree: ast.Module) -> dict[int, list[str]]:
+    classes = {node.name: node for node in tree.body if isinstance(node, ast.ClassDef)}
+    unions = _discriminated_unions(tree, classes)
+
+    def union_values(name: str, seen: set[str]) -> set[str]:
+        if name in unions or name in seen or name not in classes:
+            return set(unions.get(name, ()))
+        seen.add(name)
+        bases = [n.id for base in classes[name].bases for n in ast.walk(base) if isinstance(n, ast.Name)]
+        return {value for base in bases for value in union_values(base, seen)}
+
+    actions: dict[int, list[str]] = {}
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        routes = [route[1] for d in fn.decorator_list if (route := _route_call(d)) is not None]
+        if not routes:
+            continue
+        values = {
+            value for node in ast.walk(fn) if isinstance(node, ast.Compare) and _discriminator_read(node.left)
+            for comp in node.comparators for value in _string_literals(comp)
+        }
+        values |= {value for node in ast.walk(fn) if isinstance(node, ast.Name) for value in union_values(node.id, set())}
+        for call in routes:
+            actions[id(call)] = sorted(values) if len(values) > 1 else []
+    return actions
+
+
+# 用户入口：按协议采集一个 AST 节点里出现的入口 ID。
+def _user_entries(
+    node: ast.AST, plugin: str, consts: dict[str, str], ui_plugin: bool, actions: dict[int, list[str]],
+) -> list[str]:
+    found: list[str] = []
+    # 1. FastAPI / Starlette HTTP 与 WebSocket 路由；多动作端点只计子动作，不再计父入口。
+    if (route_call := _route_call(node)) is not None:
+        verb, call = route_call
+        route = _eval_str(call.args[0], consts)
         if route is not None:
-            found.append(f"http:{plugin}:{node.func.attr.upper()} {route}")
+            entry = f"http:{plugin}:{verb} {route}"
+            found.extend([f"{entry}#{value}" for value in actions.get(id(call), ())] or [entry])
     # 2. WebSocket 入站帧分派与 Plugin UI RPC method 分派
     if isinstance(node, ast.Compare):
         names = [name for comp in node.comparators for name in _string_literals(comp)]
@@ -187,8 +264,9 @@ def collect_surface(plugins_dir: Path) -> Surface:
             and isinstance(node.targets[0], ast.Name)
             and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str)
         }
+        actions = _route_actions(tree)
         for node in ast.walk(tree):
-            surface.entries.update(_user_entries(node, plugin, consts, plugin in ui_plugins))
+            surface.entries.update(_user_entries(node, plugin, consts, plugin in ui_plugins, actions))
             decl = _operation_decl(node, plugin, rel, surface.errors)
             if decl is None:
                 continue

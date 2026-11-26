@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import asdict, replace
-from typing import Annotated, Any, Literal, Protocol
+from datetime import datetime
+from typing import Annotated, Any, Literal, Protocol, get_args
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import (
@@ -37,6 +38,7 @@ from plugins.models.contract import (
 from plugins.models.contract import (
     MODEL_CATALOG,
     MODEL_CALL_STATS,
+    CacheUsageRead,
     ModelCallStats,
 )
 from agent.plugin_composition.model import ServiceKey
@@ -356,6 +358,22 @@ class CommandParams(RootModel[CommandPayload]):
     """Keep the command wire body unchanged while using RpcMethod."""
 
 
+# /command 的子动作：判别值 → 载荷类型，Self-CLI 按它逐个注册 operation。
+COMMAND_PAYLOADS: dict[str, type[BaseModel]] = {
+    get_args(member.model_fields["type"].annotation)[0]: member
+    for member in get_args(get_args(CommandPayload)[0])
+}
+# 其余领域入口：operation 名 → (载荷类型, 错误映射口径)。
+QUERY_PAYLOADS: dict[str, tuple[type[BaseModel], str]] = {
+    "call_stats": (CallStatsParams, "call_stats"),
+    "catalog": (EmptyParams, "catalog"),
+    "quotas": (QuotasParams, "catalog"),
+    "discover": (ConnectionInput, "discover"),
+    "discover_saved": (SavedDiscoveryPayload, "discover"),
+    "probe_embedding": (EmbeddingProbePayload, "discover"),
+}
+
+
 def _validation_detail(error: ValueError | ValidationError) -> object:
     if isinstance(error, ValidationError):
         return error.errors(include_input=False, include_context=False)
@@ -569,6 +587,49 @@ def rpc_methods(control: ModelControl) -> dict[str, RpcMethod]:
     }
 
 
+# Self-CLI 与 HTTP、Gateway 共用同一组 _*_body：按名字校验载荷、调用，失败沿用同一 HTTPException 映射；校验错误不回显输入（凭据）。
+async def run_operation(control: ModelControl, name: str, raw: Mapping[str, object]) -> dict[str, object]:
+    # 1. 子动作补上判别值走 CommandParams，其余按各自载荷类型校验。
+    is_command = name in COMMAND_PAYLOADS
+    payload_type, operation = (CommandParams, "command") if is_command else QUERY_PAYLOADS[name]
+    try:
+        params = payload_type.model_validate({**raw, "type": name} if is_command else dict(raw))
+    except ValidationError as error:
+        raise HTTPException(status_code=422, detail=_validation_detail(error)) from error
+    # 2. 与路由相同的领域入口；未映射的程序错误由 _http_error 原样抛出。
+    try:
+        return await _operation_body(control, params)
+    except (KeyError, *_HTTP_MODEL_ERRORS) as error:
+        raise _http_error(error, operation=operation) from error
+
+
+async def _operation_body(control: ModelControl, params: BaseModel) -> dict[str, object]:
+    if isinstance(params, CommandParams):
+        return await _command_body(control, params.root)
+    if isinstance(params, CallStatsParams):
+        return await _call_stats_body(control, params.call_id)
+    if isinstance(params, QuotasParams):
+        return await _quotas_body(control, params)
+    if isinstance(params, SavedDiscoveryPayload):
+        return await _discover_saved_body(control, params)
+    if isinstance(params, EmbeddingProbePayload):
+        return await _embedding_probe_body(control, params)
+    if isinstance(params, ConnectionInput):
+        return await _discover_body(control, params)
+    return await _catalog_body(control)
+
+
+# 设置·用量的一行概览：since 是界面所选范围的本地零点，须为带时区的 ISO 时刻；会话排行在侧栏面板，这里只取一行。
+async def usage_overview(usage: CacheUsageRead, since: str) -> dict[str, object]:
+    try:
+        moment = datetime.fromisoformat(since)
+    except ValueError as error:
+        raise ValueError("since 须为 ISO 时刻") from error
+    if moment.tzinfo is None:
+        raise ValueError("since 须带时区")
+    return await usage.insights(since, 1, "input")
+
+
 def _command(payload: CommandPayload) -> ModelChange:
     if isinstance(payload, AddConnectionPayload):
         return replace(
@@ -775,6 +836,8 @@ def _json_value(value: object) -> object:
 
 
 __all__ = [
+    "COMMAND_PAYLOADS",
+    "QUERY_PAYLOADS",
     "CallStatsParams",
     "CommandParams",
     "ConnectionInput",
@@ -782,4 +845,6 @@ __all__ = [
     "ModelControl",
     "create_model_settings_router",
     "rpc_methods",
+    "run_operation",
+    "usage_overview",
 ]
