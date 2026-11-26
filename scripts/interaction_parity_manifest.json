@@ -1,6 +1,9 @@
 {
   "version": 1,
-  "mapped_to_operation": {},
+  "mapped_to_operation": {
+    "rpc:commands/commands.list": {"operation_id": "commands.list", "argument_mapping": "commands list"},
+    "rpc:working_directory/directory.current": {"operation_id": "working_directory.current", "argument_mapping": "wd current"}
+  },
   "explicit_exemption": {
     "http:akashic_clients:GET /api/chat/health": {"kind": "transport", "reason": "HTTP 健康检查探针", "decision": ""},
     "http:akashic_clients:GET /api/chat/plugin-ui/asset": {"kind": "view_only", "reason": "Plugin UI 静态 JS/CSS 资产", "decision": ""},
@@ -77,7 +80,6 @@
     "http:shell_ui:GET /api/dashboard/runtime-version",
     "http:shell_ui:POST /api/dashboard/plugins/install",
     "http:shell_ui:POST /api/dashboard/plugins/{plugin_id}/enabled",
-    "rpc:commands/commands.list",
     "rpc:host_execution/bridge.state",
     "rpc:jobs/job.stop",
     "rpc:models/call.latest",
@@ -90,7 +92,6 @@
     "rpc:models/usage.spread",
     "rpc:models/usage.status",
     "rpc:skills/skills.list",
-    "rpc:working_directory/directory.current",
     "slash:abandon",
     "ws:akashic_clients/message.send",
     "ws:akashic_clients/message.steer",

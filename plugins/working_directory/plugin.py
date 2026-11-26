@@ -5,6 +5,7 @@ from plugins.ledger.contract import OWNER_STATE, SESSION_ADMISSION
 from plugins.working_directory.contract import WORKING_DIRECTORY
 
 from plugins.context.contract import MATERIALS_V4
+from plugins.operations.contract import OPERATIONS_V1, OperationRequest, OperationResult, OperationSpec
 from plugins.tools.contract import TOOLS
 from .working_directory import WorkingDirectories
 from .directory_tool import register_directory
@@ -59,3 +60,22 @@ async def apply(ctx: Context) -> None:
         )
 
     _ = await ctx.inject((UI_SLOTS,), plugin_ui, name="plugin-ui")
+
+    async def register_ops(child: Context) -> None:
+        async def handle_current(req: OperationRequest) -> OperationResult:
+            if not req.session_id:
+                return OperationResult(False, "读取当前目录需要有效 Session", error_code="missing_session")
+            info = await directories.current_info(req.session_id)
+            return OperationResult(True, f"当前目录: {info.get('path') or '(默认)'}", data=info)
+
+        _ = await child.require(OPERATIONS_V1).register(
+            child,
+            OperationSpec(
+                operation_id="working_directory.current",
+                path=("wd", "current"),
+                summary="查看当前会话的工作目录状态",
+                handler=handle_current,
+            ),
+        )
+
+    _ = await ctx.inject((OPERATIONS_V1,), register_ops, name="operations")
