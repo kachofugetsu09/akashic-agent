@@ -181,7 +181,8 @@ class SessionOperations:
         attributes = SessionAttributes.scoped(cast(Mapping[str, str], scope))
         _ = await self._ctx.require(SESSION_ADMISSION).ensure_async(self._ctx, session_id, attributes)
         await self._write_handoff(session_id, record)
-        title = _text(req.args.get("title"), "title")
+        # 没给标题时用目标的首行当标题，侧栏不退回交接卡原文。
+        title = _text(req.args.get("title"), "title") or goal.splitlines()[0][:40]
         if title:
             with self._ctx.borrow(SESSION_ADMIN) as admin:
                 if admin is not None:
