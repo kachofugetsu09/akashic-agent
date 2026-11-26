@@ -1,17 +1,21 @@
 {
   "version": 2,
   "explicit_exemption": {
+    "http:akashic_clients:GET /api/chat/downloads/{token}": {"kind": "transport", "reason": "兑现 POST /api/chat/downloads 发出的一次性票据，以 Content-Disposition: attachment 把同一份字节交付浏览器；纯交付通道", "decision": ""},
     "http:akashic_clients:GET /api/chat/health": {"kind": "transport", "reason": "HTTP 健康检查探针", "decision": ""},
+    "http:akashic_clients:GET /api/chat/navigation": {"kind": "view_only", "reason": "常量 {dashboard_path: \"/\"}，只告诉页面控制台链接指向哪里；无领域事实，前端源码已无调用", "decision": ""},
     "http:akashic_clients:GET /api/chat/plugin-ui/asset": {"kind": "view_only", "reason": "Plugin UI 静态 JS/CSS 资产", "decision": ""},
     "http:akashic_clients:GET /api/chat/plugin-ui/catalog": {"kind": "view_only", "reason": "Plugin UI 插槽目录供前端加载", "decision": ""},
     "http:akashic_clients:GET /api/chat/web-ui/bootstrap": {"kind": "view_only", "reason": "前端 WebUI 启动清单", "decision": ""},
     "http:akashic_clients:GET /api/chat/web-ui/module": {"kind": "view_only", "reason": "前端 WebUI 动态模块资产", "decision": ""},
     "http:akashic_clients:GET /api/chat/web-ui/state": {"kind": "view_only", "reason": "前端 WebUI 视图状态同步", "decision": ""},
     "http:akashic_clients:GET /api/client/diagnostics": {"kind": "view_only", "reason": "浏览器客户端诊断信息", "decision": ""},
+    "http:akashic_clients:GET /api/shell/state": {"kind": "view_only", "reason": "页面就绪探针与前端构建/运行提交核对（发现服务端已换前端时提示刷新重连），同 /api/chat/health；登录前公开（web_auth _PUBLIC），不含领域事实", "decision": ""},
     "http:akashic_clients:GET /chat": {"kind": "view_only", "reason": "Chat SPA HTML 入口", "decision": ""},
     "http:akashic_clients:GET /chat/": {"kind": "view_only", "reason": "Chat SPA HTML 入口", "decision": ""},
     "http:akashic_clients:GET /settings": {"kind": "view_only", "reason": "Settings SPA HTML 入口", "decision": ""},
     "http:akashic_clients:GET /settings/": {"kind": "view_only", "reason": "Settings SPA HTML 入口", "decision": ""},
+    "http:akashic_clients:POST /api/chat/downloads": {"kind": "transport", "reason": "把浏览器自己生成的截图字节（仅 png/jpeg/webp，≤20MB）暂存 120 秒换一次性下载票据，供 Android Shell WebView 触发系统下载；内容来自页面本身、只存在进程内存，不形成任何领域事实", "decision": ""},
     "http:akashic_clients:POST /api/chat/notifications/stream": {"kind": "transport", "reason": "SSE 实时通知订阅流", "decision": ""},
     "http:akashic_clients:POST /api/chat/plugin-ui/query": {"kind": "transport", "reason": "Plugin UI RPC 复用传输通道，具体方法按 rpc:* 逐项归属", "decision": ""},
     "http:akashic_clients:POST /api/chat/sessions/read": {"kind": "user_only", "reason": "推进已读水位代表用户实际阅读", "decision": ""},
@@ -33,24 +37,14 @@
     "http:web_auth:POST /_auth/ticket": {"kind": "auth_security", "reason": "一次性登录票据仅限人工签发", "decision": ""},
     "ws:akashic_clients/ping": {"kind": "transport", "reason": "WebSocket 保活心跳", "decision": ""},
     "ws:akashic_clients/session.attach": {"kind": "transport", "reason": "绑定当前 WebSocket 连接至会话", "decision": ""},
+    "ws:akashic_clients/session.create": {"kind": "transport", "reason": "仅分配草稿会话 ID 并绑定 socket，不落持久账本", "decision": ""},
     "ws:akashic_clients/session.follow": {"kind": "transport", "reason": "订阅会话实时增量事件流", "decision": ""},
     "ws:akashic_clients/session.unfollow": {"kind": "transport", "reason": "取消订阅会话实时增量事件流", "decision": ""}
   },
   "agent_only": {},
   "legacy_backlog": [
-    "http:akashic_clients:GET /api/chat/artifacts/{artifact_id}",
-    "http:akashic_clients:GET /api/chat/downloads/{token}",
-    "http:akashic_clients:GET /api/chat/navigation",
-    "http:akashic_clients:GET /api/chat/navigation/pins",
-    "http:akashic_clients:GET /api/chat/sessions",
-    "http:akashic_clients:GET /api/chat/sessions/{session_key:path}/messages",
-    "http:akashic_clients:GET /api/chat/sessions/{session_key:path}/search",
-    "http:akashic_clients:GET /api/shell/state",
-    "http:akashic_clients:POST /api/chat/downloads",
-    "http:akashic_clients:POST /api/chat/navigation/pins",
-    "http:akashic_clients:POST /api/chat/sessions/{session_key:path}/delete",
-    "http:akashic_clients:POST /api/chat/sessions/{session_key:path}/rename",
-    "http:akashic_clients:POST /api/chat/sessions/{session_key:path}/undelete",
-    "http:akashic_clients:POST /api/chat/uploads"
+    "slash:abandon",
+    "ws:akashic_clients/message.send",
+    "ws:akashic_clients/message.steer",
+    "ws:akashic_clients/message.steer.withdraw"
   ]
-}

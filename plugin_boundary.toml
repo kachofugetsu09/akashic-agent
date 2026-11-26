@@ -71,7 +71,7 @@ core = [
     "working_directory", "shell", "files", "jobs", "models", "openai_compatible", "ui",
     "akashic_clients", "shell_ui", "conversation_ui", "web_auth", "onboarding", "plugin_settings",
     "assets", "gateway", "channels", "delivery", "delivery_policy", "akashic_sender",
-    "plugin_update", "skills", "commands", "operations", "self_cli", "mcp", "codemode", "runtime_inspection",
+    "plugin_update", "skills", "commands", "operations", "self_cli", "chat_ops", "mcp", "codemode", "runtime_inspection",
     "runtime_diagnostics",
 ]
 extra = []
