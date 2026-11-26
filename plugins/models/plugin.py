@@ -12,8 +12,8 @@ from plugins.models.contract import (
     MODEL_DRIVERS,
 )
 from plugins.models.contract import MODEL_CACHE_USAGE, MODEL_CALL_STATS, USAGE_SOURCES
-from plugins.ui.contract import UI, UI_SLOTS, PluginUiDefinition, RpcMethod, hidden_part, part_display_key
-from plugins.ledger.contract import MESSAGE_CATALOG, MESSAGE_WRITERS, ContentPart, ContentReferences, MessageReader
+from plugins.ui.contract import UI, UI_SLOTS, PluginUiDefinition, hidden_part, part_display_key
+from plugins.ledger.contract import MESSAGE_CATALOG, MESSAGE_WRITERS, ContentPart, ContentReferences, MessageReader, RpcMethod
 from plugins.models.contract import ChatModelSelection, ModelError, ModelUnavailableError
 from plugins.channels.contract import InputPartRejected, input_part_key
 

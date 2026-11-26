@@ -4,7 +4,7 @@ import mimetypes
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from .contract import (
+from plugins.ledger.contract import (
     AttachmentImportError,
     AttachmentKind,
     AttachmentRef,

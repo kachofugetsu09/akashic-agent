@@ -3,8 +3,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Protocol
 from asyncio import Future
-from plugins.ledger.contract import CallRef
-from plugins.ui.contract import (
+from plugins.ledger.contract import (
+    CallRef,
     NAMES as NAMES,
     RequestTransport as RequestTransport,
     RpcMethod as RpcMethod,

@@ -40,7 +40,7 @@ from plugins.models.contract import (
     ModelCallStats,
 )
 from agent.plugin_composition.model import ServiceKey
-from plugins.ui.contract import RpcMethod
+from plugins.ledger.contract import RpcMethod
 
 from .settings import (
     AddConnection,

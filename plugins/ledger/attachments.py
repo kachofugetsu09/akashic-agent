@@ -12,8 +12,7 @@ from pathlib import Path
 from typing import TypeVar
 from uuid import uuid4
 
-from plugins.ledger.contract import detect_supported_image_mime
-from .contract import AttachmentKind, AttachmentRef
+from plugins.ledger.contract import AttachmentKind, AttachmentRef, detect_supported_image_mime
 from .artifact_store import AttachmentArtifactRecord, ArtifactStore
 
 

@@ -243,7 +243,7 @@ class ToolCatalog(Protocol):
     async def drain_calls(self, calls: tuple[CallRef, ...]) -> None: ...
 
 
-from plugins.ui.contract import TOOL_DISPLAY as TOOL_DISPLAY, ToolDisplay as ToolDisplay
+from plugins.ledger.contract import TOOL_DISPLAY as TOOL_DISPLAY, ToolDisplay as ToolDisplay
 
 TOOLS = ServiceKey[ToolCatalog]("tools.v1")
 ALL_TOOLS = ServiceKey[Callable[[], ToolView]]("tools.all.v1")
