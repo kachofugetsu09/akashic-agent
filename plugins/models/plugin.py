@@ -32,6 +32,8 @@ from .projection import (
     display_facts,
 )
 from .chat_ui import ChatUiQueries
+from .operations import register_chat_ops, register_settings_ops
+from plugins.operations.contract import OPERATIONS_V1
 from .selection import MODEL_SELECTION, SAVED_SELECTION_KEYS, SelectionOwner, check_selection, saved_from_part
 from .settings import MODEL_SETTINGS
 from .state import ModelsState
@@ -106,22 +108,29 @@ async def apply(ctx: Context) -> None:
         ))
         await child.require(ONBOARDING).register(child, Step("connect", "模型连接", "models", "models", status))
     await ctx.inject((ONBOARDING,), contribute, name="onboarding")
-    for method, operation in rpc_methods(BoundModelControl(ctx)).items():
+    control = BoundModelControl(ctx)
+    for method, operation in rpc_methods(control).items():
         _ = await ctx.provide(RpcMethod.key(method), operation)
+    # Self-CLI 与设置页、Gateway 共用同一 control；没有 operations 插件时照常工作。
+    _ = await ctx.inject((OPERATIONS_V1,), lambda child: register_settings_ops(child, control, usage), name="operations")
     _ = await ctx.inject((UI, MODEL_CATALOG, MODEL_CALL_STATS, MODEL_SETTINGS, MODEL_SELECTION, MODEL_CACHE_USAGE),
                          _register_ui, name="ui")
 
     _ = await ctx.inject((MESSAGE_WRITERS,), _input_selection(state), name="input-selection")
 
     # 回答说明行用量与输入框模型胶囊都只读本插件的视图；聊天界面经插件界面插槽查询，选择随消息作为 model.selection 片段回来。
+    def chat_queries(child: Context) -> ChatUiQueries:
+        return ChatUiQueries(catalog=state.read_catalog, selection=state.read_chat_selection, messages=child.require(MESSAGE_CATALOG), call_stats=store.read_call_stats,
+                             usage=usage, icons=state.connection_icons)
+
     async def message_ui(child: Context) -> None:
-        query = ChatUiQueries(catalog=state.read_catalog, selection=state.read_chat_selection, messages=child.require(MESSAGE_CATALOG), call_stats=store.read_call_stats,
-                              usage=usage, icons=state.connection_icons)
         _ = await child.require(UI_SLOTS).register_plugin_ui(
             child, PluginUiDefinition(module="plugin_ui.js", stylesheet="plugin_ui.css",
-                                      slots=("message.meta", "composer.toolbar", "composer.status", "sidebar.panels")), query=query)
+                                      slots=("message.meta", "composer.toolbar", "composer.status", "sidebar.panels")), query=chat_queries(child))
 
     _ = await ctx.inject((UI_SLOTS, MESSAGE_CATALOG), message_ui, name="message-ui")
+    # 聊天界面的插件查询经 QueryMirror 原样发布为 operation。
+    _ = await ctx.inject((OPERATIONS_V1, MESSAGE_CATALOG), lambda child: register_chat_ops(child, chat_queries(child)), name="chat-operations")
 
 
 # 客户端随消息附带的模型选择：校验与会话保存都归本插件，二者随消息写入能力一起出现，没有只校验不保存的窗口。
