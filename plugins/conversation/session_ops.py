@@ -156,7 +156,9 @@ class SessionOperations:
                 if latest is not None and isinstance(latest.body, Input) else None
             if cross is not None:
                 value = cast(Mapping[str, object], cross.value)
-                hops, root = cast(int, value["hops"]) - 1, cast(str, value["root"])
+                hops, root = cast(int, value["hops"]), cast(str, value["root"])
+        # 每次自动发送消耗一跳：从用户原话起依次带 2、1、0，第 MAX_HOPS+1 次拒绝。
+        hops -= 1
         if hops < 0:
             raise PermissionError("跨会话自动往返预算已用尽；请把结果交给用户决定下一步")
         return ContentPart(CROSS_KIND, {"from_session_id": origin, "root": root, "hops": hops})
