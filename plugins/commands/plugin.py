@@ -49,6 +49,7 @@ async def apply(ctx: Context) -> None:
                 path=("commands", "list"),
                 summary="列出当前已注册的 Slash 命令目录",
                 handler=handle_list,
+                mirrors=("rpc:commands/commands.list",),
             ),
         )
 

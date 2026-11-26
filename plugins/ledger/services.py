@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import ExitStack, AsyncExitStack
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from core.common.file_io import run_file_io
 
@@ -12,6 +12,8 @@ from agent.plugin_composition.effect import Effect
 from .log import (
     MessageLog as _MessageLog,
     MessageWriter as MessageWriter,
+    OwnerStore as _OwnerStore,
+    transact_joint_async,
     SessionAttributes as SessionAttributes,
     WriterExpired as WriterExpired,
 )
@@ -19,7 +21,7 @@ from plugins.ledger.contract import Actor, Body, CallRef, ContentPart, ContentRe
 
 
 from plugins.ledger.contract import (
-    OwnerStore, OwnerTransaction,
+    OwnerStore, OwnerTransaction, OwnerWrite,
     MESSAGE_WRITERS, APPEND_CHECKS, Message, MessageReader,
     OWNER_STATE,
     SESSION_ADMISSION,
@@ -242,6 +244,12 @@ class OwnerState:
             raise ValueError("owner state 子空间名必须是非空且不含冒号的字符串")
         owner = ctx.require_runtime_identity(OWNER_STATE, self).plugin_id
         return self._log.owner(f"plugin:{owner}:{scope}")
+
+    async def transact_joint(self, writes: Sequence[OwnerWrite]) -> tuple[object, ...]:
+        stores = [write.store for write in writes]
+        if any(not isinstance(store, _OwnerStore) for store in stores):
+            raise ValueError("联合事务只接受本 Ledger 打开的 owner store")
+        return await transact_joint_async([(cast(_OwnerStore, w.store), w.write) for w in writes])
 
 
 

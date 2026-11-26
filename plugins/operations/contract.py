@@ -6,18 +6,19 @@
 """
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+import inspect
 from typing import Literal, Protocol
 
 from agent.plugin_composition.context import Context
 from agent.plugin_composition.effect import Effect
 from agent.plugin_composition.model import ServiceKey
-from plugins.ledger.contract import ContentPart
+from plugins.ledger.contract import ContentPart, OwnerWrite
 
 ActorKind = Literal["agent", "user"]
 AudienceKind = Literal["agent_and_user", "user_only"]
-OptionValueType = Literal["string", "bool", "int"]
+OptionValueType = Literal["string", "bool", "int", "json"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,6 +44,11 @@ class OperationRequest:
     request_id: str | None
     args: Mapping[str, object]
     extensions: Mapping[str, Mapping[str, object]] = field(default_factory=dict)
+    # 主操作确定目标身份后调用，收集各扩展在同一联合事务里的写入；没有参与者返回空元组。
+    stage: Callable[[Mapping[str, object]], Awaitable[tuple[OwnerWrite, ...]]] | None = None
+
+    async def staged(self, target: Mapping[str, object]) -> tuple[OwnerWrite, ...]:
+        return () if self.stage is None else await self.stage(target)
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +70,11 @@ ExtensionApplier = Callable[
     [OperationRequest, OperationResult, Mapping[str, object]],
     Awaitable[Mapping[str, object] | None],
 ]
+# 主操作给出目标身份（如 {"dimension": "project", "value": "p_x"}）后，扩展交出本 owner 的联合写入。
+ExtensionStager = Callable[
+    [OperationRequest, Mapping[str, object], Mapping[str, object]],
+    Awaitable[OwnerWrite | None],
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +88,8 @@ class OperationSpec:
     options: tuple[OptionSpec, ...] = ()
     extension_points: tuple[str, ...] = ()
     audience: AudienceKind = "agent_and_user"
+    # 本操作对应的用户界面入口 ID（与 scripts/check_interaction_parity.py 采集的入口同名），供一对一门禁核对。
+    mirrors: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,8 +98,9 @@ class ExtensionSpec:
 
     namespace: str
     options: tuple[OptionSpec, ...]
-    validate: ExtensionValidator
-    apply: ExtensionApplier
+    validate: ExtensionValidator | None = None
+    apply: ExtensionApplier | None = None
+    stage: ExtensionStager | None = None
     target_operation: str | None = None
     extension_point: str | None = None
     description: str = ""
@@ -133,3 +147,53 @@ class Operations(Protocol):
 
 
 OPERATIONS_V1 = ServiceKey[Operations]("operations.v1")
+
+
+class QueryHandler(Protocol):
+    def __call__(
+        self, method: str, payload: dict[str, object], *,
+        session_id: str | None, turn_id: str | None,
+    ) -> object | Awaitable[object]: ...
+
+
+@dataclass(frozen=True, slots=True)
+class QueryMirror:
+    """把插件已有的一个界面查询方法原样发布为 operation：界面与 self 调用同一个领域入口。"""
+
+    method: str
+    path: tuple[str, ...]
+    summary: str
+    options: tuple[OptionSpec, ...] = ()
+    audience: AudienceKind = "agent_and_user"
+    entry: str = ""
+
+
+async def register_query_mirrors(
+    ctx: Context, operations: Operations, *, plugin: str, query: QueryHandler,
+    mirrors: Sequence[QueryMirror],
+) -> None:
+    """逐个注册镜像 operation；参数名即界面载荷键，入口 ID 默认为 rpc:<plugin>/<method>。"""
+    for mirror in mirrors:
+        await operations.register(ctx, OperationSpec(
+            operation_id=f"{plugin}.{mirror.method}",
+            path=mirror.path,
+            summary=mirror.summary,
+            handler=_query_handler(query, mirror),
+            options=mirror.options,
+            audience=mirror.audience,
+            mirrors=(mirror.entry or f"rpc:{plugin}/{mirror.method}",),
+        ))
+
+
+def _query_handler(query: QueryHandler, mirror: QueryMirror) -> OperationHandler:
+    async def handle(req: OperationRequest) -> OperationResult:
+        payload = {key: value for key, value in req.args.items() if value is not None}
+        try:
+            value = query(mirror.method, payload, session_id=req.session_id, turn_id=None)
+            if inspect.isawaitable(value):
+                value = await value
+        except (ValueError, LookupError, PermissionError) as error:
+            return OperationResult(False, str(error) or type(error).__name__, error_code="rejected")
+        data = value if isinstance(value, Mapping) else {"value": value}
+        return OperationResult(True, f"{' '.join(mirror.path)} 完成", data=data)
+    return handle

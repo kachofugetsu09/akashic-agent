@@ -75,6 +75,7 @@ async def apply(ctx: Context) -> None:
                 path=("wd", "current"),
                 summary="查看当前会话的工作目录状态",
                 handler=handle_current,
+                mirrors=("rpc:working_directory/directory.current",),
             ),
         )
 
