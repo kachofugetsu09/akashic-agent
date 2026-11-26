@@ -13,7 +13,7 @@ from typing import TypeVar
 from uuid import uuid4
 
 from plugins.ledger.contract import detect_supported_image_mime
-from plugins.channels.contract import AttachmentKind, AttachmentRef
+from .contract import AttachmentKind, AttachmentRef
 from .artifact_store import AttachmentArtifactRecord, ArtifactStore
 
 

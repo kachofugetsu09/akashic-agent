@@ -8,8 +8,7 @@ from contextlib import ExitStack
 
 from agent.plugin_composition import Context, ServiceKey
 from plugins.ledger.contract import MESSAGE_CATALOG, MessageReader
-from plugins.ui.contract import MessageDisplayProviders, PartDisplayHandler, PartDisplayValue, hidden_part, message_rows, part_display_key
-from plugins.tools.contract import TOOL_DISPLAY
+from plugins.ui.contract import MessageDisplayProviders, PartDisplayHandler, PartDisplayValue, TOOL_DISPLAY, hidden_part, message_rows, part_display_key
 from plugins.ui.contract import ToolResultDisplayProvider, MessagePage
 from plugins.ledger.contract import ContentPart, Control, Message, ToolCall, ToolResult
 

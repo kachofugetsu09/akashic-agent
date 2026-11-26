@@ -1,7 +1,10 @@
 """Ledger 的值、读写授权与同库事务合同；实现随插件 generation 生灭。"""
 from __future__ import annotations
 
+import base64
+import io
 import json
+import math
 import re
 from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Iterable, Iterator, Mapping, Sequence, Set as AbstractSet
 from contextlib import AbstractAsyncContextManager, AbstractContextManager
@@ -9,15 +12,13 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import StrEnum
 from itertools import islice
-from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeVar, cast, overload, runtime_checkable
+from types import MappingProxyType
+from typing import Any, Literal, Protocol, TypeAlias, TypeVar, cast, overload, runtime_checkable
 
 from agent.plugin_composition.context import Context
 from agent.plugin_composition.effect import Effect
 from agent.plugin_composition.model import ServiceKey
 from core.common.frozen_json import freeze_json, json_value
-
-if TYPE_CHECKING:
-    from plugins.channels.contract import InboundEnvelope, RawInbound
 
 _T = TypeVar("_T")
 
@@ -1251,3 +1252,275 @@ def resolve_process_call_output(message_id: str, part_index: int) -> None:
 
 def is_process_call_output(message_id: str) -> bool:
     return message_id in PROCESS_CALL_OUTPUTS
+
+
+JsonValue: TypeAlias = (
+    None
+    | bool
+    | int
+    | float
+    | str
+    | tuple["JsonValue", ...]
+    | Mapping[str, "JsonValue"]
+)
+
+# These keys describe the transport handoff itself.  A provider message ID
+# remains the identity source; metadata only carries the durable reservation.
+DURABLE_INBOUND_MARKER = "durable_inbound"
+DURABLE_HANDOFF_ID = "durable_handoff_id"
+DURABLE_PROVIDER_MESSAGE_ID = "provider_message_id"
+DURABLE_ATTACHMENT_REFS = "durable_attachment_refs"
+
+
+def _freeze_json_mapping(value: object) -> Mapping[str, JsonValue]:
+    if not isinstance(value, Mapping):
+        raise TypeError("metadata 必须是 mapping")
+    frozen = _freeze_json_value(value)
+    assert isinstance(frozen, Mapping)
+    return frozen
+
+
+def _freeze_json_value(
+    value: object,
+    *,
+    seen: frozenset[int] = frozenset(),
+) -> JsonValue:
+    """Freeze JSON-shaped metadata and reject mutable or non-finite values."""
+
+    if value is None or isinstance(value, (bool, int, str)):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("metadata 不接受非有限 float")
+        return value
+    if isinstance(value, Mapping):
+        marker = id(value)
+        if marker in seen:
+            raise ValueError("metadata 不接受 cycle")
+        keys = tuple(value.keys())
+        if any(not isinstance(key, str) for key in keys):
+            raise TypeError("metadata mapping key 必须是 str")
+        next_seen = seen | {marker}
+        result = {
+            key: _freeze_json_value(value[key], seen=next_seen)
+            for key in sorted(keys)
+        }
+        return MappingProxyType(result)
+    if isinstance(value, (list, tuple)):
+        marker = id(value)
+        if marker in seen:
+            raise ValueError("metadata 不接受 cycle")
+        next_seen = seen | {marker}
+        return tuple(_freeze_json_value(item, seen=next_seen) for item in value)
+    raise TypeError(f"metadata 值类型无效: {type(value).__name__}")
+
+
+def _attachment_refs(value: object, field_name: str) -> tuple[AttachmentRef, ...]:
+    if not isinstance(value, tuple):
+        raise TypeError(f"{field_name} 必须是 tuple")
+    result = tuple(value)
+    if any(not isinstance(item, AttachmentRef) for item in result):
+        raise TypeError(f"{field_name} 必须只包含 AttachmentRef")
+    return result
+
+
+def _text(value: object, field_name: str) -> str:
+    if not isinstance(value, str) or not value or value.strip() != value:
+        raise ValueError(f"{field_name} 必须是非空且无首尾空白的字符串")
+    if any(ord(char) < 32 for char in value):
+        raise ValueError(f"{field_name} 不能包含控制字符")
+    return value
+
+
+def _message_id(value: object) -> str:
+    result = _text(value, "message_id")
+    if len(result) > 256:
+        raise ValueError("message_id 长度必须在 1～256 字符")
+    return result
+
+
+def _content_string(value: object, field_name: str) -> str:
+    if not isinstance(value, str):
+        raise TypeError(f"{field_name} 必须是 str")
+    if any(ord(char) < 32 and char not in "\t\n\r" for char in value):
+        raise ValueError(f"{field_name} 不能包含控制字符")
+    return value
+
+
+@dataclass(frozen=True, slots=True)
+class ChannelInboundMessage:
+    """Represent one provider text message without retaining mutable input state."""
+
+    channel: str
+    sender: str
+    chat_id: str
+    content: str
+    timestamp: datetime
+    metadata: Mapping[str, JsonValue]
+    attachments: tuple[AttachmentRef, ...] = ()
+
+    def __post_init__(self) -> None:
+        _text(self.channel, "channel")
+        _text(self.sender, "sender")
+        _text(self.chat_id, "chat_id")
+        _content_string(self.content, "content")
+        if not isinstance(self.timestamp, datetime):
+            raise TypeError("timestamp 必须是 datetime")
+        if self.timestamp.tzinfo is None or self.timestamp.utcoffset() is None:
+            raise ValueError("timestamp 必须是 timezone-aware datetime")
+        object.__setattr__(self, "metadata", _freeze_json_mapping(self.metadata))
+        object.__setattr__(
+            self,
+            "attachments",
+            _attachment_refs(self.attachments, "attachments"),
+        )
+
+
+class InboundEnvelope(Protocol):
+    """借用一次已接纳输入；Channels 独占实际 lease 和关闭状态。"""
+
+    @property
+    def message_id(self) -> str: ...
+
+    @property
+    def session_key(self) -> str: ...
+
+    @property
+    def message(self) -> ChannelInboundMessage: ...
+
+    @property
+    def closed(self) -> bool: ...
+
+    @property
+    def metadata(self) -> Mapping[str, JsonValue]: ...
+
+    async def close(self) -> None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class RawInbound:
+    """Carry provider identity and a frozen text projection to Core admission."""
+
+    message_id: str
+    message: ChannelInboundMessage
+    provider_identity: str | None = None
+    recipient: str | None = None
+
+    def __post_init__(self) -> None:
+        _message_id(self.message_id)
+        if not isinstance(self.message, ChannelInboundMessage):
+            raise TypeError("message 必须是 ChannelInboundMessage")
+        if self.provider_identity is not None:
+            _text(self.provider_identity, "provider_identity")
+        if self.recipient is not None:
+            _text(self.recipient, "recipient")
+        if (self.provider_identity is None) != (self.recipient is None):
+            raise ValueError("provider_identity 与 recipient 必须同时提供")
+
+
+MAX_IMAGE_FILE_BYTES = 20 * 1024 * 1024
+MAX_IMAGE_TOTAL_BYTES = 40 * 1024 * 1024
+MAX_IMAGE_DATA_URI_BYTES = 8 * 1024 * 1024
+MAX_IMAGE_DATA_URI_TOTAL_BYTES = 16 * 1024 * 1024
+MAX_IMAGE_EDGE = 4096
+MAX_IMAGE_PIXELS = 40_000_000
+
+
+def validate_image_attachment_budget(sizes: list[int]) -> None:
+    """Bound raw image bytes across a model request, including retained history."""
+
+    oversized = next((size for size in sizes if size > MAX_IMAGE_FILE_BYTES), None)
+    if oversized is not None:
+        raise ValueError(
+            f"单张图片不能超过 {MAX_IMAGE_FILE_BYTES // 1024 // 1024}MB"
+            f"（当前 {oversized / 1024 / 1024:.1f}MB）。"
+        )
+    total = sum(sizes)
+    if total > MAX_IMAGE_TOTAL_BYTES:
+        raise ValueError(
+            f"模型请求中的图片（含历史消息）合计不能超过 "
+            f"{MAX_IMAGE_TOTAL_BYTES // 1024 // 1024}MB"
+            f"（当前 {total / 1024 / 1024:.1f}MB）。"
+        )
+
+
+def encode_image_bytes(raw: bytes) -> str:
+    """从 Artifact 的已核验只读 bytes 构造有界请求图，不重新打开来源路径。"""
+    # Pillow 只服务图片附件；首次编码时加载，缺失依赖在这里原样失败。
+    from PIL import Image, ImageOps
+
+    validate_image_attachment_budget([len(raw)])
+    mime = detect_supported_image_mime(raw[:4096])
+    if mime is None:
+        raise ValueError("不支持的图片格式。仅支持 PNG、JPEG、GIF、BMP、WebP。")
+
+    try:
+        with Image.open(io.BytesIO(raw)) as image:
+            _validate_image_pixels(image.width, image.height)
+            image.verify()
+
+        with Image.open(io.BytesIO(raw)) as image:
+            _validate_image_pixels(image.width, image.height)
+            image = ImageOps.exif_transpose(image)
+            if image.mode not in ("RGB", "L"):
+                canvas = Image.new("RGB", image.size, (255, 255, 255))
+                alpha = image.getchannel("A") if "A" in image.getbands() else None
+                canvas.paste(image.convert("RGB"), mask=alpha)
+                image = canvas
+            elif image.mode == "L":
+                image = image.convert("RGB")
+
+            raw_b64_len = _base64_encoded_size(len(raw))
+            if max(image.size) > MAX_IMAGE_EDGE or raw_b64_len > MAX_IMAGE_DATA_URI_BYTES:
+                image.thumbnail((MAX_IMAGE_EDGE, MAX_IMAGE_EDGE))
+
+            if raw_b64_len <= MAX_IMAGE_DATA_URI_BYTES and max(image.size) <= MAX_IMAGE_EDGE:
+                buf = io.BytesIO()
+                if mime == "image/jpeg":
+                    image.save(buf, format="JPEG", quality=95, optimize=True)
+                    clean_mime = "image/jpeg"
+                else:
+                    image.save(buf, format="PNG", optimize=True)
+                    clean_mime = "image/png"
+                clean_bytes = buf.getvalue()
+                if _base64_encoded_size(len(clean_bytes)) <= MAX_IMAGE_DATA_URI_BYTES:
+                    clean_b64 = base64.b64encode(clean_bytes).decode()
+                    return f"data:{clean_mime};base64,{clean_b64}"
+
+            compressed_b64_len = 0
+            for quality in (85, 75, 65, 55, 45):
+                buf = io.BytesIO()
+                image.save(buf, format="JPEG", quality=quality, optimize=True)
+                candidate_bytes = buf.getvalue()
+                compressed_b64_len = _base64_encoded_size(len(candidate_bytes))
+                if compressed_b64_len <= MAX_IMAGE_DATA_URI_BYTES:
+                    candidate_b64 = base64.b64encode(candidate_bytes).decode()
+                    return f"data:image/jpeg;base64,{candidate_b64}"
+    except ValueError:
+        raise
+    except Exception as exc:
+        # 这里只解析内存里的不可信字节：Pillow 对损坏文件还会抛 SyntaxError 等，都是"解不开"。
+        raise ValueError("图片文件无法解码或已损坏。请确认这是有效图片。") from exc
+
+    raise ValueError(
+        f"图片压缩后仍然过大（{compressed_b64_len / 1024 / 1024:.1f}MB base64），"
+        f"上限为 {MAX_IMAGE_DATA_URI_BYTES / 1024 / 1024:.0f}MB。"
+        "请继续压缩图片或裁剪到只包含需要分析的区域。"
+    )
+
+
+def _base64_encoded_size(size: int) -> int:
+    """每 3 个输入字节编码为 4 个字符，末组不足时补齐。"""
+    return ((size + 2) // 3) * 4
+
+
+def _validate_image_pixels(width: int, height: int) -> None:
+    """在像素解码前拒绝会显著放大内存的图片。"""
+
+    pixels = width * height
+    if pixels > MAX_IMAGE_PIXELS:
+        raise ValueError(
+            f"图片像素过多（{width}×{height}），"
+            f"上限为 {MAX_IMAGE_PIXELS // 1_000_000} 百万像素。"
+            "请缩小图片或裁剪后重试。"
+        )

@@ -4,7 +4,8 @@ import mimetypes
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from plugins.channels.contract import (
+from .contract import (
+    AttachmentImportError,
     AttachmentKind,
     AttachmentRef,
 )
@@ -12,7 +13,6 @@ from .events import ChannelAttachment
 from .attachments import ChannelAttachmentArtifactStore
 from .base import AttachmentStore
 from .remote_media import RemoteMediaError, snapshot_remote_media
-from .contract import AttachmentImportError
 
 
 _MAX_IMPORT_BYTES = 50 * 1024 * 1024

@@ -21,6 +21,7 @@ R14 分层：每个插件在 `plugin_boundary.toml` 的 [tiers] 声明 core 或 
     core 层插件不得 import extra 层插件的任何模块（含 contract）。
     已迁出 Core 的插件移到 [tiers].external（目录可以不存在，仍按 extra 层约束）；
     extra 仓库合成树根目录的 `extra_tiers.toml` 只能追加 extra 层（`extra = [...]`）。
+R15 插件依赖图必须为有向无环图（DAG / 严格下三角）：跨插件导入不得形成强连通环。
 
 比较 Git 基线时，公开模块清单与 Core 字面 key 声明只允许减少；
 不能通过扩大允许清单或登记新角色来绕过已有边界。
@@ -393,6 +394,71 @@ def check_cross_plugin(imports: list[Import]) -> list[Import]:
             continue
         violations.append(item)
     return violations
+
+
+def check_plugin_dag(imports: list[Import]) -> list[str]:
+    """R15：插件间依赖图必须为有向无环图（DAG），不允许跨插件形成强连通环。"""
+
+    graph: dict[str, set[str]] = {}
+    for item in imports:
+        if not is_plugin_file(item.importer):
+            continue
+        own = plugin_package(item.importer)
+        target = module_plugin_package(item.module)
+        if own is None or target is None or own == target:
+            continue
+        src = own.split(".", 1)[1]
+        dst = target.split(".", 1)[1]
+        graph.setdefault(src, set()).add(dst)
+        graph.setdefault(dst, set())
+
+    index_counter = 0
+    stack: list[str] = []
+    on_stack: set[str] = set()
+    indices: dict[str, int] = {}
+    lowlink: dict[str, int] = {}
+    sccs: list[list[str]] = []
+
+    def strongconnect(node: str) -> None:
+        nonlocal index_counter
+        indices[node] = lowlink[node] = index_counter
+        index_counter += 1
+        stack.append(node)
+        on_stack.add(node)
+        for neighbor in sorted(graph.get(node, ())):
+            if neighbor not in indices:
+                strongconnect(neighbor)
+                lowlink[node] = min(lowlink[node], lowlink[neighbor])
+            elif neighbor in on_stack:
+                lowlink[node] = min(lowlink[node], indices[neighbor])
+        if lowlink[node] == indices[node]:
+            component: list[str] = []
+            while True:
+                member = stack.pop()
+                on_stack.remove(member)
+                component.append(member)
+                if member == node:
+                    break
+            if len(component) > 1:
+                sccs.append(sorted(component))
+
+    for node in sorted(graph):
+        if node not in indices:
+            strongconnect(node)
+
+    errors: list[str] = []
+    for scc in sorted(sccs):
+        scc_set = set(scc)
+        edges = [
+            f"{src}->{dst}"
+            for src in scc
+            for dst in sorted(graph.get(src, set()) & scc_set)
+        ]
+        errors.append(
+            f"R15: 插件依赖存在环（强连通分量 {len(scc)} 个插件）: {', '.join(scc)} "
+            f"（边: {', '.join(edges)}）"
+        )
+    return errors
 
 
 def _is_service_key_call(node: ast.AST, names: set[str], modules: set[str]) -> ast.Call | None:
@@ -933,6 +999,7 @@ def run_check(base: str | None = None) -> int:
     ui_errors, ui_count = check_ui_hosts(base, ui_known)
     errors.extend(ui_errors)
     errors.extend(check_shared_layout())
+    errors.extend(check_plugin_dag(imports))
 
     if errors:
         print("插件边界门未通过：", file=sys.stderr)
@@ -948,7 +1015,7 @@ def run_check(base: str | None = None) -> int:
         f"R3={counts['R3']}/{len(baseline.get('R3', []))} "
         f"R7=0 R8=0 R9={len(core_domain_findings(current_sources))}/{len(baseline.get('R9', []))} "
         f"R10=9 R11=0 R12={ui_count}/{len(ui_known)} R13=0 "
-        f"R14={counts['R14']}/{len(baseline.get('R14', []))}（静态约束；不替代运行验收）"
+        f"R14={counts['R14']}/{len(baseline.get('R14', []))} R15=0（静态约束；不替代运行验收）"
     )
     return 0
 

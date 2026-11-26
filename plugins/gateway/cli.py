@@ -13,7 +13,7 @@ from uuid import uuid4
 
 from akashic_sdk import AsyncAkashic, RemoteError
 from agent.plugin_composition import load_endpoint_plan
-from plugins.programmatic.contract import parse_scope_pairs
+from .contract import parse_scope_pairs
 from core.common.file_io import run_file_io
 from .endpoint import is_tcp_endpoint
 from .protocol.errors import UPDATE_NOT_FOUND

@@ -7,8 +7,7 @@ from datetime import datetime, timezone
 from typing import Protocol, TypeVar, cast
 
 from core.common.file_io import shield_until_done
-from plugins.ledger.contract import json_value
-from plugins.channels.contract import (
+from plugins.ledger.contract import (
     AttachmentKind,
     AttachmentRef,
     ChannelInboundMessage,
@@ -19,6 +18,7 @@ from plugins.channels.contract import (
     InboundEnvelope,
     JsonValue,
     RawInbound,
+    json_value,
 )
 from .inbound_store import (
     add_handoff_provider_identity,

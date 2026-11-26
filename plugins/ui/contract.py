@@ -7,7 +7,7 @@ import gzip
 import os
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from contextlib import aclosing
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, astuple, dataclass, field
 from types import MappingProxyType
 from pathlib import Path
 from types import ModuleType
@@ -36,7 +36,79 @@ from agent.plugin_composition.plugin_config import PLUGIN_CONFIG
 from plugins.ledger.contract import MessagePage, MessageReader, SessionEntry
 from plugins.ledger.contract import ContentPart, Control, Input, Message, Output, ToolCall, ToolResult, json_value
 from plugins.ledger.contract import has_partial_text, origin
-from plugins.tools.contract import ToolDisplay
+
+
+@dataclass(frozen=True, slots=True)
+class ToolDisplay:
+    """聊天展示一次调用所需的身份与可选图标、显示名：工具名、注册它的插件；没有记录 owner 的旧 binding 为 None。
+    label 是给人看的动作短语（例如"读取文件"），工具没声明时聊天退回显示工具名。"""
+
+    name: str
+    owner: str | None
+    icon: Mapping[str, object] | None = None
+    label: str | None = None
+
+
+TOOL_DISPLAY = ServiceKey[Callable[[str], ToolDisplay]]("tools.display.v2")
+
+WorkloadUrlLookup = Callable[[Context], Mapping[tuple[str, str], str]]
+WORKLOAD_URLS = ServiceKey[WorkloadUrlLookup]("ui.workload_urls.v1")
+
+
+class RequestTransport(Protocol):
+    """动态 RPC 可使用的当前连接窄传输端口。"""
+
+    connection_id: str
+
+
+TransportCall = Callable[[BaseModel, RequestTransport], Awaitable[object]]
+
+
+@dataclass(frozen=True, slots=True)
+class RpcNames:
+    """Gateway 保留方法的固定协议名称。"""
+
+    initialize: str = "initialize"
+    server_status: str = "server/status"
+    session_create: str = "session/create"
+    session_list: str = "session/list"
+    message_read: str = "message/read"
+    message_send: str = "message/send"
+    session_follow: str = "session/follow"
+    session_unfollow: str = "session/unfollow"
+    plugin_install: str = "plugin/install"
+    plugin_status: str = "plugin/status"
+    plugin_update: str = "plugin/update"
+    plugin_drain: str = "plugin/disable-and-drain"
+    plugin_uninstall: str = "plugin/uninstall"
+
+
+NAMES = RpcNames()
+
+
+@dataclass(frozen=True)
+class RpcMethod:
+    """一个固定协议入口的参数边界与处理函数。"""
+
+    params: type[BaseModel]
+    call: Callable[[BaseModel], Awaitable[object]]
+    call_with_transport: TransportCall | None = None
+
+    @staticmethod
+    def key(name: str) -> ServiceKey[RpcMethod]:
+        """扩展方法不能替换 Gateway 保留入口。"""
+        if not name or name.strip() != name:
+            raise ValueError("RPC 方法名称必须非空且无首尾空白")
+        if name in astuple(NAMES):
+            raise ValueError(f"控制方法已经存在: {name}")
+        return ServiceKey[RpcMethod]("gateway.rpc:" + name)
+
+    async def invoke(self, params: BaseModel, transport: RequestTransport | None) -> object:
+        if self.call_with_transport is not None:
+            if transport is None:
+                raise RuntimeError("动态 RPC 缺少 RequestTransport")
+            return await self.call_with_transport(params, transport)
+        return await self.call(params)
 
 DashboardRoute = APIRoute | WebSocketRoute
 

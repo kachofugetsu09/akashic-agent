@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Protocol
 from pydantic import BaseModel, ConfigDict, Field
 from agent.plugin_composition import ServiceKey
-from plugins.gateway.contract import RequestTransport
+from plugins.gateway.contract import RequestTransport, parse_scope_pairs as parse_scope_pairs
 
 
 class SessionIdParams(BaseModel):
@@ -23,19 +23,6 @@ class AdmitParams(SessionIdParams):
 
     persist_memory: bool = False
     scope: dict[str, str] | None = Field(default=None, max_length=16)
-
-
-def parse_scope_pairs(pairs: list[str]) -> dict[str, str]:
-    """把重复的 `DIM=VALUE` 收成映射；维度名与取值仍交给 SessionAttributes 校验。"""
-    scope: dict[str, str] = {}
-    for pair in pairs:
-        dimension, separator, value = pair.partition("=")
-        if not separator or not dimension or not value:
-            raise ValueError(f"--scope 需要 DIM=VALUE，收到 {pair!r}")
-        if dimension in scope:
-            raise ValueError(f"--scope 维度重复: {dimension}")
-        scope[dimension] = value
-    return scope
 
 
 class SendParams(SessionIdParams):
