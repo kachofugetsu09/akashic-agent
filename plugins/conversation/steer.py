@@ -8,6 +8,7 @@ import weakref
 from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
+from typing import cast
 
 from agent.plugin_composition.tasks import Task, independent_task_context
 from plugins.channels.contract import ChannelInboundMessage
@@ -21,7 +22,10 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True, slots=True)
 class _Staged:
     message_id: str
-    message: ChannelInboundMessage
+    message: ChannelInboundMessage | None
+    # 助手经 self 暂存的自动插话：正文已定型，staged_at 是暂存时的会话 head。
+    body: Input | None = None
+    staged_at: int = -1
 
 
 class Steers:
@@ -33,7 +37,11 @@ class Steers:
         accept: Callable[[str, str, ChannelInboundMessage], Awaitable[Message]],
         body: Callable[[ChannelInboundMessage], Input],
         scope: Callable[[], AbstractAsyncContextManager[object]],
+        accept_automated: Callable[[str, str, Input, int], Awaitable[None]],
+        head: Callable[[str], int],
     ):
+        self._accept_automated = accept_automated
+        self._head = head
         self._open = open_session
         self._scope = scope
         self._accept = accept
@@ -66,12 +74,19 @@ class Steers:
         return SteerBinding(lambda: self.inject(task, session_id), arrived)
 
     async def stage(self, session_id: str, message_id: str, message: ChannelInboundMessage) -> bool:
+        return await self._stage(session_id, _Staged(message_id, message))
+
+    async def stage_body(self, session_id: str, message_id: str, body: Input) -> bool:
+        return await self._stage(session_id, _Staged(message_id, None, body, self._head(session_id)))
+
+    async def _stage(self, session_id: str, staged: _Staged) -> bool:
+        message_id = staged.message_id
         task = await self._open(session_id).active_task()
         if task is None or task not in self._bound:
             return False
         items = self._staged.setdefault(session_id, [])
         if all(item.message_id != message_id for item in items):
-            items.append(_Staged(message_id, message))
+            items.append(staged)
         if self._watched.get(session_id) is not task:
             self._watched[session_id] = task
             self._queue.put_nowait((session_id, task))
@@ -94,7 +109,8 @@ class Steers:
         session = self._open(session_id)
         for index, item in enumerate(items):
             try:
-                _ = await session.steer(item.message_id, self._body(item.message), task)
+                body = item.body if item.message is None else self._body(item.message)
+                _ = await session.steer(item.message_id, cast(Input, body), task)
             except Exception:
                 # 任务已撤权或来源暂不接纳：剩下的交还暂存，由回合结局决定去向。
                 logger.info("插话未能在本步写入 session=%s", session_id, exc_info=True)
@@ -130,6 +146,9 @@ class Steers:
             # 3. 本轮结束或被停止：插话直接作为下一轮的输入。
             for item in self._staged.pop(session_id, []):
                 try:
-                    _ = await self._accept(session_id, item.message_id, item.message)
+                    if item.message is None:
+                        await self._accept_automated(session_id, item.message_id, cast(Input, item.body), item.staged_at)
+                    else:
+                        _ = await self._accept(session_id, item.message_id, item.message)
                 except Exception:
                     logger.exception("插话转为普通输入失败 session=%s", session_id)

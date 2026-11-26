@@ -52,6 +52,7 @@ from plugins.sources.contract import (
 
 from .commands import CONTENT, CONVERSATION_COMMANDS, SOURCE_CHECK, run_commands
 from .session_reference import provide_session_reference
+from .session_ops import AUTOMATION_AUTHOR, CROSS_KIND, SessionPorts, check_cross, provide_session_operations, stopped_after
 from .steer import Steers
 
 api_version = 3
@@ -70,7 +71,10 @@ async def apply(ctx: Context) -> None:
     def changed(reader: MessageReader, source: str, pending: bool) -> None:
         ctx.emit(SOURCE_CHANGED, SourceChanged(reader, source, pending))
 
-    def open(session_id: str, extra: Mapping[str, Callable[[ContentPart], ContentReferences]] | None = None) -> SourceSession:
+    def open(
+        session_id: str, extra: Mapping[str, Callable[[ContentPart], ContentReferences]] | None = None,
+        *, author: str | None = None,
+    ) -> SourceSession:
         def check_reply_target(part: ContentPart) -> ContentReferences:
             references = check_reply(part)
             target = ctx.require(MESSAGE_CATALOG).reader(session_id).get(cast(str, part.value))
@@ -79,11 +83,14 @@ async def apply(ctx: Context) -> None:
             return references
 
         writers = ctx.require(MESSAGE_WRITERS)
-        inputs = ctx.require(SOURCES).user_inputs(
-            ctx, name="conversation",
-            content={"text": ctx.require(CONTENT).check_text, "artifact_ref": ctx.require(CONTENT).check_artifact, "channel.origin": check_origin,
-                     "reply_ref": check_reply_target, **(extra or {})},
-            part_metadata=True,
+        content = {"text": ctx.require(CONTENT).check_text, "artifact_ref": ctx.require(CONTENT).check_artifact, "channel.origin": check_origin,
+                   "reply_ref": check_reply_target, **(extra or {})}
+        # 助手经 self 写入的自动输入换作者，不经用户输入登记，也不冒充用户。
+        inputs = writers.bind(
+            ctx, author=author, source="conversation", body_types=(Input,),
+            content={**content, CROSS_KIND: check_cross},
+        ) if author is not None else ctx.require(SOURCES).user_inputs(
+            ctx, name="conversation", content=content, part_metadata=True,
         )
         controls = writers.bind(
             ctx, author="app", source="conversation", body_types=(Control,), content={},
@@ -212,14 +219,29 @@ async def apply(ctx: Context) -> None:
     await provide_session_reference(ctx)
     _ = await ctx.provide(CONVERSATION_COMMANDS, command)
     _ = await ctx.provide(CONVERSATION_COMPLETE, complete)
+    def open_automated(session_id: str) -> SourceSession:
+        return open(session_id, author=AUTOMATION_AUTHOR)
+
+    # 自动插话在回合结束后才转成输入：用户期间停止或放弃过就作废，不再唤醒目标。
+    async def accept_automated(session_id: str, message_id: str, body: Input, staged_at: int) -> None:
+        reader = ctx.require(MESSAGE_CATALOG).reader(session_id)
+        if await reader.read_async(lambda current: stopped_after(current, staged_at)):
+            return
+        _ = await open_automated(session_id).accept(message_id, body)
+
     steers = Steers(
         open_session=open,
         accept=accept, body=lambda message: Input((origin_part(message), ContentPart("text", message.content))),
-        scope=ctx.runtime_scope,
+        scope=ctx.runtime_scope, accept_automated=accept_automated,
+        head=lambda session_id: ctx.require(MESSAGE_CATALOG).reader(session_id).head(),
     )
     _ = await ctx.spawn(steers.run(), name="conversation-steers")
     _ = await ctx.provide(CONVERSATION_STEER, steers)
     _ = await ctx.provide(CHANNEL_STEER, steers)
+    await provide_session_operations(ctx, SessionPorts(
+        open=open, open_automated=open_automated, abandon=abandon,
+        stage=steers.stage_body, withdraw=steers.withdraw, check_text=ctx.require(CONTENT).check_text,
+    ))
     _ = await ctx.require(SOURCES).register(ctx, name="conversation", open=open, accept=accept, channels=None,
         needs_reply=lambda reader: ctx.require(SOURCE_SESSION).needs_reply(reader, "conversation"))
 
@@ -243,7 +265,7 @@ def reject_input_part(kind: str, part: ContentPart) -> ContentReferences:
 
 
 # 来源自己写入的片段不能由客户端冒充。
-OWN_INPUT_KINDS = frozenset({"text", "artifact_ref", "channel.origin", "reply_ref", "command.result"})
+OWN_INPUT_KINDS = frozenset({"text", "artifact_ref", "channel.origin", "reply_ref", "command.result", CROSS_KIND})
 
 
 def check_origin(part: ContentPart) -> ContentReferences:
