@@ -194,6 +194,31 @@ async def request(workspace: Path, method: str, params: dict[str, object]) -> di
     return cast(dict[str, object], result)
 
 
+# `akashic self <argv...>`：用户在终端调用助手同一张操作表；--json 输出完整结果，--session 指定当前会话。
+async def self_main(arguments: tuple[str, ...], *, workspace: Path, config_path: Path) -> int:
+    argv = list(arguments)
+    as_json = "--json" in argv[:1]
+    argv = argv[1:] if as_json else argv
+    params: dict[str, object] = {"argv": argv or ["help"], "request_id": "shell:" + uuid4().hex}
+    if len(argv) >= 2 and argv[0] == "--session":
+        params["session_id"], params["argv"] = argv[1], argv[2:] or ["help"]
+    try:
+        result = await request(workspace, "self/invoke", params)
+    except (ConnectionError, OSError):
+        return NO_INSTANCE
+    except (RemoteError, ValueError, RuntimeError) as error:
+        print(str(error), file=sys.stderr)
+        return 1
+    if as_json:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    else:
+        print(result.get("summary", ""))
+        data = result.get("data")
+        if data and not str(result.get("summary", "")).lstrip().startswith("{"):
+            print(json.dumps(data, ensure_ascii=False, indent=2))
+    return 0 if result.get("ok") is True else 1
+
+
 async def exec_main(arguments: tuple[str, ...], *, workspace: Path, config_path: Path) -> int:
     """提交程序输入；控制错误和连接失败返回命令失败。"""
     try:
