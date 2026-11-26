@@ -66,12 +66,26 @@ def _check_plugins(rows: Iterable[BundleRow]) -> None:
         seen.add(row.plugin)
 
 
+# 已改名的官方插件：旧 bundle.patch.toml 里的选择与启停自动迁移到新插件；新旧行并存时新行优先。
+RENAMED_PLUGINS: Mapping[str, tuple[str, str]] = {
+    "markdown_reader@release": ("file_viewer", "file_viewer@release"),
+}
+
+
 # base、mode 由 preset 作者写全，整行替换；用户 patch 按字段覆盖，没写的 disabled/config 继续跟随 preset
 # （同 DSH 的 cordis.patch.yml）。config 写了就整份替换，不深合并；换了 provider 的 row 不继承旧 config。
 def load_bundles(directory: Path, *, mode: str = "base", patch: Path | None = None) -> tuple[BundleRow, ...]:
     selected = {row.id: row for row in preset_rows(directory, mode=mode)}
     if patch is not None and patch.exists():
-        for row, fields in _read_rows(patch):
+        raw_patch = _read_rows(patch)
+        explicit_plugins = {row.plugin for row, _ in raw_patch}
+        for row, fields in raw_patch:
+            renamed = RENAMED_PLUGINS.get(row.plugin)
+            if renamed is not None:
+                target_id, target_plugin = renamed
+                if target_plugin in explicit_plugins:
+                    continue
+                row = BundleRow(target_id, target_plugin, row.config, row.disabled)
             base = preset_row_for(selected, row)
             if base is not None and base.plugin == row.plugin:
                 row = BundleRow(base.id, row.plugin, row.config if "config" in fields else base.config,
