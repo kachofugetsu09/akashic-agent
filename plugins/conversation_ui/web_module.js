@@ -83,10 +83,12 @@ function connectChat(chatHost, railActions) {
   };
 }
 
+// 标签来自各个插件：一个插件声明不合格（合同无效、id 或快捷键与别人重复）只影响它自己，不能让整个对话页加载失败。
+// 按 order 排序后先到先得：重复 id 的后来者被跳过，重复快捷键的后来者保留标签、去掉快捷键。
 function checkTabs(entries) {
-  const tabs = entries.map((entry) => {
+  const valid = entries.filter((entry) => {
     if (
-      typeof entry.id !== "string" || typeof entry.label !== "string"
+      !entry || typeof entry !== "object" || typeof entry.id !== "string" || typeof entry.label !== "string"
       || (entry.icon !== undefined && (typeof entry.icon !== "string" || !entry.icon.startsWith("<svg")))
       || (entry.header !== undefined && typeof entry.header !== "boolean")
       || (entry.background !== undefined && typeof entry.background !== "boolean")
@@ -97,17 +99,31 @@ function checkTabs(entries) {
       || (entry.accepts !== undefined && (!Array.isArray(entry.accepts)
         || entry.accepts.some((name) => typeof name !== "string" || !INTENT_NAME.test(name))))
     ) {
-      throw new Error(`对话工具标签合同无效: ${String(entry.id ?? "unknown")}`);
+      console.warn(`对话工具标签合同无效，已跳过: ${String(entry?.id ?? "unknown")}`);
+      return false;
     }
-    return entry;
+    return true;
   });
-  if (new Set(tabs.map((entry) => entry.id)).size !== tabs.length) {
-    throw new Error("对话工具标签 id 不能重复");
-  }
-  const keys = tabs.flatMap((entry) => entry.shortcut ?? []);
-  if (new Set(keys).size !== keys.length) throw new Error("对话工具快捷键不能重复");
-  return [...tabs].sort((left, right) =>
+  const sorted = [...valid].sort((left, right) =>
     (left.order ?? 0) - (right.order ?? 0) || left.id.localeCompare(right.id));
+  const ids = new Set();
+  const keys = new Map();
+  const tabs = [];
+  for (const entry of sorted) {
+    if (ids.has(entry.id)) {
+      console.warn(`对话工具标签 id 重复，已跳过后来者: ${entry.id}`);
+      continue;
+    }
+    ids.add(entry.id);
+    if (entry.shortcut !== undefined && keys.has(entry.shortcut)) {
+      console.warn(`对话工具快捷键 ${entry.shortcut} 已被 ${keys.get(entry.shortcut)} 使用，${entry.id} 不再响应它`);
+      tabs.push({ ...entry, shortcut: undefined });
+      continue;
+    }
+    if (entry.shortcut !== undefined) keys.set(entry.shortcut, entry.id);
+    tabs.push(entry);
+  }
+  return tabs;
 }
 
 // Shell 底栏动作：声明式投影交给聊天渲染，onActivate 留在宿主这边。

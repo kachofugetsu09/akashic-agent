@@ -105,7 +105,7 @@ interface ConversationTab {
   multiple?: boolean;   // 可多开：每次打开是新实例，各占一个标签（终端）
   header?: boolean;     // 挂入对话标题栏右上角动作区，点击可直达或收起该标签
   hint?: string;        // 新标签页里工具名后的一句说明，≤ 40 字符
-  shortcut?: string;    // "Ctrl+`" 或 "Mod+Shift+字母"；保留键与重复由宿主拒绝
+  shortcut?: string;    // "Ctrl+`" 或 "Mod+Shift+字母"；保留键由宿主拒绝；重复时按 order 先到先得
 }
 interface ConversationTabView {
   readonly instance: string | null;          // 多开实例 ID，随会话布局恢复
