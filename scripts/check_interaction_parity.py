@@ -1,16 +1,17 @@
-"""独立采集真实用户交互入口并校验 Self-CLI Operation 覆盖（Parity 门禁）。
+"""用户界面入口与 Self-CLI operation 的一对一门禁。
 
-入口分母直接从插件源码 AST 独立枚举（HTTP/WS 路由、WebChat WS 帧、Plugin UI RPC、
-Slash 命令、Gateway 方法），不依赖 Operation Registry 自报。
-每个规范化入口必须有且只有一种归宿：
-  - mapped_to_operation: 已映射到 Self-CLI operation
-  - explicit_exemption:  显式豁免（禁止通配符，须注明类型与理由）
-  - legacy_backlog:      迁移期冻结旧欠账（只许减少，新增未归属入口即失败）
+两侧独立取证，都从插件源码 AST 采集，不信任运行时自报：
+  - 用户入口：HTTP/WS 路由、WebChat WS 帧、Plugin UI RPC 方法、Slash 命令与接纳快路径、Gateway 动态 RPC；
+  - Agent 入口：每个 `OperationSpec(operation_id=..., mirrors=(...))` 与 `QueryMirror(...)` 声明。
+每个用户入口必须恰好被一个 operation 镜像，或写进 explicit_exemption（禁止通配，须写类型与理由）；
+每个 operation 必须镜像至少一个用户入口，或写进 agent_only（须写理由）。
+legacy_backlog 只是迁移期冻结欠账，`--strict` 要求为空。
 """
 from __future__ import annotations
 
 import argparse
 import ast
+from dataclasses import dataclass, field
 import json
 from pathlib import Path
 import sys
@@ -18,13 +19,11 @@ from typing import Literal, TypedDict
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MANIFEST = ROOT / "scripts/interaction_parity_manifest.json"
+EXTRA_MANIFEST = ROOT / "interaction_parity.extra.json"
 ALLOWED_EXEMPTION_KINDS = frozenset({"transport", "view_only", "user_only", "auth_security"})
 HTTP_VERBS = frozenset({"get", "post", "put", "patch", "delete", "websocket"})
-
-
-class MappedEntry(TypedDict):
-    operation_id: str
-    argument_mapping: str
+# 契约里的通用注册函数动态拼 OperationSpec，具体声明由调用方的 QueryMirror 提供。
+GENERIC_SPEC_FILES = frozenset({"operations/contract.py"})
 
 
 class ExemptionEntry(TypedDict):
@@ -33,11 +32,24 @@ class ExemptionEntry(TypedDict):
     decision: str
 
 
+class AgentOnlyEntry(TypedDict):
+    reason: str
+
+
 class ParityManifest(TypedDict):
     version: int
-    mapped_to_operation: dict[str, MappedEntry]
     explicit_exemption: dict[str, ExemptionEntry]
+    agent_only: dict[str, AgentOnlyEntry]
     legacy_backlog: list[str]
+
+
+@dataclass(slots=True)
+class Surface:
+    """两侧采集结果：用户入口集合与 operation → 镜像入口。"""
+
+    entries: set[str] = field(default_factory=set)
+    operations: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    errors: list[str] = field(default_factory=list)
 
 
 def _eval_str(expr: ast.expr, consts: dict[str, str]) -> str | None:
@@ -60,9 +72,98 @@ def _string_literals(expr: ast.expr) -> list[str]:
     return []
 
 
-def collect_entries(plugins_dir: Path) -> set[str]:
-    """从插件目录独立采集所有用户可触发入口，返回规范化 entry_id 集合。"""
-    entries: set[str] = set()
+def _keyword(node: ast.Call, name: str, position: int | None = None) -> ast.expr | None:
+    for kw in node.keywords:
+        if kw.arg == name:
+            return kw.value
+    if position is not None and len(node.args) > position:
+        return node.args[position]
+    return None
+
+
+def _call_name(node: ast.Call) -> str | None:
+    if isinstance(node.func, ast.Name):
+        return node.func.id
+    if isinstance(node.func, ast.Attribute):
+        return node.func.attr
+    return None
+
+
+# 用户入口：按协议采集一个 AST 节点里出现的入口 ID。
+def _user_entries(node: ast.AST, plugin: str, consts: dict[str, str], ui_plugin: bool) -> list[str]:
+    found: list[str] = []
+    # 1. FastAPI / Starlette HTTP 与 WebSocket 路由
+    if (
+        isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        and node.func.attr in HTTP_VERBS and isinstance(node.func.value, ast.Name)
+        and node.func.value.id in ("app", "router") and node.args
+    ):
+        route = _eval_str(node.args[0], consts)
+        if route is not None:
+            found.append(f"http:{plugin}:{node.func.attr.upper()} {route}")
+    # 2. WebSocket 入站帧分派与 Plugin UI RPC method 分派
+    if isinstance(node, ast.Compare) and isinstance(node.left, ast.Name):
+        names = [name for comp in node.comparators for name in _string_literals(comp)]
+        if node.left.id == "frame_type":
+            found.extend(f"ws:{plugin}/{name}" for name in names)
+        elif node.left.id == "method" and ui_plugin:
+            found.extend(f"rpc:{plugin}/{name}" for name in names if "." in name)
+        # 3. Conversation 接纳快路径 (/stop, /abandon)
+        elif plugin == "conversation" and node.left.id in ("command", "text", "stripped"):
+            found.extend(
+                f"slash:{name.lstrip('/')}" for name in names
+                if name.startswith("/") and len(name) > 1 and " " not in name
+            )
+    if isinstance(node, ast.Call):
+        name = _call_name(node)
+        # 4. Slash 命令注册
+        if name == "CommandDefinition":
+            value = _keyword(node, "name", 0)
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                found.append(f"slash:{value.value}")
+        # 5. Gateway 动态 RPC
+        if (
+            name == "key" and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name) and node.func.value.id == "RpcMethod"
+            and node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str)
+        ):
+            found.append(f"gateway:{node.args[0].value}")
+    return found
+
+
+# Agent 入口：OperationSpec / QueryMirror 声明 → (operation_id, mirrors)。
+def _operation_decl(node: ast.AST, plugin: str, rel: str, errors: list[str]) -> tuple[str, tuple[str, ...]] | None:
+    if not isinstance(node, ast.Call):
+        return None
+    name = _call_name(node)
+    if name == "OperationSpec":
+        if rel in GENERIC_SPEC_FILES:
+            return None
+        op_value = _keyword(node, "operation_id", 0)
+        if not (isinstance(op_value, ast.Constant) and isinstance(op_value.value, str)):
+            errors.append(f"{rel}:{node.lineno} OperationSpec.operation_id 必须是字面量")
+            return None
+        mirrors_value = _keyword(node, "mirrors")
+        mirrors = tuple(_string_literals(mirrors_value)) if mirrors_value is not None else ()
+        if mirrors_value is not None and not mirrors and not (
+            isinstance(mirrors_value, ast.Tuple) and not mirrors_value.elts
+        ):
+            errors.append(f"{rel}:{node.lineno} OperationSpec.mirrors 必须是字符串字面量元组")
+        return op_value.value, mirrors
+    if name == "QueryMirror":
+        method = _keyword(node, "method", 0)
+        if not (isinstance(method, ast.Constant) and isinstance(method.value, str)):
+            errors.append(f"{rel}:{node.lineno} QueryMirror.method 必须是字面量")
+            return None
+        entry = _keyword(node, "entry")
+        entry_id = entry.value if isinstance(entry, ast.Constant) and isinstance(entry.value, str) and entry.value else f"rpc:{plugin}/{method.value}"
+        return f"{plugin}.{method.value}", (entry_id,)
+    return None
+
+
+def collect_surface(plugins_dir: Path) -> Surface:
+    """从插件目录独立采集两侧入口。"""
+    surface = Surface()
     py_files = sorted(plugins_dir.rglob("*.py"))
     ui_plugins = {
         py.relative_to(plugins_dir).parts[0]
@@ -71,202 +172,161 @@ def collect_entries(plugins_dir: Path) -> set[str]:
     }
     for py in py_files:
         rel_parts = py.relative_to(plugins_dir).parts
-        if not rel_parts:
+        if len(rel_parts) < 2:
             continue
-        plugin = rel_parts[0]
-        text = py.read_text(encoding="utf-8")
+        plugin, rel = rel_parts[0], "/".join(rel_parts)
         try:
-            tree = ast.parse(text)
+            tree = ast.parse(py.read_text(encoding="utf-8"))
         except SyntaxError:
             continue
         consts = {
             node.targets[0].id: node.value.value
             for node in tree.body
-            if isinstance(node, ast.Assign)
-            and len(node.targets) == 1
+            if isinstance(node, ast.Assign) and len(node.targets) == 1
             and isinstance(node.targets[0], ast.Name)
-            and isinstance(node.value, ast.Constant)
-            and isinstance(node.value.value, str)
+            and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str)
         }
         for node in ast.walk(tree):
-            # 1. FastAPI / Starlette HTTP & WebSocket 路由
-            if (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Attribute)
-                and node.func.attr in HTTP_VERBS
-                and isinstance(node.func.value, ast.Name)
-                and node.func.value.id in ("app", "router")
-                and node.args
-            ):
-                route = _eval_str(node.args[0], consts)
-                if route is not None:
-                    entries.add(f"http:{plugin}:{node.func.attr.upper()} {route}")
-            # 2. WebSocket 入站帧分派 & Plugin UI RPC method 分派
-            if isinstance(node, ast.Compare) and isinstance(node.left, ast.Name):
-                if node.left.id == "frame_type":
-                    for comp in node.comparators:
-                        for name in _string_literals(comp):
-                            entries.add(f"ws:{plugin}/{name}")
-                elif node.left.id == "method" and plugin in ui_plugins:
-                    for comp in node.comparators:
-                        for name in _string_literals(comp):
-                            if "." in name:
-                                entries.add(f"rpc:{plugin}/{name}")
-            # 3. Slash 命令注册 (CommandDefinition)
-            if (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Name)
-                and node.func.id == "CommandDefinition"
-            ):
-                if node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
-                    entries.add(f"slash:{node.args[0].value}")
-                for kw in node.keywords:
-                    if kw.arg == "name" and isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, str):
-                        entries.add(f"slash:{kw.value.value}")
-            # 4. Conversation 接纳快路径 (/stop, /abandon)
-            if (
-                plugin == "conversation"
-                and isinstance(node, ast.Compare)
-                and isinstance(node.left, ast.Name)
-                and node.left.id in ("command", "text", "stripped")
-            ):
-                for comp in node.comparators:
-                    for name in _string_literals(comp):
-                        if name.startswith("/") and len(name) > 1 and " " not in name:
-                            entries.add(f"slash:{name.lstrip('/')}")
-            # 5. Gateway 动态 RPC 注册 RpcMethod.key("...")
-            if (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Attribute)
-                and node.func.attr == "key"
-                and isinstance(node.func.value, ast.Name)
-                and node.func.value.id == "RpcMethod"
-                and node.args
-                and isinstance(node.args[0], ast.Constant)
-                and isinstance(node.args[0].value, str)
-            ):
-                entries.add(f"gateway:{node.args[0].value}")
-    return entries
+            surface.entries.update(_user_entries(node, plugin, consts, plugin in ui_plugins))
+            decl = _operation_decl(node, plugin, rel, surface.errors)
+            if decl is None:
+                continue
+            op_id, mirrors = decl
+            if op_id in surface.operations:
+                surface.errors.append(f"operation 重复声明: {op_id}")
+            surface.operations[op_id] = mirrors
+    return surface
 
 
-def validate_parity(actual: set[str], manifest: ParityManifest) -> list[str]:
-    """校验集合完整性、互斥性、无通配豁免与无陈旧条目，返回错误列表。"""
-    errors: list[str] = []
-    mapped = manifest["mapped_to_operation"]
-    exempt = manifest["explicit_exemption"]
+def validate_parity(surface: Surface, manifest: ParityManifest, *, strict: bool = False) -> list[str]:
+    """一对一核对：入口恰好一个归宿、operation 必有对应入口或 agent_only 理由。"""
+    errors = list(surface.errors)
+    exempt, agent_only = manifest["explicit_exemption"], manifest["agent_only"]
     backlog_list = manifest["legacy_backlog"]
     backlog = set(backlog_list)
 
+    # 1. 清单自身：无重复、无通配、理由齐全。
     if len(backlog_list) != len(backlog):
         errors.append("legacy_backlog 存在重复项")
-
-    for entry_id in (*mapped, *exempt, *backlog):
+    if strict and backlog:
+        errors.append(f"legacy_backlog 必须清零（剩余 {len(backlog)} 项）")
+    for entry_id in (*exempt, *backlog, *agent_only):
         if "*" in entry_id:
             errors.append(f"禁止通配符条目: {entry_id}")
-
     for entry_id, info in exempt.items():
         if info["kind"] not in ALLOWED_EXEMPTION_KINDS:
             errors.append(f"豁免类型无效 ({entry_id}): {info['kind']}")
         if not info["reason"].strip():
             errors.append(f"豁免缺少理由: {entry_id}")
+    for op_id, info in agent_only.items():
+        if not info["reason"].strip():
+            errors.append(f"agent_only 缺少理由: {op_id}")
 
-    for entry_id, info in mapped.items():
-        if not info["operation_id"].strip():
-            errors.append(f"映射缺少 operation_id: {entry_id}")
+    # 2. 用户入口 → operation：恰好一个镜像，且不与豁免/欠账重叠。
+    mirrored: dict[str, list[str]] = {}
+    for op_id, mirrors in surface.operations.items():
+        for entry_id in mirrors:
+            mirrored.setdefault(entry_id, []).append(op_id)
+    for entry_id, ops in sorted(mirrored.items()):
+        if len(ops) > 1:
+            errors.append(f"入口被多个 operation 镜像（须一对一）: {entry_id} ← {', '.join(sorted(ops))}")
+        if entry_id not in surface.entries:
+            errors.append(f"operation 镜像了不存在的入口: {', '.join(ops)} → {entry_id}")
+        if entry_id in exempt or entry_id in backlog:
+            errors.append(f"已镜像入口不应再豁免或列欠账: {entry_id}")
+    for label, group in (("exempt 与 backlog 重复", set(exempt) & backlog),):
+        errors.extend(f"{label}: {item}" for item in sorted(group))
+    classified = set(mirrored) | set(exempt) | backlog
+    errors.extend(f"未归属的用户交互入口: {item}" for item in sorted(surface.entries - classified))
+    errors.extend(
+        f"已消失的陈旧清单条目: {item}" for item in sorted((set(exempt) | backlog) - surface.entries)
+    )
 
-    # 互斥性检查
-    overlap_me = set(mapped) & set(exempt)
-    overlap_mb = set(mapped) & backlog
-    overlap_eb = set(exempt) & backlog
-    for label, group in (
-        ("mapped 与 exempt 重复", overlap_me),
-        ("mapped 与 backlog 重复", overlap_mb),
-        ("exempt 与 backlog 重复", overlap_eb),
-    ):
-        for item in sorted(group):
-            errors.append(f"{label}: {item}")
-
-    classified = set(mapped) | set(exempt) | backlog
-    for missing in sorted(actual - classified):
-        errors.append(f"未归属的用户交互入口: {missing}")
-    for stale in sorted(classified - actual):
-        errors.append(f"已消失的陈旧清单条目: {stale}")
+    # 3. operation → 用户入口：没有镜像的必须是有理由的 agent_only。
+    for op_id, mirrors in sorted(surface.operations.items()):
+        if not mirrors and op_id not in agent_only:
+            errors.append(f"operation 没有对应的用户入口，也未登记 agent_only: {op_id}")
+        if mirrors and op_id in agent_only:
+            errors.append(f"已镜像用户入口的 operation 不应登记 agent_only: {op_id}")
+    errors.extend(
+        f"agent_only 指向不存在的 operation: {op_id}"
+        for op_id in sorted(set(agent_only) - set(surface.operations))
+    )
     return errors
 
 
-def load_manifest(path: Path) -> ParityManifest:
+def _load_one(path: Path) -> ParityManifest:
     raw = json.loads(path.read_text(encoding="utf-8"))
     return ParityManifest(
         version=int(raw["version"]),
-        mapped_to_operation=dict(raw.get("mapped_to_operation", {})),
         explicit_exemption=dict(raw.get("explicit_exemption", {})),
+        agent_only=dict(raw.get("agent_only", {})),
         legacy_backlog=list(raw.get("legacy_backlog", [])),
     )
 
 
-def run_self_test(actual: set[str], manifest: ParityManifest) -> int:
-    """负例防漏门：注入未登记假入口与通配豁免，验证检查器必报错。"""
-    probe = "ws:akashic_clients/__unmapped_probe__"
-    err_unmapped = validate_parity(actual | {probe}, manifest)
-    if not any(probe in msg for msg in err_unmapped):
-        print("SELF-TEST FAILED: 未检出注入的未归属入口", file=sys.stderr)
-        return 1
-    bad_manifest: ParityManifest = {
-        "version": manifest["version"],
-        "mapped_to_operation": dict(manifest["mapped_to_operation"]),
-        "explicit_exemption": {
-            **manifest["explicit_exemption"],
-            "rpc:models/*": {"kind": "view_only", "reason": "wildcard probe", "decision": ""},
-        },
-        "legacy_backlog": list(manifest["legacy_backlog"]),
-    }
-    err_wildcard = validate_parity(actual, bad_manifest)
-    if not any("禁止通配符条目" in msg for msg in err_wildcard):
-        print("SELF-TEST FAILED: 未拦截通配符豁免", file=sys.stderr)
-        return 1
-    print(f"SELF-TEST PASSED: 成功拦截未归属入口 ({probe}) 与通配符豁免")
+def load_manifest(paths: list[Path]) -> ParityManifest:
+    """合并 Core 与 extra 的清单；同一条目在两份清单出现即视为冲突。"""
+    merged = ParityManifest(version=2, explicit_exemption={}, agent_only={}, legacy_backlog=[])
+    for path in paths:
+        part = _load_one(path)
+        for key in ("explicit_exemption", "agent_only"):
+            clash = set(merged[key]) & set(part[key])
+            if clash:
+                raise SystemExit(f"清单条目重复 ({path}): {sorted(clash)}")
+            merged[key].update(part[key])
+        merged["legacy_backlog"].extend(part["legacy_backlog"])
+    return merged
+
+
+def run_self_test(surface: Surface, manifest: ParityManifest) -> int:
+    """负例防漏门：每种违规注入一次，检查器必须精确报出。"""
+    probe_entry = "ws:akashic_clients/__unmapped_probe__"
+    some_entry = next(iter(sorted(surface.entries)), probe_entry)
+    cases: list[tuple[str, Surface, ParityManifest, str]] = [
+        ("未归属入口", Surface(surface.entries | {probe_entry}, dict(surface.operations)), manifest, probe_entry),
+        ("operation 无对应入口", Surface(set(surface.entries), {**surface.operations, "probe.orphan": ()}), manifest, "probe.orphan"),
+        ("入口被两个 operation 镜像", Surface(set(surface.entries), {**surface.operations, "probe.a": (some_entry,), "probe.b": (some_entry,)}), manifest, "须一对一"),
+        ("通配豁免", surface, {**manifest, "explicit_exemption": {**manifest["explicit_exemption"], "rpc:models/*": {"kind": "view_only", "reason": "probe", "decision": ""}}}, "禁止通配符条目"),
+    ]
+    for label, probe_surface, probe_manifest, needle in cases:
+        if not any(needle in msg for msg in validate_parity(probe_surface, probe_manifest)):
+            print(f"SELF-TEST FAILED: 未检出「{label}」", file=sys.stderr)
+            return 1
+    print(f"SELF-TEST PASSED: {len(cases)} 类违规均被拦截")
     return 0
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="检查用户交互入口与 Self-CLI Operation 的 Parity 覆盖")
+    parser = argparse.ArgumentParser(description="检查用户界面入口与 Self-CLI operation 一对一")
     parser.add_argument("command", nargs="?", default="check", choices=("check", "report", "self-test"))
     parser.add_argument("--plugins-dir", type=Path, default=ROOT / "plugins")
-    parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
+    parser.add_argument("--manifest", type=Path, action="append")
+    parser.add_argument("--strict", action="store_true", help="要求 legacy_backlog 清零")
     args = parser.parse_args(argv)
 
-    actual = collect_entries(args.plugins_dir)
-    manifest = load_manifest(args.manifest)
-
+    paths: list[Path] = args.manifest or [p for p in (DEFAULT_MANIFEST, EXTRA_MANIFEST) if p.is_file()]
+    surface = collect_surface(args.plugins_dir)
+    manifest = load_manifest(paths)
     if args.command == "self-test":
-        return run_self_test(actual, manifest)
+        return run_self_test(surface, manifest)
 
-    errors = validate_parity(actual, manifest)
+    errors = validate_parity(surface, manifest, strict=args.strict)
+    mirrored = {entry for mirrors in surface.operations.values() for entry in mirrors}
+    stats = (
+        f"用户入口={len(surface.entries)} operation={len(surface.operations)} "
+        f"(镜像入口={len(mirrored)}, exempt={len(manifest['explicit_exemption'])}, "
+        f"agent_only={len(manifest['agent_only'])}, legacy_backlog={len(manifest['legacy_backlog'])})"
+    )
     if args.command == "report":
-        mapped, exempt, backlog = (
-            len(manifest["mapped_to_operation"]),
-            len(manifest["explicit_exemption"]),
-            len(manifest["legacy_backlog"]),
-        )
-        print(f"总入口: {len(actual)} | mapped={mapped} | exempt={exempt} | legacy_backlog={backlog}")
-        if errors:
-            print(f"存在 {len(errors)} 项差异:")
-            for err in errors:
-                print(f"  - {err}")
-            return 1
-        return 0
-
+        for op_id, mirrors in sorted(surface.operations.items()):
+            print(f"{op_id}: {', '.join(mirrors) or '(agent_only)'}")
     if errors:
-        print(f"Interaction Parity 检查失败（共 {len(errors)} 项）：", file=sys.stderr)
+        print(f"Interaction Parity 检查失败（共 {len(errors)} 项）：{stats}", file=sys.stderr)
         for err in errors:
             print(f"  - {err}", file=sys.stderr)
         return 1
-    print(
-        f"Interaction Parity 检查通过：总入口={len(actual)} "
-        f"(mapped={len(manifest['mapped_to_operation'])}, "
-        f"exempt={len(manifest['explicit_exemption'])}, "
-        f"legacy_backlog={len(manifest['legacy_backlog'])})"
-    )
+    print(f"Interaction Parity 检查通过：{stats}")
     return 0
 
 

@@ -2465,6 +2465,45 @@ class OwnerStore:
         return await _run_commit(self._log, lambda: self.transact(callback), on_commit)
 
 
+def transact_joint(
+    writes: Sequence[tuple[OwnerStore, Callable[[Transaction], object]]],
+) -> tuple[object, ...]:
+    """多个 owner 各用自己的 transaction 在同一次 BEGIN IMMEDIATE 内提交；任一失败整体回滚。"""
+    # 1. 参与者只能来自同一 authority，且每个 owner 空间只出现一次。
+    if not writes:
+        raise ValueError("联合事务至少需要一个参与者")
+    log = writes[0][0]._log
+    owners = [store._owner for store, _ in writes]
+    if any(store._log is not log for store, _ in writes):
+        raise ValueError("原子提交不能跨存储 authority")
+    if len(set(owners)) != len(owners):
+        raise ValueError("联合事务的每个 owner 只能参与一次")
+    transactions = [OwnerTransaction(store) for store, _ in writes]
+
+    # 2. 按参与者顺序写入；每个回调只拿到本 owner 的 transaction。
+    def invoke() -> tuple[object, ...]:
+        results = tuple(write(tx) for tx, (_, write) in zip(transactions, writes))
+        for tx in transactions:
+            tx._check_active()
+        return results
+
+    try:
+        return log._write(invoke)
+    finally:
+        for tx in transactions:
+            tx._active = False
+
+
+async def transact_joint_async(
+    writes: Sequence[tuple[OwnerStore, Callable[[Transaction], object]]],
+) -> tuple[object, ...]:
+    if not writes:
+        raise ValueError("联合事务至少需要一个参与者")
+    log = writes[0][0]._log
+    log._check_async_operation()
+    return await _run_commit(log, lambda: transact_joint(writes), None)
+
+
 class OwnerTransaction:
     def __init__(self, store: OwnerStore):
         self._store = store

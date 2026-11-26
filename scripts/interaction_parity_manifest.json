@@ -1,9 +1,5 @@
 {
-  "version": 1,
-  "mapped_to_operation": {
-    "rpc:commands/commands.list": {"operation_id": "commands.list", "argument_mapping": "commands list"},
-    "rpc:working_directory/directory.current": {"operation_id": "working_directory.current", "argument_mapping": "wd current"}
-  },
+  "version": 2,
   "explicit_exemption": {
     "http:akashic_clients:GET /api/chat/health": {"kind": "transport", "reason": "HTTP 健康检查探针", "decision": ""},
     "http:akashic_clients:GET /api/chat/plugin-ui/asset": {"kind": "view_only", "reason": "Plugin UI 静态 JS/CSS 资产", "decision": ""},
@@ -40,6 +36,8 @@
     "ws:akashic_clients/session.create": {"kind": "transport", "reason": "仅分配草稿会话 ID 并绑定 socket，不落持久账本", "decision": ""},
     "ws:akashic_clients/session.follow": {"kind": "transport", "reason": "订阅会话实时增量事件流", "decision": ""},
     "ws:akashic_clients/session.unfollow": {"kind": "transport", "reason": "取消订阅会话实时增量事件流", "decision": ""}
+  },
+  "agent_only": {
   },
   "legacy_backlog": [
     "http:akashic_clients:GET /api/chat/artifacts/{artifact_id}",

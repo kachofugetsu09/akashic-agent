@@ -1,6 +1,7 @@
 """OperationRegistry：统一注册、正交扩展解析、动态自省与两阶段执行。"""
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 import json
 import re
@@ -8,6 +9,7 @@ from typing import cast
 
 from agent.plugin_composition.context import Context
 from agent.plugin_composition.effect import Effect
+from plugins.ledger.contract import OwnerWrite
 
 from .contract import (
     ActorKind,
@@ -35,7 +37,12 @@ class _RegisteredExt:
     spec: ExtensionSpec
 
 
-def _coerce_value(opt: OptionSpec, raw: str) -> str | bool | int:
+def _coerce_value(opt: OptionSpec, raw: str) -> object:
+    if opt.value_type == "json":
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError as err:
+            raise ValueError(f"选项 --{opt.name} 需要 JSON 值，收到 {raw!r}") from err
     if opt.value_type == "bool":
         if raw.lower() in ("true", "1", "yes"):
             return True
@@ -252,25 +259,39 @@ class OperationRegistry:
         except ValueError as err:
             return OperationResult(False, str(err), error_code="invalid_arguments")
 
+        active = tuple((ext, ext_args[ext.spec.namespace]) for ext in exts if ext_args.get(ext.spec.namespace))
+
+        # 主操作确定目标后，仅收集带值扩展的联合写入，由主 owner 一次提交。
+        async def stage(target: Mapping[str, object]) -> tuple[OwnerWrite, ...]:
+            writes: list[OwnerWrite] = []
+            for ext, vals in active:
+                if ext.spec.stage is not None:
+                    write = await ext.spec.stage(req, vals, target)
+                    if write is not None:
+                        writes.append(write)
+            return tuple(writes)
+
         req = OperationRequest(
             operation_id=spec.operation_id, actor=actor, session_id=session_id,
             request_id=request_id, args=args,
-            extensions={ns: vals for ns, vals in ext_args.items() if vals},
+            extensions={ext.spec.namespace: vals for ext, vals in active}, stage=stage,
         )
-        for ext in exts:
-            vals = ext_args.get(ext.spec.namespace, {})
-            if vals:
-                try:
-                    await ext.spec.validate(req, vals)
-                except Exception as err:
-                    return OperationResult(False, f"扩展 {ext.spec.namespace} 校验失败: {err}", error_code="validation_failed")
-        result = await spec.handler(req)
+        for ext, vals in active:
+            if ext.spec.validate is None:
+                continue
+            try:
+                await ext.spec.validate(req, vals)
+            except Exception as err:
+                return OperationResult(False, f"扩展 {ext.spec.namespace} 校验失败: {err}", error_code="validation_failed")
+        try:
+            result = await spec.handler(req)
+        except (ValueError, LookupError, PermissionError) as err:
+            return OperationResult(False, str(err) or type(err).__name__, error_code="rejected")
         if not result.ok:
             return result
         ext_outputs: dict[str, object] = {}
-        for ext in exts:
-            vals = ext_args.get(ext.spec.namespace, {})
-            if vals:
+        for ext, vals in active:
+            if ext.spec.apply is not None:
                 applied = await ext.spec.apply(req, result, vals)
                 if applied is not None:
                     ext_outputs[ext.spec.namespace] = applied
