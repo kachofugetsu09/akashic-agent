@@ -1,4 +1,5 @@
 FROM node:22-bookworm-slim AS node
+FROM ghcr.io/astral-sh/uv:0.6.14 AS uv
 FROM python:3.12-slim-bookworm AS source
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/*
 ARG AKASHIC_REVISION
@@ -30,6 +31,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends git ca-certific
     && groupadd --gid 1000 akashic && useradd --uid 1000 --gid 1000 --create-home akashic \
     && mkdir /data && chown akashic:akashic /data
 COPY --from=node /usr/local/bin/node /usr/local/bin/node
+COPY --from=uv /uv /usr/local/bin/uv
 COPY --from=build /opt/venv /opt/venv
 COPY --from=build /opt/distribution /opt/distribution
 COPY --from=build /opt/core /opt/core

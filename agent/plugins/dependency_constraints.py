@@ -191,8 +191,26 @@ def environment_matches(site: Path, constraints: Constraints) -> bool:
     return all(constraints.pins.get(name, version) == version for name, version in installed_pins(site).items())
 
 
-# 把 pip 的解析失败翻译成冲突说明：指出哪个包、被谁约束；不是冲突的失败返回 None。
+# 把 pip / uv 的解析失败翻译成冲突说明：指出哪个包、被谁约束；不是冲突的失败返回 None。
 def explain_failure(output: str, constraints: Constraints) -> DependencyConflict | None:
+    # 兼容 uv 的无 wheel / 冲突输出，保证替换 pip 后错误提示同样清晰。
+    if "No solution found when resolving dependencies" in output or "unsatisfiable" in output:
+        uv_no_wheel = re.search(r"([A-Za-z0-9_.-]+)==([^\s,)]+)\s+has no wheels", output)
+        if uv_no_wheel is not None:
+            name, version = uv_no_wheel.groups()
+            return DependencyConflict(
+                f"依赖 {name}=={version} 没有可用的 wheel（只有源码包或不适配当前 Python）：进程内依赖不现编源码包；"
+                "请换用有 wheel 的版本，或在插件根的 wheels/ 目录里放一个 py3-none-any wheel")
+        uv_pin = re.search(r"([A-Za-z0-9_.-]+)==([^\s,)]+)", output)
+        if uv_pin is not None:
+            name, version = uv_pin.groups()
+            origin = constraints.origins.get(normalize(name), CORE_ORIGIN)
+            detail = next((line.strip() for line in output.splitlines() if "are incompatible" in line or "cannot be used" in line), "")
+            return DependencyConflict(
+                f"依赖冲突：插件 {constraints.plugin_name} 的依赖与 {origin}要求的 {name}=={version} 不兼容"
+                f"（{detail}）；请放宽该插件的依赖声明，或先升级 Core 后重试")
+        return DependencyConflict(
+            f"依赖冲突：插件 {constraints.plugin_name} 的依赖与当前环境约束不兼容；请放宽该插件的依赖声明，或先升级 Core 后重试")
     if "ResolutionImpossible" not in output and "conflicting dependencies" not in output:
         return None
     # 有包没有可用 wheel（只有源码包）时 pip 也报成"冲突"，先点破真正原因：不现编，要在插件 wheels/ 里放 wheel。
