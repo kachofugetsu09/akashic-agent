@@ -57,9 +57,9 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
   // 改一改再问：原文接在已有草稿之后，不覆盖用户正在写的内容。
   const editInput = useCallback((text: string) => composerApi.current?.insertDraft(text, { append: true }), []);
   // 工具区的“引用到对话”：宿主已核对过会话，这里再核对一次，切走后迟到的引用不写进别的会话草稿。
-  useEffect(() => onWorkbenchQuote(({ session, text, source }) => {
-    if (session !== controller.activeSessionId) return;
-    composerApi.current?.insertDraft(`> ${source.replace(/\s+/g, " ")}\n\n${text}`, { append: true });
+  useEffect(() => onWorkbenchQuote((quote) => {
+    if (quote.session !== controller.activeSessionId) return;
+    composerApi.current?.addQuote(quote);
   }), [controller.activeSessionId]);
   // 查找跳到很早的位置时显示那一段窗口：实时尾部（进行中的回复、本地消息）留在时间线里，回到最新时再出现。
   const historyWindow = controller.historyWindow.window;

@@ -1225,11 +1225,29 @@ function mountTools(root, chat, tools, entries) {
   // 8. 引用只进发起时的那个会话：会话已切走、工具区已卸载或超长都拒绝，chat 收到后再核对一次。
   function forwardQuote(request) {
     if (disposed || !request || typeof request !== "object") return "rejected";
-    const { session, text, source } = request;
-    if (typeof text !== "string" || !text || text.length > QUOTE_LIMIT) return "rejected";
+    const { session, text, source, image, anchor } = request;
+    const validImage = image && typeof image === "object"
+      && typeof image.dataUrl === "string"
+      && /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(image.dataUrl)
+      && image.dataUrl.length <= 7 * 1024 * 1024
+      ? {
+        dataUrl: image.dataUrl,
+        filename: typeof image.filename === "string" && image.filename.length <= 160 ? image.filename : "snip.png",
+        mediaType: typeof image.mediaType === "string" && /^image\/(png|jpeg|webp)$/.test(image.mediaType) ? image.mediaType : "image/png",
+      }
+      : undefined;
+    if (typeof text !== "string" || (!text && !validImage) || text.length > QUOTE_LIMIT) return "rejected";
     if (typeof source !== "string" || !source || source.length > SOURCE_LIMIT) return "rejected";
     if (typeof session !== "string" || session !== state.session) return "stale";
-    chat.handle.quote({ session, text, source });
+    let validAnchor;
+    if (anchor && typeof anchor === "object" && !Array.isArray(anchor)) {
+      try {
+        if (JSON.stringify(anchor).length <= 2048) validAnchor = anchor;
+      } catch {
+        // 忽略不可序列化锚点
+      }
+    }
+    chat.handle.quote({ session, text, source, ...(validImage ? { image: validImage } : {}), ...(validAnchor ? { anchor: validAnchor } : {}) });
     return "inserted";
   }
 

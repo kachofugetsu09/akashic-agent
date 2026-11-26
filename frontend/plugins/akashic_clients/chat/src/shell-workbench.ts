@@ -5,10 +5,26 @@ import { hostLink } from "./chat-host";
 
 export type WorkbenchIntentStatus = "handled" | "unhandled" | "invalid" | "failed";
 
+export interface WorkbenchQuoteImage {
+  dataUrl: string;
+  filename?: string;
+  mediaType?: string;
+}
+
+export interface WorkbenchQuoteAnchor {
+  path?: string;
+  page?: number;
+  line?: number;
+  sheet?: string;
+  range?: string;
+}
+
 export interface WorkbenchQuote {
   session: string;
   text: string;
   source: string;
+  image?: WorkbenchQuoteImage;
+  anchor?: WorkbenchQuoteAnchor;
 }
 
 let accepted: ReadonlySet<string> = new Set();
@@ -125,7 +141,17 @@ export function onWorkbenchQuote(handler: (quote: WorkbenchQuote) => void): () =
 }
 
 export function receiveWorkbenchQuote(message: Record<string, unknown>): void {
-  const { session, text, source } = message;
+  const { session, text, source, image, anchor } = message;
   if (typeof session !== "string" || typeof text !== "string" || typeof source !== "string") return;
-  quoteHandler?.({ session, text, source });
+  const parsedImage =
+    image && typeof image === "object" && typeof (image as Record<string, unknown>).dataUrl === "string"
+      ? {
+          dataUrl: String((image as Record<string, unknown>).dataUrl),
+          filename: typeof (image as Record<string, unknown>).filename === "string" ? String((image as Record<string, unknown>).filename) : undefined,
+          mediaType: typeof (image as Record<string, unknown>).mediaType === "string" ? String((image as Record<string, unknown>).mediaType) : undefined,
+        }
+      : undefined;
+  const parsedAnchor = anchor && typeof anchor === "object" && !Array.isArray(anchor) ? (anchor as WorkbenchQuoteAnchor) : undefined;
+  if (!text && !parsedImage) return;
+  quoteHandler?.({ session, text, source, image: parsedImage, anchor: parsedAnchor });
 }

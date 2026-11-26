@@ -42,11 +42,27 @@ export interface ConversationIntent {
 
 export type ConversationIntentStatus = "handled" | "invalid" | "failed";
 
-/** 引用回输入框；session 是发起时记下的会话，text ≤ 8192 字符，source ≤ 200 字符。 */
+export interface ConversationQuoteImage {
+  dataUrl: string;
+  filename?: string;
+  mediaType?: "image/png" | "image/jpeg" | "image/webp";
+}
+
+export interface ConversationQuoteAnchor {
+  path?: string;
+  page?: number;
+  line?: number;
+  sheet?: string;
+  range?: string;
+}
+
+/** 引用回输入框；session 是发起时记下的会话，text ≤ 8192 字符，source ≤ 200 字符，可选附带图片或定位锚点。 */
 export interface ConversationQuote {
   session: string;
   text: string;
   source: string;
+  image?: ConversationQuoteImage;
+  anchor?: ConversationQuoteAnchor;
 }
 
 export type ConversationQuoteStatus = "inserted" | "stale" | "rejected";

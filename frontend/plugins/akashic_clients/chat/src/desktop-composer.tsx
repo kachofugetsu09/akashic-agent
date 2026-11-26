@@ -16,6 +16,18 @@ import { isGeneratingChatStatus, type ChatStatus } from "./web-chat-status";
 import { useComposerSuggest } from "./composer-suggest";
 import { ComposerReferences, useReferenceDrop } from "./composer-references-ui";
 import { adoptReferences, composerReferences, notifyReferencesSent, referenceParts, useComposerReferences } from "./composer-references";
+import { ComposerQuotes } from "./composer-quotes-ui";
+import {
+  addComposerQuote,
+  adoptComposerQuotes,
+  formatQuotesForMessage,
+  MAX_COMPOSER_QUOTES,
+  quoteImageToFile,
+  restoreComposerQuotes,
+  takeComposerQuotes,
+  useComposerQuotes,
+} from "./composer-quotes";
+import type { WorkbenchQuote } from "./shell-workbench";
 import { setComposerBusy, type ComposerInputPart } from "./composer-contributions";
 import { PluginUiSlot } from "./plugin-ui-runtime";
 import { CHAT_LAYERS, chatLayerOpen, inChat, keyForChat } from "./chat-host";
@@ -27,6 +39,8 @@ export type ComposerFile = { filename?: string; mediaType?: string; url?: string
 export interface ComposerApi {
   /** append：接在已有草稿之后（空行分隔），否则替换。 */
   insertDraft: (text: string, options?: { append?: boolean }) => void;
+  /** 工作台引用：带图时走多模态图片附件，文本/代码/表格走上方索引 Chip，不往输入框硬塞大段原文。 */
+  addQuote: (quote: WorkbenchQuote) => void;
   /** 把焦点交给输入框并把光标放到末尾（如选择回复引用之后）。 */
   focus: () => void;
   /** 取走当前草稿并清空它，用于把未发送的草稿带到另一个编辑位置。 */
@@ -93,6 +107,7 @@ export const DesktopComposer = memo(function DesktopComposer({
   }, []);
   const setInput = useCallback((text: string) => setDraft(draftKey, text), [draftKey, setDraft]);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const addAttachmentRef = useRef<((files: File[]) => void) | null>(null);
   // 输入卡根节点：会话引用拖到这里就算投放。挂在整个卡片上比只挂输入框更好点中。
   const cardRef = useRef<HTMLFormElement | null>(null);
   useEffect(() => {
@@ -127,6 +142,29 @@ export const DesktopComposer = memo(function DesktopComposer({
       const text = drafts.current.get(draftKey) ?? "";
       if (text) setDraft(draftKey, "");
       return text;
+    },
+    addQuote: (quote) => {
+      let addedImage = false;
+      if (quote.image) {
+        const file = quoteImageToFile(quote.image);
+        if (file && addAttachmentRef.current) {
+          addAttachmentRef.current([file]);
+          addedImage = true;
+        }
+      }
+      if (!addedImage || quote.text.trim()) {
+        const outcome = addComposerQuote(draftKey, quote);
+        if (outcome === "full") {
+          setNotice({ text: `一次最多添加 ${MAX_COMPOSER_QUOTES} 条文档引用`, ms: 2600 });
+        }
+      }
+      setEngaged(true);
+      window.requestAnimationFrame(() => {
+        const textarea = textareaRef.current;
+        if (!textarea) return;
+        textarea.focus({ preventScroll: true });
+        textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+      });
     },
     focus: () => window.requestAnimationFrame(() => {
       const textarea = textareaRef.current;
@@ -172,10 +210,11 @@ export const DesktopComposer = memo(function DesktopComposer({
   const generating = isGeneratingChatStatus(status);
   // 布局阶段先写入，工具位插件在随后的失效回调里读到的就是新状态。
   useLayoutEffect(() => { setComposerBusy(generating); }, [generating]);
-  // 生成中只有纯文字能插进本轮；附件、回复引用与会话引用都要等本轮结束。
+  // 生成中只有纯文字能插进本轮；附件、回复引用与会话/文档引用都要等本轮结束。
   const references = useComposerReferences(draftKey);
+  const quotes = useComposerQuotes(draftKey);
   const referenceDragActive = useReferenceDrop(cardRef, draftKey, chatReady);
-  const steerable = generating && !hasAttachments && !replyTarget && references.length === 0;
+  const steerable = generating && !hasAttachments && !replyTarget && references.length === 0 && quotes.length === 0;
   const submit = useCallback(async (text: string, files: ComposerFile[]) => {
     if (!canSend) throw new Error(sendProblem || "聊天服务暂不可用，请稍后重试。");
     const wasExpanded = expanded;
@@ -183,22 +222,26 @@ export const DesktopComposer = memo(function DesktopComposer({
     setExpanded(false);
     // 会话引用随这条消息一起提交：引用是坐标，正文由模型用 read_session 去读。
     const sentReferences = composerReferences(draftKey);
+    const sentQuotes = takeComposerQuotes(draftKey);
+    const finalText = formatQuotesForMessage(sentQuotes, text);
     const parts = referenceParts(sentReferences);
     try {
-      if (steerable && !files.length && await onSteer(text)) return undefined;
-      const sessionId = await onSend(text, files, parts);
+      if (steerable && !files.length && await onSteer(finalText)) return undefined;
+      const sessionId = await onSend(finalText, files, parts);
       // 引用属于这条已发出的消息；失败时保留，用户还能改一改再发。
       if (parts.length > 0) notifyReferencesSent(draftKey, sentReferences);
       // 首次接纳只是给同一编辑位置确定会话身份，后写的草稿随它保留。
       if (sessionId && draftKey.startsWith("new:")) {
         const next = drafts.current.get(draftKey) || "";
         adoptReferences(draftKey, sessionId);
+        adoptComposerQuotes(draftKey, sessionId);
         setDraft(sessionId, next);
         setDraft(draftKey, "");
         return sessionId;
       }
       return undefined;
     } catch (error) {
+      restoreComposerQuotes(draftKey, sentQuotes);
       const later = drafts.current.get(draftKey) || "";
       setDraft(draftKey, [text, later].filter(Boolean).join("\n\n"));
       setExpanded(wasExpanded);
@@ -274,7 +317,7 @@ export const DesktopComposer = memo(function DesktopComposer({
     setNotice(null);
     submit(text, []).catch((error: unknown) => setNotice({ text: error instanceof Error ? error.message : "插话没有送达", ms: 3200 }));
   };
-  const stacked = expanded || hasAttachments || Boolean(replyTarget) || references.length > 0;
+  const stacked = expanded || hasAttachments || Boolean(replyTarget) || references.length > 0 || quotes.length > 0;
   const crowded = useComposerCrowded(cardRef, !stacked);
   const shellExpanded = stacked || crowded;
   // 窄屏阅读时输入卡只保留一行。用户点进卡片才展开（程序 autofocus 不算）；
@@ -322,7 +365,9 @@ export const DesktopComposer = memo(function DesktopComposer({
       onBlur={onComposerBlur}
     >
       <WindowFileDrop enabled={chatReady} onActiveChange={setFileDragActive} />
+      <ComposerAttachmentBridge onRegister={(fn) => { addAttachmentRef.current = fn; }} />
       <ComposerReferences draftKey={draftKey} />
+      <ComposerQuotes draftKey={draftKey} sessionId={draftKey.startsWith("new:") ? "" : draftKey} />
       {replyTarget ? <ComposerReply author={replyTarget.author} preview={replyTarget.preview} onCancel={onCancelReply} /> : null}
       {notice ? <p className="composer-queue-refused" role="status" title={notice.title}>{notice.text}</p> : null}
       {fileDragActive ? <ComposerDropScrim /> : null}
@@ -354,7 +399,7 @@ export const DesktopComposer = memo(function DesktopComposer({
         <PromptInputTools className="composer__trail">
           <ComposerAttachmentButton />
           <ComposerSubmit input={input} status={status} stopPending={stopPending} steerable={steerable}
-            hasReferences={references.length > 0} onStop={onStop} disabled={!canSend} />
+            hasReferences={references.length > 0 || quotes.length > 0} onStop={onStop} disabled={!canSend} />
         </PromptInputTools>
       </PromptInputFooter>
     </PromptInput>
@@ -567,6 +612,16 @@ function WindowFileDrop({ enabled, onActiveChange }: { enabled: boolean; onActiv
       window.removeEventListener("dragend", reset);
     };
   }, [add, enabled, onActiveChange]);
+  return null;
+}
+
+// 把 PromptInput 内部的附件添加方法桥接给 DesktopComposer 的 addQuote（用于 PDF 框选真图附件）。
+function ComposerAttachmentBridge({ onRegister }: { onRegister: (add: (files: File[]) => void) => void }) {
+  const attachments = usePromptInputAttachments();
+  useEffect(() => {
+    onRegister((files) => attachments.add(files));
+    return () => onRegister(() => {});
+  }, [attachments, onRegister]);
   return null;
 }
 
