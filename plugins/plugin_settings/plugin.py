@@ -6,7 +6,10 @@ from importlib import import_module
 from agent.plugin_composition import Context, Effect, FiberState
 from plugins.ui.contract import UI, Configuration, SETTINGS_SLOT
 
+from plugins.operations.contract import OPERATIONS_V1
+
 from .contract import SETTINGS_FORMS, Authorize, SettingsEntry, SettingsForm
+from .operations import register_ops
 
 api_version = 3
 name = "plugin_settings"
@@ -65,3 +68,4 @@ async def apply(ctx: Context) -> None:
     await ctx.provide(SETTINGS_FORMS, forms, binding_contributors=forms.contributors)
     _ = await ctx.require(UI).register(ctx, web="web_module.js", dashboard=lambda: import_module(".dashboard", __package__),
                                        requires=("shell.settings-plugins.v1",), contract_digests=SETTINGS_SLOT)
+    _ = await ctx.inject((OPERATIONS_V1,), lambda child: register_ops(child, forms), name="operations")

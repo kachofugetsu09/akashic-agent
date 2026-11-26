@@ -1,7 +1,7 @@
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from .contract import SETTINGS_FORMS, Authorize, SettingsEntry
+from .contract import SETTINGS_FORMS, AuthorizeUndeclared, SettingsEntry
 
 inject = (SETTINGS_FORMS,)
 PREFIX = "/api/dashboard/plugin_settings"
@@ -47,28 +47,21 @@ def register(app, context):
         except ValueError as error:
             raise HTTPException(422, str(error)) from error
 
-    def authorization(key: str) -> tuple[SettingsEntry, Authorize]:
-        item = entry(key)
-        if item.authorize is None:
-            raise HTTPException(404, "这个插件没有声明授权")
-        return item, item.authorize
-
-    # 授权在贡献插件的运行作用域里执行；ValueError 是用户能改正的错误（回调网址不对、授权已过期）。
     @app.post(PREFIX + "/{key}/authorize/start")
     async def authorize_start(key: str):
-        item, authorize = authorization(key)
         try:
-            async with item.context.runtime_scope():
-                return {"url": await authorize.start()}
+            return {"url": await entry(key).authorize_start()}
+        except AuthorizeUndeclared as error:
+            raise HTTPException(404, str(error)) from error
         except ValueError as error:
             raise HTTPException(422, str(error)) from error
 
     @app.post(PREFIX + "/{key}/authorize/finish")
     async def authorize_finish(key: str, request: FinishRequest):
-        item, authorize = authorization(key)
         try:
-            async with item.context.runtime_scope():
-                await authorize.finish(request.callback.strip())
+            await entry(key).authorize_finish(request.callback)
+        except AuthorizeUndeclared as error:
+            raise HTTPException(404, str(error)) from error
         except ValueError as error:
             raise HTTPException(422, str(error)) from error
         return {"ok": True}
