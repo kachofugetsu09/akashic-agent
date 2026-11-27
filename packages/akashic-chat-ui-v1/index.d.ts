@@ -558,6 +558,35 @@ export interface IconProvider {
   Picker?: ComponentType<IconPickerViewProps>;
 }
 
+/** 分组行自包含视图扩展：插件可接管行内图标与悬停浮卡内容，宿主继续拥有导航投影、搜索、焦点与 120Hz 开合外框。 */
+export interface NavigationGroupView {
+  renderLeading?: (props: {
+    group: NavigationGroup;
+    iconProvider?: IconProvider | null;
+  }) => ReactNode;
+  renderHoverCard?: (props: {
+    group: NavigationGroup;
+    meta: readonly ScopeMetaItem[];
+    hasActions: boolean;
+    iconProvider?: IconProvider | null;
+  }) => ReactNode;
+}
+
+/** 侧栏顶部目的地行自包含视图扩展：插件可接管头像与行内主体文案，宿主保留外层按钮、状态标、快捷键与行菜单。 */
+export interface NavigationDestinationView {
+  renderLeading?: (props: {
+    destination: NavigationDestination;
+    active: boolean;
+  }) => ReactNode;
+  renderContent?: (props: {
+    destination: NavigationDestination;
+    active: boolean;
+    time: string;
+    preview: string;
+    statusNode?: ReactNode;
+  }) => ReactNode;
+}
+
 /** 插件界面模块的默认导出；v2 新增数据源可放进 providers 以兼容仅识别 v1 slots 的旧浏览器。 */
 export interface PluginUiDefinition {
   slots: { [S in PluginUiMountSlotName]?: PluginUiRenderer<S> } & {
@@ -574,6 +603,11 @@ export interface PluginUiDefinition {
   providers?: {
     "scope.meta"?: ScopeMetaProvider;
     "icon.provider"?: IconProvider;
+  };
+  /** 可选导航呈现自包含扩展：老 v1/v2 浏览器自动忽略，新宿主在局部错误边界内委派插件渲染行内内容。 */
+  navigationViews?: {
+    groups?: NavigationGroupView;
+    destinations?: NavigationDestinationView;
   };
 }
 

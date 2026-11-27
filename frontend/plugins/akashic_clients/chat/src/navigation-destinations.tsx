@@ -1,11 +1,24 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import type { DestinationControls, DestinationForm, NavigationDestination } from "@akashic/chat-ui-v1";
+import { Component, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import type { DestinationControls, DestinationForm, NavigationDestination, NavigationDestinationView } from "@akashic/chat-ui-v1";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DestinationMount, destinationsPending, identityDestinationSource, type DestinationSource } from "./plugin-ui-runtime";
 import { NavigationRowMenu, type NavigationRowAction } from "./navigation-row-menu";
 import { SessionStatusMark, type SessionStatus } from "./session-status-mark";
 import { markdownPlainText } from "./static-markdown";
 import "./navigation-destinations.css";
+
+class DestinationViewBoundary extends Component<
+  { fallback: ReactNode; children: ReactNode },
+  { failed: boolean }
+> {
+  state = { failed: false };
+  static getDerivedStateFromError() { return { failed: true }; }
+  render() { return this.state.failed ? this.props.fallback : this.props.children; }
+}
+
+function InvokeDestView({ render }: { render: () => ReactNode }): ReactNode {
+  return render();
+}
 
 /** 侧栏 identity 目的地的宿主状态；数据全部来自插件的 navigation.destinations。 */
 export interface IdentityDestinationState {
@@ -100,8 +113,8 @@ export function contactTime(iso: string | undefined, now = new Date()): string {
   return `${at.getMonth() + 1}月${at.getDate()}日`;
 }
 
-/** 品牌行变成的联系人行：头像、名字、时间或状态、最近一句；菜单与会话行同一套。 */
-export function IdentityDestinationRow({ destination, mark, status, updatedAt, active, actions, onOpen }: {
+/** 品牌行变成的联系人行：头像、名字、时间或状态、最近一句；菜单与会话行同一套，支持插件自包含呈现扩展。 */
+export function IdentityDestinationRow({ destination, mark, status, updatedAt, active, actions, onOpen, viewOwnerKey, destinationView }: {
   destination: NavigationDestination;
   mark: CSSProperties;
   status?: SessionStatus;
@@ -109,21 +122,36 @@ export function IdentityDestinationRow({ destination, mark, status, updatedAt, a
   active: boolean;
   actions: NavigationRowAction[];
   onOpen(): void;
+  viewOwnerKey?: string;
+  destinationView?: NavigationDestinationView;
 }) {
   const time = destination.sessionId ? contactTime(updatedAt) : "";
   // 预览取自最近一条消息的原文：去掉 Markdown 标记再显示，星号、井号不占这一行。
   const preview = useMemo(() => destination.preview ? markdownPlainText(destination.preview) : destination.hint || "", [destination.preview, destination.hint]);
+  const statusNode = status ? <SessionStatusMark status={status} /> : time ? <time dateTime={updatedAt}>{time}</time> : null;
+  const defaultLeading = <span className="destination-row__avatar" aria-hidden="true"><span className="chat-sidebar__mark" style={mark} /></span>;
+  const defaultContent = <span className="destination-row__copy">
+    <span className="destination-row__name">
+      <strong>{destination.label}</strong>
+      {statusNode}
+    </span>
+    {preview ? <span className="destination-row__preview">{preview}</span> : null}
+  </span>;
+  const leading = destinationView?.renderLeading ? (
+    <DestinationViewBoundary key={`${viewOwnerKey ?? "dest"}-lead`} fallback={defaultLeading}>
+      <InvokeDestView render={() => destinationView.renderLeading?.({ destination, active }) ?? defaultLeading} />
+    </DestinationViewBoundary>
+  ) : defaultLeading;
+  const content = destinationView?.renderContent ? (
+    <DestinationViewBoundary key={`${viewOwnerKey ?? "dest"}-body`} fallback={defaultContent}>
+      <InvokeDestView render={() => destinationView.renderContent?.({ destination, active, time, preview, statusNode }) ?? defaultContent} />
+    </DestinationViewBoundary>
+  ) : defaultContent;
   return <NavigationRowMenu title={destination.label} actions={actions} className="destination-row">
     <button type="button" className="destination-row__open" data-active={active || undefined}
       aria-current={active ? "page" : undefined} data-unread={status === "unread" || undefined} onClick={onOpen}>
-      <span className="destination-row__avatar" aria-hidden="true"><span className="chat-sidebar__mark" style={mark} /></span>
-      <span className="destination-row__copy">
-        <span className="destination-row__name">
-          <strong>{destination.label}</strong>
-          {status ? <SessionStatusMark status={status} /> : time ? <time dateTime={updatedAt}>{time}</time> : null}
-        </span>
-        {preview ? <span className="destination-row__preview">{preview}</span> : null}
-      </span>
+      {leading}
+      {content}
     </button>
   </NavigationRowMenu>;
 }
