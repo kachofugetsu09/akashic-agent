@@ -104,6 +104,9 @@ jobs:
       - name: Check motion contract
         run: npm run check:motion
 
+      - name: Check frontend dependency boundary
+        run: npm run check:frontend-boundary
+
       - name: Run frontend typecheck
         run: npm run typecheck
 
