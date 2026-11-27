@@ -44,8 +44,33 @@ git checkout <新版本号，例如 v0.3.0>
 
 ```bash
 docker compose exec akashic python main.py pkg list --remote   # 看哪些可以升级
-docker compose exec akashic python main.py pkg upgrade         # 全部升级
+docker compose exec akashic python main.py pkg upgrade         # 全部升级（官方与各私有源）
+docker compose exec akashic python main.py pkg upgrade --source release   # 只升级官方插件
+docker compose exec akashic python main.py pkg upgrade --source fleet     # 只升级私有源 fleet
+docker compose exec akashic python main.py pkg upgrade calendar           # 只升级一个
 ```
+
+每个包只从它原来的来源升级，不会换到别的来源。某个私有源连不上时，只有它自己的包报错，其余照常升级。
+
+### 私有源
+
+和 [akashic-plugins](https://github.com/kachofugetsu09/akashic-plugins) 同样结构的仓库都可以当插件来源，可以登记多个，类似 pacman 的仓库。
+
+1. 仓库结构：`plugins/<插件目录>/`（每个目录一个插件，插件仓库也可以用 git submodule 放进来），加上根目录的 `groups.toml`（每个插件归入一个组，格式见官方仓库）。
+2. 发布：插件的前端已经构建好并提交在仓库里时，用官方仓库的 `scripts/publish_source.py --root . --bare <临时目录> --remote <仓库地址>`，生成 `index` 分支和每个插件一条 `release/<插件名>` 分支。可以放进 GitHub Actions，推送后自动发布。
+3. 登记：
+
+```bash
+python main.py pkg source add fleet https://github.com/me/akashic-fleet.git --token <只读 token>   # 公开仓库不用 --token
+python main.py pkg source list
+python main.py pkg groups --source fleet
+python main.py pkg install fleet/calendar      # 也可以只写 calendar：按来源顺序取第一个有它的
+python main.py pkg source remove fleet         # 已装的包保留，只是不再随这个来源更新
+```
+
+- 来源名称就是插件 ID 的后缀（`calendar@fleet`），装过包以后不要改名。
+- 私有仓库用 GitHub fine-grained token，只给这一个仓库的 Contents 只读权限。token 单独存放在插件目录的 `source-tokens/` 下，只在拉取时临时交给 git，不写进任何仓库配置。
+- 同名包按来源顺序查找：官方源永远排第一，私有源按登记顺序。
 
 ## 换端口
 

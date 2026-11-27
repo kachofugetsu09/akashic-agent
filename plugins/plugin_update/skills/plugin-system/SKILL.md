@@ -79,7 +79,7 @@ Host Bridge 的 Shell 会提供固定版本启动器 `AKASHIC_RUNTIME_CLI`，并
 
 ## 官方扩展包（pkg）与“已装但未启用”
 
-官方 extra 仓库里的插件用 `pkg` 管理，同一个运行时 CLI；下面省略 `--config "$AKASHIC_CONFIG" --workspace "$AKASHIC_WORKSPACE"`，实际执行时照上面带上：
+官方 extra 仓库与登记过的私有源里的插件用 `pkg` 管理，同一个运行时 CLI；下面省略 `--config "$AKASHIC_CONFIG" --workspace "$AKASHIC_WORKSPACE"`，实际执行时照上面带上：
 
 ```sh
 "$AKASHIC_RUNTIME_CLI" pkg list            # 已装的包（只看本地）：来源、版本，以及 [未启用: 原因]、[依赖环境需重建]、资源需修复等提示
@@ -87,9 +87,14 @@ Host Bridge 的 Shell 会提供固定版本启动器 `AKASHIC_RUNTIME_CLI`，并
 "$AKASHIC_RUNTIME_CLI" pkg groups          # 可安装的包组与说明
 "$AKASHIC_RUNTIME_CLI" pkg install '包名'   # 自动带上还没装的依赖并提示
 "$AKASHIC_RUNTIME_CLI" pkg install '@组名'  # 装整组（含组外依赖）
-"$AKASHIC_RUNTIME_CLI" pkg upgrade          # 升级全部已装的官方包；也修复依赖环境和缺失或损坏的资源（如浏览器）
+"$AKASHIC_RUNTIME_CLI" pkg upgrade          # 升级全部已装的包（官方与各私有源）；也修复依赖环境和缺失或损坏的资源（如浏览器）
+"$AKASHIC_RUNTIME_CLI" pkg upgrade --source release   # 只升级官方插件（--source <私有源名> 只升级那个来源）
 "$AKASHIC_RUNTIME_CLI" pkg upgrade '包名'   # 只处理这一个包
+"$AKASHIC_RUNTIME_CLI" pkg source list      # 来源：官方在前，私有源按登记顺序；add <名称> <地址> [--token]、remove <名称>
+"$AKASHIC_RUNTIME_CLI" pkg install '来源/包名'  # 指定来源安装；只写包名时按来源顺序取第一个有它的
 ```
+
+用户说「更新插件」就是不带参数的 `pkg upgrade`；说「只更新官方的」「只更新 fleet」就加 `--source`。每个包只从原来的来源升级；某个私有源连不上只影响它自己的包，如实汇报。
 
 不带 `--remote` 的 `pkg list` 不联网，看不出有没有新版本。
 

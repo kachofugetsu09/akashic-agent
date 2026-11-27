@@ -23,7 +23,7 @@ from agent.plugins.python_environment import (
 )
 from agent.plugins.reload_journal import ReloadJournal
 from agent.plugins.distribution_sources import distribution_plugin_sources, read_distribution_adoption
-from agent.plugins.extra_repo import is_official_repo, same_origin as same_origin
+from agent.plugins.extra_repo import git_env, is_official_repo, same_origin as same_origin
 from agent.plugins.source_resolver import ResolvedPluginSource
 from agent.plugins.files import sync_directory
 from agent.plugins.input_preparation import check_plugin_source, read_initial_config
@@ -416,7 +416,7 @@ def _missing_commits(repo_dir: Path, shas: list[str]) -> list[str]:
         ["git", "-C", str(repo_dir), "cat-file", "--batch-check=%(objecttype)"],
         input="".join(f"{sha}^{{commit}}\n" for sha in shas),
         capture_output=True, text=True, check=False,
-        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        env=git_env(),
     )
     if result.returncode != 0:
         return list(shas)
@@ -856,7 +856,7 @@ def _run_git(args: list[str], cwd: Path | None = None) -> str:
         capture_output=True,
         text=True,
         check=False,
-        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        env=git_env(),
     )
     if result.returncode == 0:
         return result.stdout.strip()
