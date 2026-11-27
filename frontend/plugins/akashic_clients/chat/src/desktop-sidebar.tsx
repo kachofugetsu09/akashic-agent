@@ -107,7 +107,8 @@ const SEARCH_HIGHLIGHT = "sidebar-search";
 const NAVIGATION_ROW = "button.conversation-session, button.group-session, button.navigation-group__open";
 
 function isUsableNavigationRow(row: HTMLButtonElement): boolean {
-  return !row.disabled && row.offsetParent !== null && !row.closest("[inert], [aria-hidden='true']");
+  // 用纯 DOM 属性判定可见/可用，避免 offsetParent 在挂载和 MutationObserver 回调里触发强制同步布局（#2239）。
+  return !row.disabled && !row.closest("[hidden], [inert], [aria-hidden='true']");
 }
 
 // 侧栏里可见、可用的导航行主按钮，按文档顺序：置顶、插件分组（含组内会话）、最近会话。
@@ -164,8 +165,8 @@ function useRovingTabStop(sidebarRef: RefObject<HTMLElement | null>) {
 // 补齐一次就不再回退：搜索（靠 hidden 收窄，要求全部行已挂载）与 End 键都会立即补齐。
 const FIRST_SESSION_ROWS = 120;
 const SESSION_ROW_BATCH = 200;
-function useProgressiveRows(total: number, searching: boolean): { count: number; completeNow: () => void } {
-  const [mounted, setMounted] = useState(FIRST_SESSION_ROWS);
+function useProgressiveRows(total: number, searching: boolean, initialRows = FIRST_SESSION_ROWS): { count: number; completeNow: () => void } {
+  const [mounted, setMounted] = useState(initialRows);
   if (searching && Number.isFinite(mounted)) setMounted(Number.POSITIVE_INFINITY);
   useEffect(() => {
     if (mounted >= total) return;
@@ -363,6 +364,8 @@ export interface DesktopSidebarProps {
   onOpenPanels?: (open: () => void) => void;
   /** 手机抽屉里点底部动作（如功能设置）：抽屉先关再执行。抽屉是模态框，开着时 body 不接收指针，压在上面的设置页点不动。 */
   onRailAction?: (activate: () => void) => void;
+  /** 首帧同步挂载的最近会话上限；手机抽屉按首屏可见范围收紧，其余由宏任务分批补齐。 */
+  initialSessionRows?: number;
 }
 
 /** 会话导航竖栏；底部动作由宿主 Shell 经 shell.rail-actions.v1 桥下发，主题行是 chat 域原生。 */
@@ -391,6 +394,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
   onOpenPanels,
   onRailAction,
   rail,
+  initialSessionRows,
 }: DesktopSidebarProps) {
   const [query, setQuery] = useState("");
   // 目的地指向的会话只在顶上出现：不进置顶、分组与最近会话。
@@ -554,7 +558,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
       && (groups?.ready !== false || !Object.values(session.scope ?? {}).some(Boolean)))
       .map((session) => sessionViews.get(session.id) ?? session),
     [sortedSessions, pinnedSessions, groupOf, sessionViews, groups?.ready]);
-  const { count: mountedRecent, completeNow: completeRecentRows } = useProgressiveRows(recentSessions.length, searching);
+  const { count: mountedRecent, completeNow: completeRecentRows } = useProgressiveRows(recentSessions.length, searching, initialSessionRows);
   const focusEndRef = useRef(false);
   const completeRowsForEnd = useCallback(() => {
     if (mountedRecent >= recentSessions.length) return false;
@@ -580,10 +584,15 @@ export const DesktopSidebar = memo(function DesktopSidebar({
     for (const session of sortedSessions) {
       const key = groupOf(session);
       if (!key) continue;
-      byGroup.set(key, [...byGroup.get(key) ?? [], {
+      let items = byGroup.get(key);
+      if (!items) {
+        items = [];
+        byGroup.set(key, items);
+      }
+      items.push({
         id: session.id, title: session.title, active: surface === "chat" && session.active, status: session.status,
         pinned: pinnedSessions.has(session.id), hidden: hiddenIds?.has(session.id) || undefined,
-      }]);
+      });
     }
     for (const [key, items] of byGroup) byGroup.set(key, [...items.filter((item) => item.pinned), ...items.filter((item) => !item.pinned)]);
     return byGroup;

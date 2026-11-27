@@ -336,13 +336,13 @@ function DaySeparator({ label }: { label: string }) {
 }
 
 /** 展示完整日志，引用只定位原消息，不给工具结果补造助手身份。 */
-export const DesktopTimelineMessages = React.memo(function DesktopTimelineMessages({ messages, activities, replySynced, refresh = 0, status, messageElementsRef, copiedMessageId, onReply, onEditInput, onRetry, onAbandon, onCopied, onError }: {
+export const DesktopTimelineMessages = React.memo(function DesktopTimelineMessages({ messages, activities, replySynced, refresh = 0, actionsEnabled, messageElementsRef, copiedMessageId, onReply, onEditInput, onRetry, onAbandon, onCopied, onError }: {
   messages: TimelineMessage[];
   activities: ReplyActivity[];
   /** 本会话的回复状态已同步（收到 reply.status）：之后没有实时活动的未收尾轮次按已结束显示。 */
   replySynced: boolean;
   refresh?: number;
-  status: ChatStatus;
+  actionsEnabled: boolean;
   messageElementsRef: React.RefObject<Map<string, HTMLDivElement>>;
   copiedMessageId: string;
   onReply: (reply: TimelineReply) => void;
@@ -358,8 +358,8 @@ export const DesktopTimelineMessages = React.memo(function DesktopTimelineMessag
   const lookupMessage = useCallback((id: string) => byId.get(id), [byId]);
   const swipeReply = useCallback((id: string) => {
     const message = byId.get(id);
-    if (message && status === "idle" && (message.body.kind === "input" || message.body.kind === "output")) onReply(timelineReply(message));
-  }, [byId, onReply, status]);
+    if (message && actionsEnabled && (message.body.kind === "input" || message.body.kind === "output")) onReply(timelineReply(message));
+  }, [byId, onReply, actionsEnabled]);
   useNarrowMessageGestures(scrollRef, swipeReply);
   const toolResults = useMemo(() => timelineToolResults(messages), [messages]);
   const groups = useMemo(() => timelineReplyGroups(messages, activities, replySynced), [messages, activities, replySynced]);
@@ -455,15 +455,15 @@ export const DesktopTimelineMessages = React.memo(function DesktopTimelineMessag
         name="turn.after_answer" sessionId={message.session_id} messageId={message.id} />
         : message.body.kind === "control" && message.body.action === "failure" ? <FailureRetry
           inputId={failures.retryable.get(message.id)} earlier={failures.earlier.get(message.id)}
-          disabled={status !== "idle"} onRetry={onRetry} /> : undefined} />
-    {isEngineAbandon(message) || failures.abandonable.has(message.id) ? <TimelineAbandon disabled={status !== "idle"} onAbandon={onAbandon} /> : null}
+          disabled={!actionsEnabled} onRetry={onRetry} /> : undefined} />
+    {isEngineAbandon(message) || failures.abandonable.has(message.id) ? <TimelineAbandon disabled={!actionsEnabled} onAbandon={onAbandon} /> : null}
     {/* 轮次未结束的输出还会接着长，时间与复制等落定后挂在末条上，和实时视图一致。 */}
     {!compactionBoundary && !groups.hiddenBodies.has(message.id) && !groups.moved.has(message.id) && !groups.joined.has(message.id) && !groups.unsettled.has(message.id) ? <div className={`shared-message-meta timeline-meta ${message.body.kind === "input" ? "user" : "assistant"}`}>
       <time dateTime={message.timestamp}>{formatMessageTime(message.timestamp)}</time>
       {message.body.kind === "output" && message.body.finish === "complete" ? <PluginUiSlot
         name="message.meta" sessionId={message.session_id} messageId={message.id} quiet /> : null}
       <SharedMessageActions
-        canReply={status === "idle" && (message.body.kind === "input" || message.body.kind === "output")}
+        canReply={actionsEnabled && (message.body.kind === "input" || message.body.kind === "output")}
         canCopy={Boolean(timelineText(message))} copied={copiedMessageId === message.id}
         onReply={() => onReply(timelineReply(message))}
         onEdit={userInput(message) && timelineText(message)
@@ -481,7 +481,7 @@ export const DesktopTimelineMessages = React.memo(function DesktopTimelineMessag
 }, (previous, next) => {
   // 草稿正文只更新活动行；身份/活动阶段变化才让稳定输入槽位重新读取事实。
   return previous.messages === next.messages
-    && previous.status === next.status
+    && previous.actionsEnabled === next.actionsEnabled
     && previous.replySynced === next.replySynced
     && previous.refresh === next.refresh
     && previous.messageElementsRef === next.messageElementsRef

@@ -1,5 +1,5 @@
 import { Menu } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { Dialog, DialogContent, DialogTitle } from "./components/ui/dialog";
 import { useExitPresence } from "./presence";
 import { DesktopSidebar, type DesktopSidebarProps } from "./desktop-sidebar";
@@ -15,8 +15,11 @@ import { useSidebarPanelAlert } from "./sidebar-panels";
 
 const shown = (element: HTMLElement | null): element is HTMLElement => element !== null && element.isConnected && element.getClientRects().length > 0;
 
+// 窄屏抽屉首帧只同步挂载首屏可见范围及少量余量，其余会话由宏任务分批补齐（#2239）。
+const COMPACT_INITIAL_SESSION_ROWS = 28;
+
 /** Expose the desktop navigation contract as a modal drawer on narrow viewports. */
-export function CompactNavigation(props: DesktopSidebarProps) {
+export const CompactNavigation = memo(function CompactNavigation(props: DesktopSidebarProps) {
   const [open, setOpen] = useState(false);
   const drawer = useExitPresence(open, 260);
   const [formRequest, setFormRequest] = useState<GroupFormRequest | null>(null);
@@ -84,12 +87,23 @@ export function CompactNavigation(props: DesktopSidebarProps) {
         inert={!open ? true : undefined}
         onTransitionEnd={drawer.onTransitionEnd}
         onOpenAutoFocus={(event) => {
-          if (!searchOnOpen.current) return;
-          searchOnOpen.current = false;
-          const search = event.currentTarget instanceof HTMLElement ? event.currentTarget.querySelector<HTMLInputElement>(".chat-sidebar__search input") : null;
-          if (!search) return;
           event.preventDefault();
-          search.focus();
+          const dialog = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
+          const focusSearch = searchOnOpen.current;
+          searchOnOpen.current = false;
+          // 同步 focus() 会在 Radix 刚改完 DOM/aria-hidden 时强制全页样式与布局重算；
+          // 延后到下一帧（布局已自然完成）聚焦，既保留无障碍焦点又不阻塞点击当帧（#2239）。
+          window.requestAnimationFrame(() => {
+            if (!dialog?.isConnected) return;
+            if (focusSearch) {
+              const search = dialog.querySelector<HTMLInputElement>(".chat-sidebar__search input");
+              if (search) {
+                search.focus();
+                return;
+              }
+            }
+            (dialog.querySelector<HTMLElement>(".chat-sidebar__new") ?? dialog).focus({ preventScroll: true });
+          });
         }}
         onCloseAutoFocus={(event) => {
           event.preventDefault();
@@ -111,6 +125,7 @@ export function CompactNavigation(props: DesktopSidebarProps) {
         <DialogTitle className="sr-only">Akashic 导航</DialogTitle>
         <DesktopSidebar
           {...props}
+          initialSessionRows={COMPACT_INITIAL_SESSION_ROWS}
           groups={navigationGroups ? {
             ...navigationGroups,
             startChat: (ref) => closeThen(() => navigationGroups.startChat(ref)),
@@ -134,4 +149,4 @@ export function CompactNavigation(props: DesktopSidebarProps) {
     {formRequest && navigationGroups ? <GroupFormDialog request={formRequest} groups={navigationGroups}
       onClose={() => setFormRequest(null)} onCloseFocus={() => triggerRef.current?.focus()} /> : null}
   </>;
-}
+});
