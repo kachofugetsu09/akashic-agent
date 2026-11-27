@@ -279,6 +279,7 @@ export function FolderMark({ size = 18 }: {
 function hasVisibleOverlay(): boolean {
   for (const el of document.querySelectorAll("[role='menu'], [role='dialog']")) {
     if (!(el instanceof HTMLElement)) continue;
+    if (el.closest("[hidden], [inert], [aria-hidden='true']")) continue;
     if (el.getClientRects().length === 0) continue;
     if (window.getComputedStyle(el).visibility === "hidden") continue;
     return true;
