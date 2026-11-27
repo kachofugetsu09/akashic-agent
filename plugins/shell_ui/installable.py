@@ -33,6 +33,8 @@ _PROGRESS = re.compile(r"^\((\d+)/(\d+)\) 正在安装 (\S+)$", re.M)
 _WRAPPER = '"$@"; code=$?; echo "$code" > "$0.tmp" && mv "$0.tmp" "$0"'
 
 
+_ARG = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+
 class InstallBusy(RuntimeError):
     pass
 
@@ -161,6 +163,9 @@ class PackageInstaller:
 
     # 升级任务与安装共用一个任务位：不给范围是全部来源，source 只升级一个来源，names 只升级这几个。
     async def upgrade(self, source: str | None, names: list[str]) -> Row:
+        # 名字会拼进 pkg 命令行：只收包名/来源名的字符，"--source=x" 这类不能被当成选项。
+        if any(_ARG.fullmatch(item) is None for item in (*names, *((source,) if source is not None else ()))):
+            raise ValueError("包名或来源名不合法")
         if self._claimed is not None:
             raise InstallBusy(f"正在安装 {self._claimed}，请等它结束")
         self._claimed = "插件更新"

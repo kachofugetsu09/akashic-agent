@@ -223,6 +223,8 @@ def register(app: FastAPI, context: DashboardContext) -> None:
             return await context.require(INVENTORY).installer.upgrade(request.source, request.names)
         except InstallBusy as error:
             raise HTTPException(409, str(error)) from error
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
         except (RuntimeError, ValueError, OSError) as error:
             raise HTTPException(502, str(error)) from error
 
