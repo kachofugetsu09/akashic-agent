@@ -24,7 +24,7 @@ INVOKE_METHOD = "self/invoke"
 class SelfCliInput(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     argv: list[str] = Field(
-        description='命令行参数数组，例如 ["help"]、["describe", "wd"] 或 ["wd", "current"]。',
+        description='命令行参数数组，例如 ["help"]、["help", "wd"]、["help", "wd", "current"] 或 ["wd", "current"]。',
     )
 
 
@@ -79,7 +79,7 @@ async def apply(ctx: Context) -> None:
         _ = await tools.register(
             child,
             name="self",
-            description="通过统一内省式 CLI 调用 Akashic 自身能力；传 [\"help\"] 查看当前已注册命令与正交扩展选项。",
+            description="通过统一内省式 CLI 调用 Akashic 自身能力。help 逐层展开：[\"help\"] 列出命令分组，[\"help\", 组] 列出组内命令，[\"help\", 组, 命令] 给出参数。",
             parameters=SelfCliInput.model_json_schema(),
             open=open_tool,
             idempotent=False,
