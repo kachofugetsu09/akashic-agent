@@ -92,7 +92,7 @@ export function SidebarPanelLauncher({ sheet, onOpenSheet }: {
   const ref = useRef<HTMLButtonElement>(null);
   if (!sources.length) return null;
   return <button ref={ref} type="button" className="chat-sidebar__new chat-sidebar__panels" data-alert={alert || undefined}
-    aria-label={alert ? "插件面板，有提醒" : "插件面板"} title="插件面板（Alt+U）" aria-haspopup="dialog"
+    aria-label={alert ? "插件面板，有提醒" : "插件面板"} title="插件面板" aria-haspopup="dialog"
     aria-expanded={!!open && open.sheet === sheet}
     onClick={() => sheet && onOpenSheet ? onOpenSheet(() => toggleSidebarPanels(null, true)) : toggleSidebarPanels(ref.current, false)}>
     <LayoutGrid size={18} strokeWidth={1.75} aria-hidden="true" />
@@ -111,23 +111,7 @@ export function SidebarPanelHost({ sessionId, refreshToken }: { sessionId?: stri
     refreshStatuses(sources, sessionId);
   }, [sources, sessionId, refreshToken, open]);
   useEffect(() => () => { statusAbort?.abort(); }, []);
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (!event.altKey || event.ctrlKey || event.metaKey || event.code !== "KeyU" || !sources.length) return;
-      event.preventDefault();
-      if (surface) { publish(null); return; }
-      // 与点击启动器同一条路：手机导航抽屉里的启动器会先关抽屉再弹底部抽屉；没有可见启动器时直接用底部抽屉。
-      const launcher = [...document.querySelectorAll<HTMLElement>(".chat-sidebar__panels")].find((node) => node.getClientRects().length);
-      if (launcher) launcher.click();
-      else toggleSidebarPanels(null, true);
-    };
-    const stopShown = onPageShown(() => refreshStatuses(sources, sessionId));
-    document.addEventListener("keydown", onKey);
-    return () => {
-      stopShown();
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [sources, sessionId]);
+  useEffect(() => onPageShown(() => refreshStatuses(sources, sessionId)), [sources, sessionId]);
   useEffect(() => {
     if (!open) return;
     reportShellOverlay(true);
@@ -195,7 +179,7 @@ function PanelSurface({ open, current, sources, statuses: shown, sessionId, onTr
     {current.sheet || expanded ? <div className="sidebar-panels-scrim" data-state={state} onClick={() => publish(null)} /> : null}
     <div ref={rootRef} className="sidebar-panels" role="dialog" aria-label={source?.provider.label ?? "插件面板"}
       aria-modal={current.sheet || expanded || undefined}
-      data-state={state} data-size={current.size} data-sheet={current.sheet || undefined} data-escape-layer=""
+      data-state={state} data-size={current.size} data-sheet={current.sheet || undefined}
       inert={!open ? true : undefined} style={style} onTransitionEnd={onTransitionEnd}>
       {current.sheet ? <button type="button" className="sidebar-panels__grab" aria-label={expanded ? "降低" : "拉高"}
         onClick={() => publish({ ...current, size: expanded ? "compact" : "expanded" })}><i /></button> : null}

@@ -1,4 +1,4 @@
-import { userInput, type ReplyActivity, type TimelineMessage, type TimelineReply, timelineReplyGroups, timelineText, timelineToolResults, timelineInputStarts, timelineSourceKey, timelineSourceRefreshTokens } from "./message-timeline";
+import { type ReplyActivity, type TimelineReply, timelineReplyGroups, timelineToolResults, timelineInputStarts, timelineSourceKey, timelineSourceRefreshTokens } from "./message-timeline";
 import React, { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useStickToBottomContext } from "use-stick-to-bottom";
 import { MaterialButton } from "../../../../../packages/akashic-theme/src/material-react";
@@ -7,7 +7,7 @@ import {
   ConversationContent,
   ConversationEmptyState,
 } from "@/components/ai-elements/conversation";
-import { DesktopAutoScroll, ComposerPageKeys, NarrowReadingChrome, ReadingReturnButton, SessionReadingMemory, ToggleKeepsPlace, TurnRail } from "./desktop-auto-scroll";
+import { DesktopAutoScroll, NarrowReadingChrome, ReadingReturnButton, SessionReadingMemory, ToggleKeepsPlace, TurnRail } from "./desktop-auto-scroll";
 import { ComposerStatsLine } from "./composer-stats-line";
 import { ThinkingPlaceholder } from "./thinking-placeholder";
 import { DesktopComposer, type ComposerApi } from "./desktop-composer";
@@ -28,7 +28,6 @@ import { HeaderActions } from "./header-actions";
 import { HeaderMeta } from "./header-meta";
 import { SelectionQuote } from "./selection-quote";
 import { MarqueeText } from "./marquee-text";
-import { CopyNotice, useCopyLastCode } from "./copy-last-code";
 import { isGeneratingChatStatus } from "./web-chat-status";
 import { SteerCards } from "./steer-cards";
 
@@ -36,24 +35,13 @@ interface DesktopChatViewProps {
   controller: DesktopChatController;
 }
 
-// 当前会话最后一条用户提问的正文。
 // 本轮停下后等这么久，服务端仍没把插话写进对话就退回输入框（正常结束时它会转成新一轮输入）。
 const STEER_SETTLE_MS = 4000;
-
-function lastUserInput(messages: readonly TimelineMessage[]): string {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (userInput(message)) return timelineText(message);
-  }
-  return "";
-}
 
 export function DesktopChatView({ controller }: DesktopChatViewProps) {
   const composerApi = useRef<ComposerApi | null>(null);
   const shellRef = useRef<HTMLDivElement | null>(null);
   const rail = useSidebarRail(shellRef);
-  // 空输入框按 ↑ 取回的上一条提问。
-  const lastInput = useMemo(() => lastUserInput(controller.timelineMessages), [controller.timelineMessages]);
   // 改一改再问：原文接在已有草稿之后，不覆盖用户正在写的内容。
   const editInput = useCallback((text: string) => composerApi.current?.insertDraft(text, { append: true }), []);
   // 工具区的“引用到对话”：宿主已核对过会话，这里再核对一次，切走后迟到的引用不写进别的会话草稿。
@@ -109,12 +97,6 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
   const shownHasMore = historyWindow ? historyWindow.olderSeq !== null : historyHasMore;
   const pagedTimeline = useMemo(() => withoutLeadingOrphanResults(shownTimeline, shownHasMore),
     [shownHasMore, shownTimeline]);
-  // 已落定的回复原文，按时间顺序：时间线在前，本地仍在补齐的消息在后（与渲染顺序一致）。
-  const replyTexts = useMemo(() => [
-    ...timelineMessages.filter((message) => message.body.kind === "output").map(timelineText),
-    ...messages.filter((message) => message.role === "assistant" && !message.streaming).map((message) => message.content),
-  ], [messages, timelineMessages]);
-  const copyNotice = useCopyLastCode(replyTexts, reportError);
   // 选了回复引用就是要开始写：焦点直接进输入框（触屏会弹出键盘），不必再点一次。
   const replyTo = useCallback((reply: TimelineReply) => {
     handleReplyMessage(reply);
@@ -235,7 +217,6 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
           {hasMessages ? <ThreadFind {...find} host={findHost} revision={`${timelineMessages.length}:${timelineMessages.at(-1)?.id ?? ""}`} /> : null}
           {hasMessages ? <MessageSelectionLayer sessionId={activeSessionId} /> : null}
           <NarrowReadingChrome />
-          <ComposerPageKeys />
           <ToggleKeepsPlace />
           {historyWindow ? null : <ReadingReturnButton generating={isGeneratingChatStatus(status)} />}
           {hasMessages ? <SelectionQuote onQuote={editInput} /> : null}
@@ -269,9 +250,8 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
             ref={composerApi}
             chatReady={chatReady} canSend={canSend} sendProblem={sendProblem} draftKey={draftKey} autoFocus={!conversationLayout && chatReady} fresh={!conversationLayout} status={status} stopPending={stopPending}
             replyTarget={replyTarget} onCancelReply={cancelReply}
-            onSend={sendMessage} onSteer={steerMessage} onStop={stopTurn} lastInput={lastInput}
+            onSend={sendMessage} onSteer={steerMessage} onStop={stopTurn}
           />
-          <CopyNotice text={copyNotice} />
           {replyAvailable === false ? <p className="reply-unavailable" role="status">当前未加载回复插件</p> : null}
           {controller.reconnecting ? <p className="reply-unavailable connection-status" role="status">
             <i aria-hidden="true" />连接已断开，正在重新连接…

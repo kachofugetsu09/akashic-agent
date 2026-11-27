@@ -491,12 +491,6 @@ input {
 .chat-sidebar__icon-action:active { background: color-mix(in oklab, var(--ak-ink-primary) 8%, transparent); }
 .chat-sidebar__icon-action[data-state="open"] { color: var(--chat-ink); background: color-mix(in oklab, var(--ak-ink-primary) 6%, transparent); }
 
-/* 键盘快捷键只在有键盘与指针的宽屏出现，触屏不占位。 */
-.chat-sidebar__shortcuts { display: none; }
-@media (hover: hover) and (pointer: fine) {
-  .chat-sidebar__shortcuts { display: inline-grid; }
-}
-
 /* 主题菜单：明暗是一排分段按钮（带连续滑动胶囊底块），配色是带色票的单选列表；触屏行高放到 44px。 */
 .theme-menu { width: min(264px, calc(100vw - 24px)); border: 1px solid var(--ak-rule-subtle); border-radius: var(--ak-radius-md); padding: 6px;
   color: var(--ak-ink-primary); background: var(--ak-paper-raised); font-family: var(--ak-type-ui); }
@@ -541,57 +535,12 @@ input {
   .theme-menu__family { min-height: 44px; }
 }
 
-/* 快捷键表：左说明右按键，按键是发丝线小方块，不用彩色胶囊。 */
-.shortcuts-dialog { gap: 20px; }
-.shortcuts-dialog section { display: grid; gap: 6px; }
-.shortcuts-dialog h3 { margin: 0; color: var(--chat-muted); font-size: var(--chat-type-caption, 0.75rem); font-weight: 500; }
-.shortcuts-dialog dl { display: grid; margin: 0; }
-.shortcuts-dialog dl > div {
-  display: flex;
-  min-height: 36px;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  border-block-end: 1px solid var(--ak-rule-subtle);
-}
-.shortcuts-dialog dl > div:last-child { border-block-end: 0; }
-.shortcuts-dialog dt { color: var(--ak-ink-primary); font-size: var(--chat-type-control, 0.875rem); }
-.shortcuts-dialog dd { display: flex; flex: 0 0 auto; gap: 4px; margin: 0; }
-.shortcuts-dialog kbd {
-  min-width: 1.75rem;
-  padding: 2px 6px;
-  border: 1px solid var(--ak-rule-default);
-  border-radius: var(--ak-radius-xs);
-  color: var(--ak-ink-secondary, var(--chat-muted));
-  background: var(--ak-paper-canvas);
-  font-family: var(--ak-type-technical);
-  font-size: 0.75rem;
-  line-height: 1.4;
-  text-align: center;
-}
-
 /* 搜索命中只换墨色并加粗下划线，不铺底色块，列表仍然安静。 */
 ::highlight(sidebar-search) {
   color: var(--ak-ink-primary);
   text-decoration: underline 1.5px color-mix(in srgb, var(--ak-ink-primary) 55%, transparent);
   text-underline-offset: 3px;
 }
-
-/* 快捷键提示只在宽屏指针设备上、搜索框空闲时出现；聚焦或有输入就让位。 */
-.chat-sidebar__search-key {
-  display: none;
-  margin-inline-start: auto;
-  color: var(--chat-faint, var(--chat-muted));
-  font-family: var(--ak-type-technical);
-  font-size: 0.6875rem;
-  letter-spacing: 0.02em;
-  white-space: nowrap;
-  flex: none;
-}
-
-@media (hover: hover) and (pointer: fine) { :where([data-chat-width]:not([data-chat-width~="820"])) {
-  .chat-sidebar__search:not(:focus-within):has(input:placeholder-shown) .chat-sidebar__search-key { display: inline; }
-} }
 
 .chat-sidebar__search {
   display: flex;
@@ -2565,8 +2514,6 @@ form.composer:focus-within [data-slot="input-group"] {
 .composer-status-anchor > .composer-stats-line > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 /* 生成中插话气泡在输入卡上方右对齐；状态签同时在时让出一签高，两者不叠。 */
 .composer-wrap:has(.composer-stats-line) > .steer-cards { margin-block-end: 30px; }
-/* 复制提示同样浮在输入卡左上方：状态签在时再往上让一签高。 */
-.composer-wrap:has(.composer-stats-line) > .copy-notice { inset-block-end: calc(100% + 38px); }
 
 /* 矮屏触屏输入区回到文档流，上方没有空位，停止钮与"运行中"已说明在生成，不显示状态签。
    只在视觉上收起（不用 display:none）：开始与终态的 aria-live 播报仍要留在无障碍树里。 */
@@ -2582,10 +2529,9 @@ form.composer:focus-within [data-slot="input-group"] {
     clip-path: inset(50%);
     white-space: nowrap;
   }
-  /* 状态签收起后不再给插话卡、复制提示和消息区留位。 */
+  /* 状态签收起后不再给插话卡和消息区留位。 */
   .chat-main { --composer-stats-line: 0px; }
   .composer-wrap:has(.composer-stats-line) > .steer-cards { margin-block-end: 0; }
-  .composer-wrap:has(.composer-stats-line) > .copy-notice { inset-block-end: calc(100% + 8px); }
 }
 
 
@@ -2607,33 +2553,6 @@ form.composer:focus-within [data-slot="input-group"] {
 .composer-wrap > .error-line,
 .composer-wrap > .update-line {
   margin-block-start: 0.25rem;
-}
-
-/* 快捷键复制的结果：浮在输入卡上方左侧（回到底部按钮在正中），出现与消失不改变输入区高度。 */
-.copy-notice {
-  position: absolute;
-  inset-block-end: calc(100% + 8px);
-  inset-inline-start: 12px;
-  margin: 0;
-  border-radius: var(--ak-radius-full);
-  padding: 4px 12px;
-  color: var(--ak-ink-secondary);
-  background: var(--ak-paper-sheet);
-  box-shadow: 0 0 0 1px var(--ak-rule-subtle), var(--ak-elevation-float);
-  font-size: 0.8125rem;
-  line-height: 1.4;
-  pointer-events: none;
-  translate: 0 0;
-  scale: 1;
-  transition:
-    opacity var(--ak-sys-duration-short) var(--ak-sys-motion-standard),
-    translate var(--ak-sys-duration-short) var(--ak-sys-motion-emphasized),
-    scale var(--ak-sys-duration-short) var(--ak-sys-motion-emphasized);
-}
-.copy-notice:empty { opacity: 0; translate: 0 6px; scale: 0.97; box-shadow: none; padding: 0; }
-@media (prefers-reduced-motion: reduce) {
-  .copy-notice,
-  .copy-notice:empty { translate: none; scale: none; }
 }
 
 .error-line {

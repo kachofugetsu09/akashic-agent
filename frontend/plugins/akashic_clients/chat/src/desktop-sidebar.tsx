@@ -5,7 +5,6 @@ import {
   PinOff,
   ArrowUpDown,
   ArrowUpToLine,
-  Keyboard,
   X,
 } from "lucide-react";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
@@ -13,7 +12,6 @@ import {
   DropdownMenu, DropdownMenuContent, DropdownMenuRadioGroup,
   DropdownMenuRadioItem, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ConversationNavigation, ConversationSessionRow, type ConversationRowDragHandlers, type ConversationRowDragState, type ConversationSession } from "./conversation-navigation";
 import akashicBrandIcon from "../../../../../packages/akashic-theme/src/akashic-brand.svg";
 import { activateShellRailAction, useShellRailActions } from "./shell-rail-actions";
@@ -28,12 +26,9 @@ import {
   type SidebarRailControl,
 } from "./use-sidebar-rail";
 import type { NavigationRowAction } from "./navigation-row-menu";
-import { getHostShortcuts } from "./shell-workbench";
 import { PluginUiSlot } from "./plugin-ui-runtime";
 import { SidebarPanelLauncher } from "./sidebar-panels";
 import { ThemeMenu } from "./theme-menu";
-import { cycleTheme } from "../../../../../packages/akashic-theme/src/theme-runtime";
-import { chatLayerOpen, keyForChat } from "./chat-host";
 import { DestinationFormDialog, DestinationNotice, IdentityDestinationRow, type IdentityDestinationState } from "./navigation-destinations";
 import type { DestinationControls, DestinationForm } from "@akashic/chat-ui-v1";
 
@@ -98,10 +93,6 @@ function sessionDayGroup(iso: string | undefined, now: Date): string | undefined
   return "更早";
 }
 
-const SHORTCUT_MOD = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl";
-
-// 常驻侧栏的两个全局快捷键：Mod+K 聚焦会话搜索，Mod+Shift+O 新会话。
-// 抽屉里的侧栏副本与被隐藏的常驻侧栏不挂监听，避免同一按键触发两次。
 const SEARCH_HIGHLIGHT = "sidebar-search";
 
 const NAVIGATION_ROW = "button.conversation-session, button.group-session, button.navigation-group__open";
@@ -231,82 +222,6 @@ function useSearchHighlight(rootRef: RefObject<HTMLElement | null>, needle: stri
   }, [needle, rootRef]);
 }
 
-function useSidebarShortcuts(sidebarRef: RefObject<HTMLElement | null>, searchRef: RefObject<HTMLInputElement | null>,
-  onNewChat: () => void, onShortcuts: () => void) {
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      // 抽屉里那份侧栏不接（抽屉本身是对话框）；常驻侧栏在紧凑断点被隐藏时仍接新会话与快捷键面板，
-      // 搜索要先有可见的搜索框，交给抽屉（compact-navigation.tsx）打开后聚焦。
-      const sidebar = sidebarRef.current;
-      if (!sidebar || sidebar.closest("[role='dialog']")) return;
-      if (!(event.metaKey || event.ctrlKey) || event.altKey || event.isComposing || !keyForChat(event)) return;
-      // 对话框、菜单、选择器打开时按键属于它们，不把焦点抢到背后或在背后开新会话。
-      if (chatLayerOpen()) return;
-      const key = event.key.toLowerCase();
-      if (key === "k" && !event.shiftKey) {
-        if (sidebar.offsetParent === null) return;
-        event.preventDefault();
-        searchRef.current?.focus();
-        searchRef.current?.select();
-      } else if (key === "o" && event.shiftKey) {
-        event.preventDefault();
-        onNewChat();
-      } else if (key === "/" && !event.shiftKey) {
-        event.preventDefault();
-        onShortcuts();
-      } else if (key === "l" && event.shiftKey) {
-        event.preventDefault();
-        cycleTheme();
-      }
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [onNewChat, onShortcuts, searchRef, sidebarRef]);
-}
-
-// 快捷键散在各处（输入框、侧栏、阅读区），只有 title 提示时几乎没人发现；这里集中列一份。
-// "?" 会被阅读时直接打字进入输入框接走，所以入口是 Ctrl+/（Slack、Linear 的习惯）和侧栏底部的键盘图标。
-function ShortcutsDialog({ open, onOpenChange, returnFocus }: { open: boolean; onOpenChange: (open: boolean) => void; returnFocus: () => void }) {
-  const mod = SHORTCUT_MOD === "⌘" ? "⌘" : "Ctrl";
-  const groups: { title: string; items: [string, string[]][] }[] = [
-    { title: "输入", items: [
-      ["发送；生成中排到本轮之后", ["Enter"]],
-      ["换行", ["Shift", "Enter"]],
-      ["停止生成", ["Esc"]],
-      ["取回上一条提问（输入框为空时）", ["↑"]],
-      ["在输入框里翻看对话", ["PageUp", "PageDown"]],
-      ["复制对话里最后一个代码块", [mod, "Shift", ";"]],
-      ["阅读时直接打字，进入输入框", ["任意字符"]],
-    ] },
-    { title: "导航", items: [
-      ["搜索会话", [mod, "K"]],
-      ["新会话", [mod, "Shift", "O"]],
-      ["在会话列表里上下移动", ["↑", "↓"]],
-      ["会话的操作菜单", ["Shift", "F10"]],
-      ["看图时切到同一条消息里的上一个、下一个", ["←", "→"]],
-      ["切换亮色与暗色（保持当前配色）", [mod, "Shift", "L"]],
-      ["快捷键", [mod, "/"]],
-    ] },
-  ];
-  const host = getHostShortcuts();
-  if (host.length) groups.push({ title: "工作台", items: host.map((item) => [item.label, [...item.keys]]) });
-  return <Dialog open={open} onOpenChange={onOpenChange}>
-    <DialogContent className="shortcuts-dialog" onCloseAutoFocus={(event) => { event.preventDefault(); returnFocus(); }}>
-      <DialogHeader>
-        <DialogTitle>键盘快捷键</DialogTitle>
-        <DialogDescription className="sr-only">聊天界面可用的键盘快捷键</DialogDescription>
-      </DialogHeader>
-      {groups.map((group) => <section key={group.title} aria-label={group.title}>
-        <h3>{group.title}</h3>
-        <dl>{group.items.map(([label, keys]) => <div key={label}>
-          <dt>{label}</dt>
-          <dd>{keys.map((key) => <kbd key={key}>{key}</kbd>)}</dd>
-        </div>)}</dl>
-      </section>)}
-    </DialogContent>
-  </Dialog>;
-}
-
 function sortSessions(rows: DesktopSidebarSession[], sort: SessionSortId, order: readonly string[]): DesktopSidebarSession[] {
   if (sort === "title") return [...rows].sort((a, b) => a.title.localeCompare(b.title, "zh-Hans-CN"));
   if (sort === "manual") {
@@ -410,27 +325,8 @@ export const DesktopSidebar = memo(function DesktopSidebar({
   [destinationReload, destinationOpen, openDestinationForm]);
   const sidebarRef = useRef<HTMLElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
-  const [shortcutsOpen, setShortcutsOpen] = useState(false);
-  // 面板没有固定触发按钮（输入框里按快捷键也能打开）：打开前记下焦点与光标，关闭后放回原处接着写。
-  const shortcutsReturn = useRef<{ element: HTMLElement; selection: [number, number, "forward" | "backward" | "none"] | null } | null>(null);
-  const openShortcuts = useCallback(() => {
-    const element = document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : null;
-    const field = element instanceof HTMLTextAreaElement || element instanceof HTMLInputElement ? element : null;
-    shortcutsReturn.current = element ? { element, selection: field && field.selectionStart !== null && field.selectionEnd !== null ? [field.selectionStart, field.selectionEnd, field.selectionDirection ?? "none"] : null } : null;
-    setShortcutsOpen(true);
-  }, []);
-  const returnShortcutsFocus = useCallback(() => {
-    const target = shortcutsReturn.current;
-    shortcutsReturn.current = null;
-    if (!target?.element.isConnected) return;
-    target.element.focus({ preventScroll: true });
-    if (target.selection && (target.element instanceof HTMLTextAreaElement || target.element instanceof HTMLInputElement)) {
-      target.element.setSelectionRange(...target.selection);
-    }
-  }, []);
   // 新会话继承当前所在的分组；要不归属任何分组，在新会话的分组条里改。
   const newChat = useCallback(() => groups?.active ? groups.startChat(groups.active) : onNewChat(), [groups, onNewChat]);
-  useSidebarShortcuts(sidebarRef, searchRef, newChat, openShortcuts);
   const [formRequest, setFormRequest] = useState<GroupFormRequest | null>(null);
   const [sessionSort, setSessionSort] = useState(readSessionSort);
   const [sessionOrder, setSessionOrder] = useState(readSessionOrder);
@@ -679,7 +575,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
   // 有目的地时品牌行让给联系人行，功能与新会话挪到搜索框右边。
   const brandActions = <span className="chat-sidebar__brand-actions">
     <SidebarPanelLauncher sheet={!!onOpenPanels} onOpenSheet={onOpenPanels} />
-    <button type="button" className="chat-sidebar__new" aria-label="新会话" title={`新会话（${SHORTCUT_MOD}+Shift+O）`} onClick={newChat}>
+    <button type="button" className="chat-sidebar__new" aria-label="新会话" title="新会话" onClick={newChat}>
       <MessageSquarePlus size={18} strokeWidth={1.75} aria-hidden="true" />
     </button>
   </span>;
@@ -735,9 +631,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
             }}
             placeholder="搜索会话"
             aria-label="搜索会话"
-            aria-keyshortcuts={`${SHORTCUT_MOD === "⌘" ? "Meta" : "Control"}+K`}
           />
-          <kbd className="chat-sidebar__search-key" aria-hidden="true">{SHORTCUT_MOD === "⌘" ? "⌘K" : "Ctrl K"}</kbd>
           {/* 触屏没有 Esc：有输入时给一个清除钮，清完焦点留在框里接着搜。 */}
           {query ? <button type="button" className="chat-sidebar__search-clear" aria-label="清除搜索" data-tip="清除搜索"
             onClick={() => { setQuery(""); searchRef.current?.focus(); }}>
@@ -835,7 +729,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
       />
       {activeSessionId && <PluginUiSlot name="drawer.panel" sessionId={activeSessionId} quiet />}
       </div>
-      {/* 底栏只占一行：第一个动作带字占满，其余动作、主题与快捷键收成图标，名称进提示。 */}
+      {/* 底栏只占一行：第一个动作带字占满，其余动作与主题收成图标，名称进提示。 */}
       <div className="chat-sidebar__footer">
         {railActions.map((action, index) => (
           <button key={action.id} type="button" className={index === 0 ? "chat-sidebar__action" : "chat-sidebar__icon-action"}
@@ -850,12 +744,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
           </button>
         ))}
         <ThemeMenu />
-        <button type="button" className="chat-sidebar__icon-action chat-sidebar__shortcuts" aria-label="键盘快捷键" data-tip={`键盘快捷键（${SHORTCUT_MOD}+/）`}
-          onClick={openShortcuts}>
-          <Keyboard size={16} aria-hidden="true" />
-        </button>
       </div>
-      <ShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} returnFocus={returnShortcutsFocus} />
       {rail ? <SidebarRailResizer rail={rail} sidebarRef={sidebarRef} /> : null}
       {destinationForm && destination?.source && destinationControls ? <DestinationFormDialog source={destination.source}
         form={destinationForm} controls={destinationControls} onClose={() => { setDestinationForm(null); destination.reload(); }} /> : null}

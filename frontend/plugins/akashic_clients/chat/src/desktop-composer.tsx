@@ -30,7 +30,7 @@ import {
 import type { WorkbenchQuote } from "./shell-workbench";
 import { setComposerBusy, type ComposerInputPart } from "./composer-contributions";
 import { PluginUiSlot } from "./plugin-ui-runtime";
-import { CHAT_LAYERS, chatLayerOpen, inChat, keyForChat } from "./chat-host";
+import { chatLayerOpen, inChat } from "./chat-host";
 import { chatPortalRoot } from "./chat-layout";
 
 export type ComposerFile = { filename?: string; mediaType?: string; url?: string; sizeBytes?: number };
@@ -48,9 +48,7 @@ export interface ComposerApi {
 }
 
 /** Own transient editor state while the app controller owns transport and durable chat state. */
-// 浮层打开时按键与拖放都属于浮层（chatLayerOpen）：读回复打字、窗口拖放都让路。
-// 自己在 document 上处理 Esc 的浮层：对话框、菜单、列表，以及标了 data-escape-layer 的非模态面板。
-const ESCAPE_LAYERS = `${CHAT_LAYERS}, [data-escape-layer]`;
+// 浮层打开时拖放属于浮层（chatLayerOpen）：窗口拖放让路。
 // 与服务端单个上传上限（web_chat.MAX_UPLOAD_BYTES）一致。
 const MAX_ATTACHMENT_MB = 50;
 // 一条消息最多带的附件数（与 Desktop 相同）。
@@ -60,7 +58,7 @@ const PASTE_AS_FILE_BYTES = 4096;
 
 export const DesktopComposer = memo(function DesktopComposer({
   chatReady, canSend, sendProblem, draftKey, autoFocus = false, fresh = false, status, stopPending, replyTarget,
-  onCancelReply, onSend, onSteer, onStop, lastInput = "", ref,
+  onCancelReply, onSend, onSteer, onStop, ref,
 }: {
   chatReady: boolean;
   canSend: boolean;
@@ -80,8 +78,6 @@ export const DesktopComposer = memo(function DesktopComposer({
   /** 返回 false 表示服务端此刻不接纳插话（回合已结束或是后台回调），改走普通发送。 */
   onSteer: (text: string) => Promise<boolean>;
   onStop: () => void;
-  /** 当前会话最后一条用户提问；空输入框按 ↑ 取回编辑。 */
-  lastInput?: string;
   ref?: Ref<ComposerApi>;
 }) {
   // 标签页文本草稿是展示状态，既不上传，也不创建 Message。
@@ -113,7 +109,6 @@ export const DesktopComposer = memo(function DesktopComposer({
   useEffect(() => {
     if (autoFocus && chatReady) textareaRef.current?.focus();
   }, [autoFocus, chatReady, draftKey]);
-  useTypeToCompose(textareaRef, chatReady);
   const [expanded, setExpanded] = useState(false);
   const [hasAttachments, setHasAttachments] = useState(false);
   const syncExpanded = useCallback((textarea: HTMLTextAreaElement | null, text: string) => {
@@ -283,27 +278,6 @@ export const DesktopComposer = memo(function DesktopComposer({
     onConverted: (lines: number) => setNotice({ text: `${lines} 行文本已作为附件（按住 Shift 粘贴可直接插入）`, ms: 3200 }) };
   const onComposerKeyDown = (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
     if (mention.onKeyDown(event)) return;
-    const native = event.nativeEvent;
-    // 生成中在输入框按 Esc 停止本轮（coding 工具的中断习惯）；输入法组合中的 Esc 属于输入法。
-    // 有浮层开着时 Esc 先关浮层（浮层在 document 上自己监听），这一下不能顺带停掉生成。
-    if (event.key === "Escape" && !native.isComposing && native.keyCode !== 229
-      && isGeneratingChatStatus(status) && !stopPending && !chatLayerOpen(ESCAPE_LAYERS)) {
-      event.preventDefault();
-      onStop();
-      return;
-    }
-    // 空输入框按 ↑ 取回上一条提问（终端与聊天工具的习惯）；有内容时 ↑ 仍是移动光标。
-    if (event.key === "ArrowUp" && !event.shiftKey && !event.altKey && !event.metaKey && !event.ctrlKey
-      && !native.isComposing && !input && lastInput && !hasAttachments) {
-      event.preventDefault();
-      setInput(lastInput);
-      const textarea = event.currentTarget;
-      window.requestAnimationFrame(() => {
-        textarea.setSelectionRange(textarea.value.length, textarea.value.length);
-        syncExpanded(textarea, textarea.value);
-      });
-      return;
-    }
     steerOnEnter(event);
   };
   const steerOnEnter = (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
@@ -409,29 +383,6 @@ export const DesktopComposer = memo(function DesktopComposer({
     </>
   );
 });
-
-// 读回复时直接打字就进入输入框：焦点不在任何可编辑处、也没有浮层时，把这次按键的焦点交给输入框，
-// 字符随按键的默认动作落进去。触屏设备没有这种输入方式，不挂监听。
-function useTypeToCompose(textareaRef: { current: HTMLTextAreaElement | null }, enabled: boolean) {
-  useEffect(() => {
-    if (!enabled || !window.matchMedia("(hover: hover) and (pointer: fine)").matches) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      // 1. 只接普通可见字符；组合键、输入法组合中与已被处理的按键都不碰。
-      if (event.defaultPrevented || event.isComposing || event.ctrlKey || event.metaKey || event.altKey || !keyForChat(event)) return;
-      if (event.key.length !== 1 || event.key === " ") return;
-      // 2. 焦点已在可编辑处，或有对话框/菜单/浮层打开时，按键属于它们。
-      const active = document.activeElement;
-      if (active instanceof HTMLElement && active.closest("input, textarea, select, [contenteditable]:not([contenteditable='false'])")) return;
-      if (chatLayerOpen()) return;
-      const textarea = textareaRef.current;
-      if (!textarea || textarea.disabled) return;
-      textarea.focus();
-      textarea.setSelectionRange(textarea.value.length, textarea.value.length);
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [enabled, textareaRef]);
-}
 
 function ComposerAttachmentButton() {
   const attachments = usePromptInputAttachments();
@@ -643,8 +594,7 @@ function ComposerSubmit({ input, status, stopPending, steerable, hasReferences, 
     mode={stopMode ? "stop" : "send"}
     label={stopPending ? "正在停止" : status === "uploading" ? "取消上传" : steering ? "插到下一步" : generating ? "中止回答" : "发送消息"}
     type={stopMode ? "button" : "submit"}
-    title={steering ? "不打断本轮，下一步交给模型" : stopMode && !stopping ? "中止回答（Esc）" : undefined}
-    aria-keyshortcuts={generating ? "Escape" : undefined}
+    title={steering ? "不打断本轮，下一步交给模型" : undefined}
     aria-disabled={stopping || undefined}
     onClick={stopMode ? (event) => {
       // 取消会把同一按钮变回 submit；先阻断这次点击的默认提交。
