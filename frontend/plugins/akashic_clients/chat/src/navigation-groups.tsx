@@ -463,7 +463,7 @@ export function GroupNavigationRow({
   const leadingNode = groupView?.renderLeading ? (
     <SafePluginBoundary key={viewOwnerKey ?? "group-leading"} fallback={defaultLeading}>
       <InvokePluginRender
-        render={() => groupView.renderLeading?.({ group }) ?? defaultLeading}
+        render={() => groupView.renderLeading?.({ group, open }) ?? defaultLeading}
       />
     </SafePluginBoundary>
   ) : defaultLeading;
