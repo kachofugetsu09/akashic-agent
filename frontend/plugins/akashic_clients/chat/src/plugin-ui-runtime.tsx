@@ -741,6 +741,33 @@ function deliverPush(key: string, value: Record<string, unknown> | null) {
   }
 }
 
+const slotInvalidationListeners = new Map<string, Set<() => void>>();
+
+/** 订阅某全局插槽的失效通知（例如 navigation.groups）。 */
+export function onPluginUiSlotInvalidated(slot: string, listener: () => void): () => void {
+  const listeners = slotInvalidationListeners.get(slot) ?? new Set();
+  slotInvalidationListeners.set(slot, listeners);
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+    if (!listeners.size) slotInvalidationListeners.delete(slot);
+  };
+}
+
+/** WebSocket 上的插件插槽失效帧；不是该帧时返回 false，交给其他解析器。 */
+export function receivePluginUiSlotInvalidated(value: unknown): boolean {
+  if (typeof value !== "object" || value === null || (value as { type?: unknown }).type !== "plugin_ui.slot_invalidated") return false;
+  const frame = value as Record<string, unknown>;
+  if (typeof frame.slot !== "string" || !frame.slot || typeof frame.epoch !== "number" || !Number.isInteger(frame.epoch) || frame.epoch < 1) {
+    throw new Error("插件插槽失效帧无效");
+  }
+  for (const listener of [...(slotInvalidationListeners.get(frame.slot) ?? [])]) {
+    try { listener(); }
+    catch (error) { console.error(`[plugin-ui] slot invalidation listener failed: ${frame.slot}`, error); }
+  }
+  return true;
+}
+
 /** WebSocket 上的插件推送帧；不是该帧时返回 false，交给其他解析器。 */
 export function receivePluginUiEvent(value: unknown, activeSessionId: string): boolean {
   if (typeof value !== "object" || value === null || (value as { type?: unknown }).type !== "plugin_ui.event") return false;

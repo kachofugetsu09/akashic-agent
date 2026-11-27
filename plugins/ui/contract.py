@@ -272,6 +272,18 @@ class UiSlots(Protocol):
         """Set once when the registrations change; read it again for the next change."""
         ...
 
+    def invalidate_slot(self, ctx: Context, slot: PluginUiSlot) -> None:
+        """Notify connected UIs that this plugin's data for a declared slot changed."""
+        ...
+
+    def slot_epochs(self) -> Mapping[str, int]:
+        """Return monotonic change counters per Plugin UI slot."""
+        ...
+
+    def slot_changed(self) -> asyncio.Event:
+        """Set once when any slot is invalidated; read it again for the next change."""
+        ...
+
 
 UI_SLOTS = ServiceKey[UiSlots]("ui.slots.v1")
 
@@ -320,6 +332,10 @@ class PluginUiProvider(Protocol):
 
     async def follow(self, session_id: str, emit: PluginUiEmit) -> None:
         """Forward every plugin's session stream until cancelled or the UI owner closes."""
+        ...
+
+    async def follow_slots(self, emit: PluginUiEmit) -> None:
+        """Forward slot invalidation events until cancelled or the UI owner closes."""
         ...
 
 

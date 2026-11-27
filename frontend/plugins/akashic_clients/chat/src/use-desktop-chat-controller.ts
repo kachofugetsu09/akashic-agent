@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction 
 import { createUuid, createUuidV7 } from "./browser-uuid.ts";
 import type { ChatMessage } from "./chat-message";
 import type { ComposerFile } from "./desktop-composer";
-import { invalidatePluginUiSession, loadWebPluginCatalogPatiently, onPageShown, receivePluginUiEvent, recheckWebPluginCatalog, resetPluginUiEvents, usePluginUiCatalogVersion } from "./plugin-ui-runtime";
+import { invalidatePluginUiSession, loadWebPluginCatalogPatiently, onPageShown, receivePluginUiEvent, receivePluginUiSlotInvalidated, recheckWebPluginCatalog, resetPluginUiEvents, usePluginUiCatalogVersion } from "./plugin-ui-runtime";
 import { groupKey, useNavigationGroupSections, type GroupRef, type NavigationGroupsState } from "./navigation-groups";
 import { useIdentityDestination, type IdentityDestinationState } from "./navigation-destinations";
 import type { DestinationSource } from "./plugin-ui-runtime";
@@ -680,6 +680,7 @@ export function useDesktopChatController() {
                     return;
                   }
                   if (receivePluginUiEvent(value, activeSessionRef.current)) return;
+                  if (receivePluginUiSlotInvalidated(value)) return;
                   const frame = readMessageLogFrame(value);
                   if (frame) {
                     if (frame.session_id !== activeSessionRef.current) return;
@@ -758,6 +759,7 @@ export function useDesktopChatController() {
                 // 重连时不论间隔长短都核对版本，免得容器快速重启换代后漏检前后端更新。
                 const shellStateStale = Date.now() - shellStateFreshAtRef.current > 5000;
                 const isReconnect = current !== firstCatalogSocketRef.current;
+                if (isReconnect) reloadGroupsRef.current();
                 if (chatReadyRef.current && (pageBuild || initialCommitRef.current) && (isReconnect || shellStateStale)) {
                   checkRuntimeState((state) => {
                     if (initialCommitRef.current === null && state.commit) initialCommitRef.current = state.commit;
@@ -951,6 +953,8 @@ export function useDesktopChatController() {
   }, [reportError]);
 
   const groupSections = useNavigationGroupSections(chatReady, pluginCatalog.version, reportError);
+  const reloadGroupsRef = useRef(groupSections.reload);
+  useEffect(() => { reloadGroupsRef.current = groupSections.reload; }, [groupSections.reload]);
   const destinationState = useIdentityDestination(chatReady, pluginCatalog.version, reportError);
   // 从目的地开始的新对话：首条消息生成会话 ID 时交回该数据源。
   const adoptRef = useRef<DestinationSource | null>(null);

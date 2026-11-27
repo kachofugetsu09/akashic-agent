@@ -81,3 +81,73 @@ async def test_slow_ui_owner_leaves_capacity_and_queued_timeout_never_runs(tmp_p
         await asyncio.gather(*jobs, return_exceptions=True)
         await provider.aclose()
         await root.dispose()
+
+
+@pytest.mark.asyncio
+async def test_plugin_ui_slot_invalidation_follows_and_validates_owner(tmp_path):
+    root = CompositionRoot("ui-slot-invalidation")
+    emitted: list[dict[str, object]] = []
+    got_first = asyncio.Event()
+    got_second = asyncio.Event()
+
+    async def slots(ctx):
+        directory = PluginUiSlots(ctx)
+        await ctx.provide(UI_SLOTS, directory)
+        await ctx.provide(PLUGIN_UI, LivePluginUiProvider(ctx, directory))
+
+    await root.mount(slots, name="ui")
+    provider = cast(LivePluginUiProvider, root.context.require(PLUGIN_UI))
+    ui_slots = root.context.require(UI_SLOTS)
+    (tmp_path / "panel.js").write_text("export default {};\n")
+
+    captured: dict[str, object] = {}
+
+    async def groups_owner(ctx):
+        captured["groups"] = ctx
+        await ctx.require(UI_SLOTS).register_plugin_ui(
+            ctx,
+            PluginUiDefinition("panel.js", slots=("navigation.groups",)),
+            query=lambda method, payload, *, session_id, turn_id: {},
+        )
+
+    async def other_owner(ctx):
+        captured["other"] = ctx
+        await ctx.require(UI_SLOTS).register_plugin_ui(
+            ctx,
+            PluginUiDefinition("panel.js", slots=("header.end",)),
+            query=lambda method, payload, *, session_id, turn_id: {},
+        )
+
+    for plugin_name, apply in (("projects", groups_owner), ("other", other_owner)):
+        await root.mount(
+            apply,
+            name=plugin_name,
+            inject=(UI_SLOTS,),
+            runtime=PluginRuntime(plugin_name, "ui", tmp_path, tmp_path, tmp_path, {}),
+        )
+
+    async def emit(frame: dict[str, object]) -> None:
+        emitted.append(frame)
+        if len(emitted) == 1:
+            got_first.set()
+        elif len(emitted) == 2:
+            got_second.set()
+
+    follower = asyncio.create_task(provider.follow_slots(emit))
+    try:
+        # 让 follow_slots 先建立基线并挂起等待。
+        await asyncio.sleep(0)
+        with pytest.raises(ValueError, match="未登记 slot"):
+            ui_slots.invalidate_slot(captured["other"], "navigation.groups")  # type: ignore[arg-type]
+
+        ui_slots.invalidate_slot(captured["groups"], "navigation.groups")  # type: ignore[arg-type]
+        await asyncio.wait_for(got_first.wait(), 2)
+        assert emitted[0] == {"slot": "navigation.groups", "epoch": 1}
+
+        ui_slots.invalidate_slot(captured["groups"], "navigation.groups")  # type: ignore[arg-type]
+        await asyncio.wait_for(got_second.wait(), 2)
+        assert emitted[1] == {"slot": "navigation.groups", "epoch": 2}
+    finally:
+        await provider.aclose()
+        await asyncio.wait_for(follower, 2)
+        await root.dispose()

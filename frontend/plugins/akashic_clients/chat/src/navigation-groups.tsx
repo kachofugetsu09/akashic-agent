@@ -7,7 +7,7 @@ import { IconSwap } from "./icon-swap";
 import { SessionStatusLabel, SessionStatusMark, summarizeStatus, type SessionStatus } from "./session-status-mark";
 import { MarqueeText } from "./marquee-text";
 import { followingInView, motionTiming, settle, slideClose, slideOpen } from "./motion";
-import { NavigationGroupMount, PluginUiSlot, navigationGroupSources, navigationGroupsPending, usePluginUiCatalogVersion, type NavigationGroupSource } from "./plugin-ui-runtime";
+import { NavigationGroupMount, PluginUiSlot, navigationGroupSources, navigationGroupsPending, onPageShown, onPluginUiSlotInvalidated, usePluginUiCatalogVersion, type NavigationGroupSource } from "./plugin-ui-runtime";
 import { createScopeFields } from "./scope-fields";
 
 /** 会话所在的分组：会话维度名与它的一个取值。 */
@@ -175,6 +175,12 @@ export function useNavigationGroupSections(enabled: boolean, catalogVersion: num
     && sources.every((source) => fetched.has(source.key)), [sources, fetched, catalogVersion]); // eslint-disable-line react-hooks/exhaustive-deps
   const ready = patienceOver || shown;
   const reload = useCallback(() => setRevision((value) => value + 1), []);
+  useEffect(() => {
+    if (!enabled) return;
+    const stopSlot = onPluginUiSlotInvalidated("navigation.groups", reload);
+    const stopShown = onPageShown(reload);
+    return () => { stopSlot(); stopShown(); };
+  }, [enabled, reload]);
   return { sections, revision, ready, settled, reload };
 }
 
