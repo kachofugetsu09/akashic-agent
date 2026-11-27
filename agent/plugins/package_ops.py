@@ -578,7 +578,7 @@ def _await_removed(ctx: Context, plugin_id: str) -> Outcome:
 
 
 # 卸载：停用选择、从选择移除、删 cache，数据目录保留；在线走 plugin-uninstall 并等待结算。
-def _remove_one(ctx: Context, package: InstalledPackage) -> Outcome:
+def remove_one(ctx: Context, package: InstalledPackage) -> Outcome:
     if ctx.online:
         done = _main(ctx, "plugin-uninstall", package.plugin_id)
         if done.returncode != 0:
@@ -609,7 +609,7 @@ def remove_many(ctx: Context, names: list[str], *, scoped: bool = False) -> list
             outcomes.append(Outcome(name, "failed", "未安装，或是发行版内置插件"))
             continue
         try:
-            outcomes.append(_remove_one(ctx, package))
+            outcomes.append(remove_one(ctx, package))
         except (RuntimeError, ValueError, OSError) as error:
             outcomes.append(Outcome(name, "failed", _last_line(error)))
     return outcomes
@@ -635,6 +635,8 @@ def sync_install(ctx: Context) -> list[Outcome]:
 def run_write(command: str, names: list[str], *, workspace: Path, config_path: Path, repo: str,
               timeout: float = 120.0, source: str | None = None) -> list[Outcome]:
     sources = all_sources(repo)
+    if command == "move" and source is None:
+        raise ValueError("pkg move 要用 --source 指定换到哪个来源")
     if source is not None:
         sources = tuple(item for item in sources if item.name == source)
         if not sources:
@@ -656,6 +658,9 @@ def run_write(command: str, names: list[str], *, workspace: Path, config_path: P
             return _upgrade_routed(contexts, names)
         if command == "remove":
             return remove_many(contexts[0], names, scoped=source is not None)
+        if command == "move":
+            from agent.plugins.package_move import move_many
+            return move_many(contexts[0], names)
         return sync_install(contexts[0])
     finally:
         if not online:

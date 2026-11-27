@@ -92,6 +92,7 @@ Host Bridge 的 Shell 会提供固定版本启动器 `AKASHIC_RUNTIME_CLI`，并
 "$AKASHIC_RUNTIME_CLI" pkg upgrade '包名'   # 只处理这一个包
 "$AKASHIC_RUNTIME_CLI" pkg source list      # 来源：官方在前，私有源按登记顺序；add <名称> <地址> [--token]、remove <名称>
 "$AKASHIC_RUNTIME_CLI" pkg install '来源/包名'  # 指定来源安装；只写包名时按来源顺序取第一个有它的
+"$AKASHIC_RUNTIME_CLI" pkg move 名称@旧来源 --source 新来源  # 换来源：ID 变成 名称@新来源，数据与插件状态随之迁移
 ```
 
 用户说「更新插件」就是不带参数的 `pkg upgrade`；说「只更新官方的」「只更新 fleet」就加 `--source`。每个包只从原来的来源升级；某个私有源连不上只影响它自己的包，如实汇报。
