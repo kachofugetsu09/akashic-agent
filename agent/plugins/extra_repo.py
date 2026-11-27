@@ -1,13 +1,20 @@
 """extra 仓库的来源解析与缺口分类；只依赖标准库，宿主部署脚本与包管理命令共用。"""
 from __future__ import annotations
 
+import base64
+import fcntl
 import json
 import os
+import re
 import subprocess
-from collections.abc import Callable, Iterable, Mapping
+import tomllib
+from collections.abc import Callable, Iterable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
+
+from agent.plugins.manifest import plugins_root
 
 DEFAULT_EXTRA_REPO = "https://github.com/kachofugetsu09/akashic-plugins.git"
 BRANCH_PREFIX = "refs/heads/release/"
@@ -52,10 +59,142 @@ class ExtraAction:
     commit: str
 
 
+# 拉取私有源时按地址附上只读凭据：经 GIT_CONFIG_* 注入，只活在这次 git 进程里，不写进任何仓库的配置。
 def git_env() -> dict[str, str]:
     environment = {key: value for key, value in os.environ.items() if key not in _GIT_REPOSITORY_LOCATION}
     environment["GIT_TERMINAL_PROMPT"] = "0"
+    count = int(environment.get("GIT_CONFIG_COUNT", "0") or "0")
+    for source in private_sources():
+        token = source_token(source.name)
+        if not token:
+            continue
+        basic = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+        environment[f"GIT_CONFIG_KEY_{count}"] = f"http.{source.url}.extraHeader"
+        environment[f"GIT_CONFIG_VALUE_{count}"] = f"Authorization: Basic {basic}"
+        count += 1
+    if count:
+        environment["GIT_CONFIG_COUNT"] = str(count)
     return environment
+
+
+# ---- 来源清单：像 pacman.conf 的仓库段，官方源总在最前，私有源按登记顺序排在后面 ----
+
+SOURCES_FILE = "sources.toml"
+_TOKENS_DIR = "source-tokens"
+_SOURCE_NAME = re.compile(r"[a-z0-9][a-z0-9._-]{0,39}")
+# local 留给本机目录安装；release 是官方源的身份后缀。
+_RESERVED_NAMES = frozenset({"local", "release", "core", "extra"})
+
+
+@dataclass(frozen=True)
+class Source:
+    # 名称同时是这个来源装出的插件 ID 后缀（calendar@<名称>），装过包后不能再改。
+    name: str
+    url: str
+    official: bool = False
+
+
+def _sources_path() -> Path:
+    return plugins_root() / SOURCES_FILE
+
+
+# 私有源按文件里的顺序；文件不存在等于没有私有源，格式坏了直接报错，不静默忽略。
+def private_sources() -> tuple[Source, ...]:
+    path = _sources_path()
+    if not path.is_file():
+        return ()
+    document = tomllib.loads(path.read_text(encoding="utf-8"))
+    rows = document.get("source", [])
+    if not isinstance(rows, list):
+        raise RuntimeError(f"{path} 格式错误：应为 [[source]] 列表")
+    sources: list[Source] = []
+    for row in cast(list[object], rows):
+        if not isinstance(row, dict) or not isinstance(row.get("name"), str) or not isinstance(row.get("url"), str):
+            raise RuntimeError(f"{path} 格式错误：每个 [[source]] 需要 name 与 url")
+        item = cast(dict[str, str], row)
+        sources.append(Source(item["name"], item["url"]))
+    return tuple(sources)
+
+
+# 全部来源：官方在前；官方身份后缀取自发行版，没有发行版时（开发环境）仍叫 release。
+def all_sources(official_repo: str | None = None) -> tuple[Source, ...]:
+    official = Source(official_marketplace() or "release", resolve_repo(official_repo), official=True)
+    return (official, *private_sources())
+
+
+def source_token(name: str) -> str:
+    path = plugins_root() / _TOKENS_DIR / name
+    return path.read_text(encoding="utf-8").strip() if path.is_file() else ""
+
+
+def _write_sources(sources: Iterable[Source]) -> None:
+    lines = ["# 私有插件源，按顺序查找：同名包取第一个有它的来源。由 pkg source add/remove 维护。", ""]
+    for source in sources:
+        lines += ["[[source]]", f"name = {json.dumps(source.name)}", f"url = {json.dumps(source.url)}", ""]
+    path = _sources_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    _ = temporary.write_text("\n".join(lines), encoding="utf-8")
+    _ = temporary.replace(path)
+
+
+# 来源清单的读改写互斥：网页、CLI、Agent 可能同时增删来源。
+@contextmanager
+def _sources_locked() -> Iterator[None]:
+    path = plugins_root() / "sources.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a") as stream:
+        fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+        yield
+
+
+# 登记私有源：先确认地址真的是插件源（有 index 分支），再落盘；凭据单独存放、只给本用户读。
+def add_source(name: str, url: str, token: str = "") -> Source:
+    url = url.strip()
+    official = all_sources()[0]
+    # 1. 名称与地址的基本校验；官方源的实际名称（发行版声明的 marketplace）也不能占用。
+    if _SOURCE_NAME.fullmatch(name) is None or name in _RESERVED_NAMES or name == official.name:
+        reserved = ", ".join(sorted({*_RESERVED_NAMES, official.name}))
+        raise ValueError(f"来源名称 {name!r} 不可用：小写字母、数字、点、横线，且不能是 {reserved}")
+    with _sources_locked():
+        current = private_sources()
+        if any(item.name == name for item in current):
+            raise ValueError(f"来源 {name} 已存在；要换地址先 pkg source remove {name}")
+        if any(same_origin(item.url, url) for item in (*current, official)):
+            raise ValueError(f"{url} 已经登记过")
+        # 2. 凭据先写，下面的探测就能带上它。
+        tokens = plugins_root() / _TOKENS_DIR
+        if token:
+            tokens.mkdir(mode=0o700, parents=True, exist_ok=True)
+            (tokens / name).touch(mode=0o600)
+            _ = (tokens / name).write_text(token.strip(), encoding="utf-8")
+        source = Source(name, url)
+        # 3. 先登记再探测，探测失败只撤掉这一条；地址读不到或不是插件源都当场说明。
+        _write_sources((*current, source))
+        try:
+            _probe(url)
+        except BaseException:
+            _write_sources(item for item in private_sources() if item.name != name)
+            (tokens / name).unlink(missing_ok=True)
+            raise
+    return source
+
+
+def _probe(url: str) -> None:
+    heads, index = list_heads(url)
+    if not index:
+        raise RuntimeError(f"{url} 不是插件源：没有 index 分支（需要按 akashic-plugins 的发布方式生成）")
+    if not heads:
+        raise RuntimeError(f"{url} 还没有发布任何插件（没有 release/* 分支）")
+
+
+def remove_source(name: str) -> None:
+    with _sources_locked():
+        current = private_sources()
+        if not any(item.name == name for item in current):
+            raise ValueError(f"没有名为 {name} 的私有源")
+        _write_sources(item for item in current if item.name != name)
+        (plugins_root() / _TOKENS_DIR / name).unlink(missing_ok=True)
 
 
 # 来源仓库：显式参数优先，其次环境变量，最后是默认常量。

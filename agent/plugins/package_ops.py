@@ -8,7 +8,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal, cast
 from uuid import uuid4
@@ -16,7 +16,7 @@ from uuid import uuid4
 from agent.plugin_composition import load_endpoint_plan
 from agent.plugins.artifacts import read_pointers, resolve_pointer
 from agent.plugins.bundles import absorbed_plugin_ids, composition_rows, set_plugin_choice
-from agent.plugins.extra_repo import is_official_repo, official_marketplace
+from agent.plugins.extra_repo import Source, all_sources, git_env, is_official_repo, official_marketplace
 from agent.plugins.distribution_sources import distribution_sources
 from agent.plugins.install import (
     PluginInstallResult,
@@ -47,6 +47,8 @@ class Outcome:
     name: str
     result: Result
     detail: str = ""
+    # 私有源的包写来源名称，官方源为空。
+    source: str = ""
 
 
 @dataclass(frozen=True)
@@ -56,20 +58,20 @@ class Context:
     repo: str
     online: bool
     timeout: float = 120.0
+    # 这一来源装出的插件 ID 后缀：官方源取发行版声明的那个，私有源就是来源名称。
+    marketplace: str = ""
+    official: bool = True
+
+    def identity(self, name: str) -> str:
+        if not self.marketplace:
+            raise ValueError("无法确定官方 marketplace：未配置发行版（AKASHIC_PLUGIN_DISTRIBUTION）")
+        return f"{name}@{self.marketplace}"
 
 
 # 错误信息取最后一行：子进程 traceback 的结论在末尾。
 def _last_line(error: BaseException) -> str:
     lines = str(error).strip().splitlines()
     return lines[-1] if lines else type(error).__name__
-
-
-# 官方 extra 仓库的包，身份一律是发行版的官方 marketplace（取自 distribution.json）。
-def identity_of(name: str) -> str:
-    marketplace = official_marketplace()
-    if marketplace is None:
-        raise ValueError("无法确定官方 marketplace：未配置发行版（AKASHIC_PLUGIN_DISTRIBUTION）")
-    return f"{name}@{marketplace}"
 
 
 # 取远端提交并读静态 manifest，校验 name 与 api_version；不写 cache、选择、指针与安装记录。
@@ -80,7 +82,8 @@ def _check_remote_source(repo: str, sha: str, name: str, *, workspace: Path | No
     with tempfile.TemporaryDirectory(prefix="pkg-check-") as directory:
         target = Path(directory)
         if not fetch_sha_shallow(repo, target, sha, plugins_home=plugins_root()):
-            _ = subprocess.run(["git", "clone", "--quiet", "--", repo, str(target)], check=True, capture_output=True)
+            _ = subprocess.run(["git", "clone", "--quiet", "--", repo, str(target)], check=True, capture_output=True,
+                               env=git_env())
             _ = subprocess.run(["git", "-C", str(target), "checkout", "--quiet", "--detach", sha],
                                check=True, capture_output=True)
         manifest = load_static_plugin_manifest(target)
@@ -365,16 +368,16 @@ def _hold_closed(ctx: Context, name: str, plugin_id: str, sha: str) -> str:
     return f"已安装但未启用：{note or describe(missing)}"
 
 
-# 按名字安装：pkg 只管官方仓库；其他仓库用 plugin-install --marketplace，这里明确拒绝。
+# 按名字安装：官方源只认官方仓库地址；私有源的地址来自来源清单。
 def install_named(ctx: Context, names: list[str]) -> list[Outcome]:
-    if not is_official_repo(ctx.repo):
+    if ctx.official and not is_official_repo(ctx.repo):
         return [Outcome(name, "failed", f"{ctx.repo} 不是官方 extra 仓库；pkg 只管官方仓库，"
                         "其他仓库请用 plugin-install --marketplace") for name in names]
     try:
         if not any(name.startswith("@") for name in names):
             return _install_planned(ctx, *_dependency_plan(ctx, names))
         names, heads = _expand_groups(ctx, names)
-        return install_many(ctx, [identity_of(name) for name in names], heads)
+        return install_many(ctx, [ctx.identity(name) for name in names], heads)
     except (ValueError, RuntimeError) as error:
         return [Outcome(name, "failed", str(error)) for name in names]
 
@@ -473,7 +476,7 @@ def _install_planned(ctx: Context, names: list[str], needs: dict[str, set[str]])
             outcomes.append(Outcome(bare, "failed", f"依赖 {', '.join(blocked)} 没有就绪，未安装{hint}"))
             not_ready.add(bare)
             continue
-        outcome = install_many(ctx, [identity_of(name)], heads)[0]
+        outcome = install_many(ctx, [ctx.identity(name)], heads)[0]
         outcomes.append(outcome)
         seen.append((bare, outcome.result))
         if outcome.result in BAD_RESULTS or outcome.result == "restart-required" or outcome.detail.startswith("已安装但未启用"):
@@ -594,8 +597,11 @@ def _remove_one(ctx: Context, package: InstalledPackage) -> Outcome:
     return Outcome(package.name, "removed", "数据目录已保留")
 
 
-def remove_many(ctx: Context, names: list[str]) -> list[Outcome]:
-    installed = {item.name: item for item in read_state(ctx.workspace, ctx.repo).packages}
+# scoped 时只在 ctx 这个来源的包里找，不会因为同名卸掉别的来源的包。
+def remove_many(ctx: Context, names: list[str], *, scoped: bool = False) -> list[Outcome]:
+    packages = read_state(ctx.workspace, ctx.repo).packages
+    installed = {item.name: item for item in packages
+                 if not scoped or item.plugin_id.partition("@")[2] == ctx.marketplace}
     outcomes: list[Outcome] = []
     for name in names:
         package = installed.get(name)
@@ -625,9 +631,14 @@ def sync_install(ctx: Context) -> list[Outcome]:
 
 
 # 取得执行方式并运行一条写命令：能取得 workspace 锁说明没有运行实例，持锁离线直装；
-# 否则视为实例在线，经 Gateway 局部换代。
+# 否则视为实例在线，经 Gateway 局部换代。source 给出时只针对这一个来源。
 def run_write(command: str, names: list[str], *, workspace: Path, config_path: Path, repo: str,
-              timeout: float = 120.0) -> list[Outcome]:
+              timeout: float = 120.0, source: str | None = None) -> list[Outcome]:
+    sources = all_sources(repo)
+    if source is not None:
+        sources = tuple(item for item in sources if item.name == source)
+        if not sources:
+            raise ValueError(f"没有名为 {source} 的来源；用 pkg source list 查看")
     home = plugins_root().resolve(strict=False)
     maintenance, publication = WorkspaceMaintenanceLock(workspace), PluginPublicationLock(home)
     online = False
@@ -638,15 +649,80 @@ def run_write(command: str, names: list[str], *, workspace: Path, config_path: P
     try:
         if not online:
             publication.acquire()
-        ctx = Context(workspace, config_path, repo, online, timeout)
+        contexts = [_context(item, workspace, config_path, online, timeout) for item in sources]
         if command == "install":
-            return install_named(ctx, names)
+            return _install_routed(contexts, names)
         if command == "upgrade":
-            return upgrade_many(ctx, names)
+            return _upgrade_routed(contexts, names)
         if command == "remove":
-            return remove_many(ctx, names)
-        return sync_install(ctx)
+            return remove_many(contexts[0], names, scoped=source is not None)
+        return sync_install(contexts[0])
     finally:
         if not online:
             publication.release()
             maintenance.release()
+
+
+def _context(source: Source, workspace: Path, config_path: Path, online: bool, timeout: float) -> Context:
+    marketplace = (official_marketplace() or "") if source.official else source.name
+    return Context(workspace, config_path, source.url, online, timeout, marketplace, source.official)
+
+
+def _tagged(ctx: Context, outcomes: list[Outcome]) -> list[Outcome]:
+    return outcomes if ctx.official else [replace(item, source=ctx.marketplace) for item in outcomes]
+
+
+# 安装：`来源/包名` 指定来源；只写包名时按来源顺序取第一个发布了它的来源（同 pacman 的仓库顺序），@组 默认官方源。
+def _install_routed(contexts: list[Context], names: list[str]) -> list[Outcome]:
+    routed: dict[str, list[str]] = {ctx.marketplace: [] for ctx in contexts}
+    outcomes: list[Outcome] = []
+    heads: dict[str, dict[str, str]] = {}
+    for token in names:
+        prefix, slash, bare = token.rpartition("/")
+        if slash and prefix not in routed:
+            outcomes.append(Outcome(bare, "failed", f"没有名为 {prefix} 的来源"))
+            continue
+        owner = prefix if slash else next(
+            (ctx.marketplace for ctx in contexts if not token.startswith("@") and bare in _heads(ctx, heads)),
+            contexts[0].marketplace)
+        routed[owner].append(bare)
+    for ctx in contexts:
+        if not routed[ctx.marketplace]:
+            continue
+        try:
+            outcomes.extend(_tagged(ctx, install_named(ctx, routed[ctx.marketplace])))
+        except subprocess.TimeoutExpired:
+            # 一个来源卡住只算它自己的包失败，后面的来源照常安装。
+            outcomes.extend(_tagged(ctx, [Outcome(name, "failed", f"来源 {ctx.marketplace} 超时")
+                                          for name in routed[ctx.marketplace]]))
+    return outcomes
+
+
+# 查找用的远端分支；私有源连不上时当作没有这个包，继续看下一个来源。
+def _heads(ctx: Context, cache: dict[str, dict[str, str]]) -> dict[str, str]:
+    if ctx.marketplace not in cache:
+        try:
+            cache[ctx.marketplace] = list_release_heads(ctx.repo)
+        except (RuntimeError, OSError, subprocess.TimeoutExpired):
+            cache[ctx.marketplace] = {}
+    return cache[ctx.marketplace]
+
+
+# 升级：每个包只从它原来的来源升级，不会悄悄换到别的来源；某个私有源连不上只影响它自己的包。
+def _upgrade_routed(contexts: list[Context], names: list[str]) -> list[Outcome]:
+    outcomes: list[Outcome] = []
+    claimed: set[str] = set()
+    for ctx in contexts:
+        mine: list[str] = []
+        if names:
+            packages = read_state(ctx.workspace, ctx.repo).packages
+            mine = [name for name in names if any(item.name == name and item.source == "extra" for item in packages)]
+            claimed.update(mine)
+            if not mine:
+                continue
+        try:
+            outcomes.extend(_tagged(ctx, upgrade_many(ctx, mine)))
+        except (RuntimeError, OSError, subprocess.TimeoutExpired) as error:
+            outcomes.append(Outcome("*", "failed", f"来源连不上：{_last_line(error)}", "" if ctx.official else ctx.marketplace))
+    outcomes.extend(Outcome(name, "failed", "未安装，或不属于这些来源") for name in names if name not in claimed)
+    return outcomes

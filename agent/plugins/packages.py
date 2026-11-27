@@ -14,6 +14,7 @@ from agent.plugins.distribution_sources import distribution_sources
 from agent.plugins.extra_repo import DEFAULT_EXTRA_REPO as DEFAULT_EXTRA_REPO
 from agent.plugins.extra_repo import classify_gaps, list_release_heads as list_release_heads
 from agent.plugins.extra_repo import resolve_repo as resolve_repo
+from agent.plugins.extra_repo import Source, add_source, all_sources, private_sources, remove_source
 from agent.plugins.install import is_official_fresh_install, is_same_source_upgrade, same_origin
 from agent.plugins.manifest import plugins_root
 from agent.plugins.package_index import PackageIndex, load_index
@@ -82,14 +83,17 @@ def _version_of(artifact: Path) -> str:
         return "?"
 
 
-# 来源由 artifact 的 git origin 推导：core、extra、git:<url>。
+# 来源由 artifact 的 git origin 推导：core、extra（当前操作的仓库）、登记过的私有源名称、git:<url>。
 def _source_of(artifact: Path, builtin: bool, repo: str) -> str:
     if builtin:
         return "core"
     origin = _git(artifact, "config", "--get", "remote.origin.url")
     if not origin:
         return "git:unknown"
-    return "extra" if same_origin(origin, repo) else f"git:{origin}"
+    if same_origin(origin, repo):
+        return "extra"
+    private = next((source.name for source in private_sources() if same_origin(origin, source.url)), None)
+    return private or f"git:{origin}"
 
 
 # 显式操作（pkg list/upgrade）看到资源问题：pkg upgrade 直接取回，取不到归档就如实失败。
@@ -205,14 +209,28 @@ def sync_rows(workspace: Path, repo: str) -> list[SyncRow]:
     return [SyncRow(gap.plugin_id, gap.upstream, gap.action) for gap in gaps]
 
 
-# 本地列表；带 --remote 时只给 extra 来源的包标状态，其余标 "-"。
+# 本地列表；带 --remote 时给官方与各私有源的包标状态（每个来源只联网一次），其余标 "-"；私有源连不上标 unreachable。
 def list_rows(packages: list[InstalledPackage], repo: str, remote: bool, workspace: Path | None = None) -> list[ListRow]:
     disabled, problem = ({}, None) if workspace is None else load_disabled(workspace)
-    heads = list_release_heads(repo) if remote else {}
+    urls = {"extra": repo, **{source.name: source.url for source in private_sources()}}
+    fetched: dict[str, dict[str, str] | None] = {}
+
+    def heads_of(label: str) -> dict[str, str] | None:
+        if label not in fetched:
+            try:
+                fetched[label] = list_release_heads(urls[label])
+            except (RuntimeError, OSError, subprocess.TimeoutExpired):
+                if label == "extra":
+                    raise
+                fetched[label] = None
+        return fetched[label]
+
     rows: list[ListRow] = []
     for item in packages:
         status, remote_head = "-", ""
-        if remote and item.source == "extra":
+        if remote and item.source in urls and (heads := heads_of(item.source)) is None:
+            status = "unreachable"
+        elif remote and item.source in urls:
             remote_head = heads.get(item.name, "")
             # 提交已是最新但依赖环境需要重建的包也是 upgradable：pkg upgrade 会重建。
             status = ("removed-upstream" if not remote_head
@@ -302,14 +320,19 @@ def _parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
     _ = common.add_argument("--repo", help="extra 仓库地址，默认取 AKASHIC_EXTRA_REPO 或内置常量")
     _ = common.add_argument("--json", action="store_true", help="输出 JSON")
+    _ = common.add_argument("--source", help="只针对这个来源（官方源名称见 pkg source list）")
     commands = parser.add_subparsers(dest="command", required=True)
+    source = commands.add_parser("source", help="管理私有源：list、add <名称> <地址> [--token]、remove <名称>", parents=[common])
+    _ = source.add_argument("action", choices=("list", "add", "remove"))
+    _ = source.add_argument("args", nargs="*")
+    _ = source.add_argument("--token", default="", help="私有仓库的只读 token（GitHub fine-grained，只读 Contents）")
     listing = commands.add_parser("list", help="列出已装包", parents=[common])
     _ = listing.add_argument("--remote", action="store_true", help="对比远端 release/* 分支")
-    _ = commands.add_parser("groups", help="列出 extra 仓库的包组与成员", parents=[common])
+    _ = commands.add_parser("groups", help="列出一个来源的包组与成员（默认官方源）", parents=[common])
     sync = commands.add_parser("sync", help="安装应装集合", parents=[common])
     _ = sync.add_argument("--dry-run", action="store_true", help="只打印，不做修改")
     _ = sync.add_argument("--timeout", type=float, default=120.0, help="在线等待每个包到终态的秒数")
-    for name, help_text in (("install", "安装包"), ("upgrade", "升级 extra 来源的包"), ("remove", "卸载包，保留数据")):
+    for name, help_text in (("install", "安装包"), ("upgrade", "升级已装的包：不带名字时升级全部来源，--source 只升级一个来源"), ("remove", "卸载包，保留数据")):
         command = commands.add_parser(name, help=help_text, parents=[common])
         _ = command.add_argument("names", nargs="*" if name == "upgrade" else "+")
         _ = command.add_argument("--timeout", type=float, default=120.0, help="在线等待每个包到终态的秒数")
@@ -325,7 +348,7 @@ def pkg_main(arguments: list[str], *, workspace: Path, config_path: Path) -> int
             return _run_write(options, workspace, config_path, repo)
         with read_only_manifest_facts():
             return _dispatch(options, workspace, repo)
-    except (RuntimeError, subprocess.TimeoutExpired) as error:
+    except (RuntimeError, ValueError, subprocess.TimeoutExpired) as error:
         print(str(error), file=sys.stderr)
         return 1
 
@@ -335,19 +358,53 @@ def _run_write(options: argparse.Namespace, workspace: Path, config_path: Path, 
 
     outcomes = run_write(cast(str, options.command), cast(list[str], getattr(options, "names", [])),
                          workspace=workspace, config_path=config_path, repo=repo,
-                         timeout=cast(float, options.timeout))
+                         timeout=cast(float, options.timeout), source=cast(str | None, options.source))
     if options.json:
         print(json.dumps([asdict(item) for item in outcomes], ensure_ascii=False, indent=2))
     else:
         for item in outcomes:
-            print(f"{item.name:<28} {item.result:<17} {item.detail}".rstrip())
+            label = f"{item.source}/{item.name}" if item.source else item.name
+            print(f"{label:<28} {item.result:<17} {item.detail}".rstrip())
         if not outcomes:
             print("无需处理")
     return 1 if any(item.result in BAD_RESULTS for item in outcomes) else 0
 
 
+# 按名称取来源；不给名称时是官方源。
+def pick_source(name: str | None, repo: str) -> Source:
+    sources = all_sources(repo)
+    if name is None:
+        return sources[0]
+    found = next((source for source in sources if source.name == name), None)
+    if found is None:
+        raise RuntimeError(f"没有名为 {name} 的来源；已有: {', '.join(source.name for source in sources)}")
+    return found
+
+
+def _run_source(options: argparse.Namespace, repo: str) -> int:
+    args = cast(list[str], options.args)
+    if options.action == "add" and len(args) == 2:
+        added = add_source(args[0], args[1], cast(str, options.token))
+        print(f"已添加私有源 {added.name}: {added.url}")
+    elif options.action == "remove" and len(args) == 1:
+        remove_source(args[0])
+        print(f"已移除私有源 {args[0]}（已装的包保留，之后不再随来源更新）")
+    elif options.action == "list" and not args:
+        rows = [{"name": item.name, "url": item.url, "official": item.official} for item in all_sources(repo)]
+        if options.json:
+            print(json.dumps(rows, ensure_ascii=False, indent=2))
+        for row in [] if options.json else rows:
+            print(f"{row['name']:<16} {'官方' if row['official'] else '私有'}  {row['url']}")
+    else:
+        raise RuntimeError("用法: pkg source list | add <名称> <地址> [--token T] | remove <名称>")
+    return 0
+
+
 def _dispatch(options: argparse.Namespace, workspace: Path, repo: str) -> int:
+    if options.command == "source":
+        return _run_source(options, repo)
     if options.command == "groups":
+        repo = pick_source(cast(str | None, options.source), repo).url
         index = load_index(repo, plugins_root())
         installed = {item.name for item in read_state(workspace, repo).packages if item.source == "extra"}
         _print_groups(index, installed, bool(options.json))

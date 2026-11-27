@@ -53,7 +53,13 @@ Akashic 把“核心闭环”和“功能扩展”拆开维护：
 - **核心仓库（本仓库，Core）**：只保留长程主循环（账本、上下文、压缩、基础文件与 Shell）、Web 宿主与包管理，更新 Core 需要重新部署并重启一次。
 - **官方扩展仓库（[akashic-plugins](https://github.com/kachofugetsu09/akashic-plugins)，`extra`）**：浏览器、记忆、值班、子任务、画布、手机端侧等非核心功能都在这里，按单个插件的 `release/<插件名>` 分支发布，Core 镜像默认不内置。
 - **安装与热更新**：在网页端“功能设置”→“插件”→“可安装”里可一键安装；也可以让 Akashic 帮忙装，或在容器/终端里用 `akashic pkg` 管理（`list` / `groups` / `install <名|@组>` / `upgrade`）。官方扩展插件与私人插件都支持**热安装与热更新**，改完或升级不需要重启 Core。
+- **私有源**：自己的插件可以放进一个和官方扩展仓库同样结构的仓库（私有仓库也行），用 `pkg source add <名称> <地址>` 登记成来源，可以登记多个；安装和更新跟官方插件走同一套命令，详见[使用手册](./docs/user-guide.md#私有源)。
 - **自建插件**：想让 Akashic 自己扩展新能力时，它会按内置 Skill [`develop-akashic-plugin`](./skills/develop-akashic-plugin/SKILL.md) 写插件源码并热加载。
+
+## 手机
+
+- **[Akashic Android Shell](https://github.com/kachofugetsu09/akashic-android-shell/releases)**：Android 原生外壳，在手机上用 Akashic，不依赖 Google 推送也能收到消息通知。
+- **让 Akashic 操作手机**：在 Shell 里开启后台手机控制，再在「选择功能」里装上「手机端侧」（phone-use、phone-assist）。它在一块独立的后台虚拟屏上操作，不占用你正在看的屏幕；首次启用需要在 Wi-Fi 下开一次无线调试。
 
 ## 常用操作
 
