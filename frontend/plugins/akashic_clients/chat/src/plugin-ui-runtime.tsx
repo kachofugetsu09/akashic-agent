@@ -10,9 +10,9 @@ import { openInWorkbench, subscribeWorkbenchIntents, workbenchAccepts } from "./
 import { selectMessages } from "./message-selection";
 import { readToolIcon } from "./message-timeline";
 import { chatKernel, type ChatKernelLease } from "./chat-kernel";
-import { ChatSlotOutlet, useChatServices, useChatSlotEntries } from "./chat-kernel-react";
+import { ChatSlotOutlet, useChatSlotEntries } from "./chat-kernel-react";
 
-import type { ChatKernelDisposer, ChatPluginRuntimeContext, ComposerControls, ComposerSuggestProvider, DestinationControls, DestinationForm, HeaderMetaControls, IconProvider, NavigationControls, NavigationDestinationView, NavigationDestinationsProvider, NavigationForm, NavigationFormControls, NavigationGroupView, NavigationGroupsProvider, NavigationNotice, PluginUiDefinition, PluginUiHostContext, PluginUiMountSlotName, PluginUiQueryOptions, PluginUiSlotFacts, PluginUiSlotName, ScopeFieldControls, ScopeMetaProvider, SidebarPanelControls, SidebarPanelProvider, ToolIconFacts, ToolIconProvider, ToolIconSpec, ToolSummaryFacts, ToolSummaryProvider, ToolTaskSummary } from "@akashic/chat-ui-v1";
+import type { ChatKernelDisposer, ChatPluginRuntimeContext, ComposerControls, ComposerSuggestProvider, DestinationControls, DestinationForm, HeaderMetaControls, NavigationControls, NavigationDestinationView, NavigationDestinationsProvider, NavigationForm, NavigationFormControls, NavigationGroupView, NavigationGroupsProvider, NavigationNotice, PluginUiDefinition, PluginUiHostContext, PluginUiMountSlotName, PluginUiQueryOptions, PluginUiSlotFacts, PluginUiSlotName, ScopeFieldControls, ScopeMetaProvider, SidebarPanelControls, SidebarPanelProvider, ToolIconFacts, ToolIconProvider, ToolIconSpec, ToolSummaryFacts, ToolSummaryProvider, ToolTaskSummary } from "@akashic/chat-ui-v1";
 
 // 插槽合同由 @akashic/chat-ui-v1 发布，宿主与插件共用同一份类型。
 export type { ComposerSuggestProvider, ComposerSuggestion, PluginUiContext, PluginUiDefinition, PluginUiQueryOptions, PluginUiRenderer, PluginUiSlotName } from "@akashic/chat-ui-v1";
@@ -773,13 +773,6 @@ export function scopeMetaSources(): ScopeMetaSource[] {
       }),
     }] : [];
   });
-}
-
-/** 已加载的图标提供方；按 providerId 显式匹配，不按加载顺序猜测。 */
-/** 经 ChatKernel 服务表订阅首个可用图标服务（不绑定任何特定图标插件名）。 */
-export function useDefaultIconProvider(): IconProvider | null {
-  const services = useChatServices<IconProvider>("icon.provider");
-  return services.length > 0 ? services[0].value : null;
 }
 
 export function navigationGroupSources(): NavigationGroupSource[] {

@@ -9,7 +9,7 @@ import { IconSwap } from "./icon-swap";
 import { SessionStatusLabel, SessionStatusMark, summarizeStatus, type SessionStatus } from "./session-status-mark";
 import { MarqueeText } from "./marquee-text";
 import { followingInView, motionTiming, settle, slideClose, slideOpen } from "./motion";
-import { NavigationGroupMount, PluginUiSlot, navigationGroupSources, navigationGroupsPending, onPageShown, onPluginUiSlotInvalidated, useDefaultIconProvider, usePluginUiCatalogVersion, type NavigationGroupSource } from "./plugin-ui-runtime";
+import { NavigationGroupMount, PluginUiSlot, navigationGroupSources, navigationGroupsPending, onPageShown, onPluginUiSlotInvalidated, usePluginUiCatalogVersion, type NavigationGroupSource } from "./plugin-ui-runtime";
 import { InvokePluginRender, SafePluginBoundary } from "./chat-kernel-react";
 import { createScopeFields } from "./scope-fields";
 import { useScopeMeta } from "./scope-meta-store";
@@ -287,7 +287,6 @@ function GroupHoverCard({ anchor, groupRef, group, hasActions, portalTarget, vie
 }) {
   // 直接订阅共享 scope.meta 协调器：浮卡打开期间若数据抵达或失效重核，原地刷新，不依赖刮 DOM。
   const records = useScopeMeta({ dimension: groupRef.dimension, value: groupRef.id });
-  const iconProvider = useDefaultIconProvider();
   const cardWidth = 264;
   const gap = 10;
   const margin = 12;
@@ -324,7 +323,6 @@ function GroupHoverCard({ anchor, groupRef, group, hasActions, portalTarget, vie
           meta: records.map((r) => r.item),
           metaRecords: records,
           hasActions,
-          iconProvider,
         }) ?? defaultBody}
       />
     </SafePluginBoundary>
@@ -459,12 +457,11 @@ export function GroupNavigationRow({
   const [hoverCard, setHoverCard] = useState<{ anchor: DOMRect; portalTarget: Element } | null>(null);
   // 提前登记到页面级 scope.meta 协调器，同一批分组合成一次批量查询。
   useScopeMeta({ dimension: groupRef.dimension, value: groupRef.id });
-  const iconProvider = useDefaultIconProvider();
   const defaultLeading = <FolderMark />;
   const leadingNode = groupView?.renderLeading ? (
     <SafePluginBoundary key={viewOwnerKey ?? "group-leading"} fallback={defaultLeading}>
       <InvokePluginRender
-        render={() => groupView.renderLeading?.({ group, iconProvider }) ?? defaultLeading}
+        render={() => groupView.renderLeading?.({ group }) ?? defaultLeading}
       />
     </SafePluginBoundary>
   ) : defaultLeading;
