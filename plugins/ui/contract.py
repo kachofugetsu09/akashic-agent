@@ -127,6 +127,14 @@ UI = ServiceKey[UiRegistry]("ui.v1")
 WEB_UI = ServiceKey[WebUiProvider]("ui.web.v1")
 
 @dataclass(frozen=True)
+class PluginUiAssetFile:
+    rel_path: str
+    content: bytes
+    sha256: str
+    media_type: str
+
+
+@dataclass(frozen=True)
 class PluginUiAsset:
     module: str
     module_sha256: str
@@ -135,6 +143,10 @@ class PluginUiAsset:
     stylesheet_sha256: str | None
     stylesheet_bytes: int
     slots: tuple[str, ...]
+    module_path: str = "plugin_ui.js"
+    stylesheet_path: str | None = None
+    bundle_sha256: str = ""
+    files: Mapping[str, PluginUiAssetFile] = field(default_factory=lambda: MappingProxyType({}))
 
 
 PluginUiSlot = Literal[
@@ -155,12 +167,14 @@ PluginUiSlot = Literal[
     "composer.suggest",
     "scope.fields",
     "scope.badge",
+    "scope.meta",
     "navigation.groups",
     "navigation.destinations",
     "sidebar.panels",
+    "icon.provider",
 ]
 
-PLUGIN_UI_SLOTS = frozenset(
+PLUGIN_UI_V1_SLOTS = frozenset(
     {
         "turn.before_reasoning",
         "turn.after_answer",
@@ -184,6 +198,8 @@ PLUGIN_UI_SLOTS = frozenset(
         "sidebar.panels",
     }
 )
+
+PLUGIN_UI_SLOTS = PLUGIN_UI_V1_SLOTS | frozenset({"scope.meta", "icon.provider"})
 
 class PluginUiQueryHandler(Protocol):
     def __call__(
@@ -230,6 +246,7 @@ class PluginUiDefinition:
     module: str
     stylesheet: str | None = None
     slots: tuple[PluginUiSlot, ...] = ()
+    assets_dir: str | None = None
 
 @dataclass(frozen=True, slots=True)
 class PluginUiDescriptor:
@@ -241,6 +258,9 @@ class PluginUiDescriptor:
     stylesheet_sha256: str | None
     stylesheet_bytes: int
     slots: tuple[str, ...]
+    bundle_sha256: str = ""
+    module_path: str = "plugin_ui.js"
+    stylesheet_path: str | None = None
 
 @dataclass(frozen=True, slots=True)
 class PluginUiBinding:
@@ -309,7 +329,7 @@ class MessageDisplayReader(Protocol):
 
 
 class PluginUiProvider(Protocol):
-    async def catalog(self) -> dict[str, object]: ...
+    async def catalog(self, *, protocol: int = 1) -> dict[str, object]: ...
 
     async def asset(
         self,
@@ -317,6 +337,14 @@ class PluginUiProvider(Protocol):
         plugin_revision: str,
         kind: str,
         sha256: str,
+    ) -> dict[str, object]: ...
+
+    async def file_asset(
+        self,
+        plugin_id: str,
+        plugin_revision: str,
+        bundle_sha256: str,
+        rel_path: str,
     ) -> dict[str, object]: ...
 
     async def query(

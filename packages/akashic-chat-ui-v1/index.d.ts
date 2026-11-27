@@ -19,13 +19,15 @@ export type PluginUiSlotName =
   | "composer.suggest"
   | "scope.fields"
   | "scope.badge"
+  | "scope.meta"
   | "navigation.groups"
   | "navigation.destinations"
-  | "sidebar.panels";
+  | "sidebar.panels"
+  | "icon.provider";
 
-/** 宿主挂载插件元素的插槽；composer.suggest、tool.icon、tool.summary、navigation.groups、navigation.destinations 与 sidebar.panels 是数据源，由宿主外框挂载。 */
+/** 宿主挂载插件元素的插槽；其余为数据源或能力提供方，由宿主外框统一调度与隔离。 */
 export type PluginUiMountSlotName = Exclude<PluginUiSlotName,
-  "composer.suggest" | "tool.icon" | "tool.summary" | "navigation.groups" | "navigation.destinations" | "sidebar.panels">;
+  "composer.suggest" | "tool.icon" | "tool.summary" | "scope.meta" | "navigation.groups" | "navigation.destinations" | "sidebar.panels" | "icon.provider">;
 
 export type WorkbenchIntentStatus = "handled" | "unhandled" | "invalid" | "failed";
 
@@ -209,6 +211,14 @@ export interface NavigationControls {
  * 侧栏分组的数据源：会话按 dimension 维度归类，分组 id 即维度取值。
  * 分组行、展开、置顶、搜索、键盘与“新建对话”都由宿主负责，插件只给数据、表单与提示。
  */
+/** 分组行菜单里的一项动作。 */
+export interface NavigationGroupAction {
+  label: string;
+  form: NavigationForm;
+  /** 可选语义图标（由宿主映射）；省略时使用通用设置图标。 */
+  icon?: "sliders" | "sparkles" | "folder";
+}
+
 export interface NavigationGroupsProvider {
   dimension: string;
   /** 分区标题，例如“项目”。 */
@@ -217,7 +227,7 @@ export interface NavigationGroupsProvider {
   load(context: Pick<PluginUiHostContext, "query">): Promise<readonly NavigationGroup[]>;
   create?: NavigationForm;
   /** 分组行菜单里的额外动作，每项打开一个对话框。 */
-  actions?(group: NavigationGroup): readonly { label: string; form: NavigationForm }[];
+  actions?(group: NavigationGroup): readonly NavigationGroupAction[];
   /** 分区顶部的提示，例如未确认的新建请求；没有内容时插件不渲染任何东西。 */
   notice?: NavigationNotice;
 }
@@ -496,15 +506,74 @@ export interface ComposerSuggestProvider {
   load(context: Pick<PluginUiHostContext, "query">): Promise<readonly ComposerSuggestion[]>;
 }
 
-/** 插件界面模块的默认导出。 */
+/** 针对某个 scope 的一条结构化元信息，由宿主统一排入悬停卡与简洁标签。 */
+export interface ScopeMetaItem {
+  /** 在本插件内稳定的条目 ID。 */
+  id: string;
+  /** 主标签，例如“独立记忆”“共享全局记忆”。 */
+  label: string;
+  /** 补充说明，仅在悬停卡展示。 */
+  description?: string;
+  /** 语义状态点色；省略时为中性墨色。 */
+  tone?: "success" | "primary" | "warning" | "muted";
+  /** 简洁场景（如新会话分组选择器）是否显式展示短标签；默认 false。 */
+  inline?: boolean;
+}
+
+/** scope.meta 数据源：按 (dimension, value) 批量返回结构化元信息，key 为 `${dimension}:${value}`。 */
+export interface ScopeMetaProvider {
+  /** 可选：从插件本地缓存同步读取首帧快照，缺失返回 undefined。 */
+  peek?(scope: { dimension: string; value: string }): readonly ScopeMetaItem[] | undefined;
+  /** 批量加载（宿主自动按每批 ≤ 100 项分片与去重）。 */
+  load(
+    scopes: readonly { dimension: string; value: string }[],
+    context: Pick<PluginUiHostContext, "query">,
+  ): Promise<Record<string, readonly ScopeMetaItem[]>>;
+}
+
+/** 图标提供方渲染单枚图标时的 props：颜色由宿主通过外层 currentColor 传递。 */
+export interface IconRenderProps {
+  name: string;
+  size?: number;
+  trigger?: "hover" | "parent" | "none";
+  className?: string;
+}
+
+/** 图标提供方渲染选图标区域时的 props：颜色与色板由宿主外框持有。 */
+export interface IconPickerViewProps {
+  value: string | null;
+  disabled?: boolean;
+  onChange(icon: string | null): void;
+}
+
+/** icon.provider 能力定义：只负责图标渲染与可选的浏览选择界面，与分组业务与主题色板解耦。 */
+export interface IconProvider {
+  /** 提供方稳定标识，例如 "kubai-line"。 */
+  id: string;
+  /** 可读名称，例如 "Kubai 线性图标"。 */
+  label: string;
+  /** 渲染单枚图标的 React 组件（由宿主包在局部 ErrorBoundary + Suspense 内渲染）。 */
+  Icon: ComponentType<IconRenderProps>;
+  /** 可选：浏览与选择图标的 React 组件。 */
+  Picker?: ComponentType<IconPickerViewProps>;
+}
+
+/** 插件界面模块的默认导出；v2 新增数据源可放进 providers 以兼容仅识别 v1 slots 的旧浏览器。 */
 export interface PluginUiDefinition {
   slots: { [S in PluginUiMountSlotName]?: PluginUiRenderer<S> } & {
     "composer.suggest"?: ComposerSuggestProvider;
     "tool.icon"?: ToolIconProvider;
     "tool.summary"?: ToolSummaryProvider;
+    "scope.meta"?: ScopeMetaProvider;
     "navigation.groups"?: NavigationGroupsProvider;
     "navigation.destinations"?: NavigationDestinationsProvider;
     "sidebar.panels"?: SidebarPanelProvider;
+    "icon.provider"?: IconProvider;
+  };
+  /** 可选扩展区：与 slots 合并解析，供同时需要兼容旧版前端的插件挂载 v2 数据源。 */
+  providers?: {
+    "scope.meta"?: ScopeMetaProvider;
+    "icon.provider"?: IconProvider;
   };
 }
 

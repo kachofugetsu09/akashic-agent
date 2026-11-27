@@ -81,11 +81,26 @@ class ScopedPluginUiProvider:
     def __init__(self, opener: RequestScopeOpener) -> None:
         self._opener = opener
 
-    async def catalog(self) -> dict[str, object]:
+    async def catalog(self, *, protocol: int = 1) -> dict[str, object]:
         """Read the provider while holding the current client request scope."""
 
         async with _request_scope(self._opener) as scope:
-            return await cast(PluginUiProvider, scope.require(PLUGIN_UI)).catalog()
+            return await cast(PluginUiProvider, scope.require(PLUGIN_UI)).catalog(protocol=protocol)
+
+    async def file_asset(
+        self,
+        plugin_id: str,
+        plugin_revision: str,
+        bundle_sha256: str,
+        rel_path: str,
+    ) -> dict[str, object]:
+        async with _request_scope(self._opener) as scope:
+            return await cast(PluginUiProvider, scope.require(PLUGIN_UI)).file_asset(
+                plugin_id,
+                plugin_revision,
+                bundle_sha256,
+                rel_path,
+            )
 
     async def asset(
         self,

@@ -1,11 +1,12 @@
 """O/C1: bounded UI work is isolated by owner and drains its real Root scope."""
 import asyncio
+from pathlib import Path
 import threading
 from typing import cast
 
 import pytest
 
-from agent.plugin_composition import CompositionRoot, PluginRuntime
+from agent.plugin_composition import CompositionRoot, Context, PluginRuntime
 from plugins.ui.contract import PluginUiDefinition, UI_SLOTS
 from plugins.ui.contract import PluginUiQueryTimeout
 from plugins.ui.contract import PLUGIN_UI
@@ -150,4 +151,187 @@ async def test_plugin_ui_slot_invalidation_follows_and_validates_owner(tmp_path)
     finally:
         await provider.aclose()
         await asyncio.wait_for(follower, 2)
+        await root.dispose()
+
+
+@pytest.mark.asyncio
+async def test_plugin_ui_v1_v2_catalog_and_file_asset_isolation(tmp_path: Path) -> None:
+    from plugins.ui.contract import PluginUiPluginUnavailable, PluginUiStaleRevision
+    from plugins.ui.plugin_ui import resolve_plugin_ui_asset
+
+    root = CompositionRoot("ui-v2-files")
+    kubai_dir = tmp_path / "kubai_icons"
+    chunks_dir = kubai_dir / "static" / "chunks"
+    chunks_dir.mkdir(parents=True)
+    (kubai_dir / "plugin_ui.js").write_text("export default { slots: {} };\n", encoding="utf-8")
+    (kubai_dir / "plugin_ui.css").write_text(".kubai-icons-root {}\n", encoding="utf-8")
+    (chunks_dir / "a.js").write_text("export const a = 1;\n", encoding="utf-8")
+    (chunks_dir / "b.js").write_text("export const b = 2;\n", encoding="utf-8")
+
+    akasha_dir = tmp_path / "akasha"
+    akasha_dir.mkdir(parents=True)
+    (akasha_dir / "message_ui.js").write_text("export default { slots: {} };\n", encoding="utf-8")
+
+    async def slots(ctx: Context) -> None:
+        directory = PluginUiSlots(ctx)
+        await ctx.provide(UI_SLOTS, directory)
+        await ctx.provide(PLUGIN_UI, LivePluginUiProvider(ctx, directory))
+
+    await root.mount(slots, name="ui")
+    provider = cast(LivePluginUiProvider, root.context.require(PLUGIN_UI))
+
+    async def mount_kubai(ctx: Context) -> None:
+        await ctx.require(UI_SLOTS).register_plugin_ui(
+            ctx,
+            PluginUiDefinition(
+                "plugin_ui.js",
+                stylesheet="plugin_ui.css",
+                slots=("icon.provider",),
+                assets_dir="static/chunks",
+            ),
+            query=lambda method, payload, *, session_id, turn_id: {},
+        )
+
+    async def mount_akasha(ctx: Context) -> None:
+        await ctx.require(UI_SLOTS).register_plugin_ui(
+            ctx,
+            PluginUiDefinition(
+                "message_ui.js",
+                slots=("scope.badge", "scope.meta"),
+            ),
+            query=lambda method, payload, *, session_id, turn_id: {},
+        )
+
+    try:
+        await root.mount(
+            mount_kubai,
+            name="kubai_icons",
+            inject=(UI_SLOTS,),
+            runtime=PluginRuntime("kubai_icons", "ui", kubai_dir, tmp_path, tmp_path, {}),
+        )
+        await root.mount(
+            mount_akasha,
+            name="akasha",
+            inject=(UI_SLOTS,),
+            runtime=PluginRuntime("akasha", "ui", akasha_dir, tmp_path, tmp_path, {}),
+        )
+
+        # 1. protocol=1 隐藏纯 v2 插件并过滤混合插件的 v2 slot，保护已打开的旧页面。
+        v1 = await provider.catalog(protocol=1)
+        v1_items = cast(list[dict[str, object]], v1["items"])
+        assert [item["id"] for item in v1_items] == ["akasha"]
+        assert v1_items[0]["slots"] == ["scope.badge"]
+
+        # 2. protocol=2 暴露完整插件、bundle_sha256 与实际入口文件名，且 catalog_revision 与 v1 区分。
+        v2 = await provider.catalog(protocol=2)
+        assert v2["catalog_revision"] != v1["catalog_revision"]
+        v2_by_id = {str(item["id"]): item for item in cast(list[dict[str, object]], v2["items"])}
+        assert set(v2_by_id) == {"akasha", "kubai_icons"}
+        assert v2_by_id["akasha"]["module_path"] == "message_ui.js"
+        assert set(cast(list[str], v2_by_id["akasha"]["slots"])) == {"scope.badge", "scope.meta"}
+
+        kubai_item = v2_by_id["kubai_icons"]
+        rev = str(kubai_item["revision"])
+        bundle_sha = str(kubai_item["bundle_sha256"])
+        assert kubai_item["module_path"] == "plugin_ui.js"
+        assert kubai_item["stylesheet_path"] == "plugin_ui.css"
+
+        # 3. 路径式文件读取返回单文件独立 sha256 与原始 bytes，错摘要或缺失路径均被拒。
+        chunk_a = await provider.file_asset("kubai_icons", rev, bundle_sha, "static/chunks/a.js")
+        chunk_b = await provider.file_asset("kubai_icons", rev, bundle_sha, "static/chunks/b.js")
+        assert chunk_a["content"] == b"export const a = 1;\n"
+        assert chunk_b["content"] == b"export const b = 2;\n"
+        assert chunk_a["sha256"] != chunk_b["sha256"]
+        assert chunk_a["media_type"] == "text/javascript"
+
+        with pytest.raises(PluginUiStaleRevision):
+            await provider.file_asset("kubai_icons", rev, "0" * 64, "static/chunks/a.js")
+        with pytest.raises(PluginUiPluginUnavailable):
+            await provider.file_asset("kubai_icons", rev, bundle_sha, "static/chunks/missing.js")
+
+        # 4. 修改任意 chunk 内容会改变 bundle_sha256；非法文件类型与越界链接在登记阶段即被拒。
+        before_asset = resolve_plugin_ui_asset(
+            kubai_dir, module="plugin_ui.js", stylesheet="plugin_ui.css",
+            slots=("icon.provider",), assets_dir="static/chunks",
+        )
+        (chunks_dir / "b.js").write_text("export const b = 3;\n", encoding="utf-8")
+        after_asset = resolve_plugin_ui_asset(
+            kubai_dir, module="plugin_ui.js", stylesheet="plugin_ui.css",
+            slots=("icon.provider",), assets_dir="static/chunks",
+        )
+        assert before_asset.bundle_sha256 != after_asset.bundle_sha256
+
+        (chunks_dir / "evil.svg").write_text("<svg/>", encoding="utf-8")
+        with pytest.raises(RuntimeError, match="不支持的文件类型"):
+            resolve_plugin_ui_asset(
+                kubai_dir, module="plugin_ui.js", stylesheet=None,
+                slots=("icon.provider",), assets_dir="static/chunks",
+            )
+        (chunks_dir / "evil.svg").unlink()
+
+        outside = tmp_path / "secret.js"
+        outside.write_text("export const s = 1;\n", encoding="utf-8")
+        (chunks_dir / "escape.js").symlink_to(outside)
+        with pytest.raises(RuntimeError, match="非法文件"):
+            resolve_plugin_ui_asset(
+                kubai_dir, module="plugin_ui.js", stylesheet=None,
+                slots=("icon.provider",), assets_dir="static/chunks",
+            )
+    finally:
+        await provider.aclose()
+        await root.dispose()
+
+
+@pytest.mark.asyncio
+async def test_chat_api_catalog_protocol_http_query_coercion(tmp_path: Path) -> None:
+    """验证 HTTP 层 /api/chat/plugin-ui/catalog 对 ?protocol=1|2 的真实查询参数解析（防 Literal 整数 422 回归）。"""
+    import httpx
+    from plugins.akashic_clients.chat_api import create_chat_app
+    from plugins.akashic_clients.web_chat import WebChatChannel
+
+    root = CompositionRoot("chat-api-protocol")
+    plugin_dir = tmp_path / "demo"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "plugin_ui.js").write_text("export default { slots: {} };\n", encoding="utf-8")
+
+    async def providers(ctx: Context) -> None:
+        directory = PluginUiSlots(ctx)
+        await ctx.provide(UI_SLOTS, directory)
+        await ctx.provide(PLUGIN_UI, LivePluginUiProvider(ctx, directory))
+
+    async def demo_plugin(ctx: Context) -> None:
+        async def query(method: str, payload: dict[str, object], *, session_id: str | None, turn_id: str | None) -> dict[str, object]:
+            del method, payload, session_id, turn_id
+            return {}
+        await ctx.require(UI_SLOTS).register_plugin_ui(
+            ctx, PluginUiDefinition(module="plugin_ui.js", slots=("scope.badge", "scope.meta")), query=query,
+        )
+
+    await root.mount(providers, name="ui")
+    provider = cast(LivePluginUiProvider, root.context.require(PLUGIN_UI))
+
+    try:
+        await root.mount(
+            demo_plugin, name="demo", inject=(UI_SLOTS,),
+            runtime=PluginRuntime("demo", "release", plugin_dir, tmp_path, tmp_path, {}),
+        )
+        app = create_chat_app(workspace=tmp_path, channel=cast(WebChatChannel, object()), plugin_ui_provider=provider)
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            r_default = await client.get("/api/chat/plugin-ui/catalog")
+            assert r_default.status_code == 200
+            assert r_default.json()["items"][0]["slots"] == ["scope.badge"]
+
+            r_v1 = await client.get("/api/chat/plugin-ui/catalog?protocol=1")
+            assert r_v1.status_code == 200
+            assert r_v1.json()["items"][0]["slots"] == ["scope.badge"]
+
+            r_v2 = await client.get("/api/chat/plugin-ui/catalog?protocol=2")
+            assert r_v2.status_code == 200
+            assert r_v2.json()["items"][0]["slots"] == ["scope.badge", "scope.meta"]
+
+            r_bad = await client.get("/api/chat/plugin-ui/catalog?protocol=99")
+            assert r_bad.status_code == 422
+    finally:
+        await provider.aclose()
         await root.dispose()

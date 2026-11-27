@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { access, cp, mkdir, readdir, copyFile, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -107,6 +108,17 @@ const exists = (path) => access(path).then(() => true, (error) => {
   throw error;
 });
 for (const plugin of pluginNames.filter((name) => !customBuilt.has(name))) {
+  // 通用自备构建钩子：插件在 frontend/plugins/<name>/build.mjs 自行控制分包与依赖，避免在 Core 里写特判。
+  const customScript = resolve(repoRoot, `frontend/plugins/${plugin}/build.mjs`);
+  if (await exists(customScript)) {
+    const pluginPkg = resolve(repoRoot, `frontend/plugins/${plugin}/package.json`);
+    const pluginModules = resolve(repoRoot, `frontend/plugins/${plugin}/node_modules`);
+    if (await exists(pluginPkg) && !(await exists(pluginModules))) {
+      throw new Error(`插件 ${plugin} 缺少本地依赖，请先执行：npm ci --prefix frontend/plugins/${plugin} --ignore-scripts --omit=peer`);
+    }
+    execFileSync(process.execPath, [customScript], { cwd: repoRoot, stdio: "inherit" });
+    continue;
+  }
   for (const [source, output] of slotEntries) {
     for (const extension of ["tsx", "ts", "js"]) {
       const entry = `frontend/plugins/${plugin}/src/${source}.${extension}`;

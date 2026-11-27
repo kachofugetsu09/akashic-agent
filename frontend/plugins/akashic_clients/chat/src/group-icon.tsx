@@ -1,18 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
-import { Folder } from "kubai-icons-react/line";
-import { DynamicIcon } from "kubai-icons-react/line/dynamic";
-import { Search, X } from "lucide-react";
-import type { IconCatalogEntry, IconCategoryGroup } from "./group-icon-catalog";
-
-type CatalogModule = typeof import("./group-icon-catalog");
-
-let catalogPromise: Promise<CatalogModule> | null = null;
-function loadCatalog(): Promise<CatalogModule> {
-  catalogPromise ??= import("./group-icon-catalog");
-  return catalogPromise;
-}
-
-const SEARCH_RESULT_LIMIT = 96;
+import { Component, Suspense, type ErrorInfo, type ReactNode } from "react";
+import { Folder } from "lucide-react";
+import { useIconProvider } from "./plugin-ui-runtime";
 
 export interface GroupIconColorOption {
   readonly id: string | null;
@@ -41,41 +29,52 @@ export function resolveGroupIconColor(color?: string | null): string | undefined
   return COLOR_MAP[color.trim()];
 }
 
-/** 侧栏分组图标：默认 folder 同步渲染，其余图标按官方分类 chunk 懒加载，均支持父行悬停弹簧微动效与纸面语义色。 */
-export function GroupIcon({ name, color, size = 18, trigger = "parent", className }: {
+const DEFAULT_ICON_PROVIDER_ID = "kubai-line";
+
+/** 局部错误边界：把外置图标插件的渲染期异常严格隔离在单枚图标或选择器内部，不拖垮侧栏或表单。 */
+class IconProviderBoundary extends Component<{ fallback: ReactNode; children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+  static getDerivedStateFromError(): { failed: boolean } {
+    return { failed: true };
+  }
+  componentDidCatch(error: Error, info: ErrorInfo): void {
+    console.error("[icon.provider] render failed", error, info);
+  }
+  render(): ReactNode {
+    return this.state.failed ? this.props.fallback : this.props.children;
+  }
+}
+
+/** 侧栏分组图标：历史字符串图标名固定解析到 kubai-line；未装对应图标插件或异常时优雅退回默认 Lucide 文件夹。 */
+export function GroupIcon({ name, color, providerId = DEFAULT_ICON_PROVIDER_ID, size = 18, trigger = "parent", className }: {
   name?: string | null;
   color?: string | null;
+  providerId?: string;
   size?: number;
   trigger?: "hover" | "parent" | "none";
   className?: string;
 }) {
+  const entry = useIconProvider(providerId);
   const cls = className ? `group-mark ${className}` : "group-mark";
-  const clean = typeof name === "string" ? name.trim() : "";
+  const clean = typeof name === "string" && name.trim() ? name.trim() : "folder";
   const cssColor = resolveGroupIconColor(color);
-  const fallback = <Folder
-    size={size}
-    color={cssColor}
-    variant="outline"
-    strokeWidth={1.75}
-    trigger={trigger}
-    aria-hidden={true}
-    className={cls}
-  />;
-  if (!clean || clean === "folder") return fallback;
-  return <DynamicIcon
-    name={clean}
-    size={size}
-    color={cssColor}
-    variant="outline"
-    strokeWidth={1.75}
-    trigger={trigger}
-    aria-hidden={true}
-    className={cls}
-    fallback={fallback}
-  />;
+  const fallback = <Folder size={size} strokeWidth={1.75} aria-hidden={true} className={cls} />;
+
+  return <span className="group-mark-host" style={cssColor ? { color: cssColor } : undefined}>
+    {entry ? <IconProviderBoundary key={entry.key} fallback={fallback}>
+      <Suspense fallback={fallback}>
+        <entry.provider.Icon name={clean} size={size} trigger={trigger} className={cls} />
+      </Suspense>
+    </IconProviderBoundary> : fallback}
+  </span>;
 }
 
-/** 供插件表单（例如项目右键「更换图标」）复用的宿主图标选择器：完整接入 kubai-icons/line 官方分类、搜索与纸面语义色板。 */
+/**
+ * 冻结的 v1 公开图标选择器：
+ * - 宿主始终持有预览头、7 色纸面语义色板与恢复默认，与图标插件解耦；
+ * - 若已安装匹配的 icon.provider（如 kubai_icons），把选图标区域委托给 provider.Picker（包在局部 ErrorBoundary + Suspense 内）；
+ * - 未安装或换代降级时，提供可正常输入、保存、清空且遵守 disabled 的轻量表单，保障旧版 projects 插件 100% 可用。
+ */
 export function GroupIconPicker({ value, onChange, color = null, onColorChange, disabled = false }: {
   value: string | null;
   onChange: (icon: string | null) => void;
@@ -83,46 +82,29 @@ export function GroupIconPicker({ value, onChange, color = null, onColorChange, 
   onColorChange?: (color: string | null) => void;
   disabled?: boolean;
 }) {
-  const [catalog, setCatalog] = useState<CatalogModule | null>(null);
-  const [categoryId, setCategoryId] = useState<string>("files");
-  const [query, setQuery] = useState("");
-
-  useEffect(() => {
-    let live = true;
-    void loadCatalog().then((mod) => {
-      if (!live) return;
-      setCatalog(mod);
-      if (value) {
-        const hit = mod.ALL_LINE_ICONS.find((item) => item.name === value);
-        if (hit) setCategoryId(hit.category);
-      }
-    });
-    return () => { live = false; };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
+  const entry = useIconProvider(DEFAULT_ICON_PROVIDER_ID);
   const selected = value?.trim() || "folder";
   const selectedColor = color && COLOR_MAP[color] ? color : null;
-  const keyword = query.trim().toLowerCase();
-
-  const visibleIcons: readonly IconCatalogEntry[] = useMemo(() => {
-    if (!catalog) return [];
-    if (keyword) {
-      const terms = keyword.split(/\s+/).filter(Boolean);
-      const matched: IconCatalogEntry[] = [];
-      for (const item of catalog.ALL_LINE_ICONS) {
-        if (terms.every((term) => item.searchText.includes(term))) {
-          matched.push(item);
-          if (matched.length >= SEARCH_RESULT_LIMIT) break;
-        }
-      }
-      return matched;
-    }
-    const activeCat: IconCategoryGroup | undefined = catalog.ICON_CATEGORIES.find((cat) => cat.id === categoryId)
-      ?? catalog.ICON_CATEGORIES[0];
-    return activeCat?.icons ?? [];
-  }, [catalog, categoryId, keyword]);
-
+  const cssColor = resolveGroupIconColor(selectedColor);
   const canReset = selected !== "folder" || selectedColor !== null;
+
+  const fallbackPicker = <div className="group-icon-picker__fallback">
+    <label className="group-icon-picker__input-row">
+      <span>图标标识</span>
+      <input
+        type="text"
+        value={value ?? ""}
+        disabled={disabled}
+        maxLength={64}
+        placeholder="留空为默认文件夹，例如 terminal、book-open"
+        onChange={(event) => {
+          const next = event.target.value.trim();
+          onChange(next ? next : null);
+        }}
+      />
+    </label>
+    <p className="group-icon-picker__hint">安装 kubai_icons 插件后可按分类浏览全部线性动画图标。</p>
+  </div>;
 
   return <div className="group-icon-picker">
     <div className="group-icon-picker__summary">
@@ -131,7 +113,7 @@ export function GroupIconPicker({ value, onChange, color = null, onColorChange, 
       </span>
       <span className="group-icon-picker__meta">
         <strong>{selected === "folder" ? "默认文件夹" : selected}</strong>
-        <small>{catalog ? `共 ${catalog.ALL_LINE_ICONS.length} 枚线性图标 · 悬停可预览动效` : "正在加载图标分类…"}</small>
+        <small>{entry ? `${entry.provider.label} · 悬停可预览动效` : "未安装图标扩展包（可输入标识或仅选颜色）"}</small>
       </span>
       {canReset ? <button
         type="button"
@@ -162,59 +144,12 @@ export function GroupIconPicker({ value, onChange, color = null, onColorChange, 
       })}
     </div> : null}
 
-    <label className="group-icon-picker__search">
-      <Search size={14} aria-hidden="true" />
-      <input
-        type="search"
-        value={query}
-        disabled={disabled}
-        placeholder="搜索图标名称或关键词（如 terminal、book、phone）"
-        onChange={(event) => setQuery(event.target.value)}
-      />
-      {query ? <button
-        type="button"
-        className="group-icon-picker__clear"
-        aria-label="清空搜索"
-        onClick={() => setQuery("")}
-      >
-        <X size={13} aria-hidden="true" />
-      </button> : null}
-    </label>
-
-    {!keyword && catalog ? <div className="group-icon-picker__cats" role="tablist" aria-label="图标分类">
-      {catalog.ICON_CATEGORIES.map((cat) => <button
-        key={cat.id}
-        type="button"
-        role="tab"
-        aria-selected={categoryId === cat.id}
-        className="group-icon-picker__cat"
-        onClick={() => setCategoryId(cat.id)}
-      >
-        <span>{cat.label}</span>
-        <small>{cat.icons.length}</small>
-      </button>)}
-    </div> : null}
-
-    <div className="group-icon-picker__grid" role="radiogroup" aria-label="选择分组图标">
-      {!catalog ? <p className="group-icon-picker__empty">正在加载图标目录…</p>
-        : visibleIcons.length === 0 ? <p className="group-icon-picker__empty">没有匹配的图标</p>
-        : visibleIcons.map((item) => {
-          const active = selected === item.name;
-          return <button
-            key={item.name}
-            type="button"
-            role="radio"
-            aria-checked={active}
-            aria-label={item.name}
-            title={item.name}
-            disabled={disabled}
-            data-kubai-trigger=""
-            className="group-icon-picker__cell"
-            onClick={() => onChange(item.name === "folder" ? null : item.name)}
-          >
-            <GroupIcon name={item.name} color={selectedColor} size={20} trigger="parent" />
-          </button>;
-        })}
+    <div className="group-icon-picker__body" style={cssColor ? { color: cssColor } : undefined}>
+      {entry?.provider.Picker ? <IconProviderBoundary key={entry.key} fallback={fallbackPicker}>
+        <Suspense fallback={<p className="group-icon-picker__hint">正在加载图标选择器…</p>}>
+          <entry.provider.Picker value={value} disabled={disabled} onChange={onChange} />
+        </Suspense>
+      </IconProviderBoundary> : fallbackPicker}
     </div>
   </div>;
 }

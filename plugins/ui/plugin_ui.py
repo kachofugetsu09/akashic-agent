@@ -5,16 +5,27 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import inspect
+import json
 from collections.abc import Callable, Mapping
 from pathlib import Path
+from types import MappingProxyType
 from typing import cast
 from uuid import uuid4
 
 from agent.plugin_composition import Context, CompositionError, Effect, FiberState
 from plugins.ui.contract import (
-    UI_SLOTS, PLUGIN_UI_SLOTS, PluginUiAsset, PluginUiBinding, PluginUiDefinition,
+    UI_SLOTS, PLUGIN_UI_SLOTS, PluginUiAsset, PluginUiAssetFile, PluginUiBinding, PluginUiDefinition,
     PluginUiDescriptor, PluginUiFollowHandler, PluginUiQueryHandler, PluginUiSlot,
 )
+
+_MAX_ENTRY_BYTES = 240 * 1024
+_MAX_CHUNK_FILE_BYTES = 1024 * 1024
+_MAX_CHUNK_FILES = 128
+_MAX_CHUNK_TOTAL_BYTES = 12 * 1024 * 1024
+_ALLOWED_CHUNK_MEDIA: Mapping[str, str] = MappingProxyType({
+    ".js": "text/javascript",
+    ".css": "text/css",
+})
 
 
 class PluginUiSlots:
@@ -116,6 +127,7 @@ class PluginUiSlots:
             module=definition.module,
             stylesheet=definition.stylesheet,
             slots=tuple(definition.slots),
+            assets_dir=definition.assets_dir,
         )
         binding = PluginUiBinding(
             descriptor=PluginUiDescriptor(
@@ -125,6 +137,9 @@ class PluginUiSlots:
                 stylesheet_sha256=asset.stylesheet_sha256,
                 stylesheet_bytes=asset.stylesheet_bytes,
                 slots=asset.slots,
+                bundle_sha256=asset.bundle_sha256,
+                module_path=asset.module_path,
+                stylesheet_path=asset.stylesheet_path,
             ),
             asset=asset,
             query=cast(PluginUiQueryHandler, query),
@@ -184,6 +199,7 @@ def resolve_plugin_ui_asset(
     module: str,
     stylesheet: str | None,
     slots: tuple[str, ...],
+    assets_dir: str | None = None,
 ) -> PluginUiAsset:
     """Validate and freeze plugin-owned plugin UI static assets."""
 
@@ -192,6 +208,7 @@ def resolve_plugin_ui_asset(
         module=module,
         stylesheet=stylesheet,
         slots=slots,
+        assets_dir=assets_dir,
     )
 
     # 2. Resolve symlinks before enforcing plugin-source containment.
@@ -207,9 +224,16 @@ def resolve_plugin_ui_asset(
             kind="stylesheet",
         )
     )
+    extra_dir = (
+        None
+        if assets_dir is None
+        else _resolve_assets_dir(plugin_root, assets_dir)
+    )
     return _build_plugin_ui_asset(
+        plugin_root,
         module_path,
         stylesheet_path,
+        extra_dir,
         slots=slots,
     )
 
@@ -219,6 +243,7 @@ def _validate_plugin_ui_metadata(
     module: str,
     stylesheet: str | None,
     slots: tuple[str, ...],
+    assets_dir: str | None = None,
 ) -> None:
     if (
         not isinstance(module, str)
@@ -234,6 +259,13 @@ def _validate_plugin_ui_metadata(
         or Path(stylesheet).is_absolute()
     ):
         raise RuntimeError("插件 UI stylesheet 必须是非空相对路径")
+    if assets_dir is not None and (
+        not isinstance(assets_dir, str)
+        or not assets_dir
+        or assets_dir != assets_dir.strip()
+        or Path(assets_dir).is_absolute()
+    ):
+        raise RuntimeError("插件 UI assets_dir 必须是非空相对路径")
     if not isinstance(slots, tuple) or any(
         not isinstance(slot, str) or slot not in PLUGIN_UI_SLOTS for slot in slots
     ):
@@ -243,34 +275,129 @@ def _validate_plugin_ui_metadata(
 
 
 def _build_plugin_ui_asset(
+    plugin_root: Path,
     module_path: Path,
     stylesheet_path: Path | None,
+    assets_dir: Path | None,
     *,
     slots: tuple[str, ...],
 ) -> PluginUiAsset:
     """Read validated assets and attach content hashes and byte sizes."""
 
+    module_stat = module_path.stat()
+    sheet_stat_size = 0 if stylesheet_path is None else stylesheet_path.stat().st_size
+    if module_stat.st_size + sheet_stat_size > _MAX_ENTRY_BYTES:
+        raise RuntimeError("插件 UI 资产超过协议安全预算")
     module_content = module_path.read_text(encoding="utf-8")
     stylesheet_content = (
         "" if stylesheet_path is None else stylesheet_path.read_text(encoding="utf-8")
     )
     module_encoded = module_content.encode("utf-8")
     stylesheet_encoded = stylesheet_content.encode("utf-8")
-    if len(module_encoded) + len(stylesheet_encoded) > 240 * 1024:
+    if len(module_encoded) + len(stylesheet_encoded) > _MAX_ENTRY_BYTES:
         raise RuntimeError("插件 UI 资产超过协议安全预算")
+
+    module_rel = module_path.relative_to(plugin_root).as_posix()
+    module_sha256 = hashlib.sha256(module_encoded).hexdigest()
+    stylesheet_rel = (
+        None
+        if stylesheet_path is None
+        else stylesheet_path.relative_to(plugin_root).as_posix()
+    )
+    stylesheet_sha256 = (
+        hashlib.sha256(stylesheet_encoded).hexdigest()
+        if stylesheet_content
+        else None
+    )
+
+    files: dict[str, PluginUiAssetFile] = {
+        module_rel: PluginUiAssetFile(
+            rel_path=module_rel,
+            content=module_encoded,
+            sha256=module_sha256,
+            media_type="text/javascript",
+        ),
+    }
+    if stylesheet_rel is not None and stylesheet_sha256 is not None:
+        if stylesheet_rel in files:
+            raise RuntimeError(f"插件 UI 资产路径冲突: {stylesheet_rel}")
+        files[stylesheet_rel] = PluginUiAssetFile(
+            rel_path=stylesheet_rel,
+            content=stylesheet_encoded,
+            sha256=stylesheet_sha256,
+            media_type="text/css",
+        )
+
+    if assets_dir is not None:
+        chunk_count = 0
+        chunk_total = 0
+        for candidate in sorted(assets_dir.rglob("*")):
+            if candidate.is_dir():
+                resolved_dir = candidate.resolve(strict=True)
+                if not resolved_dir.is_relative_to(assets_dir):
+                    raise RuntimeError(f"插件 UI assets_dir 包含越界目录: {candidate}")
+                continue
+            resolved = candidate.resolve(strict=True)
+            if not resolved.is_relative_to(assets_dir) or not resolved.is_file():
+                raise RuntimeError(f"插件 UI assets_dir 包含非法文件: {candidate}")
+            media_type = _ALLOWED_CHUNK_MEDIA.get(resolved.suffix)
+            if media_type is None:
+                raise RuntimeError(f"插件 UI assets_dir 不支持的文件类型: {resolved.name}")
+            size = resolved.stat().st_size
+            if size > _MAX_CHUNK_FILE_BYTES:
+                raise RuntimeError(f"插件 UI 分块文件超过单文件上限: {resolved.name}")
+            chunk_count += 1
+            chunk_total += size
+            if chunk_count > _MAX_CHUNK_FILES or chunk_total > _MAX_CHUNK_TOTAL_BYTES:
+                raise RuntimeError("插件 UI 分块资产超过协议安全预算")
+            rel = resolved.relative_to(plugin_root).as_posix()
+            if rel in files:
+                raise RuntimeError(f"插件 UI 资产路径重复: {rel}")
+            raw = resolved.read_bytes()
+            if len(raw) > _MAX_CHUNK_FILE_BYTES:
+                raise RuntimeError(f"插件 UI 分块文件超过单文件上限: {resolved.name}")
+            files[rel] = PluginUiAssetFile(
+                rel_path=rel,
+                content=raw,
+                sha256=hashlib.sha256(raw).hexdigest(),
+                media_type=media_type,
+            )
+
+    manifest_encoded = json.dumps(
+        {
+            "module": module_rel,
+            "stylesheet": stylesheet_rel if stylesheet_sha256 is not None else None,
+            "files": [[rel, entry.sha256] for rel, entry in sorted(files.items())],
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    bundle_sha256 = hashlib.sha256(manifest_encoded).hexdigest()
+
     return PluginUiAsset(
         module=module_content,
-        module_sha256=hashlib.sha256(module_encoded).hexdigest(),
+        module_sha256=module_sha256,
         module_bytes=len(module_encoded),
         stylesheet=stylesheet_content,
-        stylesheet_sha256=(
-            hashlib.sha256(stylesheet_encoded).hexdigest()
-            if stylesheet_content
-            else None
-        ),
+        stylesheet_sha256=stylesheet_sha256,
         stylesheet_bytes=len(stylesheet_encoded),
         slots=slots,
+        module_path=module_rel,
+        stylesheet_path=stylesheet_rel if stylesheet_sha256 is not None else None,
+        bundle_sha256=bundle_sha256,
+        files=MappingProxyType(files),
     )
+
+
+def _resolve_assets_dir(plugin_root: Path, relative_path: str) -> Path:
+    try:
+        path = (plugin_root / relative_path).resolve(strict=True)
+    except FileNotFoundError as error:
+        raise RuntimeError(f"插件 UI assets_dir 无效: {relative_path}") from error
+    if not path.is_relative_to(plugin_root) or path == plugin_root or not path.is_dir():
+        raise RuntimeError(f"插件 UI assets_dir 无效: {relative_path}")
+    return path
 
 
 def _resolve_asset_path(
