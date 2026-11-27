@@ -163,7 +163,13 @@ if (hasVisuals) {
 const themeBuild = await bundle({ entryPoints: [resolve(repoRoot, "packages/akashic-theme/src/theme-runtime.ts")],
   bundle: true, format: "esm", platform: "node", write: false });
 const themeModule = await import(`data:text/javascript;base64,${Buffer.from(themeBuild.outputFiles[0].contents).toString("base64")}`);
-if (hasVisuals) await writeFile(resolve(pluginsRoot, "visuals/preview-theme.css"), themeModule.themeCss());
+if (hasVisuals) {
+  await writeFile(resolve(pluginsRoot, "visuals/preview-theme.css"), themeModule.themeCss());
+  await writeFile(
+    resolve(pluginsRoot, "visuals/.akashic-generated-assets.json"),
+    `${JSON.stringify(["frame.html", "bootstrap.html", "preview-theme.css"], null, 2)}\n`,
+  );
+}
 
 // 设计编辑器（Vue + open-pencil + CanvasKit WASM + 字体）单独打包成一个入口，按内容哈希命名放进不入库的 static/（发布时随插件制品一起打包），
 if (hasDesign) {

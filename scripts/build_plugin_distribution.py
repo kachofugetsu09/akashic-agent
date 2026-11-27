@@ -8,7 +8,7 @@ import hashlib
 import io
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import shutil
 import subprocess
 import sys
@@ -66,7 +66,11 @@ _GENERATED_PLUGIN_UI_FILES = (
     "web_module.css",
     "message_ui.js",
     "message_ui.css",
+    "runner_ui.js",
+    "runner_ui.css",
 )
+# 插件自备构建或特殊构建写出的额外产物清单（相对插件根 POSIX 路径列表）；staging 按本轮构建字节精准覆盖，清单本身不进 release。
+_GENERATED_ASSETS_MANIFEST = ".akashic-generated-assets.json"
 
 
 def git(repository: Path, *args: str, env: dict[str, str] | None = None) -> bytes:
@@ -327,6 +331,60 @@ def _copy_runtime_wiring(
     return copied
 
 
+def _is_release_member(member: tarfile.TarInfo) -> bool:
+    parts = PurePosixPath(member.name).parts
+    if not parts:
+        return False
+    # 排除插件根源码目录 web/、任意嵌套 node_modules 与构建期临时产物清单；保留 skills/.../web/、手写 web_module.js 等运行资产。
+    if parts[0] == "web" or "node_modules" in parts or parts[0] == _GENERATED_ASSETS_MANIFEST:
+        return False
+    return True
+
+
+def _copy_declared_generated_assets(generated_plugin: Path, package: Path) -> None:
+    manifest_path = generated_plugin / _GENERATED_ASSETS_MANIFEST
+    if not manifest_path.is_file():
+        return
+    raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if not isinstance(raw, list) or not all(isinstance(item, str) for item in raw):
+        raise ValueError(f"生成产物清单格式无效: {manifest_path}")
+    gen_root = generated_plugin.resolve(strict=True)
+    pkg_root = package.resolve(strict=True)
+    for rel in raw:
+        rel_posix = PurePosixPath(rel)
+        if not rel or rel_posix.is_absolute() or ".." in rel_posix.parts:
+            raise ValueError(f"生成产物路径非法: {rel}")
+        if rel_posix.parts[0] == "web" or "node_modules" in rel_posix.parts or rel_posix.parts[0] == ".akashic-source.json":
+            raise ValueError(f"生成产物不允许写入受保留路径: {rel}")
+        src = (gen_root / rel).resolve(strict=True)
+        if not src.is_relative_to(gen_root) or not src.is_file():
+            raise ValueError(f"生成产物缺失或越界: {rel}")
+        dst = (pkg_root / rel).resolve()
+        if not dst.is_relative_to(pkg_root):
+            raise ValueError(f"生成产物目标越界: {rel}")
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_bytes(src.read_bytes())
+
+
+def _assert_clean_staged_package(package: Path) -> None:
+    pkg_root = package.resolve(strict=True)
+    if (pkg_root / "web").exists() or (pkg_root / "web").is_symlink():
+        raise ValueError(f"发布包不得包含前端源码目录 web/: {package}")
+    if (pkg_root / _GENERATED_ASSETS_MANIFEST).exists():
+        raise ValueError(f"发布包不得包含构建期产物清单 {_GENERATED_ASSETS_MANIFEST}: {package}")
+    for entry in pkg_root.rglob("*"):
+        rel = entry.relative_to(pkg_root)
+        if "node_modules" in rel.parts:
+            raise ValueError(f"发布包不得包含 node_modules: {rel}")
+        if entry.is_symlink():
+            try:
+                target = entry.resolve(strict=True)
+            except FileNotFoundError as error:
+                raise ValueError(f"发布包包含悬空符号链接: {rel}") from error
+            if not target.is_relative_to(pkg_root):
+                raise ValueError(f"发布包包含越界符号链接: {rel}")
+
+
 # 把固定提交的插件目录和同次构建的前端产物落到 package 目录；发行 bundle 与 release 分支共用。
 def stage_plugin_package(
     repository: Path,
@@ -337,17 +395,19 @@ def stage_plugin_package(
 ) -> None:
     archive = git(repository, "archive", "--format=tar", commit + ":" + root)
     with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as stream:
-        stream.extractall(package, filter="data")
-    if generated_plugins_root is None:
-        return
-    generated_plugin = generated_plugins_root / Path(root).name
-    for name in _GENERATED_PLUGIN_UI_FILES:
-        generated = generated_plugin / name
-        if generated.is_file():
-            (package / name).write_bytes(generated.read_bytes())
-    static = generated_plugin / "static"
-    if static.is_dir():
-        shutil.copytree(static, package / "static", dirs_exist_ok=True)
+        members = [member for member in stream.getmembers() if _is_release_member(member)]
+        stream.extractall(package, members=members, filter="data")
+    if generated_plugins_root is not None:
+        generated_plugin = generated_plugins_root / Path(root).name
+        for name in _GENERATED_PLUGIN_UI_FILES:
+            generated = generated_plugin / name
+            if generated.is_file():
+                (package / name).write_bytes(generated.read_bytes())
+        static = generated_plugin / "static"
+        if static.is_dir():
+            shutil.copytree(static, package / "static", dirs_exist_ok=True)
+        _copy_declared_generated_assets(generated_plugin, package)
+    _assert_clean_staged_package(package)
 
 
 def _bundle_plugin(
@@ -374,7 +434,8 @@ def _bundle_plugin(
             encoding="utf-8",
         )
         git(package, "init", "--initial-branch=source")
-        git(package, "add", "--all")
+        # staging 阶段已严格排除 web/ 与 node_modules；此处必须 --force，防止被插件 .gitignore 忽略的编译产物在 .bundle 里消失。
+        git(package, "add", "--all", "--force")
         env = {
             **os.environ,
             "GIT_AUTHOR_NAME": "Akashic build",
