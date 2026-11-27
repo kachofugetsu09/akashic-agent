@@ -38,7 +38,7 @@ function ShellResultView({ result }: { result: ShellResult }) {
     <div className="shell-result">
       <div className="shell-result-command"><span aria-hidden="true">$</span><span>{result.command}</span></div>
       {result.output.trim()
-        ? <ToolText text={result.output} tail className="tool-result" />
+        ? <ToolText text={result.output} tail />
         : <p className="shell-result-empty">无输出</p>}
       {state || duration ? <div className="shell-result-foot">{state}{duration}</div> : null}
     </div>

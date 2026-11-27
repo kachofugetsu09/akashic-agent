@@ -7,6 +7,8 @@ import { NavigationRowMenu, type NavigationRowAction } from "./navigation-row-me
 import { SessionStatusMark, type SessionStatus } from "./session-status-mark";
 import { markdownPlainText } from "./static-markdown";
 import "./navigation-destinations.css";
+// 插件可复用的导航样式词汇归公开契约包所有。
+import "../../../../../packages/akashic-chat-ui-v1/navigation.css";
 
 /** 侧栏 identity 目的地的宿主状态；数据全部来自插件的 navigation.destinations。 */
 export interface IdentityDestinationState {
