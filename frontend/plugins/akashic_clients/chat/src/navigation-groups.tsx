@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight, FolderPlus, Plus, SlidersHorizontal, Sparkles } from "lucide-react";
+import { ChevronDown, ChevronRight, Folder, FolderPlus, Plus, SlidersHorizontal, Sparkles } from "lucide-react";
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import type { NavigationControls, NavigationForm, NavigationFormControls, NavigationGroup } from "@akashic/chat-ui-v1";
@@ -11,6 +11,7 @@ import { MarqueeText } from "./marquee-text";
 import { followingInView, motionTiming, settle, slideClose, slideOpen } from "./motion";
 import { NavigationGroupMount, PluginUiSlot, navigationGroupSources, navigationGroupsPending, onPageShown, onPluginUiSlotInvalidated, usePluginUiCatalogVersion, type NavigationGroupSource } from "./plugin-ui-runtime";
 import { createScopeFields } from "./scope-fields";
+import { useScopeMeta } from "./scope-meta-store";
 
 /** 会话所在的分组：会话维度名与它的一个取值。 */
 export interface GroupRef {
@@ -273,48 +274,15 @@ export function FolderMark({ icon, color, size = 18, trigger = "parent" }: {
   return <GroupIcon name={icon} color={color} size={size} trigger={trigger} />;
 }
 
-interface ScopeMemorySummary {
-  label: string;
-  description: string;
-  tone: "global" | "isolated" | "off" | "none" | "muted";
-}
-
-function readScopeMemory(button: HTMLElement | null): ScopeMemorySummary | null {
-  const slot = button?.querySelector<HTMLElement>('.plugin-ui-slot[data-slot="scope.badge"]');
-  if (!slot) return null;
-  const badge = slot.querySelector<HTMLElement>("[data-scope-line], small, span");
-  const text = badge?.textContent?.trim() ?? "";
-  if (!text) {
-    return {
-      label: "共享全局记忆",
-      description: "对话参与全局学习，也能回忆其他对话。",
-      tone: "global",
-    };
-  }
-  const line = badge?.getAttribute("data-scope-line");
-  const rawTitle = badge?.getAttribute("title")?.trim() ?? "";
-  let label = text;
-  let description = "";
-  const sep = rawTitle.indexOf("：");
-  if (sep > 0) {
-    label = rawTitle.slice(0, sep).trim() || text;
-    description = rawTitle.slice(sep + 1).trim();
-  } else if (rawTitle && rawTitle !== text) {
-    description = rawTitle;
-  }
-  const tone = line === "double" ? "isolated"
-    : line === "dashed" ? "off"
-    : line === "dotted" ? "none"
-    : "muted";
-  return { label, description, tone };
-}
-
-function GroupHoverCard({ anchor, group, memory, portalTarget }: {
+function GroupHoverCard({ anchor, groupRef, group, hasActions, portalTarget }: {
   anchor: DOMRect;
+  groupRef: GroupRef;
   group: NavigationGroup;
-  memory: ScopeMemorySummary | null;
+  hasActions: boolean;
   portalTarget: Element;
 }) {
+  // 直接订阅共享 scope.meta 协调器：浮卡打开期间若数据抵达或失效重核，原地刷新，不依赖刮 DOM。
+  const records = useScopeMeta({ dimension: groupRef.dimension, value: groupRef.id });
   const cardWidth = 264;
   const gap = 10;
   const margin = 12;
@@ -322,7 +290,7 @@ function GroupHoverCard({ anchor, group, memory, portalTarget }: {
   const left = fitsRight
     ? anchor.right + gap
     : Math.max(margin, Math.min(anchor.left, window.innerWidth - cardWidth - margin));
-  const estHeight = (memory ? 76 : 36) + (group.detail ? 44 : 0) + 52;
+  const estHeight = 48 + records.length * 54 + (group.detail ? 44 : 0) + (hasActions ? 36 : 0);
   const top = Math.max(margin, Math.min(anchor.top - 4, window.innerHeight - estHeight - margin));
   return createPortal(
     <div className="group-hover-card" role="tooltip" style={{ left, top }}>
@@ -332,18 +300,17 @@ function GroupHoverCard({ anchor, group, memory, portalTarget }: {
         </span>
         <strong className="group-hover-card__title">{group.label}</strong>
       </div>
-      {memory ? <div className="group-hover-card__section">
+      {records.map(({ key, item }) => <div key={key} className="group-hover-card__section">
         <div className="group-hover-card__kicker">
-          <span className={`group-hover-card__dot group-hover-card__dot--${memory.tone}`} aria-hidden="true" />
-          <span className="group-hover-card__policy">{memory.label}</span>
+          <span className={`group-hover-card__dot group-hover-card__dot--${item.tone ?? "muted"}`} aria-hidden="true" />
+          <span className="group-hover-card__policy">{item.label}</span>
         </div>
-        {memory.description ? <p className="group-hover-card__desc">{memory.description}</p> : null}
-      </div> : null}
+        {item.description ? <p className="group-hover-card__desc">{item.description}</p> : null}
+      </div>)}
       {group.detail ? <div className="group-hover-card__section group-hover-card__dir">
-        <span className="group-hover-card__label">默认目录</span>
         <code className="group-hover-card__path">{group.detail}</code>
       </div> : null}
-      <div className="group-hover-card__foot">右键可更换图标或查看更多设置</div>
+      {hasActions ? <div className="group-hover-card__foot">右键或点行尾菜单查看更多操作</div> : null}
     </div>,
     portalTarget,
   );
@@ -354,9 +321,11 @@ export function groupFormActions(source: NavigationGroupSource, group: Navigatio
   onOpenForm: (request: GroupFormRequest) => void): NavigationRowAction[] {
   return (source.provider.actions?.(group) ?? []).map((action) => ({
     label: action.label,
-    icon: action.label.includes("图标")
+    icon: action.icon === "sparkles"
       ? <Sparkles size={18} aria-hidden="true" />
-      : <SlidersHorizontal size={18} aria-hidden="true" />,
+      : action.icon === "folder"
+        ? <Folder size={18} aria-hidden="true" />
+        : <SlidersHorizontal size={18} aria-hidden="true" />,
     onSelect: () => onOpenForm({ source, form: action.form, group }),
   }));
 }
@@ -466,7 +435,9 @@ export function GroupNavigationRow({
   }, [items, truncated, allShown]);
   const openButtonRef = useRef<HTMLButtonElement>(null);
   const hoverTimerRef = useRef<number | null>(null);
-  const [hoverCard, setHoverCard] = useState<{ anchor: DOMRect; memory: ScopeMemorySummary | null; portalTarget: Element } | null>(null);
+  const [hoverCard, setHoverCard] = useState<{ anchor: DOMRect; portalTarget: Element } | null>(null);
+  // 提前登记到页面级 scope.meta 协调器，同一批分组合成一次批量查询。
+  useScopeMeta({ dimension: groupRef.dimension, value: groupRef.id });
   const clearHoverCard = useCallback(() => {
     if (hoverTimerRef.current !== null) {
       window.clearTimeout(hoverTimerRef.current);
@@ -486,7 +457,6 @@ export function GroupNavigationRow({
       if (button.closest("[data-state='open']") || document.querySelector("[role='menu'], [role='dialog']")) return;
       setHoverCard({
         anchor: button.getBoundingClientRect(),
-        memory: readScopeMemory(button),
         portalTarget: button.closest(".akashic-chat") ?? document.body,
       });
     }, 240);
@@ -522,14 +492,15 @@ export function GroupNavigationRow({
           b={<span className="navigation-group__icon"><SessionStatusMark status={collapsedStatus ?? lastStatus} /></span>} />
         <SessionStatusLabel status={collapsedStatus} />
         <span className="navigation-group__name"><MarqueeText>{group.label}</MarqueeText></span>
-        {/* 其他插件给这个取值的短标签，例如记忆范围；行内仅保留给读屏与悬停卡读取，不挤占名称宽度。 */}
+        {/* 仅对尚未迁到 scope.meta 的旧插件挂载 scope.badge；已提供 scope.meta 的同 owner 自动跳过。 */}
         <PluginUiSlot name="scope.badge" scope={{ dimension: groupRef.dimension, value: groupRef.id }} quiet />
         <ChevronRight size={14} aria-hidden="true" className="navigation-group__chevron" />
       </button>
       {hoverCard ? <GroupHoverCard
         anchor={hoverCard.anchor}
+        groupRef={groupRef}
         group={group}
-        memory={hoverCard.memory}
+        hasActions={Boolean(actions && actions.length > 0)}
         portalTarget={hoverCard.portalTarget}
       /> : null}
       {/* 桌面端悬停或聚焦项目行时浮现，触屏常驻：无需先展开文件夹即可一步在该项目新建对话。 */}

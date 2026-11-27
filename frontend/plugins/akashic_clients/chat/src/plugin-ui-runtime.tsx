@@ -10,7 +10,7 @@ import { openInWorkbench, subscribeWorkbenchIntents, workbenchAccepts } from "./
 import { selectMessages } from "./message-selection";
 import { readToolIcon } from "./message-timeline";
 
-import type { ComposerControls, ComposerSuggestProvider, DestinationControls, DestinationForm, HeaderMetaControls, NavigationControls, NavigationDestinationsProvider, NavigationForm, NavigationFormControls, NavigationGroupsProvider, NavigationNotice, PluginUiDefinition, PluginUiHostContext, PluginUiMountSlotName, PluginUiQueryOptions, PluginUiSlotFacts, PluginUiSlotName, ScopeFieldControls, SidebarPanelControls, SidebarPanelProvider, ToolIconFacts, ToolIconProvider, ToolIconSpec, ToolSummaryFacts, ToolSummaryProvider, ToolTaskSummary } from "@akashic/chat-ui-v1";
+import type { ComposerControls, ComposerSuggestProvider, DestinationControls, DestinationForm, HeaderMetaControls, IconProvider, NavigationControls, NavigationDestinationsProvider, NavigationForm, NavigationFormControls, NavigationGroupsProvider, NavigationNotice, PluginUiDefinition, PluginUiHostContext, PluginUiMountSlotName, PluginUiQueryOptions, PluginUiSlotFacts, PluginUiSlotName, ScopeFieldControls, ScopeMetaProvider, SidebarPanelControls, SidebarPanelProvider, ToolIconFacts, ToolIconProvider, ToolIconSpec, ToolSummaryFacts, ToolSummaryProvider, ToolTaskSummary } from "@akashic/chat-ui-v1";
 
 // 插槽合同由 @akashic/chat-ui-v1 发布，宿主与插件共用同一份类型。
 export type { ComposerSuggestProvider, ComposerSuggestion, PluginUiContext, PluginUiDefinition, PluginUiQueryOptions, PluginUiRenderer, PluginUiSlotName } from "@akashic/chat-ui-v1";
@@ -103,10 +103,31 @@ const SLOT_NAMES = new Set<PluginUiSlotName>([
   "composer.suggest",
   "scope.fields",
   "scope.badge",
+  "scope.meta",
   "navigation.groups",
   "navigation.destinations",
   "sidebar.panels",
+  "icon.provider",
 ]);
+
+const iconProviderListeners = new Set<() => void>();
+let iconProviderIdentity = "";
+
+function computeIconProviderIdentity(): string {
+  if (catalog.updating) return "";
+  return catalog.plugins.flatMap((plugin) => {
+    const loaded = definitions.get(plugin.id);
+    const provider = loaded?.revision === plugin.revision ? loaded.definition.slots["icon.provider"] : undefined;
+    return provider ? [`${provider.id}@${plugin.id}:${plugin.revision}`] : [];
+  }).join("|");
+}
+
+function notifyIconProvidersIfChanged() {
+  const next = computeIconProviderIdentity();
+  if (next === iconProviderIdentity) return;
+  iconProviderIdentity = next;
+  iconProviderListeners.forEach((listener) => listener());
+}
 
 /** 目录或模块变化时通知；宿主内的数据型扩展点据此对齐自己的缓存。 */
 export function subscribePluginUiCatalog(listener: () => void): () => void {
@@ -117,6 +138,7 @@ export function subscribePluginUiCatalog(listener: () => void): () => void {
 function emitChange() {
   registryVersion += 1;
   listeners.forEach((listener) => listener());
+  notifyIconProvidersIfChanged();
 }
 
 export function receivePluginUiCatalog(next: PluginUiCatalog): Promise<void> {
@@ -152,10 +174,12 @@ export function receivePluginUiCatalog(next: PluginUiCatalog): Promise<void> {
 let catalogReadGeneration = 0;
 let catalogPublishedGeneration = 0;
 
-/** 通过桌面适配器加载同一份内容寻址插件界面。 */
+/** 通过桌面适配器加载同一份内容寻址插件界面（协议 v2 支持路径式多 chunk 资产与结构化数据源）。 */
+const PLUGIN_UI_CATALOG_URL = "/api/chat/plugin-ui/catalog?protocol=2";
+
 export async function loadWebPluginCatalog(signal?: AbortSignal): Promise<void> {
   const generation = ++catalogReadGeneration;
-  const response = await takeStartupResponse("/api/chat/plugin-ui/catalog", signal) ?? await fetch("/api/chat/plugin-ui/catalog", { signal });
+  const response = await takeStartupResponse(PLUGIN_UI_CATALOG_URL, signal) ?? await fetch(PLUGIN_UI_CATALOG_URL, { signal });
   if (!response.ok) throw await webPluginError(response);
   const catalog = parseWebPluginCatalog(await response.json());
   // 预热响应的正文读取不受 signal 约束：失去 owner 的旧目录不能再发布。
@@ -235,13 +259,23 @@ function parseWebPluginCatalog(value: unknown): PluginUiCatalog {
     const stylesheetSha256 = item.stylesheet_sha256 === null
       ? undefined
       : requireDigest(item.stylesheet_sha256, `plugins[${index}].stylesheet_sha256`);
+    const bundleSha256 = typeof item.bundle_sha256 === "string" && /^[0-9a-f]{64}$/.test(item.bundle_sha256)
+      ? item.bundle_sha256
+      : undefined;
+    const modulePath = typeof item.module_path === "string" && item.module_path ? item.module_path : undefined;
+    const stylesheetPath = typeof item.stylesheet_path === "string" && item.stylesheet_path ? item.stylesheet_path : undefined;
+    const hasFiles = item.has_files === true && Boolean(bundleSha256 && modulePath);
     const slots = requireSlots(item.slots, index);
     return {
       id,
       revision: pluginRevision,
-      moduleUrl: webPluginAssetUrl(id, pluginRevision, "module", moduleSha256),
+      moduleUrl: hasFiles
+        ? webPluginFileUrl(id, pluginRevision, bundleSha256!, modulePath!)
+        : webPluginAssetUrl(id, pluginRevision, "module", moduleSha256),
       stylesheetUrl: stylesheetSha256
-        ? webPluginAssetUrl(id, pluginRevision, "stylesheet", stylesheetSha256)
+        ? (hasFiles && stylesheetPath
+          ? webPluginFileUrl(id, pluginRevision, bundleSha256!, stylesheetPath)
+          : webPluginAssetUrl(id, pluginRevision, "stylesheet", stylesheetSha256))
         : undefined,
       slots,
     } satisfies PluginUiCatalogItem;
@@ -250,6 +284,16 @@ function parseWebPluginCatalog(value: unknown): PluginUiCatalog {
     throw new Error("插件目录包含重复 ID");
   }
   return { catalogRevision: revision, updating: false, plugins };
+}
+
+function webPluginFileUrl(
+  pluginId: string,
+  pluginRevision: string,
+  bundleSha256: string,
+  relPath: string,
+): string {
+  const safePath = relPath.split("/").map((seg) => encodeURIComponent(seg)).join("/");
+  return `/api/chat/plugin-ui/files/${encodeURIComponent(pluginId)}/${encodeURIComponent(pluginRevision)}/${bundleSha256}/${safePath}`;
 }
 
 function webPluginAssetUrl(
@@ -371,7 +415,7 @@ function importPluginModule(plugin: PluginUiCatalogItem, current: () => boolean)
       window.clearTimeout(timer);
       if (done) return;
       if (!current()) { finish(() => reject(new Error("插件目录已更新"))); return; }
-      const url = started === 0 ? plugin.moduleUrl : `${plugin.moduleUrl}&attempt=${started}`;
+      const url = started === 0 ? plugin.moduleUrl : withAttemptParam(plugin.moduleUrl, started);
       started += 1;
       timer = window.setTimeout(() => started < MODULE_ATTEMPTS ? start()
         : finish(() => reject(new Error(`插件界面加载超时: ${plugin.id}`))), MODULE_PATIENCE_MS * started);
@@ -390,34 +434,78 @@ function importPluginModule(plugin: PluginUiCatalogItem, current: () => boolean)
   });
 }
 
+function withAttemptParam(url: string, attempt: number): string {
+  return `${url}${url.includes("?") ? "&" : "?"}attempt=${attempt}`;
+}
+
 function parseDefinition(value: unknown, plugin: PluginUiCatalogItem): PluginUiDefinition {
   if (!value || typeof value !== "object") {
     throw new Error(`插件界面必须默认导出定义对象: ${plugin.id}`);
   }
-  const raw = value as { slots?: unknown };
-  const slots = raw.slots ?? {};
-  if (!slots || typeof slots !== "object" || Array.isArray(slots)) {
+  const raw = value as { slots?: unknown; providers?: unknown };
+  const rawSlots = raw.slots ?? {};
+  if (!rawSlots || typeof rawSlots !== "object" || Array.isArray(rawSlots)) {
     throw new Error(`插件界面 slots 无效: ${plugin.id}`);
   }
-  for (const [name, renderer] of Object.entries(slots)) {
+  const rawProviders = raw.providers;
+  if (rawProviders !== undefined && (!rawProviders || typeof rawProviders !== "object" || Array.isArray(rawProviders))) {
+    throw new Error(`插件界面 providers 无效: ${plugin.id}`);
+  }
+  // 合并 slots 与 providers（providers 用于同时兼容仅校验 v1 slots 的旧浏览器），禁止同名键重复。
+  const merged: Record<string, unknown> = { ...(rawSlots as Record<string, unknown>) };
+  if (rawProviders) {
+    for (const [name, provider] of Object.entries(rawProviders as Record<string, unknown>)) {
+      if (name in merged) {
+        throw new Error(`插件界面 slot 与 provider 重复定义: ${plugin.id}.${name}`);
+      }
+      if (name !== "scope.meta" && name !== "icon.provider") {
+        throw new Error(`插件界面 provider 仅支持 v2 扩展槽: ${plugin.id}.${name}`);
+      }
+      merged[name] = provider;
+    }
+  }
+  for (const [name, renderer] of Object.entries(merged)) {
     if (!SLOT_NAMES.has(name as PluginUiSlotName)) {
       throw new Error(`插件界面 slot 无效: ${plugin.id}.${name}`);
     }
     const valid = name === "composer.suggest" ? isSuggestProvider(renderer)
       : name === "tool.icon" ? isToolIconProvider(renderer)
       : name === "tool.summary" ? isSummaryProvider(renderer)
+      : name === "scope.meta" ? isScopeMetaProvider(renderer)
       : name === "navigation.groups" ? isGroupsProvider(renderer)
       : name === "navigation.destinations" ? isDestinationsProvider(renderer)
-      : name === "sidebar.panels" ? isPanelProvider(renderer) : isRenderer(renderer);
+      : name === "sidebar.panels" ? isPanelProvider(renderer)
+      : name === "icon.provider" ? isIconProvider(renderer) : isRenderer(renderer);
     if (!valid) {
       throw new Error(`插件界面 renderer 无效: ${plugin.id}.${name}`);
     }
   }
-  const declaredSlots = Object.keys(slots).sort().join("|");
+  const declaredSlots = Object.keys(merged).sort().join("|");
   if (declaredSlots !== [...plugin.slots].sort().join("|")) {
     throw new Error(`插件界面 slots 与 catalog 不一致: ${plugin.id}`);
   }
-  return { slots: slots as PluginUiDefinition["slots"] };
+  return { slots: merged as PluginUiDefinition["slots"] };
+}
+
+function isScopeMetaProvider(value: unknown): value is ScopeMetaProvider {
+  if (typeof value !== "object" || value === null) return false;
+  const provider = value as Partial<Record<keyof ScopeMetaProvider, unknown>>;
+  return typeof provider.load === "function"
+    && (provider.peek === undefined || typeof provider.peek === "function");
+}
+
+function isIconProvider(value: unknown): value is IconProvider {
+  if (typeof value !== "object" || value === null) return false;
+  const provider = value as Partial<Record<keyof IconProvider, unknown>>;
+  return typeof provider.id === "string" && Boolean(provider.id)
+    && typeof provider.label === "string" && Boolean(provider.label)
+    && isComponentLike(provider.Icon)
+    && (provider.Picker === undefined || isComponentLike(provider.Picker));
+}
+
+function isComponentLike(value: unknown): boolean {
+  if (typeof value === "function") return true;
+  return typeof value === "object" && value !== null && "$$typeof" in value;
 }
 
 function isRenderer(value: unknown): value is HostRenderer {
@@ -592,6 +680,68 @@ export interface NavigationGroupSource {
   pluginRevision: string;
   provider: NavigationGroupsProvider;
   context(signal: AbortSignal): Pick<PluginUiHostContext, "query">;
+}
+
+/** 已加载的 scope.meta 结构化元信息数据源，按目录顺序；宿主不按插件名挑选。 */
+export interface ScopeMetaSource {
+  key: string;
+  pluginId: string;
+  pluginRevision: string;
+  provider: ScopeMetaProvider;
+  context(signal: AbortSignal): Pick<PluginUiHostContext, "query">;
+}
+
+export function scopeMetaSources(): ScopeMetaSource[] {
+  if (catalog.updating) return [];
+  return catalog.plugins.flatMap((plugin) => {
+    const loaded = definitions.get(plugin.id);
+    const provider = loaded?.revision === plugin.revision ? loaded.definition.slots["scope.meta"] : undefined;
+    return provider ? [{
+      key: `${plugin.id}:${plugin.revision}`,
+      pluginId: plugin.id,
+      pluginRevision: plugin.revision,
+      provider,
+      context: (signal) => ({
+        query: (method, payload = {}) => queryWebPluginUi({
+          pluginId: plugin.id, pluginRevision: plugin.revision, method, payload, slot: "scope.meta", signal,
+        }),
+      }),
+    }] : [];
+  });
+}
+
+/** 已加载的图标提供方；按 providerId 显式匹配，不按加载顺序猜测。 */
+export interface LoadedIconProvider {
+  key: string;
+  pluginId: string;
+  pluginRevision: string;
+  provider: IconProvider;
+}
+
+export function iconProviderById(providerId: string): LoadedIconProvider | null {
+  if (catalog.updating) return null;
+  for (const plugin of catalog.plugins) {
+    const loaded = definitions.get(plugin.id);
+    const provider = loaded?.revision === plugin.revision ? loaded.definition.slots["icon.provider"] : undefined;
+    if (provider && provider.id === providerId) {
+      return { key: `${plugin.id}:${plugin.revision}`, pluginId: plugin.id, pluginRevision: plugin.revision, provider };
+    }
+  }
+  return null;
+}
+
+function subscribeIconProviders(listener: () => void): () => void {
+  iconProviderListeners.add(listener);
+  return () => { iconProviderListeners.delete(listener); };
+}
+
+/** 仅在可用图标提供方的身份集合变化时重渲染，避免无关目录刷新打断业务表单焦点与草稿。 */
+export function useIconProvider(providerId: string): LoadedIconProvider | null {
+  const identity = useSyncExternalStore(subscribeIconProviders, () => iconProviderIdentity, () => "");
+  return useMemo(() => {
+    void identity;
+    return iconProviderById(providerId);
+  }, [identity, providerId]);
 }
 
 export function navigationGroupSources(): NavigationGroupSource[] {
@@ -943,6 +1093,11 @@ function slotMatches(name: InlineSlotName, block: unknown, prefetch: boolean, ow
   return catalog.plugins.flatMap((plugin) => {
     if (owner !== undefined && plugin.id !== owner) return [];
     const loaded = definitions.get(plugin.id);
+    // 同一个插件同时提供 scope.meta 与旧 scope.badge 时，新界面只走结构化 scope.meta，避免双重展示；
+    // 仍只提供旧 scope.badge 的插件照常挂载，确保向下兼容。
+    if (name === "scope.badge" && loaded?.revision === plugin.revision && loaded.definition.slots["scope.meta"]) {
+      return [];
+    }
     const renderer = loaded?.revision === plugin.revision
       ? loaded.definition.slots[name] as HostRenderer | undefined
       : undefined;

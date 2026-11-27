@@ -6,13 +6,22 @@ import {
 import { MarqueeText } from "./marquee-text";
 import { FolderMark, type GroupRef, type NavigationGroupsState } from "./navigation-groups";
 import { PluginUiSlot } from "./plugin-ui-runtime";
+import { useScopeMeta } from "./scope-meta-store";
 
-// 一个分组选项：图标与插件短标签并排，挑项目时能看清归属与记忆策略。
+function ScopeInlineMeta({ dimension, value }: { dimension: string; value: string }) {
+  const records = useScopeMeta({ dimension, value });
+  const inline = records.filter((record) => record.item.inline);
+  if (!inline.length) return null;
+  return <>{inline.map(({ key, item }) => <small key={key} className="new-chat-scope__meta-tag">{item.label}</small>)}</>;
+}
+
+// 一个分组选项：图标与结构化短标签并排，挑项目时能看清归属与附加策略。
 function ScopeOption({ dimension, group }: { dimension: string; group: NavigationGroup }) {
   return <span className="new-chat-scope__option">
     <FolderMark icon={group.icon} color={group.color} size={16} trigger="none" />
     <span>
       <strong><MarqueeText still>{group.label}</MarqueeText></strong>
+      <ScopeInlineMeta dimension={dimension} value={group.id} />
       <PluginUiSlot name="scope.badge" scope={{ dimension, value: group.id }} quiet />
       {group.detail ? <small>{group.detail}</small> : null}
     </span>
@@ -37,6 +46,7 @@ export function NewChatScope({ groups, onStart, onUngrouped }: {
         {active ? <span className="new-chat-scope__option">
           <FolderMark icon={active.icon} color={active.color} size={16} trigger="none" />
           <strong><MarqueeText still>{active.label}</MarqueeText></strong>
+          <ScopeInlineMeta dimension={active.dimension} value={active.id} />
           <PluginUiSlot name="scope.badge" scope={{ dimension: active.dimension, value: active.id }} quiet />
         </span> : <span>不归属{label}</span>}
         <ChevronDown size={15} aria-hidden="true" />

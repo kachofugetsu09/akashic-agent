@@ -20,6 +20,7 @@ from agent.plugin_composition import (
     RuntimeScope,
 )
 from plugins.ui.contract import (
+    PLUGIN_UI_V1_SLOTS,
     UI_SLOTS,
     PluginUiAsset,
     PluginUiBinding,
@@ -107,9 +108,11 @@ class LivePluginUiProvider:
         if cancelled:
             raise asyncio.CancelledError
 
-    async def catalog(self) -> dict[str, object]:
+    async def catalog(self, *, protocol: int = 1) -> dict[str, object]:
         """Read each current ACTIVE registration inside its exact Context scope."""
 
+        if protocol not in (1, 2):
+            raise PluginUiRpcInvalidRequest(f"不支持的 Plugin UI 协议版本: {protocol}")
         items: list[dict[str, object]] = []
         ui_context, slots = self._ctx, self._slots
         ui_scope = ui_context.runtime_scope()
@@ -122,11 +125,13 @@ class LivePluginUiProvider:
         try:
             for binding in slots.bindings():
                 if self._binding_is_active(binding) and await self._available(binding):
-                    items.append(self._catalog_item(binding))
+                    entry = self._catalog_item(binding, protocol=protocol)
+                    if entry is not None:
+                        items.append(entry)
         finally:
             await ui_scope.__aexit__(None, None, None)
         encoded = json.dumps(
-            items,
+            {"protocol": protocol, "items": items},
             ensure_ascii=False,
             separators=(",", ":"),
             sort_keys=True,
@@ -136,6 +141,49 @@ class LivePluginUiProvider:
             "catalog_revision": hashlib.sha256(encoded).hexdigest(),
             "items": items,
         }
+
+    async def file_asset(
+        self,
+        plugin_id: str,
+        plugin_revision: str,
+        bundle_sha256: str,
+        rel_path: str,
+    ) -> dict[str, object]:
+        """Read one frozen file from a plugin UI bundle inside its exact registration scope."""
+
+        binding = await self._select_binding(plugin_id, plugin_revision)
+        scope = binding.context.runtime_scope()
+        try:
+            await scope.__aenter__()
+        except CompositionError as error:
+            if error.code in {"STALE_ACTIVATION", "OWNER_UNAVAILABLE"}:
+                raise PluginUiPluginUnavailable(plugin_id) from error
+            raise
+        try:
+            with plugin_entrypoint(
+                plugin_id=binding.descriptor.owner,
+                generation_id=binding.context.runtime.generation_id,
+                fiber=binding.context.fiber.name,
+                operation="plugin_ui.available",
+            ):
+                if not binding.available():
+                    raise PluginUiPluginUnavailable(plugin_id)
+            if not binding.asset.bundle_sha256 or binding.asset.bundle_sha256 != bundle_sha256:
+                raise PluginUiStaleRevision(plugin_id)
+            entry = binding.asset.files.get(rel_path)
+            if entry is None:
+                raise PluginUiPluginUnavailable(f"plugin UI file 不存在: {rel_path}")
+            return {
+                "plugin_id": plugin_id,
+                "plugin_revision": plugin_revision,
+                "bundle_sha256": binding.asset.bundle_sha256,
+                "rel_path": entry.rel_path,
+                "sha256": entry.sha256,
+                "media_type": entry.media_type,
+                "content": entry.content,
+            }
+        finally:
+            await scope.__aexit__(None, None, None)
 
     async def asset(
         self,
@@ -530,8 +578,22 @@ class LivePluginUiProvider:
         ).encode("utf-8")
         return hashlib.sha256(encoded).hexdigest()
 
-    def _catalog_item(self, binding: PluginUiBinding) -> dict[str, object]:
+    def _catalog_item(self, binding: PluginUiBinding, *, protocol: int = 1) -> dict[str, object] | None:
         asset = binding.asset
+        if protocol == 1:
+            v1_slots = [slot for slot in asset.slots if slot in PLUGIN_UI_V1_SLOTS]
+            # 仅对声明了槽但全为 v2 新增槽的插件在 v1 视图中隐藏，保留原本空 slots 的登记。
+            if asset.slots and not v1_slots:
+                return None
+            return {
+                "id": binding.descriptor.owner,
+                "revision": self._plugin_revision(binding),
+                "module_sha256": asset.module_sha256,
+                "module_bytes": asset.module_bytes,
+                "stylesheet_sha256": asset.stylesheet_sha256,
+                "stylesheet_bytes": asset.stylesheet_bytes,
+                "slots": v1_slots,
+            }
         return {
             "id": binding.descriptor.owner,
             "revision": self._plugin_revision(binding),
@@ -539,6 +601,10 @@ class LivePluginUiProvider:
             "module_bytes": asset.module_bytes,
             "stylesheet_sha256": asset.stylesheet_sha256,
             "stylesheet_bytes": asset.stylesheet_bytes,
+            "bundle_sha256": asset.bundle_sha256,
+            "module_path": asset.module_path,
+            "stylesheet_path": asset.stylesheet_path,
+            "has_files": len(asset.files) > 0,
             "slots": list(asset.slots),
         }
 

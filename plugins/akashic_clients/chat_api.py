@@ -391,11 +391,66 @@ def create_chat_app(
         return {"dashboard_path": "/"}
 
     @app.get("/api/chat/plugin-ui/catalog")
-    async def plugin_ui_catalog() -> dict[str, object]:
+    async def plugin_ui_catalog(
+        protocol: Literal[1, 2] = Query(1),
+    ) -> dict[str, object]:
         if plugin_ui_scope is not None:
             async with plugin_ui_scope() as provider:
-                return await provider.catalog()
-        return await _require_plugin_ui_provider(plugin_ui_provider).catalog()
+                return await provider.catalog(protocol=protocol)
+        return await _require_plugin_ui_provider(plugin_ui_provider).catalog(protocol=protocol)
+
+    @app.get("/api/chat/plugin-ui/files/{plugin_id}/{plugin_revision}/{bundle_sha256}/{rel_path:path}")
+    async def plugin_ui_file_asset(
+        request: Request,
+        plugin_id: str,
+        plugin_revision: str,
+        bundle_sha256: str,
+        rel_path: str,
+    ) -> Response:
+        if not (1 <= len(plugin_id) <= 128) or not (1 <= len(plugin_revision) <= 128):
+            raise HTTPException(status_code=400, detail="插件标识或版本无效")
+        if len(bundle_sha256) != 64 or any(ch not in "0123456789abcdef" for ch in bundle_sha256):
+            raise HTTPException(status_code=400, detail="插件资产摘要无效")
+        if not rel_path or rel_path.startswith("/") or ".." in rel_path.split("/"):
+            raise HTTPException(status_code=400, detail="插件资产路径无效")
+        try:
+            if plugin_ui_scope is not None:
+                async with plugin_ui_scope() as provider:
+                    asset = await provider.file_asset(
+                        plugin_id,
+                        plugin_revision,
+                        bundle_sha256,
+                        rel_path,
+                    )
+            else:
+                asset = await _require_plugin_ui_provider(plugin_ui_provider).file_asset(
+                    plugin_id,
+                    plugin_revision,
+                    bundle_sha256,
+                    rel_path,
+                )
+        except (PluginUiPluginUnavailable, PluginUiStaleRevision) as error:
+            raise _plugin_ui_http_error(error) from error
+        raw_content = asset["content"]
+        if not isinstance(raw_content, (bytes, bytearray)):
+            raise HTTPException(status_code=500, detail="插件资产字节无效")
+        content_bytes = bytes(raw_content)
+        file_sha256 = str(asset["sha256"])
+        media_type = str(asset["media_type"])
+        headers = {
+            "Cache-Control": "private, max-age=31536000, immutable",
+            "Vary": "Accept-Encoding",
+            "X-Content-Type-Options": "nosniff",
+        }
+        body = content_bytes
+        if accepts_gzip_header(request.headers.get("accept-encoding", "")):
+            body = await run_file_io(lambda: _gzip_cached(file_sha256, content_bytes))
+            headers["Content-Encoding"] = "gzip"
+        return Response(
+            content=body,
+            media_type=media_type,
+            headers=headers,
+        )
 
     @app.get("/api/chat/plugin-ui/asset")
     async def plugin_ui_asset(
