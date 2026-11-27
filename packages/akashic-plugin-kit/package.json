@@ -9,6 +9,7 @@
     "./configuration": "./src/configuration.tsx",
     "./connection-form": "./src/connection-form.js",
     "./connection-form.js": "./src/connection-form.js",
+    "./connection-form.css": "./src/connection-form.css",
     "./markdown-prose": "./src/markdown-prose.ts",
     "./meta-store": "./src/meta-store.ts"
   },
