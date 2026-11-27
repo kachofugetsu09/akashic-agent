@@ -558,6 +558,13 @@ export interface IconProvider {
   Picker?: ComponentType<IconPickerViewProps>;
 }
 
+/** 带来源插件身份的 scope.meta 条目，供自定义浮卡按 (owner, item.id) 精确去重与覆盖选择。 */
+export interface ScopeMetaRecord {
+  readonly owner: string;
+  readonly key: string;
+  readonly item: ScopeMetaItem;
+}
+
 /** 分组行自包含视图扩展：插件可接管行内图标与悬停浮卡内容，宿主继续拥有导航投影、搜索、焦点与 120Hz 开合外框。 */
 export interface NavigationGroupView {
   renderLeading?: (props: {
@@ -567,9 +574,78 @@ export interface NavigationGroupView {
   renderHoverCard?: (props: {
     group: NavigationGroup;
     meta: readonly ScopeMetaItem[];
+    metaRecords: readonly ScopeMetaRecord[];
     hasActions: boolean;
     iconProvider?: IconProvider | null;
   }) => ReactNode;
+}
+
+export type ChatKernelDisposer = () => void;
+
+export interface ChatServiceRecord<T = unknown> {
+  readonly ownerId: string;
+  readonly ownerRevision: string;
+  readonly value: T;
+}
+
+export interface ChatSlotContribution<TProps = unknown> {
+  readonly id: string;
+  readonly order?: number;
+  /** 可选：声明替代同 owner 的某条 scope.meta item.id（仅允许替代本贡献 owner 自己的条目）。 */
+  readonly replacesMetaId?: string;
+  render(props: TProps): ReactNode;
+}
+
+export interface ChatSlotEntry<TProps = unknown> {
+  readonly ownerId: string;
+  readonly ownerRevision: string;
+  readonly id: string;
+  readonly order: number;
+  readonly replacesMetaId?: string;
+  readonly render: (props: TProps) => ReactNode;
+}
+
+export interface ChatSlotHandle {
+  readonly slotId: string;
+  readonly ownerId: string;
+  readonly ownerRevision: string;
+  isCurrent(): boolean;
+  entries<TProps = unknown>(): readonly ChatSlotEntry<TProps>[];
+  subscribe(listener: () => void): ChatKernelDisposer;
+  dispose(): void;
+}
+
+export interface ChatSlotOutletProps<TProps = unknown> {
+  handle: ChatSlotHandle | null | undefined;
+  props: TProps;
+  fallback?: ReactNode;
+  filter?: (entry: ChatSlotEntry<TProps>) => boolean;
+  entryFallback?: (entry: ChatSlotEntry<TProps>) => ReactNode;
+}
+
+/**
+ * 浏览器微内核（v3）同步激活上下文：通过顶层具名导出 `export function activate(ctx)` 注入，
+ * 无需静态导入新 SDK 符号，保证混合插件仍可在旧版 chat-ui-v1.js 下正常链接。
+ */
+export interface ChatPluginRuntimeContext {
+  readonly pluginId: string;
+  readonly pluginRevision: string;
+  readonly signal: AbortSignal;
+  query(method: string, payload?: Record<string, unknown>, options?: { signal?: AbortSignal }): Promise<Record<string, unknown>>;
+  onDispose(fn: ChatKernelDisposer): void;
+  readonly services: {
+    provide<T>(serviceId: string, value: T): ChatKernelDisposer;
+    list<T>(serviceId: string): readonly ChatServiceRecord<T>[];
+    get<T>(serviceId: string): T | null;
+    subscribe(serviceId: string, listener: () => void): ChatKernelDisposer;
+  };
+  readonly slots: {
+    declare(slotId: string): ChatSlotHandle;
+    contribute<TProps = unknown>(slotId: string, entry: ChatSlotContribution<TProps>): ChatKernelDisposer;
+  };
+  /** 受局部 ErrorBoundary 保护的槽出口组件，由 v3 宿主直接注入，避免旧 SDK 链接失败。 */
+  readonly Outlet: <TProps = unknown>(props: ChatSlotOutletProps<TProps>) => ReactNode;
+  readonly useSlotEntries: <TProps = unknown>(handle: ChatSlotHandle | null | undefined) => readonly ChatSlotEntry<TProps>[];
 }
 
 /** 侧栏顶部目的地行自包含视图扩展：插件可接管头像与行内主体文案，宿主保留外层按钮、状态标、快捷键与行菜单。 */

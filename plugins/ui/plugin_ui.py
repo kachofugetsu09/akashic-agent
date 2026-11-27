@@ -128,6 +128,7 @@ class PluginUiSlots:
             stylesheet=definition.stylesheet,
             slots=tuple(definition.slots),
             assets_dir=definition.assets_dir,
+            client_kernel=definition.client_kernel,
         )
         binding = PluginUiBinding(
             descriptor=PluginUiDescriptor(
@@ -140,6 +141,7 @@ class PluginUiSlots:
                 bundle_sha256=asset.bundle_sha256,
                 module_path=asset.module_path,
                 stylesheet_path=asset.stylesheet_path,
+                client_kernel=asset.client_kernel,
             ),
             asset=asset,
             query=cast(PluginUiQueryHandler, query),
@@ -200,6 +202,7 @@ def resolve_plugin_ui_asset(
     stylesheet: str | None,
     slots: tuple[str, ...],
     assets_dir: str | None = None,
+    client_kernel: bool = False,
 ) -> PluginUiAsset:
     """Validate and freeze plugin-owned plugin UI static assets."""
 
@@ -209,6 +212,7 @@ def resolve_plugin_ui_asset(
         stylesheet=stylesheet,
         slots=slots,
         assets_dir=assets_dir,
+        client_kernel=client_kernel,
     )
 
     # 2. Resolve symlinks before enforcing plugin-source containment.
@@ -235,6 +239,7 @@ def resolve_plugin_ui_asset(
         stylesheet_path,
         extra_dir,
         slots=slots,
+        client_kernel=client_kernel,
     )
 
 
@@ -244,7 +249,10 @@ def _validate_plugin_ui_metadata(
     stylesheet: str | None,
     slots: tuple[str, ...],
     assets_dir: str | None = None,
+    client_kernel: bool = False,
 ) -> None:
+    if not isinstance(client_kernel, bool):
+        raise RuntimeError("插件 UI client_kernel 必须是布尔值")
     if (
         not isinstance(module, str)
         or not module
@@ -281,6 +289,7 @@ def _build_plugin_ui_asset(
     assets_dir: Path | None,
     *,
     slots: tuple[str, ...],
+    client_kernel: bool = False,
 ) -> PluginUiAsset:
     """Read validated assets and attach content hashes and byte sizes."""
 
@@ -387,6 +396,7 @@ def _build_plugin_ui_asset(
         stylesheet_path=stylesheet_rel if stylesheet_sha256 is not None else None,
         bundle_sha256=bundle_sha256,
         files=MappingProxyType(files),
+        client_kernel=client_kernel,
     )
 
 

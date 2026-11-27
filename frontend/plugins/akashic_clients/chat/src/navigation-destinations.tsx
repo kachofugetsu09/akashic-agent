@@ -1,24 +1,12 @@
-import { Component, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import type { DestinationControls, DestinationForm, NavigationDestination, NavigationDestinationView } from "@akashic/chat-ui-v1";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { InvokePluginRender, SafePluginBoundary } from "./chat-kernel-react";
 import { DestinationMount, destinationsPending, identityDestinationSource, type DestinationSource } from "./plugin-ui-runtime";
 import { NavigationRowMenu, type NavigationRowAction } from "./navigation-row-menu";
 import { SessionStatusMark, type SessionStatus } from "./session-status-mark";
 import { markdownPlainText } from "./static-markdown";
 import "./navigation-destinations.css";
-
-class DestinationViewBoundary extends Component<
-  { fallback: ReactNode; children: ReactNode },
-  { failed: boolean }
-> {
-  state = { failed: false };
-  static getDerivedStateFromError() { return { failed: true }; }
-  render() { return this.state.failed ? this.props.fallback : this.props.children; }
-}
-
-function InvokeDestView({ render }: { render: () => ReactNode }): ReactNode {
-  return render();
-}
 
 /** 侧栏 identity 目的地的宿主状态；数据全部来自插件的 navigation.destinations。 */
 export interface IdentityDestinationState {
@@ -138,14 +126,16 @@ export function IdentityDestinationRow({ destination, mark, status, updatedAt, a
     {preview ? <span className="destination-row__preview">{preview}</span> : null}
   </span>;
   const leading = destinationView?.renderLeading ? (
-    <DestinationViewBoundary key={`${viewOwnerKey ?? "dest"}-lead`} fallback={defaultLeading}>
-      <InvokeDestView render={() => destinationView.renderLeading?.({ destination, active }) ?? defaultLeading} />
-    </DestinationViewBoundary>
+    <SafePluginBoundary key={`${viewOwnerKey ?? "dest"}-lead`} fallback={defaultLeading}>
+      <InvokePluginRender render={() => destinationView.renderLeading?.({ destination, active }) ?? defaultLeading} />
+    </SafePluginBoundary>
   ) : defaultLeading;
   const content = destinationView?.renderContent ? (
-    <DestinationViewBoundary key={`${viewOwnerKey ?? "dest"}-body`} fallback={defaultContent}>
-      <InvokeDestView render={() => destinationView.renderContent?.({ destination, active, time, preview, statusNode }) ?? defaultContent} />
-    </DestinationViewBoundary>
+    <SafePluginBoundary key={`${viewOwnerKey ?? "dest"}-body`} fallback={defaultContent}>
+      <InvokePluginRender
+        render={() => destinationView.renderContent?.({ destination, active, time, preview, statusNode }) ?? defaultContent}
+      />
+    </SafePluginBoundary>
   ) : defaultContent;
   return <NavigationRowMenu title={destination.label} actions={actions} className="destination-row">
     <button type="button" className="destination-row__open" data-active={active || undefined}

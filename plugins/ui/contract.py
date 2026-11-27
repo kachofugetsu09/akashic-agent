@@ -147,6 +147,7 @@ class PluginUiAsset:
     stylesheet_path: str | None = None
     bundle_sha256: str = ""
     files: Mapping[str, PluginUiAssetFile] = field(default_factory=lambda: MappingProxyType({}))
+    client_kernel: bool = False
 
 
 PluginUiSlot = Literal[
@@ -247,6 +248,7 @@ class PluginUiDefinition:
     stylesheet: str | None = None
     slots: tuple[PluginUiSlot, ...] = ()
     assets_dir: str | None = None
+    client_kernel: bool = False
 
 @dataclass(frozen=True, slots=True)
 class PluginUiDescriptor:
@@ -261,6 +263,7 @@ class PluginUiDescriptor:
     bundle_sha256: str = ""
     module_path: str = "plugin_ui.js"
     stylesheet_path: str | None = None
+    client_kernel: bool = False
 
 @dataclass(frozen=True, slots=True)
 class PluginUiBinding:

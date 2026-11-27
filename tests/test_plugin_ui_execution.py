@@ -330,8 +330,82 @@ async def test_chat_api_catalog_protocol_http_query_coercion(tmp_path: Path) -> 
             assert r_v2.status_code == 200
             assert r_v2.json()["items"][0]["slots"] == ["scope.badge", "scope.meta"]
 
+            r_v3 = await client.get("/api/chat/plugin-ui/catalog?protocol=3")
+            assert r_v3.status_code == 200
+            assert r_v3.json()["items"][0]["client_kernel"] is False
+
             r_bad = await client.get("/api/chat/plugin-ui/catalog?protocol=99")
             assert r_bad.status_code == 422
+    finally:
+        await provider.aclose()
+        await root.dispose()
+
+
+@pytest.mark.asyncio
+async def test_plugin_ui_protocol_v3_client_kernel_projection(tmp_path: Path) -> None:
+    root = CompositionRoot("plugin-ui-v3-kernel")
+    kernel_dir = tmp_path / "pure_kernel"
+    legacy_empty_dir = tmp_path / "legacy_empty"
+    hybrid_dir = tmp_path / "hybrid"
+    for d in (kernel_dir, legacy_empty_dir, hybrid_dir):
+        d.mkdir(parents=True)
+        (d / "plugin_ui.js").write_text("export function activate() {}\nexport default { slots: {} };\n", encoding="utf-8")
+
+    async def providers(ctx: Context) -> None:
+        directory = PluginUiSlots(ctx)
+        await ctx.provide(UI_SLOTS, directory)
+        await ctx.provide(PLUGIN_UI, LivePluginUiProvider(ctx, directory))
+
+    async def pure_kernel_plugin(ctx: Context) -> None:
+        async def query(method: str, payload: dict[str, object], *, session_id: str | None, turn_id: str | None) -> dict[str, object]:
+            del method, payload, session_id, turn_id
+            return {"ok": True}
+        await ctx.require(UI_SLOTS).register_plugin_ui(
+            ctx, PluginUiDefinition(module="plugin_ui.js", slots=(), client_kernel=True), query=query,
+        )
+
+    async def legacy_empty_plugin(ctx: Context) -> None:
+        async def query(method: str, payload: dict[str, object], *, session_id: str | None, turn_id: str | None) -> dict[str, object]:
+            del method, payload, session_id, turn_id
+            return {}
+        await ctx.require(UI_SLOTS).register_plugin_ui(
+            ctx, PluginUiDefinition(module="plugin_ui.js", slots=()), query=query,
+        )
+
+    async def hybrid_plugin(ctx: Context) -> None:
+        async def query(method: str, payload: dict[str, object], *, session_id: str | None, turn_id: str | None) -> dict[str, object]:
+            del method, payload, session_id, turn_id
+            return {}
+        await ctx.require(UI_SLOTS).register_plugin_ui(
+            ctx, PluginUiDefinition(module="plugin_ui.js", slots=("scope.badge", "scope.meta"), client_kernel=True), query=query,
+        )
+
+    await root.mount(providers, name="ui")
+    provider = cast(LivePluginUiProvider, root.context.require(PLUGIN_UI))
+
+    try:
+        await root.mount(pure_kernel_plugin, name="pure_kernel", inject=(UI_SLOTS,), runtime=PluginRuntime("pure_kernel", "release", kernel_dir, tmp_path, tmp_path, {}))
+        await root.mount(legacy_empty_plugin, name="legacy_empty", inject=(UI_SLOTS,), runtime=PluginRuntime("legacy_empty", "release", legacy_empty_dir, tmp_path, tmp_path, {}))
+        await root.mount(hybrid_plugin, name="hybrid", inject=(UI_SLOTS,), runtime=PluginRuntime("hybrid", "release", hybrid_dir, tmp_path, tmp_path, {}))
+
+        v1 = await provider.catalog(protocol=1)
+        v1_by_id = {item["id"]: item for item in cast(list[dict[str, object]], v1["items"])}
+        assert "pure_kernel" not in v1_by_id
+        assert "legacy_empty" in v1_by_id
+        assert v1_by_id["hybrid"]["slots"] == ["scope.badge"]
+
+        v2 = await provider.catalog(protocol=2)
+        v2_by_id = {item["id"]: item for item in cast(list[dict[str, object]], v2["items"])}
+        assert "pure_kernel" not in v2_by_id
+        assert "legacy_empty" in v2_by_id
+        assert v2_by_id["hybrid"]["slots"] == ["scope.badge", "scope.meta"]
+
+        v3 = await provider.catalog(protocol=3)
+        v3_by_id = {item["id"]: item for item in cast(list[dict[str, object]], v3["items"])}
+        assert v3_by_id["pure_kernel"]["client_kernel"] is True
+        assert v3_by_id["pure_kernel"]["slots"] == []
+        assert v3_by_id["legacy_empty"]["client_kernel"] is False
+        assert v3_by_id["hybrid"]["client_kernel"] is True
     finally:
         await provider.aclose()
         await root.dispose()
