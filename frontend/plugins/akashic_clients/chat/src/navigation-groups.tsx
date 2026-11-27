@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight, Folder, FolderPlus, Plus, SlidersHorizontal, Sparkles } from "lucide-react";
+import { ChevronDown, Folder, FolderOpen, FolderPlus, Plus, SlidersHorizontal, Sparkles } from "lucide-react";
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import type { NavigationControls, NavigationForm, NavigationFormControls, NavigationGroup, NavigationGroupView } from "@akashic/chat-ui-v1";
@@ -267,13 +267,15 @@ export function GroupNavigation({
 }
 
 /** 分组默认文件夹图标；完整视觉与色板由业务插件通过 navigationViews 自包含渲染。 */
-export function FolderMark({ size = 18 }: {
+export function FolderMark({ size = 18, open = false }: {
   icon?: string;
   color?: string;
   size?: number;
   trigger?: "hover" | "parent" | "none";
+  /** 展开时画打开的文件夹：开合状态由图标表示，行尾不再挂折叠箭头。 */
+  open?: boolean;
 }) {
-  return <Folder size={size} aria-hidden="true" />;
+  return open ? <FolderOpen size={size} aria-hidden="true" /> : <Folder size={size} aria-hidden="true" />;
 }
 
 function GroupHoverCard({ anchor, groupRef, group, hasActions, portalTarget, viewOwnerKey, groupView }: {
@@ -457,7 +459,7 @@ export function GroupNavigationRow({
   const [hoverCard, setHoverCard] = useState<{ anchor: DOMRect; portalTarget: Element } | null>(null);
   // 提前登记到页面级 scope.meta 协调器，同一批分组合成一次批量查询。
   useScopeMeta({ dimension: groupRef.dimension, value: groupRef.id });
-  const defaultLeading = <FolderMark />;
+  const defaultLeading = <FolderMark open={open} />;
   const leadingNode = groupView?.renderLeading ? (
     <SafePluginBoundary key={viewOwnerKey ?? "group-leading"} fallback={defaultLeading}>
       <InvokePluginRender
@@ -521,7 +523,6 @@ export function GroupNavigationRow({
         <span className="navigation-group__name" data-akashic-private="title"><MarqueeText>{group.label}</MarqueeText></span>
         {/* 仅对尚未迁到 scope.meta 的旧插件挂载 scope.badge；已提供 scope.meta 的同 owner 自动跳过。 */}
         <PluginUiSlot name="scope.badge" scope={{ dimension: groupRef.dimension, value: groupRef.id }} quiet />
-        <ChevronRight size={14} aria-hidden="true" className="navigation-group__chevron" />
       </button>
       {hoverCard ? <GroupHoverCard
         anchor={hoverCard.anchor}
