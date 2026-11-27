@@ -9,8 +9,10 @@ import type { ScopeFields } from "./scope-fields";
 import { openInWorkbench, subscribeWorkbenchIntents, workbenchAccepts } from "./shell-workbench";
 import { selectMessages } from "./message-selection";
 import { readToolIcon } from "./message-timeline";
+import { chatKernel, type ChatKernelLease } from "./chat-kernel";
+import { ChatSlotOutlet, useChatServices, useChatSlotEntries } from "./chat-kernel-react";
 
-import type { ComposerControls, ComposerSuggestProvider, DestinationControls, DestinationForm, HeaderMetaControls, IconProvider, NavigationControls, NavigationDestinationView, NavigationDestinationsProvider, NavigationForm, NavigationFormControls, NavigationGroupView, NavigationGroupsProvider, NavigationNotice, PluginUiDefinition, PluginUiHostContext, PluginUiMountSlotName, PluginUiQueryOptions, PluginUiSlotFacts, PluginUiSlotName, ScopeFieldControls, ScopeMetaProvider, SidebarPanelControls, SidebarPanelProvider, ToolIconFacts, ToolIconProvider, ToolIconSpec, ToolSummaryFacts, ToolSummaryProvider, ToolTaskSummary } from "@akashic/chat-ui-v1";
+import type { ChatKernelDisposer, ChatPluginRuntimeContext, ComposerControls, ComposerSuggestProvider, DestinationControls, DestinationForm, HeaderMetaControls, IconProvider, NavigationControls, NavigationDestinationView, NavigationDestinationsProvider, NavigationForm, NavigationFormControls, NavigationGroupView, NavigationGroupsProvider, NavigationNotice, PluginUiDefinition, PluginUiHostContext, PluginUiMountSlotName, PluginUiQueryOptions, PluginUiSlotFacts, PluginUiSlotName, ScopeFieldControls, ScopeMetaProvider, SidebarPanelControls, SidebarPanelProvider, ToolIconFacts, ToolIconProvider, ToolIconSpec, ToolSummaryFacts, ToolSummaryProvider, ToolTaskSummary } from "@akashic/chat-ui-v1";
 
 // 插槽合同由 @akashic/chat-ui-v1 发布，宿主与插件共用同一份类型。
 export type { ComposerSuggestProvider, ComposerSuggestion, PluginUiContext, PluginUiDefinition, PluginUiQueryOptions, PluginUiRenderer, PluginUiSlotName } from "@akashic/chat-ui-v1";
@@ -28,6 +30,7 @@ export interface PluginUiCatalogItem {
   moduleUrl: string;
   stylesheetUrl?: string;
   slots: PluginUiSlotName[];
+  clientKernel?: boolean;
 }
 
 export interface PluginUiResult {
@@ -110,23 +113,20 @@ const SLOT_NAMES = new Set<PluginUiSlotName>([
   "icon.provider",
 ]);
 
-const iconProviderListeners = new Set<() => void>();
-let iconProviderIdentity = "";
+const kernelLeases = new Map<string, ChatKernelLease>();
+const bridgeLeases = new Map<string, ChatKernelLease>();
 
-function computeIconProviderIdentity(): string {
-  if (catalog.updating) return "";
-  return catalog.plugins.flatMap((plugin) => {
-    const loaded = definitions.get(plugin.id);
-    const provider = loaded?.revision === plugin.revision ? loaded.definition.slots["icon.provider"] : undefined;
-    return provider ? [`${provider.id}@${plugin.id}:${plugin.revision}`] : [];
-  }).join("|");
-}
-
-function notifyIconProvidersIfChanged() {
-  const next = computeIconProviderIdentity();
-  if (next === iconProviderIdentity) return;
-  iconProviderIdentity = next;
-  iconProviderListeners.forEach((listener) => listener());
+function disposePluginLeases(id: string) {
+  const bridge = bridgeLeases.get(id);
+  if (bridge) {
+    bridgeLeases.delete(id);
+    bridge.dispose();
+  }
+  const lease = kernelLeases.get(id);
+  if (lease) {
+    kernelLeases.delete(id);
+    lease.dispose();
+  }
 }
 
 /** 目录或模块变化时通知；宿主内的数据型扩展点据此对齐自己的缓存。 */
@@ -138,7 +138,6 @@ export function subscribePluginUiCatalog(listener: () => void): () => void {
 function emitChange() {
   registryVersion += 1;
   listeners.forEach((listener) => listener());
-  notifyIconProvidersIfChanged();
 }
 
 export function receivePluginUiCatalog(next: PluginUiCatalog): Promise<void> {
@@ -148,6 +147,19 @@ export function receivePluginUiCatalog(next: PluginUiCatalog): Promise<void> {
   if (revisionChanged) immutableResults.clear();
   catalog = next;
   if (next.updating || revisionChanged) rejectAllPending("插件界面正在更新");
+  // 目录发布时立即撤销被删除或已换代插件的微内核 lease（先关准入，不等异步 import 队列）。
+  if (!next.updating && !next.error) {
+    const nextById = new Map(next.plugins.map((item) => [item.id, item.revision]));
+    for (const [id, lease] of [...kernelLeases.entries()]) {
+      if (nextById.get(id) !== lease.pluginRevision) disposePluginLeases(id);
+    }
+    for (const [id, lease] of [...bridgeLeases.entries()]) {
+      if (nextById.get(id) !== lease.pluginRevision) {
+        bridgeLeases.delete(id);
+        lease.dispose();
+      }
+    }
+  }
   emitChange();
   if (next.updating || next.error || next.catalogRevision === activeRevision) {
     return Promise.resolve();
@@ -174,12 +186,17 @@ export function receivePluginUiCatalog(next: PluginUiCatalog): Promise<void> {
 let catalogReadGeneration = 0;
 let catalogPublishedGeneration = 0;
 
-/** 通过桌面适配器加载同一份内容寻址插件界面（协议 v2 支持路径式多 chunk 资产与结构化数据源）。 */
-const PLUGIN_UI_CATALOG_URL = "/api/chat/plugin-ui/catalog?protocol=2";
+/** 通过桌面适配器加载同一份内容寻址插件界面（协议 v3 支持开放式浏览器微内核插件激活与路径式分块资产）。 */
+const PLUGIN_UI_CATALOG_URL = "/api/chat/plugin-ui/catalog?protocol=3";
+const PLUGIN_UI_CATALOG_V2_FALLBACK_URL = "/api/chat/plugin-ui/catalog?protocol=2";
 
 export async function loadWebPluginCatalog(signal?: AbortSignal): Promise<void> {
   const generation = ++catalogReadGeneration;
-  const response = await takeStartupResponse(PLUGIN_UI_CATALOG_URL, signal) ?? await fetch(PLUGIN_UI_CATALOG_URL, { signal });
+  let response = await takeStartupResponse(PLUGIN_UI_CATALOG_URL, signal) ?? await fetch(PLUGIN_UI_CATALOG_URL, { signal });
+  // 仅当旧版服务端明确拒绝 protocol=3（422 参数校验失败）时降级一次到 v2；不吞认证/网络错误。
+  if (response.status === 422) {
+    response = await fetch(PLUGIN_UI_CATALOG_V2_FALLBACK_URL, { signal });
+  }
   if (!response.ok) throw await webPluginError(response);
   const catalog = parseWebPluginCatalog(await response.json());
   // 预热响应的正文读取不受 signal 约束：失去 owner 的旧目录不能再发布。
@@ -266,6 +283,7 @@ function parseWebPluginCatalog(value: unknown): PluginUiCatalog {
     const stylesheetPath = typeof item.stylesheet_path === "string" && item.stylesheet_path ? item.stylesheet_path : undefined;
     const hasFiles = item.has_files === true && Boolean(bundleSha256 && modulePath);
     const slots = requireSlots(item.slots, index);
+    const clientKernel = item.client_kernel === true;
     return {
       id,
       revision: pluginRevision,
@@ -278,6 +296,7 @@ function parseWebPluginCatalog(value: unknown): PluginUiCatalog {
           : webPluginAssetUrl(id, pluginRevision, "stylesheet", stylesheetSha256))
         : undefined,
       slots,
+      clientKernel,
     } satisfies PluginUiCatalogItem;
   });
   if (new Set(plugins.map((plugin) => plugin.id)).size !== plugins.length) {
@@ -338,20 +357,39 @@ function requireSlots(
   });
 }
 
+type LoadedPluginModule = {
+  default?: unknown;
+  activate?: (ctx: ChatPluginRuntimeContext) => void | ChatKernelDisposer;
+};
+
 // 各插件模块各自加载、到一个发布一个：慢的不拖住已到的，一个失败也不连坐整版目录。
 // 只有定义无效（确定性错误）才隔离这一版目录；网络失败留给下一次读取目录时补齐。
 async function activateCatalog(next: PluginUiCatalog): Promise<boolean> {
   const current = () => catalog.catalogRevision === next.catalogRevision && !catalog.updating;
   const listed = new Set(next.plugins.map((plugin) => plugin.id));
-  retirePlugins([...new Set([...definitions.keys(), ...styleNodes.keys()])].filter((id) => !listed.has(id)));
+  retirePlugins([...new Set([...definitions.keys(), ...styleNodes.keys(), ...kernelLeases.keys(), ...bridgeLeases.keys()])]
+    .filter((id) => !listed.has(id)));
   const results = await Promise.allSettled(next.plugins.map(async (plugin) => {
-    if (definitions.get(plugin.id)?.revision === plugin.revision) return;
+    const alreadyLoaded = definitions.get(plugin.id)?.revision === plugin.revision
+      && (!plugin.clientKernel || kernelLeases.get(plugin.id)?.pluginRevision === plugin.revision);
+    if (alreadyLoaded) return;
     if (!definitions.has(plugin.id)) attachStylesheet(plugin);
     const module = await importPluginModule(plugin, current);
+    const isKernelOnly = plugin.clientKernel === true && plugin.slots.length === 0;
     let definition: PluginUiDefinition;
-    try { definition = parseDefinition(module.default, plugin); }
-    catch (error) { throw new PluginDefinitionError(error instanceof Error ? error.message : String(error)); }
-    if (current()) installPlugin(plugin, definition);
+    try {
+      if (isKernelOnly) {
+        if (typeof module.activate !== "function") {
+          throw new Error(`纯微内核插件必须导出同步 activate(ctx) 函数: ${plugin.id}`);
+        }
+        definition = { slots: {} };
+      } else {
+        definition = parseDefinition(module.default, plugin);
+      }
+    } catch (error) {
+      throw new PluginDefinitionError(error instanceof Error ? error.message : String(error));
+    }
+    if (current()) installPlugin(plugin, definition, typeof module.activate === "function" ? module.activate : undefined);
   }));
   if (!current()) return false;
   const failed = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
@@ -361,10 +399,51 @@ async function activateCatalog(next: PluginUiCatalog): Promise<boolean> {
 
 class PluginDefinitionError extends Error {}
 
-// 同一插件换代时先退役旧代的推送与样式，再挂新代；其余插件不受影响。
-function installPlugin(plugin: PluginUiCatalogItem, definition: PluginUiDefinition) {
+// 同一插件换代时先退役旧代的推送、微内核 lease 与样式，再挂新代；其余插件不受影响。
+function installPlugin(
+  plugin: PluginUiCatalogItem,
+  definition: PluginUiDefinition,
+  activateFn?: (ctx: ChatPluginRuntimeContext) => void | ChatKernelDisposer,
+) {
   const previous = definitions.get(plugin.id);
   if (previous && previous.revision !== plugin.revision) retirePushes(new Set([JSON.stringify([plugin.id, previous.revision])]));
+  disposePluginLeases(plugin.id);
+
+  // 若插件导出同步 activate(ctx)，通过微内核事务激活：半途抛错或返回 Promise 时自动回滚不留脏状态。
+  if (activateFn) {
+    const lease = chatKernel.activate(
+      plugin.id,
+      plugin.revision,
+      (method, payload = {}, options) => queryWebPluginUi({
+        pluginId: plugin.id,
+        pluginRevision: plugin.revision,
+        method,
+        payload,
+        signal: options?.signal ?? new AbortController().signal,
+      }),
+      (baseCtx) => activateFn({
+        ...baseCtx,
+        Outlet: ChatSlotOutlet,
+        useSlotEntries: useChatSlotEntries,
+      }),
+    );
+    kernelLeases.set(plugin.id, lease);
+  }
+
+  // 显式优先、桥接仅补缺：若插件未在 activate 中显式提供 icon.provider 服务但声明了 legacy 槽，则自动桥接。
+  const legacyIconProvider = definition.slots["icon.provider"];
+  if (legacyIconProvider) {
+    const hasExplicit = chatKernel
+      .listServices<IconProvider>("icon.provider")
+      .some((record) => record.ownerId === plugin.id && record.ownerRevision === plugin.revision);
+    if (!hasExplicit) {
+      bridgeLeases.set(
+        plugin.id,
+        chatKernel.provideHostService(plugin.id, plugin.revision, "icon.provider", legacyIconProvider),
+      );
+    }
+  }
+
   definitions.set(plugin.id, { revision: plugin.revision, definition });
   attachStylesheet(plugin);
   emitChange();
@@ -390,6 +469,7 @@ function retirePlugins(ids: readonly string[]) {
   if (!ids.length) return;
   retirePushes(new Set(ids.map((id) => JSON.stringify([id, definitions.get(id)?.revision]))));
   for (const id of ids) {
+    disposePluginLeases(id);
     definitions.delete(id);
     styleNodes.get(id)?.remove();
     styleNodes.delete(id);
@@ -399,7 +479,7 @@ function retirePlugins(ids: readonly string[]) {
 
 // 浏览器模块表记住失败的 URL，重试必须换地址；慢请求不判死，等满期限仍未回来就并行补发下一次，先到为准。
 // 全部尝试都失败或最后一次也超期才算失败。
-function importPluginModule(plugin: PluginUiCatalogItem, current: () => boolean): Promise<{ default?: unknown }> {
+function importPluginModule(plugin: PluginUiCatalogItem, current: () => boolean): Promise<LoadedPluginModule> {
   return new Promise((resolve, reject) => {
     let started = 0;
     let failed = 0;
@@ -747,28 +827,35 @@ export interface LoadedIconProvider {
 
 export function iconProviderById(providerId: string): LoadedIconProvider | null {
   if (catalog.updating) return null;
-  for (const plugin of catalog.plugins) {
-    const loaded = definitions.get(plugin.id);
-    const provider = loaded?.revision === plugin.revision ? loaded.definition.slots["icon.provider"] : undefined;
-    if (provider && provider.id === providerId) {
-      return { key: `${plugin.id}:${plugin.revision}`, pluginId: plugin.id, pluginRevision: plugin.revision, provider };
+  for (const record of chatKernel.listServices<IconProvider>("icon.provider")) {
+    if (record.value.id === providerId) {
+      return {
+        key: `${record.ownerId}:${record.ownerRevision}`,
+        pluginId: record.ownerId,
+        pluginRevision: record.ownerRevision,
+        provider: record.value,
+      };
     }
   }
   return null;
 }
 
-function subscribeIconProviders(listener: () => void): () => void {
-  iconProviderListeners.add(listener);
-  return () => { iconProviderListeners.delete(listener); };
-}
-
-/** 仅在可用图标提供方的身份集合变化时重渲染，避免无关目录刷新打断业务表单焦点与草稿。 */
+/** 经 ChatKernel 服务表订阅图标提供方：只读冻结快照保证 Object.is 稳定，不打断业务表单焦点与草稿。 */
 export function useIconProvider(providerId: string): LoadedIconProvider | null {
-  const identity = useSyncExternalStore(subscribeIconProviders, () => iconProviderIdentity, () => "");
+  const services = useChatServices<IconProvider>("icon.provider");
   return useMemo(() => {
-    void identity;
-    return iconProviderById(providerId);
-  }, [identity, providerId]);
+    for (const record of services) {
+      if (record.value.id === providerId) {
+        return {
+          key: `${record.ownerId}:${record.ownerRevision}`,
+          pluginId: record.ownerId,
+          pluginRevision: record.ownerRevision,
+          provider: record.value,
+        };
+      }
+    }
+    return null;
+  }, [services, providerId]);
 }
 
 export function navigationGroupSources(): NavigationGroupSource[] {
@@ -1443,7 +1530,7 @@ async function queryWebPluginUi({
   pluginRevision: string;
   method: string;
   payload: Record<string, unknown>;
-  slot: PluginUiSlotName;
+  slot?: PluginUiSlotName;
   sessionId?: string;
   signal: AbortSignal;
 }): Promise<Record<string, unknown>> {
@@ -1455,7 +1542,7 @@ async function queryWebPluginUi({
       plugin_revision: pluginRevision,
       method,
       payload,
-      slot,
+      ...(slot ? { slot } : {}),
       session_id: sessionId ?? null,
     }),
     signal,

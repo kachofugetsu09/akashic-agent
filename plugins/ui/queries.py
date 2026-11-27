@@ -111,7 +111,7 @@ class LivePluginUiProvider:
     async def catalog(self, *, protocol: int = 1) -> dict[str, object]:
         """Read each current ACTIVE registration inside its exact Context scope."""
 
-        if protocol not in (1, 2):
+        if protocol not in (1, 2, 3):
             raise PluginUiRpcInvalidRequest(f"不支持的 Plugin UI 协议版本: {protocol}")
         items: list[dict[str, object]] = []
         ui_context, slots = self._ctx, self._slots
@@ -580,13 +580,16 @@ class LivePluginUiProvider:
 
     def _catalog_item(self, binding: PluginUiBinding, *, protocol: int = 1) -> dict[str, object] | None:
         asset = binding.asset
+        # 纯微内核插件（client_kernel=True 且未声明旧槽）：v1 与 v2 客户端均不可见，避免旧端加载/校验失败。
+        if asset.client_kernel and not asset.slots and protocol < 3:
+            return None
         if protocol == 1:
             # 含额外相对分块文件的插件无法通过旧 /asset 单文件 URL 解析相对 import，v1 视图统一隐藏。
             entry_count = 1 + (1 if asset.stylesheet_sha256 is not None else 0)
             if len(asset.files) > entry_count:
                 return None
             v1_slots = [slot for slot in asset.slots if slot in PLUGIN_UI_V1_SLOTS]
-            # 仅对声明了槽但全为 v2 新增槽的插件在 v1 视图中隐藏，保留原本空 slots 的登记。
+            # 仅对声明了槽但全为 v2 新增槽的插件在 v1 视图中隐藏，保留原本无旗标空 slots 的登记。
             if asset.slots and not v1_slots:
                 return None
             return {
@@ -598,7 +601,7 @@ class LivePluginUiProvider:
                 "stylesheet_bytes": asset.stylesheet_bytes,
                 "slots": v1_slots,
             }
-        return {
+        item: dict[str, object] = {
             "id": binding.descriptor.owner,
             "revision": self._plugin_revision(binding),
             "module_sha256": asset.module_sha256,
@@ -611,6 +614,9 @@ class LivePluginUiProvider:
             "has_files": len(asset.files) > 0,
             "slots": list(asset.slots),
         }
+        if protocol >= 3:
+            item["client_kernel"] = asset.client_kernel
+        return item
 
     async def _run_query(
         self,

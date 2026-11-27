@@ -52,7 +52,7 @@ class WebPluginUiQueryPayload(BaseModel):
     plugin_revision: str = Field(min_length=1, max_length=128)
     method: str = Field(pattern=r"^[a-z][a-z0-9_.-]{0,255}$")
     payload: dict[str, object]
-    slot: PluginUiSlot
+    slot: PluginUiSlot | None = None
     session_id: str | None = Field(default=None, max_length=512)
     turn_id: str | None = Field(default=None, max_length=128)
 
@@ -392,7 +392,7 @@ def create_chat_app(
 
     @app.get("/api/chat/plugin-ui/catalog")
     async def plugin_ui_catalog(
-        protocol: int = Query(1, ge=1, le=2),
+        protocol: int = Query(1, ge=1, le=3),
     ) -> dict[str, object]:
         if plugin_ui_scope is not None:
             async with plugin_ui_scope() as provider:

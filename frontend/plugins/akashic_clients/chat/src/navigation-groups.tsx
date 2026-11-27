@@ -1,5 +1,5 @@
 import { ChevronDown, ChevronRight, Folder, FolderPlus, Plus, SlidersHorizontal, Sparkles } from "lucide-react";
-import { Component, Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import type { NavigationControls, NavigationForm, NavigationFormControls, NavigationGroup, NavigationGroupView } from "@akashic/chat-ui-v1";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -10,22 +10,9 @@ import { SessionStatusLabel, SessionStatusMark, summarizeStatus, type SessionSta
 import { MarqueeText } from "./marquee-text";
 import { followingInView, motionTiming, settle, slideClose, slideOpen } from "./motion";
 import { NavigationGroupMount, PluginUiSlot, navigationGroupSources, navigationGroupsPending, onPageShown, onPluginUiSlotInvalidated, useIconProvider, usePluginUiCatalogVersion, type NavigationGroupSource } from "./plugin-ui-runtime";
+import { InvokePluginRender, SafePluginBoundary } from "./chat-kernel-react";
 import { createScopeFields } from "./scope-fields";
 import { useScopeMeta } from "./scope-meta-store";
-
-/** 隔离插件自包含导航渲染回调的局部错误边界：插件视图出错时自动回退宿主默认外观，不影响导航面。 */
-class PluginViewBoundary extends Component<
-  { fallback: ReactNode; children: ReactNode },
-  { failed: boolean }
-> {
-  state = { failed: false };
-  static getDerivedStateFromError() { return { failed: true }; }
-  render() { return this.state.failed ? this.props.fallback : this.props.children; }
-}
-
-function InvokeView({ render }: { render: () => ReactNode }): ReactNode {
-  return render();
-}
 
 /** 会话所在的分组：会话维度名与它的一个取值。 */
 export interface GroupRef {
@@ -330,14 +317,17 @@ function GroupHoverCard({ anchor, groupRef, group, hasActions, portalTarget, vie
     {hasActions ? <div className="group-hover-card__foot">右键或点行尾菜单查看更多操作</div> : null}
   </>;
   const customBody = groupView?.renderHoverCard ? (
-    <PluginViewBoundary key={viewOwnerKey ?? "group-hover"} fallback={defaultBody}>
-      <InvokeView render={() => groupView.renderHoverCard?.({
-        group,
-        meta: records.map((r) => r.item),
-        hasActions,
-        iconProvider: loadedIconProvider?.provider ?? null,
-      }) ?? defaultBody} />
-    </PluginViewBoundary>
+    <SafePluginBoundary key={viewOwnerKey ?? "group-hover"} fallback={defaultBody}>
+      <InvokePluginRender
+        render={() => groupView.renderHoverCard?.({
+          group,
+          meta: records.map((r) => r.item),
+          metaRecords: records,
+          hasActions,
+          iconProvider: loadedIconProvider?.provider ?? null,
+        }) ?? defaultBody}
+      />
+    </SafePluginBoundary>
   ) : defaultBody;
   return createPortal(
     <div className="group-hover-card" role="tooltip" style={{ left, top }}>{customBody}</div>,
@@ -472,9 +462,11 @@ export function GroupNavigationRow({
   const loadedIconProvider = useIconProvider("kubai-line");
   const defaultLeading = <FolderMark icon={group.icon} color={group.color} />;
   const leadingNode = groupView?.renderLeading ? (
-    <PluginViewBoundary key={viewOwnerKey ?? "group-leading"} fallback={defaultLeading}>
-      <InvokeView render={() => groupView.renderLeading?.({ group, iconProvider: loadedIconProvider?.provider ?? null }) ?? defaultLeading} />
-    </PluginViewBoundary>
+    <SafePluginBoundary key={viewOwnerKey ?? "group-leading"} fallback={defaultLeading}>
+      <InvokePluginRender
+        render={() => groupView.renderLeading?.({ group, iconProvider: loadedIconProvider?.provider ?? null }) ?? defaultLeading}
+      />
+    </SafePluginBoundary>
   ) : defaultLeading;
   const clearHoverCard = useCallback(() => {
     if (hoverTimerRef.current !== null) {
