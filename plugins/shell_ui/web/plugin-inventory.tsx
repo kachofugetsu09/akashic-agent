@@ -44,7 +44,7 @@ export function inventoryResource(ctx: WebHostContextV1): InventoryResource {
   return ctx.data.resource("plugins", (signal) => call<{ plugins: PluginRow[] }>(ctx.http, "/api/dashboard/plugins", { signal }), { warm: true });
 }
 
-// 插件列表：内置 / 外置两组，被其他插件依赖的内置插件收进“基础组件”子组；行展开才显示说明与开关。
+// 插件列表：用户会去调的外置插件在上；内置插件是基础设施，收进默认折起的“系统组件”，停用或出错的留在上面露出来。
 export function PluginInventory({ http, inventory, active }: {
   http: Http;
   inventory: InventoryResource;
@@ -57,9 +57,9 @@ export function PluginInventory({ http, inventory, active }: {
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   const [infraOpen, setInfraOpen] = useState(false);
   const [notes, setNotes] = useState<ReadonlyMap<string, RowNote>>(new Map());
-  // 分组按本次打开时见过的依赖关系固定，停用基础组件后它不会跳到别的分组。
-  const infra = useRef(new Set<string>());
-  for (const row of rows ?? []) if (row.source === "builtin" && row.dependents.length > 0) infra.current.add(row.id);
+  // 分组按本次打开时第一次见到的状态固定：在系统组件里停用一个，它不会当场跳到上面去。
+  const seen = useRef(new Map<string, boolean>());
+  for (const row of rows ?? []) if (!seen.current.has(row.id)) seen.current.set(row.id, row.source === "builtin" && row.phase === "active");
 
   const load = useCallback(() => inventory.refresh().then(() => undefined, () => undefined), [inventory]);
 
@@ -100,9 +100,9 @@ export function PluginInventory({ http, inventory, active }: {
   }, [all, query, filter]);
 
   if (rows === null) return <p className="shell-inventory-empty" role="status">{loadError || "正在读取插件…"}</p>;
-  const builtin = visible.filter((row) => row.source === "builtin" && !infra.current.has(row.id));
-  const base = visible.filter((row) => row.source === "builtin" && infra.current.has(row.id));
-  const external = visible.filter((row) => row.source === "external");
+  const system = visible.filter((row) => seen.current.get(row.id));
+  const main = visible.filter((row) => !seen.current.get(row.id));
+  const idle = system.filter((row) => row.phase !== "active").length;
   const flip = (id: string) => setExpanded((current) => {
     const next = new Set(current);
     if (!next.delete(id)) next.add(id);
@@ -122,21 +122,17 @@ export function PluginInventory({ http, inventory, active }: {
       </div>}
     </div>
     {loadError && <p className="shell-inventory-error" role="alert">{loadError}</p>}
-    {builtin.length + base.length > 0 && <section className="shell-inventory-group">
-      <h4>内置插件 <span>{builtin.length + base.length}</span></h4>
-      {list(builtin)}
-      {base.length > 0 && <div className="shell-inventory-sub">
-        <button type="button" className="shell-inventory-sub-head" aria-expanded={searching || infraOpen} onClick={() => setInfraOpen(!infraOpen)}>
-          <span className="shell-inventory-chevron" aria-hidden="true" dangerouslySetInnerHTML={markup(CHEVRON)} />
-          基础组件 <span>{base.length}</span><small>通常不需要改动</small>
-        </button>
-        <ShellDisclosure open={searching || infraOpen} instant={searching}>{list(base)}</ShellDisclosure>
-      </div>}
+    {main.length > 0 && <section className="shell-inventory-group">
+      <h4>插件 <span>{main.length}</span></h4>
+      {list(main)}
     </section>}
-    {external.length > 0 && <section className="shell-inventory-group">
-      <h4>外置插件 <span>{external.length}</span></h4>
-      {list(external)}
-    </section>}
+    {system.length > 0 && <div className="shell-inventory-sub">
+      <button type="button" className="shell-inventory-sub-head" aria-expanded={searching || infraOpen} onClick={() => setInfraOpen(!infraOpen)}>
+        <span className="shell-inventory-chevron" aria-hidden="true" dangerouslySetInnerHTML={markup(CHEVRON)} />
+        系统组件 <span>{system.length}</span><small>{idle ? `${idle} 个未运行` : "内置，通常不需要改动"}</small>
+      </button>
+      <ShellDisclosure open={searching || infraOpen} instant={searching}>{list(system)}</ShellDisclosure>
+    </div>}
     <InstallablePackages http={http} active={active} onInstalled={load} />
     {visible.length === 0 && <div className="shell-inventory-empty">
       <p>{query.trim() ? `没有匹配“${query.trim()}”的插件` : "没有需要处理的插件"}</p>
@@ -145,7 +141,7 @@ export function PluginInventory({ http, inventory, active }: {
   </div>;
 }
 
-// 一行插件：收起时只有名称和状态（运行中只显示一个点），展开后给说明、原因与开关。
+// 一行插件：收起时只有名称和状态（运行中是常态，不标），展开后给说明、原因与开关。
 function InventoryRow({ row, rows, open, note, flip, toggle }: {
   row: PluginRow;
   rows: readonly PluginRow[];
@@ -165,9 +161,7 @@ function InventoryRow({ row, rows, open, note, flip, toggle }: {
   return <li className="shell-inventory-row" data-phase={row.phase === "stopping" && row.error ? "failed" : row.phase}>
     <button type="button" className="shell-inventory-head" aria-expanded={open} onClick={flip}>
       <span className="shell-inventory-name"><strong>{row.name}</strong>{row.description && <small>{row.description}</small>}</span>
-      {status
-        ? <span className="shell-inventory-status">{status}</span>
-        : <span className="shell-inventory-dot" role="img" aria-label="运行中" />}
+      {status ? <span className="shell-inventory-status">{status}</span> : null}
       <span className="shell-inventory-chevron" aria-hidden="true" dangerouslySetInnerHTML={markup(CHEVRON)} />
     </button>
     <ShellDisclosure open={open}>

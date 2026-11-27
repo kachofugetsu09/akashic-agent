@@ -461,7 +461,6 @@
   .shell-inventory-row[data-phase="failed"] .shell-inventory-status { color: var(--ak-color-status-error); }
   .shell-inventory-row[data-phase="pending"] .shell-inventory-status { color: var(--ak-color-status-warning); }
   /* deslop-ignore-next-line 19 */
-  .shell-inventory-dot { flex: 0 0 auto; width: 6px; height: 6px; border-radius: 50%; background: var(--ak-color-status-success); }
   .shell-inventory-chevron { flex: 0 0 auto; display: inline-flex; color: var(--ak-ink-muted); transition: transform 150ms ease; }
   .shell-inventory-chevron svg { width: 16px; height: 16px; }
   [aria-expanded="true"] > .shell-inventory-chevron { transform: rotate(90deg); }
