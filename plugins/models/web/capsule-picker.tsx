@@ -425,15 +425,9 @@ function PickerList({ listRef, view, baseId, active, selectedId, follow, scope, 
 }
 
 // 思考强度折成三格刻度：触发钮上只占三个点的宽度，档名留给读屏与面板。
-const EFFORT_DOTS: Record<string, number> = { none: 0, minimal: 1, low: 1, medium: 2, high: 3, xhigh: 3, max: 3 };
-
-function EffortDots({ effort }: { effort: string }) {
-  const filled = EFFORT_DOTS[effort] ?? 2;
-  return (
-    <span className="model-picker__dots" aria-hidden="true">
-      {[0, 1, 2].map((index) => <i key={index} data-on={index < filled || undefined} />)}
-    </span>
-  );
+// 思考强度只在偏离模型默认档时露出：模型名后写一个字（"· 高"），读得出意思，也不另占一组刻度点。
+function EffortTag({ effort }: { effort: string }) {
+  return <span className="model-picker__effort-tag" aria-hidden="true">· {EFFORT_LABELS[effort] || effort}</span>;
 }
 
 // 面板底部的思考强度：参数跟着当前模型走（Cursor 把推理档放在模型菜单里，不单独占一个工具按钮）。
@@ -518,7 +512,7 @@ export function ModelCapsulePicker({
         {multiSource && visibleModel.icon ? <img className="model-picker__group-icon" src={visibleModel.icon} alt="" aria-hidden="true" /> : null}
         {/* 名字最少留约 6 个字符宽：再窄就认不出型号，输入卡据此判断单行放不下、改用两行。 */}
         <span className="model-picker__name" style={{ minWidth: `${Math.min(selectionLabel.length, 6)}ch` }}><bdi>{selectionLabel}</bdi></span>
-        {effort ? <EffortDots effort={effort} /> : null}
+        {effort && effort !== visibleModel.reasoningEffort ? <EffortTag effort={effort} /> : null}
         <ChevronDown size={9} strokeWidth={2.5} aria-hidden="true" />
       </button>
       {/* 先确定位置再挂列表，避免首次测量触发整份列表布局，随后写入定位又重算一次。 */}

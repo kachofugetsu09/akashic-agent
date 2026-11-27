@@ -1255,45 +1255,37 @@ input {
   .conversation-navigation__heading--section:has(.conversation-sort-trigger) { padding-block: 4px 0; }
 }
 
-/* 新会话空态的分组条：新会话继承当前分组，这里可以换到另一个或不归属；首条消息发出后随空态一起消失。 */
+/* 新会话空态输入卡里的「项目」：与模型名同一种安静的文字钮，选了才显示项目名；首条消息发出后随空态一起消失。 */
 .new-chat-scope {
   display: inline-flex;
-  width: fit-content;
-  max-width: 100%;
-  min-height: 32px;
-  align-self: flex-start;
-  justify-self: start;
+  min-width: 0;
+  max-width: 11rem;
+  height: 28px;
   align-items: center;
-  gap: 6px;
-  border: 1px solid var(--ak-rule-subtle);
+  border: 0;
   border-radius: var(--ak-radius-sm);
-  padding-inline: 10px 8px;
-  color: var(--ak-ink-primary);
-  background: color-mix(in oklab, var(--ak-ink-primary) 3.5%, var(--ak-paper-canvas));
+  padding-inline: 8px;
+  color: var(--md-sys-color-on-surface-variant);
+  background: transparent;
   font: inherit;
-  font-size: 0.8125rem;
+  font-size: var(--chat-type-caption);
+  font-weight: 500;
+  white-space: nowrap;
   cursor: pointer;
-  transition:
-    background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard),
-    border-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard),
-    color var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
+  transition: color var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
 }
+/* 只写维度名时不让位：两个字被挤成竖排就读不出来了，挤不下由输入卡转成两行。 */
+.new-chat-scope:not(:has(.new-chat-scope__option)) { flex: none; }
 @media (hover: hover) {
-  .new-chat-scope:hover {
-    background: var(--ak-paper-sheet);
-    border-color: var(--ak-rule-default);
-  }
+  .new-chat-scope:hover { color: var(--md-sys-color-on-surface); }
 }
 .new-chat-scope[data-state="open"] {
-  background: var(--ak-paper-sheet);
-  border-color: var(--ak-rule-default);
+  color: var(--md-sys-color-on-surface);
+  background: color-mix(in oklab, var(--md-sys-color-on-surface) 6%, transparent);
 }
+.new-chat-scope .new-chat-scope__option { gap: 6px; }
 :where([data-chat-width~="820"], [data-chat-touch]) {
-  .new-chat-scope {
-    min-height: 44px;
-    padding-inline: 12px 10px;
-    font-size: 0.875rem;
-  }
+  .new-chat-scope { height: 44px; min-width: 44px; justify-content: center; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1306,7 +1298,6 @@ input {
     transition-duration: 0ms !important;
   }
 }
-.new-chat-scope__dimension { color: var(--chat-muted); }
 .new-chat-scope__option { display: flex; min-width: 0; align-items: center; gap: 8px; }
 .new-chat-scope__option strong { min-width: 0; font-weight: 550; }
 .new-chat-scope__option > span { display: grid; min-width: 0; gap: 2px; }
@@ -1519,16 +1510,17 @@ input {
   /* 输入卡边框外缘到输入文字的距离：1px 边框 + 15px padding。 */
   --composer-text-inset: 16px;
   --composer-compact-h: 48px;
-  /* 输入卡只有一种形状：单行时是胶囊，长高后保持同一个圆角（参考 ChatGPT、Gemini），
-     不在聚焦或换行时从胶囊变成方卡。按钮离卡片外缘相同距离，与卡片同心。 */
-  --composer-radius: calc(var(--composer-compact-h) / 2);
+  /* 输入卡学 OpenMinis 的外框：无发丝描边，浅底加一层柔和投影托起来；圆角是连续曲率（superellipse），
+     单行 18、两行 26（≈ iOS 连续圆角 20），比同半径的圆弧更方、更顺。刻度外的两个值见 ADR 0143 修订。 */
+  --composer-radius: 18px;
+  --composer-radius-tall: 26px;
   --composer-control-size: 36px;
   --composer-control-inset: calc((var(--composer-compact-h) - 2px - var(--composer-control-size)) / 2);
   --composer-dock-gap: 4px;
-  --composer-ring: color-mix(in oklab, var(--ak-ink-primary) 11%, transparent);
-  --composer-ring-focus: color-mix(in oklab, var(--ak-ink-primary) 26%, transparent);
-  /* token-exempt: 输入卡的托起影是负扩散的宽影，elevation 档位里没有这种只往下沉的形状 */
-  --composer-lift-shadow: 0 6px 18px -8px color-mix(in oklab, var(--ak-color-shadow) 18%, transparent);
+  /* token-exempt: 输入卡的托起影取 OpenMinis 的 0 2px 8px，elevation 档位里没有这一档 */
+  --composer-lift-shadow: 0 2px 8px color-mix(in oklab, var(--ak-color-shadow) 12%, transparent);
+  /* token-exempt: 聚焦时托起影加深一档，代替原来的描边加深 */
+  --composer-lift-shadow-focus: 0 3px 12px color-mix(in oklab, var(--ak-color-shadow) 18%, transparent);
   /* 状态签浮在输入卡左上方、不占流（见 .composer-status-anchor）；消息区底部常驻留出一签高（6 间隔 + 24 签），
      最后一行不被签压住，签出现、消失也不让正文跳动。 */
   --composer-stats-line: 30px;
@@ -2170,11 +2162,10 @@ input {
   position: relative;
   min-height: 0;
   overflow: hidden;
-  /* 纸面单形：不画硬边框，1px 发丝环 + 贴地软影把卡片从纸色里托起来；聚焦只把环加深一档。 */
-  border: 1px solid var(--composer-ring);
+  /* 纸面单形：不画描边，浅底加柔和投影托起；1px 透明边框只为保留内距几何。聚焦时投影加深一档。 */
+  border: 1px solid transparent;
   border-radius: var(--composer-radius);
-  /* 左侧 15px + 1px 边框 = --composer-text-inset，输入文字落在阅读竖线上。 */
-  padding: var(--composer-control-inset) var(--composer-control-inset) var(--composer-control-inset) 15px;
+  padding: var(--composer-control-inset);
   background: var(--chat-lift, var(--ak-paper-editing));
   box-shadow: var(--ak-elevation-raised), var(--composer-lift-shadow);
   interpolate-size: allow-keywords;
@@ -2189,20 +2180,30 @@ input {
   min-height: var(--composer-compact-h);
   max-height: var(--composer-compact-h);
   border-radius: var(--composer-radius);
-  padding: var(--composer-control-inset) var(--composer-control-inset) var(--composer-control-inset) 15px;
+  padding: var(--composer-control-inset);
 }
 
 .composer.is-expanded {
+  --composer-radius: var(--composer-radius-tall);
   height: auto;
   min-height: var(--composer-compact-h);
   max-height: none;
-  /* 文字与操作分行；13px + 1px 边框 + textarea 2px 同样落到 text-inset。按钮行离外缘与单行时相同。 */
+  /* 文字在上、工具一排在下；按钮行离外缘与单行时相同，文字由 textarea 的起始内距落到 text-inset。 */
   border-radius: var(--composer-radius);
-  padding: 10px var(--composer-control-inset) var(--composer-control-inset) 13px;
+  padding: 10px var(--composer-control-inset) var(--composer-control-inset);
 }
 
 .composer:focus-within {
-  border-color: var(--composer-ring-focus);
+  box-shadow: var(--ak-elevation-raised), var(--composer-lift-shadow-focus);
+}
+
+@supports (corner-shape: superellipse(1.4)) {
+  .composer { corner-shape: superellipse(1.4); }
+}
+
+/* 暗色下纸面比卡片亮，没有描边时卡片会沉下去：改用高一档的纸面，卡片比页面浅一档（OpenMinis 暗色同理）。 */
+@supports (color: light-dark(#000, #fff)) {
+  .composer { background: light-dark(var(--chat-lift, var(--ak-paper-editing)), var(--ak-paper-raised)); }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -2246,7 +2247,7 @@ input {
   display: flex;
   flex-direction: row;
   align-items: center;
-  gap: 8px;
+  gap: 4px;
 }
 
 .composer.is-compact [data-slot="input-group"] > :not([data-slot="input-group-addon"]) {
@@ -2276,17 +2277,15 @@ form.composer:focus-within [data-slot="input-group"] {
   gap: 6px;
 }
 
+/* 单行：工具行拆进同一行，回形针排在文字前，「项目」、模型与发送在后（宽窄屏同一排法）。 */
 .composer.is-compact .composer__bar {
-  flex: 0 0 auto;
-  width: auto;
-  min-height: 0;
-  justify-content: flex-end;
-  gap: 4px;
+  display: contents !important;
 }
 
-.composer.is-compact .composer__lead {
-  display: flex;
-}
+.composer.is-compact .composer__trail { display: contents; }
+.composer.is-compact .composer-tool { order: -1; }
+.composer.is-compact .composer__lead { display: flex; order: 1; }
+.composer.is-compact .composer-action-button { order: 2; }
 
 .composer__lead,
 .composer__trail {
@@ -2321,7 +2320,7 @@ form.composer:focus-within [data-slot="input-group"] {
   height: var(--composer-control-size);
   max-height: var(--composer-control-size);
   padding-block: 0;
-  padding-inline: 0;
+  padding-inline: 4px;
   line-height: var(--composer-control-size);
   field-sizing: fixed;
   /* 单行态放不下时会转成展开态，过渡的一帧里也不露原生滚动箭头。 */
@@ -2342,12 +2341,26 @@ form.composer:focus-within [data-slot="input-group"] {
   max-height: var(--composer-text-max);
   line-height: 1.5;
   padding-block: 2px;
-  padding-inline-end: 8px;
+  /* 1px 边框 + 控件内距 + 起始内距落到 --composer-text-inset，输入文字与阅读竖线对齐。 */
+  padding-inline: calc(var(--composer-text-inset) - 1px - var(--composer-control-inset)) 8px;
 }
 
-/* 展开后模型与附件、发送仍在右侧，与单行时同一位置，不跳到左边。 */
+/* 两行：回形针留在左下角，「项目」、模型与发送在右下角，与单行时左右关系不变。 */
 .composer.is-expanded .composer__bar {
-  justify-content: flex-end;
+  display: grid !important;
+  grid-template-columns: var(--composer-control-size) minmax(0, 1fr) var(--composer-control-size);
+  column-gap: 6px;
+}
+
+.composer.is-expanded .composer__lead { grid-column: 2; grid-row: 1; justify-self: end; max-width: 100%; }
+.composer.is-expanded .composer__trail { display: contents; }
+.composer.is-expanded .composer-tool { grid-column: 1; grid-row: 1; }
+.composer.is-expanded .composer-action-button { grid-column: 3; grid-row: 1; }
+
+/* 按钮与卡片同心：18 − 5 − 1 = 12。 */
+.composer .composer-tool,
+.composer .composer-action-button {
+  border-radius: var(--ak-radius-md);
 }
 
 .composer textarea::placeholder {
@@ -2391,7 +2404,7 @@ form.composer:focus-within [data-slot="input-group"] {
   max-width: calc(100% - 2 * var(--composer-text-inset));
   height: 24px;
   align-items: center;
-  border: 1px solid var(--composer-ring);
+  border: 1px solid color-mix(in oklab, var(--ak-ink-primary) 11%, transparent);
   border-radius: var(--ak-radius-full);
   padding-inline: 9px;
   color: var(--chat-faint, var(--ak-ink-muted));
@@ -3030,15 +3043,6 @@ form.composer:focus-within [data-slot="input-group"] {
     overflow-y: auto;
   }
 
-  /* 单行：工具行拆进同一行，回形针排在文字前，模型与发送在后。 */
-  .chat-main .composer.is-compact .composer__bar {
-    display: contents !important;
-  }
-
-  .chat-main .composer.is-compact .composer-tool { order: -1; }
-  .chat-main .composer.is-compact .composer__lead { order: 1; }
-  .chat-main .composer.is-compact .composer-action-button { order: 2; }
-
   /* 回形针中心离外缘 1 + 3 + 22，与输入文字左缘（17）大致同一竖线。 */
   .chat-main .composer.is-expanded .composer__bar {
     display: grid !important;
@@ -3068,7 +3072,7 @@ form.composer:focus-within [data-slot="input-group"] {
   .chat-main .composer.is-expanded .composer-tool {
     grid-column: 1;
     grid-row: 1;
-    border-radius: var(--ak-radius-full);
+    border-radius: var(--ak-radius-md);
     color: var(--chat-muted);
     background: transparent;
   }
@@ -3077,9 +3081,9 @@ form.composer:focus-within [data-slot="input-group"] {
   .chat-main .composer.is-expanded .composer-action-button {
     grid-column: 3;
     grid-row: 1;
-    /* 44px 热区里只画 36px 的圆，与胶囊同心（26 − 4 − 4 = 18），不至于比正文重一截。 */
+    /* 44px 热区里只画 36px 的方钮（透明边框 4px），画出的圆角 12 与卡片同心，不至于比正文重一截。 */
     border: 4px solid transparent;
-    border-radius: var(--ak-radius-full);
+    border-radius: calc(var(--ak-radius-md) + 4px);
     background-clip: padding-box;
   }
 
