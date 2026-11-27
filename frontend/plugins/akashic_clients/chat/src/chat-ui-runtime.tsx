@@ -5,6 +5,7 @@ import * as ReactDOMClient from "react-dom/client";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ChevronDown } from "lucide-react";
 import { copyText } from "./copy-text";
+import { GroupIconPicker } from "./group-icon";
 import { MarqueeText } from "./marquee-text";
 import { formatToolDuration, PreviewText, ToolDataValue } from "./tool-result-view";
 import {
@@ -110,6 +111,7 @@ const ChatUi = {
   HeaderMarkerActions,
   MarqueeText,
   ChoiceMenu,
+  GroupIconPicker,
   copyText,
   ToolText: PreviewText,
   ToolData: ToolDataValue,

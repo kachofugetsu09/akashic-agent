@@ -1,7 +1,9 @@
-import { ChevronDown, ChevronRight, FolderPlus, Plus, SlidersHorizontal } from "lucide-react";
+import { ChevronDown, ChevronRight, FolderPlus, Plus, SlidersHorizontal, Sparkles } from "lucide-react";
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import type { NavigationControls, NavigationForm, NavigationFormControls, NavigationGroup } from "@akashic/chat-ui-v1";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { GroupIcon } from "./group-icon";
 import { NavigationRowMenu, type NavigationRowAction } from "./navigation-row-menu";
 import { IconSwap } from "./icon-swap";
 import { SessionStatusLabel, SessionStatusMark, summarizeStatus, type SessionStatus } from "./session-status-mark";
@@ -56,7 +58,7 @@ export interface NavigationGroupsState {
   ready: boolean;
   /** 各数据源本次都从网络读到了分组（本机快照、等满期限都不算）；之前找不到的置顶分组算「还在读」，不算不可用。 */
   settled: boolean;
-  active: (GroupRef & { label: string }) | null;
+  active: (GroupRef & { label: string; icon?: string }) | null;
   reload: () => void;
   startChat: (ref: GroupRef) => void;
 }
@@ -66,8 +68,14 @@ function checkGroups(value: unknown): NavigationGroup[] {
   return value.map((item: unknown) => {
     const row = typeof item === "object" && item !== null ? item as Partial<Record<keyof NavigationGroup, unknown>> : null;
     if (!row || typeof row.id !== "string" || !row.id || typeof row.label !== "string"
-      || (row.detail !== undefined && typeof row.detail !== "string")) throw new Error("分组记录无效");
-    return { id: row.id, label: row.label, ...(row.detail ? { detail: row.detail } : {}) };
+      || (row.detail !== undefined && typeof row.detail !== "string")
+      || (row.icon !== undefined && typeof row.icon !== "string")) throw new Error("分组记录无效");
+    return {
+      id: row.id,
+      label: row.label,
+      ...(row.detail ? { detail: row.detail } : {}),
+      ...(row.icon ? { icon: row.icon } : {}),
+    };
   });
 }
 
@@ -253,13 +261,89 @@ export function GroupNavigation({
   </section>;
 }
 
-/** 分组图标。scope.badge 的标签带 data-scope-line（double / dashed / dotted）时，样式把线型换到这枚图标上，标签文字只留给读屏。 */
-export function FolderMark() {
-  return <svg className="folder-mark" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-    strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-    <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
-    <rect className="folder-mark__inner" x="5.5" y="9.5" width="13" height="7" rx="1" />
-  </svg>;
+/** 分组图标：默认 folder，支持插件传入 kubai-icons/line 图标名。 */
+export function FolderMark({ icon, size = 18, trigger = "parent" }: {
+  icon?: string;
+  size?: number;
+  trigger?: "hover" | "parent" | "none";
+}) {
+  return <GroupIcon name={icon} size={size} trigger={trigger} />;
+}
+
+interface ScopeMemorySummary {
+  label: string;
+  description: string;
+  tone: "global" | "isolated" | "off" | "none" | "muted";
+}
+
+function readScopeMemory(button: HTMLElement | null): ScopeMemorySummary | null {
+  const slot = button?.querySelector<HTMLElement>('.plugin-ui-slot[data-slot="scope.badge"]');
+  if (!slot) return null;
+  const badge = slot.querySelector<HTMLElement>("[data-scope-line], small, span");
+  const text = badge?.textContent?.trim() ?? "";
+  if (!text) {
+    return {
+      label: "共享全局记忆",
+      description: "对话参与全局学习，也能回忆其他对话。",
+      tone: "global",
+    };
+  }
+  const line = badge?.getAttribute("data-scope-line");
+  const rawTitle = badge?.getAttribute("title")?.trim() ?? "";
+  let label = text;
+  let description = "";
+  const sep = rawTitle.indexOf("：");
+  if (sep > 0) {
+    label = rawTitle.slice(0, sep).trim() || text;
+    description = rawTitle.slice(sep + 1).trim();
+  } else if (rawTitle && rawTitle !== text) {
+    description = rawTitle;
+  }
+  const tone = line === "double" ? "isolated"
+    : line === "dashed" ? "off"
+    : line === "dotted" ? "none"
+    : "muted";
+  return { label, description, tone };
+}
+
+function GroupHoverCard({ anchor, group, memory, portalTarget }: {
+  anchor: DOMRect;
+  group: NavigationGroup;
+  memory: ScopeMemorySummary | null;
+  portalTarget: Element;
+}) {
+  const cardWidth = 264;
+  const gap = 10;
+  const margin = 12;
+  const fitsRight = anchor.right + gap + cardWidth + margin <= window.innerWidth;
+  const left = fitsRight
+    ? anchor.right + gap
+    : Math.max(margin, Math.min(anchor.left, window.innerWidth - cardWidth - margin));
+  const estHeight = (memory ? 76 : 36) + (group.detail ? 44 : 0) + 52;
+  const top = Math.max(margin, Math.min(anchor.top - 4, window.innerHeight - estHeight - margin));
+  return createPortal(
+    <div className="group-hover-card" role="tooltip" style={{ left, top }}>
+      <div className="group-hover-card__head">
+        <span className="group-hover-card__icon">
+          <GroupIcon name={group.icon} size={16} trigger="none" />
+        </span>
+        <strong className="group-hover-card__title">{group.label}</strong>
+      </div>
+      {memory ? <div className="group-hover-card__section">
+        <div className="group-hover-card__kicker">
+          <span className={`group-hover-card__dot group-hover-card__dot--${memory.tone}`} aria-hidden="true" />
+          <span className="group-hover-card__policy">{memory.label}</span>
+        </div>
+        {memory.description ? <p className="group-hover-card__desc">{memory.description}</p> : null}
+      </div> : null}
+      {group.detail ? <div className="group-hover-card__section group-hover-card__dir">
+        <span className="group-hover-card__label">默认目录</span>
+        <code className="group-hover-card__path">{group.detail}</code>
+      </div> : null}
+      <div className="group-hover-card__foot">右键可更换图标或查看更多设置</div>
+    </div>,
+    portalTarget,
+  );
 }
 
 /** 插件给分组行的动作，每项打开一个宿主对话框。 */
@@ -267,7 +351,9 @@ export function groupFormActions(source: NavigationGroupSource, group: Navigatio
   onOpenForm: (request: GroupFormRequest) => void): NavigationRowAction[] {
   return (source.provider.actions?.(group) ?? []).map((action) => ({
     label: action.label,
-    icon: <SlidersHorizontal size={18} aria-hidden="true" />,
+    icon: action.label.includes("图标")
+      ? <Sparkles size={18} aria-hidden="true" />
+      : <SlidersHorizontal size={18} aria-hidden="true" />,
     onSelect: () => onOpenForm({ source, form: action.form, group }),
   }));
 }
@@ -375,23 +461,74 @@ export function GroupNavigationRow({
     return activeItem && !head.includes(activeItem)
       ? [...head.slice(0, GROUP_SESSION_LIMIT - 1), activeItem] : head;
   }, [items, truncated, allShown]);
+  const openButtonRef = useRef<HTMLButtonElement>(null);
+  const hoverTimerRef = useRef<number | null>(null);
+  const [hoverCard, setHoverCard] = useState<{ anchor: DOMRect; memory: ScopeMemorySummary | null; portalTarget: Element } | null>(null);
+  const clearHoverCard = useCallback(() => {
+    if (hoverTimerRef.current !== null) {
+      window.clearTimeout(hoverTimerRef.current);
+      hoverTimerRef.current = null;
+    }
+    setHoverCard(null);
+  }, []);
+  const scheduleHoverCard = useCallback((pointerType: string) => {
+    if (pointerType && pointerType !== "mouse") return;
+    if (!window.matchMedia("(hover: hover) and (pointer: fine)").matches) return;
+    if (hoverTimerRef.current !== null) window.clearTimeout(hoverTimerRef.current);
+    hoverTimerRef.current = window.setTimeout(() => {
+      hoverTimerRef.current = null;
+      const button = openButtonRef.current;
+      if (!button || !button.isConnected) return;
+      // 右键菜单或对话框打开时不叠出浮卡。
+      if (button.closest("[data-state='open']") || document.querySelector("[role='menu'], [role='dialog']")) return;
+      setHoverCard({
+        anchor: button.getBoundingClientRect(),
+        memory: readScopeMemory(button),
+        portalTarget: button.closest(".akashic-chat") ?? document.body,
+      });
+    }, 240);
+  }, []);
+  useEffect(() => {
+    if (!hoverCard) return;
+    const hide = () => clearHoverCard();
+    window.addEventListener("scroll", hide, true);
+    window.addEventListener("resize", hide);
+    window.addEventListener("keydown", hide);
+    return () => {
+      window.removeEventListener("scroll", hide, true);
+      window.removeEventListener("resize", hide);
+      window.removeEventListener("keydown", hide);
+    };
+  }, [hoverCard, clearHoverCard]);
+  useEffect(() => () => clearHoverCard(), [clearHoverCard]);
+
   return <div ref={hostRef} className={`navigation-group ${active ? "active" : ""}`} data-group-key={groupKey(groupRef)}>
     <NavigationRowMenu title={group.label} className="navigation-group__row" actions={[
       { label: "新建对话", icon: <Plus size={18} aria-hidden="true" />, onSelect: onNewChat },
       ...(actions ?? []),
     ]}>
       {/* 搜索时只停用折叠，不禁用按钮：它是这一行唯一的键盘入口，行菜单（含"新建对话"）要靠它 Shift+F10 打开。 */}
-      <button type="button" className="navigation-group__open" data-row-primary="" onClick={searching ? undefined : onToggle}
-        aria-expanded={open} aria-disabled={searching || undefined}
-        title={`${open ? "收起" : "展开"} ${group.label}${group.detail ? ` · ${group.detail}` : ""}`}>
-        <IconSwap state={Boolean(collapsedStatus)} a={<FolderMark />}
+      <button ref={openButtonRef} type="button" className="navigation-group__open" data-row-primary="" data-kubai-trigger=""
+        onClick={searching ? undefined : () => { clearHoverCard(); onToggle(); }}
+        onPointerEnter={(event) => scheduleHoverCard(event.pointerType)}
+        onPointerLeave={clearHoverCard}
+        onPointerDown={clearHoverCard}
+        onContextMenu={clearHoverCard}
+        aria-expanded={open} aria-disabled={searching || undefined}>
+        <IconSwap state={Boolean(collapsedStatus)} a={<FolderMark icon={group.icon} />}
           b={<span className="navigation-group__icon"><SessionStatusMark status={collapsedStatus ?? lastStatus} /></span>} />
         <SessionStatusLabel status={collapsedStatus} />
         <span className="navigation-group__name"><MarqueeText>{group.label}</MarqueeText></span>
-        {/* 其他插件给这个取值的短标签，例如记忆范围；只放文字，没有插件时不占位。 */}
+        {/* 其他插件给这个取值的短标签，例如记忆范围；行内仅保留给读屏与悬停卡读取，不挤占名称宽度。 */}
         <PluginUiSlot name="scope.badge" scope={{ dimension: groupRef.dimension, value: groupRef.id }} quiet />
         <ChevronRight size={14} aria-hidden="true" className="navigation-group__chevron" />
       </button>
+      {hoverCard ? <GroupHoverCard
+        anchor={hoverCard.anchor}
+        group={group}
+        memory={hoverCard.memory}
+        portalTarget={hoverCard.portalTarget}
+      /> : null}
       {/* 桌面端悬停或聚焦项目行时浮现，触屏常驻：无需先展开文件夹即可一步在该项目新建对话。 */}
       <button type="button" className="navigation-section__icon navigation-group__new-chat" aria-label={`在 ${group.label} 中新建对话`}
         data-tip="新建对话" tabIndex={-1} onClick={onNewChat}>

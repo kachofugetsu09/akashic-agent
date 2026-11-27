@@ -163,6 +163,8 @@ export interface NavigationGroup {
   label: string;
   /** 悬停时的补充说明，例如固定目录。 */
   detail?: string;
+  /** 可选图标标识（由宿主从精选 kubai-icons/line 集渲染）；省略或未识别时回退为默认文件夹。 */
+  icon?: string;
 }
 
 /** 分组新建或分组动作的对话框：宿主给外框、标题与按钮，插件在表单区挂自己的内容。 */
@@ -539,3 +541,9 @@ export const ToolText: ComponentType<{ text: string; tail: boolean; className: s
 export const ToolData: ComponentType<{ value: unknown }>;
 export function formatDuration(durationMs: number): string;
 export function copyText(text: string): Promise<void>;
+/** 宿主的分组图标选择器：复用聊天宿主内置的 kubai-icons/line 精选集，插件无需各自打包图标运行时。 */
+export const GroupIconPicker: ComponentType<{
+  value: string | null;
+  onChange(icon: string | null): void;
+  disabled?: boolean;
+}>;

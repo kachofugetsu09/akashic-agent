@@ -19,6 +19,22 @@ const repoRoot = resolve(here, "..", "..", "..", "..");
 const shellOwned = new Set(["theme-runtime.ts", "material-react.tsx"].map((name) => resolve(repoRoot, "packages", "akashic-theme", "src", name)));
 const shellTheme = resolve(here, "src", "shell-theme.ts");
 
+function createKubaiLineChunks(): (id: string) => string | undefined {
+  const indexPath = resolve(repoRoot, "node_modules", "kubai-icons", "dist", "line", "icons.json");
+  const categoryByName = new Map<string, string>();
+  if (existsSync(indexPath)) {
+    const entries = JSON.parse(readFileSync(indexPath, "utf8")) as { name: string; category: string }[];
+    for (const entry of entries) categoryByName.set(entry.name, entry.category);
+  }
+  return (id: string) => {
+    const normalized = id.replaceAll("\\", "/");
+    const match = normalized.match(/\/node_modules\/kubai-icons\/dist\/line\/icons\/([^/]+)\.js$/);
+    if (!match) return undefined;
+    const category = categoryByName.get(match[1]) ?? "misc";
+    return `kubai-line-${category}`;
+  };
+}
+
 // 主题状态与 Material 组件（自定义元素全文档只能登记一次）归外壳所有：解析到它们的导入都改用外壳运行时那一份。
 function useShellTheme(): Plugin {
   return {
@@ -180,6 +196,8 @@ export default defineConfig({
         chunkFileNames: (chunk) => chunk.name === "mount" ? "chat-app-mount.js" : "chat-app-[name]-[hash].js",
         // 合并出的样式在 Vite 里叫 style.css；按 ?url 引用的样式（如 katex）保留带哈希的文件名，由使用处自己加载。
         assetFileNames: (asset) => asset.names.includes("style.css") ? "chat-app.css" : "[name]-[hash][extname]",
+        // kubai-icons/line 按官方 26 个分类合成分类懒加载分块，避免 1285 枚图标散落成上千个碎片文件。
+        manualChunks: createKubaiLineChunks(),
       },
     },
   },

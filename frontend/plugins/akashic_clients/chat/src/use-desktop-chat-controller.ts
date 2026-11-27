@@ -1407,7 +1407,7 @@ export function useDesktopChatController() {
     const active = groupSections.sections.flatMap(({ source, groups }) => {
       const id = activeScope?.[source.provider.dimension];
       const group = id ? groups.find((item) => item.id === id) : undefined;
-      return group ? [{ dimension: source.provider.dimension, id: group.id, label: group.label }] : [];
+      return group ? [{ dimension: source.provider.dimension, id: group.id, label: group.label, ...(group.icon ? { icon: group.icon } : {}) }] : [];
     })[0] ?? null;
     return { ...groupSections, active, startChat: startGroupChat };
   }, [activeScope, groupSections, startGroupChat]);
