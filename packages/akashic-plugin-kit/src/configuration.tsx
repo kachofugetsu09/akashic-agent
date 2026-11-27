@@ -57,7 +57,7 @@ export function Field({label, name, value, change, type = "text", hint, required
 }) {
   const shown = typeof value === "string" || (typeof value === "number" && !Number.isNaN(value)) ? value : "";
   return <label className="config-field"><span>{label}</span><input name={name} type={type} inputMode={inputMode} autoComplete={type === "password" ? "new-password" : "off"} required={required}
-    min={min} max={max} step={step} value={shown} placeholder={fallback === undefined || fallback === null ? undefined : `默认：${String(fallback)}`}
+    min={min} max={max} step={step} value={shown} placeholder={fallback === undefined || fallback === null || fallback === "" ? undefined : `默认：${String(fallback)}`}
     onChange={event => change(name, type === "number" ? (event.target.value === "" ? null : event.target.valueAsNumber) : event.target.value)} />{hint && <small>{hint}</small>}</label>;
 }
 
