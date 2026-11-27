@@ -61,6 +61,14 @@ OperationSpec(
 
 不允许通配，也没有欠账清单。
 
+## 模型工具要登记理由
+
+`TOOLS.register(name=..., parameters=...)` 注册的模型工具不经过 self。每个都要写进清单的 `model_tools`（键为 `tool:<插件>/<名字>`，名字不是字面量时写源码表达式），说明它为什么是工具而不是 operation：例如依赖调用所在消息或轮次、属于模型执行机制，或者是逐步操作设备的执行器。
+
+用户在界面上能做的动作（打开、定位、切换视图）先做成 operation，工具只当作调用同一段领域代码的模型入口，并在理由里写明对应哪个 operation。例如 `open_document` 与 `file_viewer.open` 共用 Navigator（#2287）。
+
+服务端向前端推送视图指令的通道也一样：不能只用一条 `transport` 豁免了事，要有一个 operation 读得到这个通道的当前状态，并镜像它（例如 `file_viewer.state` 镜像 `file_viewer/live`）。
+
 ## 本地自查
 
 ```bash

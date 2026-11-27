@@ -242,5 +242,17 @@
       "decision": ""
     }
   },
-  "agent_only": {}
+  "agent_only": {},
+  "model_tools": {
+    "tool:codemode/codemode": {"reason": "在沙箱里组合调用模型已获授的工具，属于模型执行机制；界面上没有对应动作"},
+    "tool:content_view/read_content": {"reason": "按消息与片段回读本会话的工具结果原文，补全模型上下文；界面直接渲染同一份结果"},
+    "tool:conversation/read_session": {"reason": "回读当前会话引用过的其他会话，依赖调用所在消息核对引用关系；用户直接打开会话即可看到，self 侧有 conversation.session_open"},
+    "tool:files/prototype.name": {"reason": "执行主机上的读写编辑文件工具组，按调用上下文解析会话工作目录并走工具授权；界面的文件浏览由 file_viewer.list/read 镜像"},
+    "tool:plugin_update/plugin_install": {"reason": "按调用所在会话发起插件安装并回报挂载结果，走工具授权；用户侧的安装在设置页与 pkg 命令"},
+    "tool:self_cli/self": {"reason": "self 命令本身的模型入口，所有 operation 经它执行"},
+    "tool:shell/name": {"reason": "执行主机 shell 工具组（运行、读输出、停止），按会话工作目录与工具授权执行；用户的交互终端见 ADR-0122"},
+    "tool:skills/load_skill": {"reason": "把技能正文读进模型上下文，属于模型执行机制；技能清单由 skills.skills.list 镜像"},
+    "tool:tool_search/load_tools": {"reason": "按需加载工具组 schema，属于模型执行机制；界面上没有对应动作"},
+    "tool:working_directory/set_working_directory": {"reason": "切换会话工作目录须独占一个工具批次（批次内其他调用按旧目录解析），只能作为工具调用；当前目录由 working_directory.current 镜像"}
+  }
 }

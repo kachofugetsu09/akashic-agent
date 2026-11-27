@@ -5,6 +5,8 @@
   - Agent 入口：每个 `OperationSpec(operation_id=..., mirrors=(...))` 与 `QueryMirror(...)` 声明。
 每个用户入口必须恰好被一个 operation 镜像，或写进 explicit_exemption（禁止通配，须写类型与理由）；
 每个 operation 必须镜像至少一个用户入口，或写进 agent_only（须写理由）。
+模型工具（`TOOLS.register(name=..., parameters=...)`）绕开 self 直接给模型用，每个都要写进 model_tools 并写明理由，
+防止界面上的动作改写成孤立工具后 self 里没有（#2287）。
 没有欠账清单：新入口在同一个 PR 里镜像或豁免，否则 CI 失败。
 """
 from __future__ import annotations
@@ -42,6 +44,7 @@ class ParityManifest(TypedDict):
     version: int
     explicit_exemption: dict[str, ExemptionEntry]
     agent_only: dict[str, AgentOnlyEntry]
+    model_tools: dict[str, AgentOnlyEntry]
 
 
 _DYNAMIC_RPC = "dynamic-rpc:"
@@ -55,6 +58,7 @@ class Surface:
     operations: dict[str, tuple[str, ...]] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
     rpc_tables: set[str] = field(default_factory=set)
+    tools: set[str] = field(default_factory=set)
 
 
 def _eval_str(expr: ast.expr, consts: dict[str, str]) -> str | None:
@@ -296,6 +300,18 @@ def _operation_decl(node: ast.AST, plugin: str, rel: str, errors: list[str]) -> 
     return None
 
 
+# 模型工具注册：带 name= 与 parameters= 的 .register(...) → tool:<插件>/<名字>；名字不是字面量时记源码表达式。
+def _tool_decl(node: ast.AST, plugin: str, consts: dict[str, str]) -> str | None:
+    if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "register"):
+        return None
+    keywords = {kw.arg: kw.value for kw in node.keywords}
+    name = keywords.get("name")
+    if name is None or "parameters" not in keywords:
+        return None
+    literal = _eval_str(name, consts)
+    return f"tool:{plugin}/{literal if literal is not None else ast.unparse(name)}"
+
+
 # operation 的命令路径（字面量元组）；拿不到时返回 None，由运行期注册兜底。
 def _op_path(node: ast.Call) -> tuple[str, ...] | None:
     name = _call_name(node)
@@ -350,6 +366,9 @@ def collect_surface(plugins_dir: Path) -> Surface:
         }
         for node in ast.walk(tree):
             surface.entries.update(_user_entries(node, plugin, consts, plugin in ui_plugins, actions, surface.errors, tables))
+            tool = _tool_decl(node, plugin, consts)
+            if tool is not None:
+                surface.tools.add(tool)
             decl = _operation_decl(node, plugin, rel, surface.errors)
             if decl is None:
                 continue
@@ -418,6 +437,15 @@ def validate_parity(surface: Surface, manifest: ParityManifest) -> list[str]:
         f"agent_only 指向不存在的 operation: {op_id}"
         for op_id in sorted(set(agent_only) - set(surface.operations))
     )
+
+    # 4. 模型工具：每个都要登记理由（为什么不经 self），清单里不能留已删掉的工具。
+    tools = manifest["model_tools"]
+    for tool_id in sorted(surface.tools):
+        if tool_id not in tools:
+            errors.append(f"模型工具未登记 model_tools（界面动作应收进 self 的 operation）: {tool_id}")
+        elif not tools[tool_id]["reason"].strip():
+            errors.append(f"model_tools 缺少理由: {tool_id}")
+    errors.extend(f"model_tools 指向不存在的工具: {tool_id}" for tool_id in sorted(set(tools) - surface.tools))
     return errors
 
 
@@ -429,20 +457,22 @@ def _load_one(path: Path) -> ParityManifest:
         version=int(raw["version"]),
         explicit_exemption=dict(raw.get("explicit_exemption", {})),
         agent_only=dict(raw.get("agent_only", {})),
+        model_tools=dict(raw.get("model_tools", {})),
     )
 
 
 def load_manifest(paths: list[Path]) -> ParityManifest:
     """合并 Core 与 extra 的清单；同一条目在两份清单出现即视为冲突。"""
-    merged = ParityManifest(version=3, explicit_exemption={}, agent_only={})
+    merged = ParityManifest(version=3, explicit_exemption={}, agent_only={}, model_tools={})
     for path in paths:
         part = _load_one(path)
         clash = (set(merged["explicit_exemption"]) & set(part["explicit_exemption"])) | (
-            set(merged["agent_only"]) & set(part["agent_only"]))
+            set(merged["agent_only"]) & set(part["agent_only"])) | (set(merged["model_tools"]) & set(part["model_tools"]))
         if clash:
             raise SystemExit(f"清单条目重复 ({path}): {sorted(clash)}")
         merged["explicit_exemption"].update(part["explicit_exemption"])
         merged["agent_only"].update(part["agent_only"])
+        merged["model_tools"].update(part["model_tools"])
     return merged
 
 
@@ -455,6 +485,7 @@ def run_self_test(surface: Surface, manifest: ParityManifest) -> int:
         ("operation 无对应入口", Surface(set(surface.entries), {**surface.operations, "probe.orphan": ()}), manifest, "probe.orphan"),
         ("入口被两个 operation 镜像", Surface(set(surface.entries), {**surface.operations, "probe.a": (some_entry,), "probe.b": (some_entry,)}), manifest, "须一对一"),
         ("通配豁免", surface, {**manifest, "explicit_exemption": {**manifest["explicit_exemption"], "rpc:models/*": {"kind": "view_only", "reason": "probe", "decision": ""}}}, "禁止通配符条目"),
+        ("未登记模型工具", Surface(set(surface.entries), dict(surface.operations), tools=surface.tools | {"tool:probe/orphan"}), manifest, "tool:probe/orphan"),
     ]
     for label, probe_surface, probe_manifest, needle in cases:
         if not any(needle in msg for msg in validate_parity(probe_surface, probe_manifest)):
@@ -528,7 +559,7 @@ def main(argv: list[str] | None = None) -> int:
     stats = (
         f"用户入口={len(surface.entries)} operation={len(surface.operations)} "
         f"(镜像入口={len(mirrored)}, exempt={len(manifest['explicit_exemption'])}, "
-        f"agent_only={len(manifest['agent_only'])})"
+        f"agent_only={len(manifest['agent_only'])}, 模型工具={len(surface.tools)})"
     )
     if args.command == "report":
         for op_id, mirrors in sorted(surface.operations.items()):
