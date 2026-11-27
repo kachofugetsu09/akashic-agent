@@ -33,6 +33,8 @@ _PROGRESS = re.compile(r"^\((\d+)/(\d+)\) 正在安装 (\S+)$", re.M)
 _WRAPPER = '"$@"; code=$?; echo "$code" > "$0.tmp" && mv "$0.tmp" "$0"'
 
 
+_ARG = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+
 class InstallBusy(RuntimeError):
     pass
 
@@ -47,15 +49,37 @@ def pkg_command(*arguments: str) -> list[str]:
             "--workspace", os.environ["AKASHIC_WORKSPACE"], "--config", os.environ["AKASHIC_CORE_CONFIG"]]
 
 
-# 只保留含未装包的组与未装包。
-def uninstalled_groups(index: Row) -> list[Row]:
+# 只保留含未装包的组与未装包；私有源的包安装时要写成 来源/包名，记在 id 里，官方源的 id 就是包名。
+def uninstalled_groups(index: Row, source: Row | None = None) -> list[Row]:
+    private = source is not None and not source["official"]
+    prefix = f"{source['name']}/" if source is not None and private else ""
     groups: list[Row] = []
     for group in cast(list[Row], index["groups"]):
-        packages = [item for item in cast(list[Row], group["packages"]) if not item["installed"]]
+        packages = [{**item, "id": prefix + cast(str, item["name"])}
+                    for item in cast(list[Row], group["packages"]) if not item["installed"]]
         if packages:
-            groups.append({"id": group["id"], "title": group["title"], "description": group["description"],
-                           "required": group["required"], "packages": packages})
+            groups.append({"id": prefix + cast(str, group["id"]), "title": group["title"], "description": group["description"],
+                           "required": group["required"], "packages": packages,
+                           "source": None if source is None else source["name"], "private": private})
     return groups
+
+
+# 跑一条只读 pkg 命令并解析 JSON；超时杀掉整个进程组，失败带上最后一行原因。
+async def pkg_json(*arguments: str, timeout: float = LIST_TIMEOUT) -> object:
+    process = await asyncio.create_subprocess_exec(
+        *pkg_command(*arguments, "--json"), stdin=asyncio.subprocess.DEVNULL, start_new_session=True,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+    try:
+        out, err = await asyncio.wait_for(process.communicate(), timeout)
+    except TimeoutError as error:
+        raise RuntimeError(f"超过 {int(timeout)} 秒仍没有读到") from error
+    finally:
+        if process.returncode is None:
+            _kill_group(process.pid)
+            _ = await process.wait()
+    if process.returncode != 0:
+        raise RuntimeError((err.decode(errors="replace").strip().splitlines() or ["命令失败"])[-1])
+    return json.loads(out.decode())
 
 
 # 进程是否还在：以 kill(pid, 0) 为准；有 /proc（Linux）时再排除僵尸，没有（macOS）不当作已死。
@@ -86,24 +110,74 @@ class PackageInstaller:
     def _dir(self) -> Path:
         return Path(os.environ["AKASHIC_WORKSPACE"]) / "runtime" / "settings-install"
 
-    # 读取扩展包列表；失败时抛出带原因的 RuntimeError，由路由转成错误文字。
+    # 读取各来源的扩展包列表（官方在前）；官方读不到整体失败，私有源读不到只记在 unreachable 里。
     async def available(self) -> Row:
+        sources = await self.sources()
+        results = await asyncio.gather(*(pkg_json("groups", "--source", cast(str, source["name"])) for source in sources),
+                                       return_exceptions=True)
+        groups: list[Row] = []
+        unreachable: list[Row] = []
+        for source, result in zip(sources, results):
+            if isinstance(result, BaseException):
+                if source["official"]:
+                    raise result
+                unreachable.append({"source": source["name"], "error": str(result)})
+                continue
+            groups.extend(uninstalled_groups(cast(Row, result), source))
+        self._known = {cast(str, item["id"]) for group in groups for item in cast(list[Row], group["packages"])}
+        return {"groups": groups, "unreachable": unreachable, "first_install": await run_file_io(self._selecting)}
+
+    # ---- 来源与更新：都是 pkg 子命令，网页、Self-CLI 与 Agent 走同一套 ----
+
+    async def sources(self) -> list[Row]:
+        return cast(list[Row], await pkg_json("source", "list"))
+
+    async def add_source(self, name: str, url: str, token: str) -> list[Row]:
+        arguments = ("source", "add", name, url, *(("--token", token) if token else ()))
+        _ = await self._pkg_text(*arguments)
+        return await self.sources()
+
+    async def remove_source(self, name: str) -> list[Row]:
+        _ = await self._pkg_text("source", "remove", name)
+        return await self.sources()
+
+    async def _pkg_text(self, *arguments: str) -> str:
         process = await asyncio.create_subprocess_exec(
-            *pkg_command("groups", "--json"), stdin=asyncio.subprocess.DEVNULL, start_new_session=True,
+            *pkg_command(*arguments), stdin=asyncio.subprocess.DEVNULL, start_new_session=True,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-        try:
-            out, err = await asyncio.wait_for(process.communicate(), LIST_TIMEOUT)
-        except TimeoutError as error:
-            raise RuntimeError(f"超过 {int(LIST_TIMEOUT)} 秒仍没有读到") from error
-        finally:
-            if process.returncode is None:
-                _kill_group(process.pid)
-                _ = await process.wait()
+        out, err = await asyncio.wait_for(process.communicate(), LIST_TIMEOUT)
         if process.returncode != 0:
-            raise RuntimeError((err.decode(errors="replace").strip().splitlines() or ["命令失败"])[-1])
-        groups = uninstalled_groups(cast(Row, json.loads(out.decode())))
-        self._known = {cast(str, item["name"]) for group in groups for item in cast(list[Row], group["packages"])}
-        return {"groups": groups, "first_install": await run_file_io(self._selecting)}
+            raise ValueError((err.decode(errors="replace").strip().splitlines() or ["命令失败"])[-1])
+        return out.decode()
+
+    # 有更新的包按来源分好；连不上的私有源单独列出，不算没有更新。
+    async def updates(self) -> Row:
+        rows = cast(list[Row], await pkg_json("list", "--remote", timeout=120.0))
+        official = next(cast(str, item["name"]) for item in await self.sources() if item["official"])
+        label = lambda row: official if row["source"] == "extra" else cast(str, row["source"])  # noqa: E731
+        updates = [{"plugin_id": row["plugin_id"], "name": cast(str, row["plugin_id"]).partition("@")[0], "source": label(row),
+                    "version": row["version"], "head": row["head"], "remote_head": row["remote_head"]}
+                   for row in rows if row["status"] == "upgradable"]
+        unreachable = sorted({label(row) for row in rows if row["status"] == "unreachable"})
+        return {"updates": updates, "unreachable": unreachable, "official": official, "checked_at": time.time()}
+
+    # 升级任务与安装共用一个任务位：不给范围是全部来源，source 只升级一个来源，names 只升级这几个。
+    async def upgrade(self, source: str | None, names: list[str]) -> Row:
+        # 名字会拼进 pkg 命令行：只收包名/来源名的字符，"--source=x" 这类不能被当成选项。
+        if any(_ARG.fullmatch(item) is None for item in (*names, *((source,) if source is not None else ()))):
+            raise ValueError("包名或来源名不合法")
+        if self._claimed is not None:
+            raise InstallBusy(f"正在安装 {self._claimed}，请等它结束")
+        self._claimed = "插件更新"
+        try:
+            running = await run_file_io(self._running_task)
+            if running is not None:
+                raise InstallBusy(f"正在安装 {_title(running)}，请等它结束")
+            scope = names or [f"{source} 的全部插件" if source else "全部插件"]
+            argv = ("upgrade", *names, *(("--source", source) if source else ()))
+            return await self._spawn(scope, False, argv)
+        finally:
+            self._claimed = None
 
     def _pending(self) -> Path:
         return Path(os.environ["AKASHIC_WORKSPACE"]) / FIRST_INSTALL_PENDING
@@ -165,11 +239,12 @@ class PackageInstaller:
     async def decline(self) -> None:
         await run_file_io(lambda: self._pending().unlink(missing_ok=True))
 
-    async def _spawn(self, names: list[str], first: bool) -> Row:
+    async def _spawn(self, names: list[str], first: bool, argv: tuple[str, ...] = ()) -> Row:
         task_id = f"{time.time_ns():020d}"
         base = self._dir() / task_id
         await run_file_io(lambda: base.parent.mkdir(parents=True, exist_ok=True))
-        wrapper = ["sh", "-c", _WRAPPER, f"{base}.exit", *pkg_command("install", *names, "--timeout", str(PKG_WAIT))]
+        command = argv or ("install", *names)
+        wrapper = ["sh", "-c", _WRAPPER, f"{base}.exit", *pkg_command(*command, "--timeout", str(PKG_WAIT))]
         with open(f"{base}.log", "wb") as log:
             process = await asyncio.create_subprocess_exec(
                 *wrapper, stdin=asyncio.subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)

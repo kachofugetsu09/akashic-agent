@@ -2,8 +2,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { WebHostContextV1 } from "@akashic/web-ui-v1";
 import { kickInstallHold } from "./install-hold";
 
-export interface Package { name: string; desc: string; requires: string[]; needs: string[]; size_bytes: number }
-export interface Group { id: string; title: string; description: string; packages: Package[] }
+/** id 是安装时用的名字：官方源就是包名，私有源是 来源/包名。 */
+export interface Package { id: string; name: string; desc: string; requires: string[]; needs: string[]; size_bytes: number }
+export interface Group { id: string; title: string; description: string; packages: Package[]; source: string | null; private: boolean }
 export interface Outcome { name: string; result: string; detail: string }
 export interface Task {
   name: string; names: string[]; state: "running" | "succeeded" | "failed" | "unknown"; exit_code: number | null; first_install: boolean;
@@ -47,6 +48,7 @@ export function InstallablePackages({ http, active, onInstalled }: {
   onInstalled: () => Promise<void>;
 }): React.ReactElement | null {
   const [groups, setGroups] = useState<Group[] | null>(null);
+  const [unreachable, setUnreachable] = useState<{ source: string; error: string }[]>([]);
   const [error, setError] = useState("");
   const [task, setTask] = useState<Task | null>(null);
   const [failure, setFailure] = useState("");
@@ -59,8 +61,8 @@ export function InstallablePackages({ http, active, onInstalled }: {
   // 状态读取串行：上一次还没回来就不再发，避免慢回包互相淘汰。
   const polling = useRef(false);
 
-  const load = useCallback(() => call<{ groups: Group[] }>(http, "/api/dashboard/plugins/installable")
-    .then((body) => { setGroups(body.groups); setError(""); }, (reason: unknown) => setError(reason instanceof Error ? reason.message : String(reason))), [http]);
+  const load = useCallback(() => call<{ groups: Group[]; unreachable?: { source: string; error: string }[] }>(http, "/api/dashboard/plugins/installable")
+    .then((body) => { setGroups(body.groups); setUnreachable(body.unreachable ?? []); setError(""); }, (reason: unknown) => setError(reason instanceof Error ? reason.message : String(reason))), [http]);
   const poll = useCallback(async () => {
     if (polling.current) return;
     polling.current = true;
@@ -112,21 +114,24 @@ export function InstallablePackages({ http, active, onInstalled }: {
       <h4>可安装 <span>{groups.reduce((sum, group) => sum + group.packages.length, 0)}</span></h4>
       {failure && <p className="shell-inventory-error" role="alert">{failure}</p>}
       {groups.map((group) => <div key={group.id} className="shell-installable-group">
-        <h5>{group.title}{group.description && <small>{group.description}</small>}</h5>
+        <h5><span>{group.title}{group.private && <span className="shell-source-chip">{group.source}</span>}</span>
+          {group.description && <small>{group.description}</small>}</h5>
         <ul className="shell-inventory-rows">
           {group.packages.map((pkg) => {
             const meta = [sizeText(pkg.size_bytes), ...pkg.needs.map((need) => `需要 ${needText(need)}`),
               ...(pkg.requires.length ? [`会一并安装 ${pkg.requires.join("、")}`] : [])].filter(Boolean);
-            const mine = running && !!task?.names.includes(pkg.name);
-            return <li key={pkg.name} className="shell-installable-row">
+            const mine = running && !!task?.names.includes(pkg.id);
+            return <li key={pkg.id} className="shell-installable-row">
               <span className="shell-inventory-name"><strong>{pkg.name}</strong>
                 <small>{pkg.desc}</small>{meta.length > 0 && <small>{meta.join(" · ")}</small>}</span>
-              <button type="button" disabled={running || submitting} aria-busy={mine} onClick={() => void install(pkg.name)}>
+              <button type="button" disabled={running || submitting} aria-busy={mine} onClick={() => void install(pkg.id)}>
                 {mine ? "安装中…" : "安装"}</button>
             </li>;
           })}
         </ul>
       </div>)}
     </section>}
+    {unreachable.map((item) => <p key={item.source} className="shell-installable-note" role="status">
+      读不到私有源 {item.source} 的包列表：{item.error}</p>)}
   </>;
 }

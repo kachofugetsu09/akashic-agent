@@ -51,6 +51,23 @@ async def register_ops(ctx: Context, service: PluginInventory) -> None:
             raise ValueError("--names 须为包名的 JSON 数组")
         return await installer.start([str(name) for name in items], bool(req.args.get("first_install", False)))
 
+    async def upgrade(req: OperationRequest) -> Row:
+        names = req.args.get("names") or []
+        if not isinstance(names, list) or not all(isinstance(name, str) for name in cast(list[object], names)):
+            raise ValueError("--names 须为包名的 JSON 数组")
+        source = req.args.get("source")
+        return await installer.upgrade(None if source is None else str(source), [str(name) for name in cast(list[object], names)])
+
+    async def sources(_req: OperationRequest) -> Row:
+        return {"sources": await installer.sources()}
+
+    async def add_source(req: OperationRequest) -> Row:
+        token = req.args.get("token")
+        return {"sources": await installer.add_source(str(req.args["name"]), str(req.args["url"]), "" if token is None else str(token))}
+
+    async def remove_source(req: OperationRequest) -> Row:
+        return {"sources": await installer.remove_source(str(req.args["name"]))}
+
     async def decline(_req: OperationRequest) -> Row:
         await installer.decline()
         return {"first_install": False}
@@ -71,6 +88,21 @@ async def register_ops(ctx: Context, service: PluginInventory) -> None:
                       mirrors=("http:shell_ui:GET /api/dashboard/plugins/install",)),
         OperationSpec("shell_ui.decline_first_install", ("plugin", "first-install", "decline"), "首装只用核心，不装扩展包", _guarded("已跳过首装挑选", decline),
                       mirrors=("http:shell_ui:DELETE /api/dashboard/plugins/first-install",)),
+        OperationSpec("shell_ui.updates", ("plugin", "updates"), "检查各来源有更新的插件（联网）", _guarded("更新检查完成", lambda _req: installer.updates()),
+                      mirrors=("http:shell_ui:GET /api/dashboard/plugins/updates",)),
+        OperationSpec("shell_ui.upgrade", ("plugin", "upgrade"), "后台更新插件：不给范围是全部来源，与安装共用任务位", _guarded("更新任务已开始", upgrade), (
+            OptionSpec("source", "只更新这个来源（pkg source list 的名称）"),
+            OptionSpec("names", "只更新这些包，包名 JSON 数组", "json"),
+        ), mirrors=("http:shell_ui:POST /api/dashboard/plugins/upgrade",)),
+        OperationSpec("shell_ui.sources", ("plugin", "source", "list"), "列出插件来源：官方在前，私有源按登记顺序", _guarded("来源已读取", sources),
+                      mirrors=("http:shell_ui:GET /api/dashboard/plugins/sources",)),
+        OperationSpec("shell_ui.add_source", ("plugin", "source", "add"), "登记私有源（先确认地址有 index 分支）", _guarded("私有源已添加", add_source), (
+            OptionSpec("name", "来源名称，也是插件 ID 的后缀", required=True), OptionSpec("url", "仓库地址", required=True),
+            OptionSpec("token", "私有仓库的只读 token"),
+        ), mirrors=("http:shell_ui:POST /api/dashboard/plugins/sources",)),
+        OperationSpec("shell_ui.remove_source", ("plugin", "source", "remove"), "移除私有源（已装的包保留）", _guarded("私有源已移除", remove_source), (
+            OptionSpec("name", "来源名称", required=True),
+        ), mirrors=("http:shell_ui:DELETE /api/dashboard/plugins/sources/{name}",)),
         OperationSpec("shell_ui.runtime_version", ("runtime", "version"), "读取运行版本、部署记录与宿主桥状态",
                       _guarded("运行版本已读取", lambda _req: service.read_runtime_version()),
                       mirrors=("http:shell_ui:GET /api/dashboard/runtime-version",)),
