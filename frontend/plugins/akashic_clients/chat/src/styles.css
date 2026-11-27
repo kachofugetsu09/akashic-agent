@@ -2201,6 +2201,11 @@ input {
   .composer { corner-shape: superellipse(1.4); }
 }
 
+/* 暗色下纸面比卡片亮，没有描边时卡片会沉下去：改用高一档的纸面，卡片比页面浅一档（OpenMinis 暗色同理）。 */
+@supports (color: light-dark(#000, #fff)) {
+  .composer { background: light-dark(var(--chat-lift, var(--ak-paper-editing)), var(--ak-paper-raised)); }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .composer {
     transition-duration: 0ms;
