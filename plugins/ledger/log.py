@@ -581,6 +581,28 @@ class MessageLog:
             self._has_owner_records = True
         return OwnerStore(self, name)
 
+    # 插件换来源后 owner 随 ID 改名：旧 owner 与它的子空间整体改归新 owner；新 owner 已有同键不同内容时拒绝并回滚。
+    def adopt_owner(self, old: str, new: str) -> int:
+        match = "(owner = ? OR substr(owner, 1, ?) = ?)"
+        arguments = (old, len(old) + 1, old + ":")
+        renamed = f"? || substr(owner, {len(old) + 1})"
+
+        def move() -> int:
+            conflicts = self._connection.execute(
+                f"""SELECT o.owner, o.key FROM owner_records AS o
+                    JOIN owner_records AS n ON n.owner = ? || substr(o.owner, {len(old) + 1}) AND n.key = o.key
+                    WHERE (o.owner = ? OR substr(o.owner, 1, ?) = ?)
+                      AND (n.version IS NOT o.version OR n.value IS NOT o.value)""",
+                (new, *arguments)).fetchall()
+            if conflicts:
+                raise MessageConflict(f"{new} 已有不同内容的同键记录，拒绝覆盖: {[tuple(row) for row in conflicts[:3]]}")
+            moved = self._connection.execute(
+                f"UPDATE OR IGNORE owner_records SET owner = {renamed} WHERE {match}", (new, *arguments)).rowcount
+            _ = self._connection.execute(f"DELETE FROM owner_records WHERE {match}", arguments)
+            return moved
+
+        return self._write(move)
+
     def ensure_session(
         self, session_id: str, attributes: SessionAttributes, *,
         initializers: tuple[tuple[Store, Callable[[str, SessionAttributes, Transaction], None]], ...] = (),
