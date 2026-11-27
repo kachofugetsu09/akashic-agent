@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { WebHostContextV1, WebResource } from "@akashic/web-ui-v1";
-import { markup } from "./brand";
+import { markup } from "@akashic/plugin-kit/brand";
 import { InstallablePackages } from "./plugin-installable";
 
 type Phase = "active" | "pending" | "failed" | "disabled" | "stopping" | "loading";

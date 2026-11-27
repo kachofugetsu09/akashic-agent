@@ -7,6 +7,7 @@ __pycache__
 *.pyc
 node_modules
 frontend/**/node_modules
+plugins/**/node_modules
 docker/debug/profiles
 docker/debug/reports
 static

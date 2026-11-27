@@ -912,11 +912,16 @@ def _scanned_roots(roots: list[str], files: dict[str, str]) -> set[str]:
     return {root for root in roots if any(rel.startswith(f"{root}/") for rel in files)}
 
 
-# R13：前端源码按 DSH 的方式归属——应用和模块都在 frontend/plugins/<插件>/ 下，
-# 共享的只能是 packages/ 里声明了 akashic.kind 的包（合同包另须写明提供它的插件）。
+# R13：前端源码归属与相对导入边界——
+# - 宿主外壳留在 frontend/plugins/<壳>/，业务插件前端归属到 plugins/<插件>/web/（迁移期允许旧 frontend/plugins/<插件>/，但禁止双份并存）；
+# - plugins/<插件>/web/ 内禁止通过相对路径穿透到 packages/.../src 或兄弟插件目录；
+# - 共享的只能是 packages/ 里声明了 akashic.kind 的包（合同包另须写明提供它的插件）。
+_JS_IMPORT_RE = re.compile(r"""(?:from\s+|import\s*\(\s*|import\s+)(["'])(\.[^"']+)\1""")
+
+
 def check_shared_layout() -> list[str]:
     listed = subprocess.run(
-        ["git", "ls-files", "--cached", "--others", "--exclude-standard", "--", "frontend", "packages"],
+        ["git", "ls-files", "--cached", "--others", "--exclude-standard", "--", "frontend", "packages", "plugins"],
         cwd=REPO_ROOT, capture_output=True, text=True, check=True,
     ).stdout.splitlines()
     plugins = {path.name for path in (REPO_ROOT / "plugins").iterdir() if path.is_dir()}
@@ -924,9 +929,37 @@ def check_shared_layout() -> list[str]:
     for owner in sorted({path.split("/")[1] for path in listed if path.startswith("frontend/")}):
         if owner != "plugins":
             errors.append(f"R13: frontend/ 下只允许 plugins/<插件名>/: frontend/{owner}")
-    for owner in sorted({path.split("/")[2] for path in listed if path.startswith("frontend/plugins/")}):
+    legacy_owners = {path.split("/")[2] for path in listed if path.startswith("frontend/plugins/") and len(path.split("/")) >= 3}
+    for owner in sorted(legacy_owners):
         if owner not in plugins:
             errors.append(f"R13: 前端目录没有对应的插件: frontend/plugins/{owner}")
+
+    # 检查 plugins/<name>/web/ 源码：禁止与旧 frontend/plugins/<name>/ 并存（computer 过渡迁移完毕前由 PR C 清理转发目录），
+    # 并禁止通过相对路径穿透到 packages/ 或其他插件目录。
+    web_owners: set[str] = set()
+    for rel in listed:
+        parts = rel.split("/")
+        if len(parts) >= 4 and parts[0] == "plugins" and parts[2] == "web" and "node_modules" not in parts:
+            owner = parts[1]
+            web_owners.add(owner)
+            if not rel.endswith((".ts", ".tsx", ".js", ".mjs")):
+                continue
+            source_path = REPO_ROOT / rel
+            if not source_path.is_file():
+                continue
+            plugin_web_root = (REPO_ROOT / "plugins" / owner / "web").resolve()
+            text = source_path.read_text(encoding="utf-8", errors="ignore")
+            for match in _JS_IMPORT_RE.finditer(text):
+                spec = match.group(2)
+                resolved = (source_path.parent / spec).resolve()
+                if not resolved.is_relative_to(plugin_web_root):
+                    errors.append(
+                        f"R13: 插件前端禁止相对路径穿透自身 web/ 目录（请改用正式 @akashic/* 包名）: {rel} -> {spec}"
+                    )
+    for owner in sorted(web_owners & legacy_owners):
+        # 迁移过渡：仅当两处都存在 index.tsx / plugin-ui.* 等真实入口时由构建器报错，此处在 Core 侧确保无业务插件双份并存。
+        if owner != "computer":
+            errors.append(f"R13: 插件同时存在 plugins/{owner}/web/ 与旧 frontend/plugins/{owner}/，请清理旧目录")
     for package in sorted({path.split("/")[1] for path in listed if path.startswith("packages/")}):
         manifest = REPO_ROOT / "packages" / package / "package.json"
         meta = json.loads(manifest.read_text(encoding="utf-8")).get("akashic") if manifest.is_file() else None
