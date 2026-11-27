@@ -233,8 +233,13 @@ export class ChatKernel {
       slots: {
         declare: (slotId: string): ChatSlotHandle => {
           assertLive(`declare(${slotId})`);
-          if (typeof slotId !== "string" || !slotId.startsWith(`${pluginId}.`) || slotId.length <= pluginId.length + 1) {
-            throw new Error(`插件 ${pluginId} 只能声明自身命名空间下的槽（须以 "${pluginId}." 开头）: ${slotId}`);
+          // 生产环境 pluginId 带 "@marketplace" 后缀（如 "projects@release"）；允许使用无后缀插件名（"projects."）
+          // 或完整 pluginId（"projects@release."）作为槽命名空间前缀，避免消费端被 marketplace 绑定。
+          const pluginName = pluginId.includes("@") ? pluginId.slice(0, pluginId.indexOf("@")) : pluginId;
+          const matchesName = pluginName.length > 0 && slotId.startsWith(`${pluginName}.`) && slotId.length > pluginName.length + 1;
+          const matchesFull = slotId.startsWith(`${pluginId}.`) && slotId.length > pluginId.length + 1;
+          if (typeof slotId !== "string" || (!matchesName && !matchesFull)) {
+            throw new Error(`插件 ${pluginId} 只能声明自身命名空间下的槽（须以 "${pluginName}." 或 "${pluginId}." 开头）: ${slotId}`);
           }
           const existing = this.slotDeclarations.get(slotId);
           if (existing?.active || stagedDeclarations.some((d) => d.slotId === slotId && d.active)) {
