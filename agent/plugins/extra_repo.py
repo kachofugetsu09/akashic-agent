@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import base64
+import fcntl
 import json
 import os
 import re
 import subprocess
 import tomllib
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
@@ -136,45 +138,63 @@ def _write_sources(sources: Iterable[Source]) -> None:
     _ = temporary.replace(path)
 
 
+# 来源清单的读改写互斥：网页、CLI、Agent 可能同时增删来源。
+@contextmanager
+def _sources_locked() -> Iterator[None]:
+    path = plugins_root() / "sources.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a") as stream:
+        fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+        yield
+
+
 # 登记私有源：先确认地址真的是插件源（有 index 分支），再落盘；凭据单独存放、只给本用户读。
 def add_source(name: str, url: str, token: str = "") -> Source:
-    # 1. 名称与地址的基本校验。
     url = url.strip()
-    if _SOURCE_NAME.fullmatch(name) is None or name in _RESERVED_NAMES:
-        raise ValueError(f"来源名称 {name!r} 不可用：小写字母、数字、点、横线，且不能是 {', '.join(sorted(_RESERVED_NAMES))}")
-    current = private_sources()
-    if any(item.name == name for item in current):
-        raise ValueError(f"来源 {name} 已存在；要换地址先 pkg source remove {name}")
-    if any(same_origin(item.url, url) for item in (*current, *all_sources()[:1])):
-        raise ValueError(f"{url} 已经登记过")
-    # 2. 凭据先写，下面的探测就能带上它。
-    tokens = plugins_root() / _TOKENS_DIR
-    if token:
-        tokens.mkdir(mode=0o700, parents=True, exist_ok=True)
-        (tokens / name).touch(mode=0o600)
-        _ = (tokens / name).write_text(token.strip(), encoding="utf-8")
-    source = Source(name, url)
-    # 3. 先登记再探测，探测失败回滚，地址读不到或不是插件源都当场说明。
-    _write_sources((*current, source))
-    try:
-        heads, index = list_heads(url)
-        if not index:
-            raise RuntimeError(f"{url} 不是插件源：没有 index 分支（需要按 akashic-plugins 的发布方式生成）")
-        if not heads:
-            raise RuntimeError(f"{url} 还没有发布任何插件（没有 release/* 分支）")
-    except BaseException:
-        _write_sources(current)
-        (tokens / name).unlink(missing_ok=True)
-        raise
+    official = all_sources()[0]
+    # 1. 名称与地址的基本校验；官方源的实际名称（发行版声明的 marketplace）也不能占用。
+    if _SOURCE_NAME.fullmatch(name) is None or name in _RESERVED_NAMES or name == official.name:
+        reserved = ", ".join(sorted({*_RESERVED_NAMES, official.name}))
+        raise ValueError(f"来源名称 {name!r} 不可用：小写字母、数字、点、横线，且不能是 {reserved}")
+    with _sources_locked():
+        current = private_sources()
+        if any(item.name == name for item in current):
+            raise ValueError(f"来源 {name} 已存在；要换地址先 pkg source remove {name}")
+        if any(same_origin(item.url, url) for item in (*current, official)):
+            raise ValueError(f"{url} 已经登记过")
+        # 2. 凭据先写，下面的探测就能带上它。
+        tokens = plugins_root() / _TOKENS_DIR
+        if token:
+            tokens.mkdir(mode=0o700, parents=True, exist_ok=True)
+            (tokens / name).touch(mode=0o600)
+            _ = (tokens / name).write_text(token.strip(), encoding="utf-8")
+        source = Source(name, url)
+        # 3. 先登记再探测，探测失败只撤掉这一条；地址读不到或不是插件源都当场说明。
+        _write_sources((*current, source))
+        try:
+            _probe(url)
+        except BaseException:
+            _write_sources(item for item in private_sources() if item.name != name)
+            (tokens / name).unlink(missing_ok=True)
+            raise
     return source
 
 
+def _probe(url: str) -> None:
+    heads, index = list_heads(url)
+    if not index:
+        raise RuntimeError(f"{url} 不是插件源：没有 index 分支（需要按 akashic-plugins 的发布方式生成）")
+    if not heads:
+        raise RuntimeError(f"{url} 还没有发布任何插件（没有 release/* 分支）")
+
+
 def remove_source(name: str) -> None:
-    current = private_sources()
-    if not any(item.name == name for item in current):
-        raise ValueError(f"没有名为 {name} 的私有源")
-    _write_sources(item for item in current if item.name != name)
-    (plugins_root() / _TOKENS_DIR / name).unlink(missing_ok=True)
+    with _sources_locked():
+        current = private_sources()
+        if not any(item.name == name for item in current):
+            raise ValueError(f"没有名为 {name} 的私有源")
+        _write_sources(item for item in current if item.name != name)
+        (plugins_root() / _TOKENS_DIR / name).unlink(missing_ok=True)
 
 
 # 来源仓库：显式参数优先，其次环境变量，最后是默认常量。

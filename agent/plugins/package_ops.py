@@ -597,8 +597,11 @@ def _remove_one(ctx: Context, package: InstalledPackage) -> Outcome:
     return Outcome(package.name, "removed", "数据目录已保留")
 
 
-def remove_many(ctx: Context, names: list[str]) -> list[Outcome]:
-    installed = {item.name: item for item in read_state(ctx.workspace, ctx.repo).packages}
+# scoped 时只在 ctx 这个来源的包里找，不会因为同名卸掉别的来源的包。
+def remove_many(ctx: Context, names: list[str], *, scoped: bool = False) -> list[Outcome]:
+    packages = read_state(ctx.workspace, ctx.repo).packages
+    installed = {item.name: item for item in packages
+                 if not scoped or item.plugin_id.partition("@")[2] == ctx.marketplace}
     outcomes: list[Outcome] = []
     for name in names:
         package = installed.get(name)
@@ -652,7 +655,7 @@ def run_write(command: str, names: list[str], *, workspace: Path, config_path: P
         if command == "upgrade":
             return _upgrade_routed(contexts, names)
         if command == "remove":
-            return remove_many(contexts[0], names)
+            return remove_many(contexts[0], names, scoped=source is not None)
         return sync_install(contexts[0])
     finally:
         if not online:
@@ -684,8 +687,14 @@ def _install_routed(contexts: list[Context], names: list[str]) -> list[Outcome]:
             contexts[0].marketplace)
         routed[owner].append(bare)
     for ctx in contexts:
-        if routed[ctx.marketplace]:
+        if not routed[ctx.marketplace]:
+            continue
+        try:
             outcomes.extend(_tagged(ctx, install_named(ctx, routed[ctx.marketplace])))
+        except subprocess.TimeoutExpired:
+            # 一个来源卡住只算它自己的包失败，后面的来源照常安装。
+            outcomes.extend(_tagged(ctx, [Outcome(name, "failed", f"来源 {ctx.marketplace} 超时")
+                                          for name in routed[ctx.marketplace]]))
     return outcomes
 
 
