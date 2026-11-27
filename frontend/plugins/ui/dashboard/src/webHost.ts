@@ -10,6 +10,7 @@ import type {
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { WebDataRegistry } from "./webData";
+import { WebNavigation } from "./webNavigation";
 
 type Disposer = WebUiDisposer;
 type MountCardinality = WebMountCardinality;
@@ -96,7 +97,7 @@ class BrowserCatalogSession implements WebHostSession {
   private staleNotice: HTMLElement | null = null;
   private readonly data = new WebDataRegistry();
 
-  constructor(readonly bootstrap: WebUiBootstrap) {
+  constructor(readonly bootstrap: WebUiBootstrap, private readonly navigation: WebNavigation) {
     this.mounts.set("web.root.v1", {
       id: "web.root.v1",
       cardinality: "single",
@@ -287,7 +288,23 @@ class BrowserCatalogSession implements WebHostSession {
       ui: {
         inject: (mountId, connect) => this.inject(owner, mountId, connect),
       },
+      navigation: {
+        guard: (guard) => this.ownEffect(owner, this.navigation.guard(guard)),
+        request: (reason, go) => this.navigation.request(reason, go),
+        onLeave: (listener) => this.ownEffect(owner, this.navigation.onLeave(listener)),
+        expectCatalogChange: () => this.navigation.expectCatalogChange(),
+        reveal: () => this.navigation.reveal(),
+        onReveal: (listener) => this.ownEffect(owner, this.navigation.onReveal(listener)),
+      },
     };
+  }
+
+  // 模块登记的守卫与监听随模块注销一起撤掉；模块自己先撤也只执行一次。
+  private ownEffect(owner: ModuleActivation, dispose: Disposer): Disposer {
+    if (owner.disposed) { dispose(); throw new Error("web module is disposed"); }
+    const disposer = once(dispose);
+    owner.effects.push(disposer);
+    return disposer;
   }
 
   private async request(owner: ModuleActivation, path: string, init: RequestInit = {}): Promise<Response> {
@@ -662,6 +679,7 @@ export async function startWebHost(host: HTMLElement): Promise<WebHostSession> {
   // 运行时下载与目录读取彼此独立；插件执行仍等共享运行时发布完成。
   const runtimeReady = import("./design/runtime").then((runtime) => runtime.exposeRuntime());
   const cached = loadCachedDigests();
+  const navigation = new WebNavigation();
   const open = async (): Promise<BrowserCatalogSession> => {
     // 消费 index.html 内联脚本的预热请求（一次性钩子，取走即删；重试与无钩子的
     // 夹具/桌面页面自行 fetch）。响应体只读一次，不能共享已消费的 Response。
@@ -674,7 +692,7 @@ export async function startWebHost(host: HTMLElement): Promise<WebHostSession> {
     ]);
     if (response.status === 401) throw new WebHostUnauthorizedError();
     if (!response.ok) throw new Error(`界面目录暂时不可用（${response.status}）`);
-    const next = new BrowserCatalogSession(parseBootstrap(await response.json()));
+    const next = new BrowserCatalogSession(parseBootstrap(await response.json()), navigation);
     try {
       await next.activateModules(cached);
       rememberCatalogDigests(next.bootstrap);
@@ -738,10 +756,8 @@ export async function startWebHost(host: HTMLElement): Promise<WebHostSession> {
       };
       // 仅在正式目录稳定后更换宿主；保留路由与非敏感回执，不重载浏览器。
       // 拦下换代的一方调 wait() 表示自己会在就绪后调 go()（如安装进行中的引导），这时不弹“暂时阻止切换”。
-      let waiting = false;
-      const wait = (): void => { waiting = true; };
-      if (window.dispatchEvent(new CustomEvent("akashic:before-navigate", {cancelable: true, detail: {go, wait, reason: "catalog"}}))) go();
-      if (!applied) { available = false; next.close(); if (!waiting) show("界面已更新，当前页面暂时阻止切换。请等待原操作结果或处理页面提示，再重新核对。"); }
+      const outcome = navigation.request("catalog", go);
+      if (!applied) { available = false; next.close(); if (outcome !== "deferred") show("界面已更新，当前页面暂时阻止切换。请等待原操作结果或处理页面提示，再重新核对。"); }
     } catch (error) {
       if (closed) return;
       if (error instanceof WebHostUnauthorizedError) {
@@ -773,15 +789,14 @@ export async function startWebHost(host: HTMLElement): Promise<WebHostSession> {
     submitted();
     sawChange = true;
   };
-  window.addEventListener("akashic:configuration-submitted", submitted);
+  const stopSubmitted = navigation.onCatalogChangeExpected(submitted);
   // 设置面板里的未保存修改会暂缓更换目录；面板关上就立即再核对一次，不必等窗口重新获得焦点。
-  window.addEventListener("akashic:settings-closed", focus);
+  const stopReveal = navigation.onReveal(focus);
   window.addEventListener("focus", focus);
   document.addEventListener("visibilitychange", focus);
   return {close: once(() => {
     closed = true; window.clearInterval(timer); notice.remove();
-    window.removeEventListener("akashic:configuration-submitted", submitted);
-    window.removeEventListener("akashic:settings-closed", focus);
+    stopSubmitted(); stopReveal();
     window.removeEventListener("focus", focus);
     document.removeEventListener("visibilitychange", focus);
     session.close();

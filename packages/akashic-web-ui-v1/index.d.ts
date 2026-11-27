@@ -140,7 +140,36 @@ export interface WebResource<T> {
   set(value: T): void;
 }
 
+/** "catalog": the host is about to swap in a newer plugin catalog; "page": a shell page or settings section change. */
+export type WebNavigationReason = "catalog" | "page";
+
+export interface WebNavigationRequest {
+  readonly reason: WebNavigationReason;
+  /** Runs the navigation. A guard that held it may call this later, for example after the user confirms leaving. */
+  readonly go: () => void;
+  /** True once an earlier guard held this navigation. */
+  readonly held: boolean;
+  /** Stop this navigation for now. `resume: true` promises this guard calls `go()` itself once ready, so the host shows no notice. */
+  hold(options?: { resume?: boolean }): void;
+}
+
+/** "proceeded": `go` already ran; "held": a guard stopped it; "deferred": a guard will call `go` itself. */
+export type WebNavigationOutcome = "proceeded" | "held" | "deferred";
+
 export interface WebHostContextV1 {
+  readonly navigation: {
+    /** Consulted before every page change and catalog swap; removed with the module. */
+    guard(guard: (request: WebNavigationRequest) => void): WebUiDisposer;
+    /** Ask every guard, then run `go` unless one held it. */
+    request(reason: WebNavigationReason, go: () => void): WebNavigationOutcome;
+    /** Called once a navigation passed every guard, right before `go` runs; removed with the module. */
+    onLeave(listener: (reason: WebNavigationReason) => void): WebUiDisposer;
+    /** A configuration or install was submitted: the plugin catalog may change soon, so the host re-checks it. */
+    expectCatalogChange(): void;
+    /** An overlay covering the pages closed: pages beneath it are visible again and may re-read their data. */
+    reveal(): void;
+    onReveal(listener: () => void): WebUiDisposer;
+  };
   readonly data: {
     /** `key` is unique within the module; `load` receives a signal aborted when the module is disposed. */
     resource<T>(key: string, load: (signal: AbortSignal) => Promise<T>, options?: WebResourceOptions): WebResource<T>;

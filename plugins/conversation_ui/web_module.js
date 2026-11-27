@@ -1452,7 +1452,7 @@ function mountTools(root, chat, tools, entries) {
   };
 }
 
-function renderConversation(host, view, props) {
+function renderConversation(ctx, host, view, props) {
   const tools = view.child("conversation.tools.v2");
   const entries = checkTabs(tools.entries);
   const railActions = checkRailActions(props?.railActions);
@@ -1469,10 +1469,10 @@ function renderConversation(host, view, props) {
   visibility.observe(chatHost);
   // 设置面板盖住聊天又关上时视口交叉没变，观察器不会再报；按同一信号处理，例如引导里刚连好的模型。
   const settingsClosed = () => { if (chatHost.getClientRects().length) chat.handle.shown(); };
-  window.addEventListener("akashic:settings-closed", settingsClosed);
+  const stopReveal = ctx.navigation.onReveal(settingsClosed);
   workbench?.start();
   return () => {
-    window.removeEventListener("akashic:settings-closed", settingsClosed);
+    stopReveal();
     visibility.disconnect();
     workbench?.dispose();
     chat.handle.dispose();
@@ -1488,6 +1488,6 @@ export function activate(ctx) {
     route: "",
     order: 10,
     children: [{ id: "conversation.tools.v2", cardinality: "list" }],
-    render: renderConversation,
+    render: (host, view, props) => renderConversation(ctx, host, view, props),
   }));
 }

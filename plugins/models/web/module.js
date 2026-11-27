@@ -1039,7 +1039,7 @@ function registerModels(ctx, mount, catalogResource) {
             unmount?.();
             openOverlays.delete(release);
             scrim.removeEventListener("cancel", onCancel);
-            window.removeEventListener("akashic:before-navigate", onNavigate);
+            stopLeave();
             scrim.close();
             scrim.remove();
           };
@@ -1050,14 +1050,11 @@ function registerModels(ctx, mount, catalogResource) {
             resolve(value);
           };
           const onCancel = (event) => { event.preventDefault(); settle(null); };
-          // Shell keeps inactive pages mounted. Wait for every leave guard before
-          // releasing a sheet; a cancelled navigation must preserve the selection.
-          const onNavigate = (event) => {
-            queueMicrotask(() => { if (!event.defaultPrevented) settle(null); });
-          };
+          // Shell keeps inactive pages mounted. Release a sheet only once a navigation
+          // passed every leave guard; a cancelled navigation must preserve the selection.
           closeButton.addEventListener("click", () => settle(null));
           scrim.addEventListener("cancel", onCancel);
-          window.addEventListener("akashic:before-navigate", onNavigate);
+          const stopLeave = ctx.navigation.onLeave(() => settle(null));
           scrim.append(sheet);
           openOverlays.add(release);
           page.appendChild(scrim);
@@ -1458,13 +1455,13 @@ function registerModels(ctx, mount, catalogResource) {
           return !dirty || window.confirm("放弃尚未保存的修改？选择取消可继续填写。");
         };
         const cancel = event => { event.preventDefault(); if (leave()) dialog.close(); };
-        const navigate = event => { if (!dialog.open || event.defaultPrevented) return; if (leave()) dialog.close(); else event.preventDefault(); };
+        const navigate = request => { if (!dialog.open || request.held) return; if (leave()) dialog.close(); else request.hold(); };
         const unload = event => { const current = state(); if (current.dirty || current.busy) { event.preventDefault(); event.returnValue = ""; } };
         dialog.addEventListener("cancel", cancel);
-        window.addEventListener("akashic:before-navigate", navigate);
+        const stopGuard = ctx.navigation.guard(navigate);
         window.addEventListener("beforeunload", unload);
         // 2. 模块卸载释放监听；持久化和 auth 取消仍由原 owner 处理。
-        return () => { dialog.removeEventListener("cancel", cancel); window.removeEventListener("akashic:before-navigate", navigate); window.removeEventListener("beforeunload", unload); };
+        return () => { dialog.removeEventListener("cancel", cancel); stopGuard(); window.removeEventListener("beforeunload", unload); };
       }
 
       // 编辑器就地展开：session.host 是卡片（编辑）或添加面板（新建）内的挂载区。
@@ -1690,22 +1687,22 @@ function registerModels(ctx, mount, catalogResource) {
         session.head.setAttribute("aria-expanded", "true");
         // 就地编辑器没有原生 cancel 事件；路由离开与页面卸载共享一次草稿/请求判断，
         // 与 guardDialog 的语义保持一致，只是通知走页面 toast。
-        const navigate = (event) => {
-          if (event.defaultPrevented || auth.closed) return;
+        const navigate = (request) => {
+          if (request.held || auth.closed) return;
           if (busy) {
-            event.preventDefault();
+            request.hold();
             showNotice("请求正在执行，请等待结果后再离开。关闭页面不会撤销已提交的操作。");
             return;
           }
-          if ((providerDirty || modelsDirty) && !window.confirm("放弃尚未保存的修改？选择取消可继续填写。")) event.preventDefault();
+          if ((providerDirty || modelsDirty) && !window.confirm("放弃尚未保存的修改？选择取消可继续填写。")) request.hold();
         };
         const unload = (event) => {
           if (providerDirty || modelsDirty || busy) { event.preventDefault(); event.returnValue = ""; }
         };
-        window.addEventListener("akashic:before-navigate", navigate);
+        const stopNavigate = ctx.navigation.guard(navigate);
         window.addEventListener("beforeunload", unload);
         const stopGuard = () => {
-          window.removeEventListener("akashic:before-navigate", navigate);
+          stopNavigate();
           window.removeEventListener("beforeunload", unload);
         };
         let disposeEntry, modelManager, footer;

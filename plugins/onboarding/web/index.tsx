@@ -20,6 +20,7 @@ interface Catalog { steps: Step[]; groups: Group[]; }
 interface StepStatus extends Partial<Status> { fault?: string; running?: boolean; }
 type Statuses = Record<string, StepStatus>;
 type Snapshot = {catalog: Catalog; statuses: Statuses};
+type Navigation = WebHostContextV1["navigation"];
 type Phase = { kind: "welcome" } | { kind: "group"; key: string } | { kind: "abilities" } | { kind: "done" };
 /** 界面换代会重建整个外框：换代前记下走到哪一步，新外框里接着走（只认一分钟内的记录）。 */
 const RESUME_KEY = "akashic.onboarding.resume";
@@ -104,7 +105,7 @@ export function activate(ctx: WebHostContextV1): WebUiDisposer {
       // 换代时新模块先激活、旧引导后写续接记录，所以续接要在真正渲染时再看一次。
       const auto = firstRun.pending || hasResume();
       firstRun.pending = false;
-      root.render(<OnboardingSection data={data} renderRoute={renderRoute} close={close} surfaceHost={surfaceHost} auto={auto} />);
+      root.render(<OnboardingSection data={data} navigation={ctx.navigation} renderRoute={renderRoute} close={close} surfaceHost={surfaceHost} auto={auto} />);
       return () => { root.unmount(); releaseStyle(); surfaceHost.remove(); };
     },
   }));
@@ -155,8 +156,8 @@ function useCatalog(data: WebResource<Snapshot>) {
 }
 
 // 设置里的“新手引导”分节：平时是能力概览，可从这里重走整屏流程；首跑自动进入流程。
-function OnboardingSection({data, renderRoute, close, surfaceHost, auto}: {
-  data: WebResource<Snapshot>; renderRoute?: RenderSettingsRoute; close?: () => void; surfaceHost: HTMLElement; auto: boolean;
+function OnboardingSection({data, navigation, renderRoute, close, surfaceHost, auto}: {
+  data: WebResource<Snapshot>; navigation: Navigation; renderRoute?: RenderSettingsRoute; close?: () => void; surfaceHost: HTMLElement; auto: boolean;
 }) {
   const [running, setRunning] = useState(auto);
   const {catalog, statuses, error, refresh} = useCatalog(data);
@@ -190,12 +191,12 @@ function OnboardingSection({data, renderRoute, close, surfaceHost, auto}: {
         })}
       </ul>}
     </div>
-    {running && <Onboarding data={data} renderRoute={renderRoute} exit={exit} surfaceHost={surfaceHost} />}
+    {running && <Onboarding data={data} navigation={navigation} renderRoute={renderRoute} exit={exit} surfaceHost={surfaceHost} />}
   </>;
 }
 
-function Onboarding({data, renderRoute, exit, surfaceHost}: {
-  data: WebResource<Snapshot>; renderRoute?: RenderSettingsRoute; exit: () => void; surfaceHost: HTMLElement;
+function Onboarding({data, navigation, renderRoute, exit, surfaceHost}: {
+  data: WebResource<Snapshot>; navigation: Navigation; renderRoute?: RenderSettingsRoute; exit: () => void; surfaceHost: HTMLElement;
 }) {
   const {catalog, statuses, chosen, setChosen, error, refresh} = useCatalog(data);
   const [resume] = useState(takeResume);
@@ -212,7 +213,7 @@ function Onboarding({data, renderRoute, exit, surfaceHost}: {
   const runningInstallPhase = useMemo(() => runningInstallPhaseOf(catalog, statuses), [catalog, statuses]);
   const editing = Object.values(dirty).some(Boolean);
   if (editing) userActed.current = true;
-  useResume(resume, runningInstallPhase, userActed, phases, setIndex, () => ({phase: phaseId(phase), planned: planned && [...planned], installs: [...(installs ?? [])]}));
+  useResume(navigation, resume, runningInstallPhase, userActed, phases, setIndex, () => ({phase: phaseId(phase), planned: planned && [...planned], installs: [...(installs ?? [])]}));
   const guard = (go: () => void) => { if (editing) setLeave(() => go); else go(); };
   const move = (delta: number) => guard(() => {
     userActed.current = true;
@@ -272,6 +273,7 @@ function runningInstallPhaseOf(catalog: Catalog | null, statuses: Statuses): str
 // 界面换代会重建外框：换代前记下当前一步与定格的计划，新外框打开引导后跳回那一步。
 // 刷新或从聊天切回引导时若后台首装仍在运行，同样直接落到正在安装的进度页；用户一旦手动导航或开始编辑即停止自动跳转。
 function useResume(
+  navigation: Navigation,
   resume: Resume | null,
   runningInstallPhase: string | null,
   userActed: {current: boolean},
@@ -304,14 +306,8 @@ function useResume(
       }
     }
   }, [phases, runningInstallPhase, userActed, setIndex]);
-  useEffect(() => {
-    const onNavigate = (event: Event) => {
-      // 被别处（如安装中的暂缓）拦下的换代不记：那次不会真的重建外框。
-      if (!event.defaultPrevented && (event as CustomEvent<{reason?: string}>).detail?.reason === "catalog") saveResume(latest.current());
-    };
-    window.addEventListener("akashic:before-navigate", onNavigate);
-    return () => window.removeEventListener("akashic:before-navigate", onNavigate);
-  }, []);
+  // 被别处（如安装中的暂缓）拦下的换代不记：那次不会真的重建外框。
+  useEffect(() => navigation.onLeave(reason => { if (reason === "catalog") saveResume(latest.current()); }), [navigation]);
 }
 
 // 换步沿用展开时长；样式表不能声明 @keyframes，短位移动效走 Web Animations。

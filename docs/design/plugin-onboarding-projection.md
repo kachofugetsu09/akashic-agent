@@ -516,7 +516,7 @@ onboarding 不 import Wake、不 inject WAKE_*、不要求固定步骤数量或 
 
 connection-type 表单通过 `ProviderProps.dirty(boolean)` 报告未保存草稿，不由宿主读取 DOM 猜测。models 宿主拥有请求执行状态、原生 dialog、离开确认和 auth attempt 释放。Escape、关闭按钮和 Shell 导航共用同一判断：有草稿先确认放弃，请求执行中保留弹窗并说明已提交操作不会因关闭而回滚。保存成功清除草稿状态；失败保留可继续修改的内容。
 
-Shell 的 hashchange / popstate 也发送既有 `akashic:before-navigate` 事件。取消时恢复当前页面的地址，继续时完成目标导航，不额外插入历史条目。模块被正式撤回时必须释放原生 dialog 与监听；不把模块卸载声称为持久化回滚。密码与未保存草稿只留在当前表单内存。
+Shell 的 hashchange / popstate 也经宿主导航守卫 `ctx.navigation.request("page", go)`。取消时恢复当前页面的地址，继续时完成目标导航，不额外插入历史条目。模块被正式撤回时必须释放原生 dialog 与监听；不把模块卸载声称为持久化回滚。密码与未保存草稿只留在当前表单内存。
 
 provider 动作在已有 auth owner 的 closed 边界前后检查存活状态。正式模块撤回后，不再启动同步或默认绑定；auth 取消仍由原 owner 幂等收束，不与业务请求争用 busy。向量弹窗没有 auth，因此由自己的 dialog 生命周期在两个持久化请求之间判断 closed。文档实际离开（非 BFCache pagehide）释放已登记 auth attempt；beforeunload 拒绝离开时不提前取消。已提交请求不因撤回而回滚。
 

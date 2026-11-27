@@ -110,7 +110,7 @@ const settingsLauncher = { open: () => {} };
 export function activate(ctx: WebHostContextV1): WebUiDisposer {
   const inventory = inventoryResource(ctx);
   const disposers = [
-    holdWhileInstalling(ctx.http),
+    holdWhileInstalling(ctx.http, ctx.navigation),
     ctx.ui.inject("web.root.v1", (mount) => mount.register({
       id: "shell",
       children: [
@@ -127,6 +127,7 @@ export function activate(ctx: WebHostContextV1): WebUiDisposer {
           settings={view.child(SETTINGS_MOUNT)}
           settingsPlugins={view.child(SETTINGS_PLUGINS_MOUNT)}
           http={ctx.http}
+          navigation={ctx.navigation}
           inventory={inventory}
         />);
         return () => root.unmount();
@@ -145,12 +146,13 @@ export function activate(ctx: WebHostContextV1): WebUiDisposer {
   };
 }
 
-function Shell({ pages, railActions, settings, settingsPlugins, http, inventory }: {
+function Shell({ pages, railActions, settings, settingsPlugins, http, navigation, inventory }: {
   pages: WebMountView;
   railActions: WebMountView;
   settings: WebMountView;
   settingsPlugins: WebMountView;
   http: WebHostContextV1["http"];
+  navigation: WebHostContextV1["navigation"];
   inventory: InventoryResource;
 }): React.ReactElement {
   const bandEntries = useMemo(() => checkPages(pages.entries), [pages.entries]);
@@ -301,11 +303,11 @@ function Shell({ pages, railActions, settings, settingsPlugins, http, inventory 
       const base = `${window.location.pathname}${window.location.search}`;
       window.history.replaceState(null, "", entry.route ? `${base}#${entry.route}` : base);
     };
-    if (window.dispatchEvent(new CustomEvent("akashic:before-navigate", { cancelable: true, detail: { go } }))) go();
-  }, [activeId]);
+    navigation.request("page", go);
+  }, [activeId, navigation]);
 
   // 设置页不再整页切换:功能设置是对话框内的双栏工作区,左栏分节导航,右栏就地渲染。
-  // 打开、换节、关闭都先经 before-navigate,当前分节里未保存的表单可以拦截并走自己的确认。
+  // 打开、换节、关闭都先经 宿主导航守卫(ctx.navigation),当前分节里未保存的表单可以拦截并走自己的确认。
   const bandRoute = useCallback(() => {
     const entry = bandEntries.find((item) => item.id === activeId) ?? defaultPage;
     const base = `${window.location.pathname}${window.location.search}`;
@@ -328,16 +330,16 @@ function Shell({ pages, railActions, settings, settingsPlugins, http, inventory 
       const base = `${window.location.pathname}${window.location.search}`;
       window.history.replaceState(null, "", route ? `${base}#${route}` : base);
     };
-    if (window.dispatchEvent(new CustomEvent("akashic:before-navigate", { cancelable: true, detail: { go } }))) go();
-  }, [currentTarget, sectionEntries, pluginEntries, settingsOpen]);
+    navigation.request("page", go);
+  }, [currentTarget, sectionEntries, pluginEntries, settingsOpen, navigation]);
 
   const closeSettings = useCallback((): void => {
     const go = () => {
       setSettingsOpen(false);
       window.history.replaceState(null, "", bandRoute());
     };
-    if (window.dispatchEvent(new CustomEvent("akashic:before-navigate", { cancelable: true, detail: { go } }))) go();
-  }, [bandRoute]);
+    navigation.request("page", go);
+  }, [bandRoute, navigation]);
 
   // 分节拿到的 close 保持同一身份，Shell 路由变化不应重挂载正在编辑的分节。
   const closeSettingsRef = useRef(closeSettings);
@@ -394,7 +396,7 @@ function Shell({ pages, railActions, settings, settingsPlugins, http, inventory 
       if (lost) settingsReturnFocus.current?.focus();
       settingsReturnFocus.current = null;
       // 设置面板盖在页面上，关上时页面并没有离开视口：通知页面重新显示了，好重读在设置里改过的数据。
-      window.dispatchEvent(new CustomEvent("akashic:settings-closed"));
+      navigation.reveal();
     }
     if (!settingsOpen) return;
     // 焦点可能因内容重渲染落回 body：和原生模态一样在文档层收按键，不要求焦点在面板里。
@@ -412,7 +414,7 @@ function Shell({ pages, railActions, settings, settingsPlugins, http, inventory 
       document.removeEventListener("keydown", onKeyDown);
       document.removeEventListener("focusin", onFocusIn);
     };
-  }, [settingsOpen]);
+  }, [settingsOpen, navigation]);
 
   // 设置工作区内的跨目录渲染：初始配置按 route 内嵌任意分节的表单，不关心它属于哪个目录。
   // route 可带「/后缀」：后缀作为 subroute 交给分节自己解释，比如声明式设置卡只渲染某个插件的表单。
@@ -542,15 +544,14 @@ function Shell({ pages, railActions, settings, settingsPlugins, http, inventory 
         focusAfterNavigation.current = true;
         setActiveId(entry.id); setWithdrawn(missing); setSettingsOpen(false);
       };
-      if (window.dispatchEvent(new CustomEvent("akashic:before-navigate", {cancelable:true, detail:{go}}))) go();
-      else restore();
+      if (navigation.request("page", go) !== "proceeded") restore();
     };
     // hash 路由只监听一次变化；同一次跳转的 popstate 会重复清除撤回提示。
     window.addEventListener("hashchange", syncLocation);
     return () => {
       window.removeEventListener("hashchange", syncLocation);
     };
-  }, [activeId, defaultPage, bandEntries, sectionEntries, pluginEntries, openSettings]);
+  }, [activeId, defaultPage, bandEntries, sectionEntries, pluginEntries, openSettings, navigation]);
 
   const onBandKeyDown = (event: KeyboardEvent<HTMLElement>): void => {
     if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;
