@@ -330,6 +330,17 @@ export interface SidebarPanelProvider {
 }
 
 /**
+ * 聊天宿主公开的 DOM 约定，插件样式与脚本可以依赖，宿主保证语义稳定：
+ * - `data-chat-width`：聊天根上已满足的 max-width 断点列表，按 `[data-chat-width~="820"]` 匹配；聊天根也用它定位。
+ * - `data-chat-wide` / `data-chat-low` / `data-chat-short` / `data-chat-touch`：聊天根上的宽屏、矮视口、矮触屏、触控为主。
+ * - `data-chat-modal`：聊天打开的锁页面模态层（ADR 0126），外壳隐藏聊天前先保留它。
+ * - `data-chat-raise-composer`：挂在输入区里弹层的根上；窄屏铺满时宿主把输入区抬到浮动标题条之上。
+ */
+export type ChatDomAttribute =
+  | "data-chat-width" | "data-chat-wide" | "data-chat-low" | "data-chat-short" | "data-chat-touch"
+  | "data-chat-modal" | "data-chat-raise-composer";
+
+/**
  * 顶栏说明行的一项。宿主按 scope 与 parent 建树、子项状态冒泡到父项，空间不够时沿树收起：
  * 先缩短「在哪」的路径，再把本会话的顶层项收进 +N，需要注意的最后才合并；会话信息面板列出整棵树。
  */
@@ -337,6 +348,7 @@ export interface HeaderMetaItem {
   /** 本插件内唯一。 */
   id: string;
   /** project 是「在哪」（目录、分支），session 是本会话在做的事，account 是账号级状态。 */
+  // boundary-ok: "project" 是宿主定义的范围名，不是 projects 插件的名字
   scope: "project" | "session" | "account";
   /** 挂在哪一项下面：本插件的 id，或另一插件的 `插件名/id`；找不到时挂回所在范围的根。 */
   parent?: string;

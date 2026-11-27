@@ -88,7 +88,7 @@ function useFixedPanelStyle(open: boolean, triggerRef: RefObject<HTMLElement | n
     place();
     window.addEventListener("resize", place);
     // 聊天与工作台同页：拖动分隔条改变聊天宽度时窗口不 resize，跟随聊天根节点的尺寸重定位。
-    const chat = triggerRef.current?.closest(".akashic-chat");
+    const chat = triggerRef.current?.closest("[data-chat-width]");
     const observer = chat ? new ResizeObserver(place) : null;
     if (chat) observer?.observe(chat);
     // 非捕获：只跟随文档级滚动重定位。面板内部列表滚动不触发，
@@ -501,7 +501,7 @@ export function ModelCapsulePicker({
   const effortText = effort ? `，思考强度 ${EFFORT_LABELS[effort] || effort}` : "";
 
   return (
-    <div ref={rootRef} className={`model-picker ${open ? "is-open" : ""} ${explicitModel ? "is-pinned" : ""}`}>
+    <div ref={rootRef} className={`model-picker ${open ? "is-open" : ""} ${explicitModel ? "is-pinned" : ""}`} data-chat-raise-composer={open ? "" : undefined}>
       <button
         ref={triggerRef}
         type="button"

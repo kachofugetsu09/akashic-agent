@@ -250,8 +250,6 @@
   animation: picker-scrim-in 180ms ease-out;
 }
 
-/* 面板与遮罩在输入区的层叠上下文里；打开时把输入区抬到浮动标题条（z 6）之上，遮罩才能盖住整屏。 */
-:where([data-chat-width~="820"], [data-chat-short]) .chat-main .composer-wrap:has(.model-picker.is-open) { z-index: 7; }
 
 :where([data-chat-width~="820"], [data-chat-short]) .model-picker__search input { font-size: 16px; }
 

@@ -336,6 +336,7 @@ function useHighlightHandoff(ref: RefObject<HTMLDivElement | null>, key: string,
     const highlighted = () => {
       const host = wrapper.querySelector<HTMLElement>("diffs-container");
       const root = host?.shadowRoot;
+      // boundary-ok: data-line 是代码高亮库 diffs-container 影子树里的行属性，不属于任何插件
       if (!host || !root?.querySelector("[data-line]") || host.offsetHeight === 0) return null;
       if (watched !== root) {
         watched = root;

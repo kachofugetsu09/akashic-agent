@@ -37,7 +37,7 @@ function ensureStylesheet(): void {
 }
 
 // 宿主到聊天的句柄：外壳与工具区的状态只经这里进入聊天。
-function chatHandle(): ChatHandle {
+function chatHandle(frame: HTMLElement): ChatHandle {
   return {
     setRailActions: setShellRailActions,
     setHeaderActions,
@@ -47,6 +47,8 @@ function chatHandle(): ChatHandle {
       if (typeof quote === "object" && quote !== null) receiveWorkbenchQuote(quote as Record<string, unknown>);
     },
     shown: notifyShown,
+    headerActionTarget: (id) => frame.querySelector<HTMLElement>(`button[data-header-action="${CSS.escape(id)}"]`)
+      ?? frame.querySelector<HTMLElement>(".conversation-heading__more"),
   };
 }
 
@@ -68,12 +70,14 @@ export function mountChat(host: HTMLElement, link: ChatHostLink): MountedChat {
   const title = document.title;
   const frame = document.createElement("div");
   frame.className = "akashic-chat";
+  // 聊天自己画选区（styles.css 的 scoped ::selection），外壳的通用选区规则跳过这棵子树。
+  frame.dataset.akashicOwnSelection = "";
   host.replaceChildren(frame);
   const disconnect = connectHost(link);
   const stopLayout = observeChatLayout(frame);
   const stopKeys = setKeyScope(frame);
   // 3. 宿主投影（底栏动作、工作台意图与快捷键）是模块级状态，上一次挂载可能留下：每次挂载从空开始，卸载时撤回。
-  const handle = chatHandle();
+  const handle = chatHandle(frame);
   const clearProjection = () => {
     handle.setRailActions([]);
     handle.setHeaderActions([]);

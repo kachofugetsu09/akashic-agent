@@ -145,6 +145,13 @@ export interface WebResource<T> {
   set(value: T): void;
 }
 
+/**
+ * Page-wide DOM conventions owned by the Web Host:
+ * - `data-akashic-own-selection` on a subtree root: the subtree paints its own `::selection`, so the
+ *   host's page-wide selection colors skip it.
+ */
+export type WebHostDomAttribute = "data-akashic-own-selection";
+
 /** "catalog": the host is about to swap in a newer plugin catalog; "page": a shell page or settings section change. */
 export type WebNavigationReason = "catalog" | "page";
 

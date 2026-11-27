@@ -1357,8 +1357,6 @@ input {
   border-inline-start: 1px solid var(--chat-line);
 }
 
-.navigation-group__icon { display: grid; width: 18px; height: 18px; flex: 0 0 18px; place-items: center; }
-
 .navigation-group__hint {
   padding-block: 4px;
   padding-inline: 8px;
@@ -3544,3 +3542,6 @@ form.composer:focus-within [data-slot="input-group"] {
 ::highlight(thread-find) { background-color: light-dark(oklch(0.9 0.12 95 / 0.7), oklch(0.62 0.12 85 / 0.45)); color: inherit; }
 ::highlight(thread-find-active) { background-color: light-dark(oklch(0.78 0.16 62), oklch(0.75 0.16 62)); color: oklch(0.2 0 0); }
 @media (prefers-reduced-motion: reduce) { .thread-find__meta-wrap, .thread-find__meta { transition: none; } .thread-find__spin { animation-duration: 2s; } }
+
+/* 输入区里的弹层（如模型面板）窄屏铺满时挂 data-chat-raise-composer：把输入区抬到浮动标题条（z 6）之上，遮罩才能盖住整屏。 */
+:where([data-chat-width~="820"], [data-chat-short]) .chat-main .composer-wrap:has([data-chat-raise-composer]) { z-index: 7; }
