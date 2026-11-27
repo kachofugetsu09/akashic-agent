@@ -58,7 +58,7 @@ export interface NavigationGroupsState {
   ready: boolean;
   /** 各数据源本次都从网络读到了分组（本机快照、等满期限都不算）；之前找不到的置顶分组算「还在读」，不算不可用。 */
   settled: boolean;
-  active: (GroupRef & { label: string; icon?: string }) | null;
+  active: (GroupRef & { label: string; icon?: string; color?: string }) | null;
   reload: () => void;
   startChat: (ref: GroupRef) => void;
 }
@@ -69,12 +69,14 @@ function checkGroups(value: unknown): NavigationGroup[] {
     const row = typeof item === "object" && item !== null ? item as Partial<Record<keyof NavigationGroup, unknown>> : null;
     if (!row || typeof row.id !== "string" || !row.id || typeof row.label !== "string"
       || (row.detail !== undefined && typeof row.detail !== "string")
-      || (row.icon !== undefined && typeof row.icon !== "string")) throw new Error("分组记录无效");
+      || (row.icon !== undefined && typeof row.icon !== "string")
+      || (row.color !== undefined && typeof row.color !== "string")) throw new Error("分组记录无效");
     return {
       id: row.id,
       label: row.label,
       ...(row.detail ? { detail: row.detail } : {}),
       ...(row.icon ? { icon: row.icon } : {}),
+      ...(row.color ? { color: row.color } : {}),
     };
   });
 }
@@ -261,13 +263,14 @@ export function GroupNavigation({
   </section>;
 }
 
-/** 分组图标：默认 folder，支持插件传入 kubai-icons/line 图标名。 */
-export function FolderMark({ icon, size = 18, trigger = "parent" }: {
+/** 分组图标：默认 folder，支持插件传入 kubai-icons/line 图标名与纸面语义色。 */
+export function FolderMark({ icon, color, size = 18, trigger = "parent" }: {
   icon?: string;
+  color?: string;
   size?: number;
   trigger?: "hover" | "parent" | "none";
 }) {
-  return <GroupIcon name={icon} size={size} trigger={trigger} />;
+  return <GroupIcon name={icon} color={color} size={size} trigger={trigger} />;
 }
 
 interface ScopeMemorySummary {
@@ -325,7 +328,7 @@ function GroupHoverCard({ anchor, group, memory, portalTarget }: {
     <div className="group-hover-card" role="tooltip" style={{ left, top }}>
       <div className="group-hover-card__head">
         <span className="group-hover-card__icon">
-          <GroupIcon name={group.icon} size={16} trigger="none" />
+          <GroupIcon name={group.icon} color={group.color} size={16} trigger="none" />
         </span>
         <strong className="group-hover-card__title">{group.label}</strong>
       </div>
@@ -515,7 +518,7 @@ export function GroupNavigationRow({
         onPointerDown={clearHoverCard}
         onContextMenu={clearHoverCard}
         aria-expanded={open} aria-disabled={searching || undefined}>
-        <IconSwap state={Boolean(collapsedStatus)} a={<FolderMark icon={group.icon} />}
+        <IconSwap state={Boolean(collapsedStatus)} a={<FolderMark icon={group.icon} color={group.color} />}
           b={<span className="navigation-group__icon"><SessionStatusMark status={collapsedStatus ?? lastStatus} /></span>} />
         <SessionStatusLabel status={collapsedStatus} />
         <span className="navigation-group__name"><MarqueeText>{group.label}</MarqueeText></span>
