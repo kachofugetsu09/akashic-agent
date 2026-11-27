@@ -33,6 +33,8 @@ class SettingsField:
     hint: str = ""
     # 只有 model 字段需要：声明这个用途能跟随什么、对模型有什么要求。
     use: ModelUse | None = None
+    # 有推荐值、一般不用改的字段：表单里收进「更多设置」，引导里也只露出其余几项。
+    advanced: bool = False
 
     def __post_init__(self) -> None:
         if not _KEY.fullmatch(self.name):
@@ -41,7 +43,7 @@ class SettingsField:
             raise ValueError("只有 model 字段带 ModelUse，且 model 字段必须带")
 
     def body(self) -> dict[str, object]:
-        return {"name": self.name, "label": self.label, "kind": self.kind, "hint": self.hint}
+        return {"name": self.name, "label": self.label, "kind": self.kind, "hint": self.hint, "advanced": self.advanced}
 
 
 # 表单同时作为引导里的一步：按分组出现在能力卡上，内嵌的就是这张表单。
