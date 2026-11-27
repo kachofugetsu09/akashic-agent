@@ -74,23 +74,11 @@
   translate: 0 0.5px;
 }
 
-/* 思考强度三格刻度：点按字的 x 高居中，和名字一起读成「模型 ··· 档位」。 */
-.model-picker__dots {
-  display: inline-flex;
+/* 偏离默认档的思考强度：模型名后一个字，与名字同色同字级。 */
+.model-picker__effort-tag {
   flex: 0 0 auto;
-  gap: 2px;
-  translate: 0 0.5px;
+  white-space: nowrap;
 }
-
-.model-picker__dots i {
-  width: 3px;
-  height: 3px;
-  border-radius: var(--ak-radius-full);
-  background: currentColor;
-  opacity: 0.28;
-}
-
-.model-picker__dots i[data-on] { opacity: 0.9; }
 
 /* 面板只是外框；搜索行固定在顶，来源栏与列表各自滚动。 */
 .model-picker__panel {

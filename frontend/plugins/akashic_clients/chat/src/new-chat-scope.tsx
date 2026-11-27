@@ -1,4 +1,4 @@
-import { Check, ChevronDown } from "lucide-react";
+import { Check } from "lucide-react";
 import type { NavigationGroup } from "@akashic/chat-ui-v1";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger,
@@ -28,7 +28,7 @@ function ScopeOption({ dimension, group }: { dimension: string; group: Navigatio
   </span>;
 }
 
-/** 新会话空态的分组条：首条消息之前可换到另一个分组或不归属任何分组；发出后由标题行显示归属。 */
+/** 新会话空态输入卡里的分组选择：平时只写维度名（"项目"），选了才显示名称；发出后由标题行显示归属。 */
 export function NewChatScope({ groups, onStart, onUngrouped }: {
   groups: NavigationGroupsState;
   onStart: (ref: GroupRef) => void;
@@ -41,15 +41,12 @@ export function NewChatScope({ groups, onStart, onUngrouped }: {
   const label = heading.source.provider.label;
   return <DropdownMenu>
     <DropdownMenuTrigger asChild>
-      <button type="button" className="new-chat-scope" aria-label={`${label}：${active?.label ?? `不归属${label}`}，点按更换`}>
-        <span className="new-chat-scope__dimension">{label}</span>
+      <button type="button" className="new-chat-scope" data-tip={active ? `${label}：${active.label}` : `选择${label}`}
+        aria-label={`${label}：${active?.label ?? `不归属${label}`}，点按更换`}>
         {active ? <span className="new-chat-scope__option">
           <FolderMark icon={active.icon} color={active.color} size={16} trigger="none" />
           <strong><MarqueeText still>{active.label}</MarqueeText></strong>
-          <ScopeInlineMeta dimension={active.dimension} value={active.id} />
-          <PluginUiSlot name="scope.badge" scope={{ dimension: active.dimension, value: active.id }} quiet />
-        </span> : <span>不归属{label}</span>}
-        <ChevronDown size={15} aria-hidden="true" />
+        </span> : <span>{label}</span>}
       </button>
     </DropdownMenuTrigger>
     <DropdownMenuContent className="choice-menu new-chat-scope__menu" align="start" side="top" sideOffset={8} collisionPadding={16}>

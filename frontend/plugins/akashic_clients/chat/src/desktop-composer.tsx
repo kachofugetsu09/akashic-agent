@@ -1,5 +1,5 @@
 import { FileText, FolderOpen, ImageIcon, Paperclip } from "lucide-react";
-import { memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type ChangeEvent, type CSSProperties, type FocusEvent, type KeyboardEvent as ReactKeyboardEvent, type Ref, type RefObject } from "react";
+import { memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type ChangeEvent, type CSSProperties, type FocusEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type Ref, type RefObject } from "react";
 import { createPortal, flushSync } from "react-dom";
 import {
   PromptInput, PromptInputBody, PromptInputButton, PromptInputFooter, PromptInputTextarea, PromptInputTools,
@@ -58,7 +58,7 @@ const PASTE_AS_FILE_BYTES = 4096;
 
 export const DesktopComposer = memo(function DesktopComposer({
   chatReady, canSend, sendProblem, draftKey, autoFocus = false, fresh = false, status, stopPending, replyTarget,
-  onCancelReply, onSend, onSteer, onStop, ref,
+  onCancelReply, onSend, onSteer, onStop, scope, ref,
 }: {
   chatReady: boolean;
   canSend: boolean;
@@ -78,6 +78,8 @@ export const DesktopComposer = memo(function DesktopComposer({
   /** 返回 false 表示服务端此刻不接纳插话（回合已结束或是后台回调），改走普通发送。 */
   onSteer: (text: string) => Promise<boolean>;
   onStop: () => void;
+  /** 新会话空态的「项目」选择：排在工具位最前、模型之前；发出首条消息后由标题行显示归属。 */
+  scope?: ReactNode;
   ref?: Ref<ComposerApi>;
 }) {
   // 标签页文本草稿是展示状态，既不上传，也不创建 Message。
@@ -369,6 +371,7 @@ export const DesktopComposer = memo(function DesktopComposer({
       </PromptInputBody>
       <PromptInputFooter className="composer__bar">
         <PromptInputTools className="composer__lead">
+          {scope}
           {/* 插件的输入框工具（随草稿重新挂载，不同新对话的选择互不串）。 */}
           <PluginUiSlot key={draftKey} name="composer.toolbar" sessionId={draftKey.startsWith("new:") ? undefined : draftKey}
             refreshToken={generating ? 1 : 0} quiet />

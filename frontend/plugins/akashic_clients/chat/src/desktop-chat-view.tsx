@@ -122,6 +122,10 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
   const sessionOpening = historyLoading || (sessionRequested && (shellStatus === null || shellStatus === "ready"));
   const historyFailed = controller.historyFailure !== null && !hasMessages;
   const conversationLayout = hasMessages || sessionOpening || historyFailed;
+  // 新会话空态的「项目」选择放进输入卡工具位；元素按依赖记忆，输入卡的 memo 不因每次渲染失效。
+  const newChatScope = useMemo(() => !conversationLayout && !activeSessionId ? <NewChatScope groups={navigationGroups}
+    onStart={(ref) => moveDraft(() => navigationGroups.startChat(ref))} onUngrouped={() => moveDraft(startNewChat)} /> : null,
+  [conversationLayout, activeSessionId, navigationGroups, moveDraft, startNewChat]);
   // 稳定化回调，避免每次状态刷新都击穿 DesktopSidebar / CompactNavigation 的 memo（#2238）。
   const handleRestoreSession = useCallback((key: string) => { void restoreSession(key); }, [restoreSession]);
   // 历史消息行上的回复/重试禁用态延后到低优先级帧更新，避免点击发送当帧同步重渲染全量历史（#2238）。
@@ -238,8 +242,6 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
           </p> : null}
           {/* 输入框工具位的插件说明为什么现在不能发；处理入口在插件自己的工具里。 */}
           {chatReady && sendProblem ? <p className="chat-send-notice" id="chat-send-reason" role="status">{sendProblem}</p> : null}
-          {!conversationLayout && !activeSessionId ? <NewChatScope groups={navigationGroups}
-            onStart={(ref) => moveDraft(() => navigationGroups.startChat(ref))} onUngrouped={() => moveDraft(startNewChat)} /> : null}
 
           <SteerCards items={steers} onWithdraw={withdrawToDraft} />
           {/* 状态签挂在输入卡左上方：零高锚点，出现与淡出都不改变输入区高度。 */}
@@ -250,7 +252,7 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
             ref={composerApi}
             chatReady={chatReady} canSend={canSend} sendProblem={sendProblem} draftKey={draftKey} autoFocus={!conversationLayout && chatReady} fresh={!conversationLayout} status={status} stopPending={stopPending}
             replyTarget={replyTarget} onCancelReply={cancelReply}
-            onSend={sendMessage} onSteer={steerMessage} onStop={stopTurn}
+            onSend={sendMessage} onSteer={steerMessage} onStop={stopTurn} scope={newChatScope}
           />
           {replyAvailable === false ? <p className="reply-unavailable" role="status">当前未加载回复插件</p> : null}
           {controller.reconnecting ? <p className="reply-unavailable connection-status" role="status">
