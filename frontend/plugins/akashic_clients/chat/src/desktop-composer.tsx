@@ -349,7 +349,9 @@ export const DesktopComposer = memo(function DesktopComposer({
         // 触屏发送后收起键盘、输入卡回到静止态：接下来是读回复，半屏键盘和展开的工具行只会挡住它。
         if (!window.matchMedia("(hover: hover) and (pointer: fine)").matches) {
           setEngaged(false);
-          if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+          // 触屏收起键盘会同步触发 Android WebView 视口重排，延后到下一帧不阻塞发送当帧（#2238）。
+          const focused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+          if (focused) window.requestAnimationFrame(() => { if (document.activeElement === focused) focused.blur(); });
         }
         return submit(message.text, message.files);
       }}

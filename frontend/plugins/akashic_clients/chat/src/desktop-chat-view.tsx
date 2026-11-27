@@ -1,5 +1,5 @@
 import { userInput, type ReplyActivity, type TimelineMessage, type TimelineReply, timelineReplyGroups, timelineText, timelineToolResults, timelineInputStarts, timelineSourceKey, timelineSourceRefreshTokens } from "./message-timeline";
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useStickToBottomContext } from "use-stick-to-bottom";
 import { MaterialButton } from "../../../../../packages/akashic-theme/src/material-react";
 import {
@@ -140,6 +140,10 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
   const sessionOpening = historyLoading || (sessionRequested && (shellStatus === null || shellStatus === "ready"));
   const historyFailed = controller.historyFailure !== null && !hasMessages;
   const conversationLayout = hasMessages || sessionOpening || historyFailed;
+  // 稳定化回调，避免每次状态刷新都击穿 DesktopSidebar / CompactNavigation 的 memo（#2238）。
+  const handleRestoreSession = useCallback((key: string) => { void restoreSession(key); }, [restoreSession]);
+  // 历史消息行上的回复/重试禁用态延后到低优先级帧更新，避免点击发送当帧同步重渲染全量历史（#2238）。
+  const timelineActionsEnabled = useDeferredValue(status === "idle");
 
   return (
     <main className="chat-shell">
@@ -152,7 +156,7 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
             onNewChat={startNewChat} rail={rail}
             onDeleteSession={deleteSession} deletedNotice={deletedNotice}
             restorePending={deletedNotice !== null && restoringSessionIds.has(deletedNotice.key)}
-            onRestoreSession={(key) => { void restoreSession(key); }} onDismissDeletedNotice={dismissDeletedNotice}
+            onRestoreSession={handleRestoreSession} onDismissDeletedNotice={dismissDeletedNotice}
             onRenameSession={renameSession}
           />
         {/* 面板外框挂在侧栏之外：手机上侧栏随导航抽屉卸载，面板仍要留着；短值随一轮回答结束重读。 */}
@@ -168,7 +172,7 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
             onNewChat={startNewChat}
             onDeleteSession={deleteSession} deletedNotice={deletedNotice}
             restorePending={deletedNotice !== null && restoringSessionIds.has(deletedNotice.key)}
-            onRestoreSession={(key) => { void restoreSession(key); }} onDismissDeletedNotice={dismissDeletedNotice}
+            onRestoreSession={handleRestoreSession} onDismissDeletedNotice={dismissDeletedNotice}
             onRenameSession={renameSession}
           />
           {/* 同一父节点下的兄弟 key 必须互不相同；共用会话 ID 会让 React 留下旧标题节点。 */}
@@ -205,7 +209,7 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
                   loading={historyWindow ? historyWindow.loadingOlder : historyLoadingOlder}
                   onLoadOlder={() => (historyWindow ? controller.historyWindow.loadOlder() : loadOlderMessages()).catch(reportError)}
                 />
-                <DesktopTimelineMessages messages={pagedTimeline} activities={shownActivities} replySynced={replyAvailable !== null} refresh={controller.timelineRefresh} status={status}
+                <DesktopTimelineMessages messages={pagedTimeline} activities={shownActivities} replySynced={replyAvailable !== null} refresh={controller.timelineRefresh} actionsEnabled={timelineActionsEnabled}
                   messageElementsRef={messageElementsRef} copiedMessageId={copiedMessageId}
                   onReply={replyTo} onEditInput={editInput} onRetry={retryTurn} onAbandon={abandonTurn} onCopied={handleCopiedMessage} onError={reportError} />
                 {historyWindow ? <HistoryWindowEnd loading={historyWindow.loadingNewer}
