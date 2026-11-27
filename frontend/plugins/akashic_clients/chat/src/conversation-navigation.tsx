@@ -131,6 +131,8 @@ export function ConversationNavigation({
     }
     return ids;
   }, [sessions, sessionGroup, hiddenSessions]);
+  // 没有区标题时第一个分组标签就是区标题（"今天"本身已说明"最近"），标题行的动作跟到它右侧。
+  const leadGroupId = !sessionHeading && groupHeaderIds?.size ? groupHeaderIds.values().next().value : undefined;
 
   return (
     <aside
@@ -163,8 +165,11 @@ export function ConversationNavigation({
       <section className="conversation-navigation__sessions">
         <nav className="conversation-session-list" aria-label="最近会话">
           {sessions.map((session) => <Fragment key={session.id}>
-            {groupHeaderIds?.has(session.id)
-              ? <div className="conversation-session-group">{sessionGroup?.(session)}</div> : null}
+            {groupHeaderIds?.has(session.id) ? session.id === leadGroupId
+              ? <div className="conversation-session-group conversation-session-group--lead">
+                <span>{sessionGroup?.(session)}</span>{sessionHeadingAction}
+              </div>
+              : <div className="conversation-session-group">{sessionGroup?.(session)}</div> : null}
             <ConversationSessionRow
             session={session}
             hidden={hiddenSessions?.has(session.id) || undefined}

@@ -590,6 +590,8 @@ export interface ScopeMetaRecord {
 export interface NavigationGroupView {
   renderLeading?: (props: {
     group: NavigationGroup;
+    /** 分组是否展开：行尾没有折叠箭头，默认文件夹图标可据此画成打开的样子。 */
+    open?: boolean;
   }) => ReactNode;
   renderHoverCard?: (props: {
     group: NavigationGroup;

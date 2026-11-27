@@ -571,6 +571,8 @@ export const DesktopSidebar = memo(function DesktopSidebar({
     return row ? [...pinAction({ kind: "session", id: row.id }, false), ...destinationActions(session)] : [];
   }, [pinAction, destinationActions]);
   const railAction = useShellRailActions()[0];
+  // 按时间排序时列表按日期分组，"今天/昨天"直接当区标题，不再叠一层"最近会话"。
+  const dayGrouped = sessionSort === "activity" || sessionSort === "created";
   // 有目的地时品牌行让给联系人行，功能与新会话挪到搜索框右边。
   const brandActions = <span className="chat-sidebar__brand-actions">
     <SidebarPanelLauncher sheet={!!onOpenPanels} onOpenSheet={onOpenPanels} />
@@ -710,13 +712,13 @@ export const DesktopSidebar = memo(function DesktopSidebar({
 
       <ConversationNavigation
         destinationHeading={false}
-        sessionHeading={!searching ? "最近会话" : visibleRecentCount ? "匹配的会话" : ""}
+        sessionHeading={searching ? visibleRecentCount ? "匹配的会话" : "" : dayGrouped ? "" : "最近会话"}
         sessionHeadingAction={searching ? undefined : <SessionSortMenu sort={sessionSort} onSort={setSessionSort} />}
         destinations={[]}
         actions={[]}
         sessions={mountedRecentSessions}
         hiddenSessions={hiddenIds}
-        sessionGroup={sessionSort === "activity" || sessionSort === "created" ? sessionDayGroupOf : undefined}
+        sessionGroup={dayGrouped ? sessionDayGroupOf : undefined}
         sessionDrag={sessionDrag}
         dragHandlers={dragHandlers}
         onSessionDelete={onDeleteSession ? deleteHandler : undefined}
@@ -757,7 +759,7 @@ function groupFormFocus(root: HTMLElement | null, request: GroupFormRequest) {
   target?.focus();
 }
 
-/** "最近会话"分组标题行的排序入口；选中项持久化，菜单复用行菜单的浮层样式。 */
+/** 会话区的排序入口（挂在区标题或第一个日期组标签右侧）；选中项持久化，菜单复用行菜单的浮层样式。 */
 function SessionSortMenu({ sort, onSort }: { sort: SessionSortId; onSort: (sort: SessionSortId) => void }) {
   const current = SESSION_SORT_CHOICES.find((choice) => choice.id === sort) ?? SESSION_SORT_CHOICES[0];
   return <DropdownMenu modal={false}>

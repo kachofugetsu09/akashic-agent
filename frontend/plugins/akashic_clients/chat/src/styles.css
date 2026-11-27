@@ -1064,19 +1064,11 @@ input {
 .navigation-group__open svg { flex: 0 0 auto; }
 .navigation-group.active > .navigation-group__row { background: var(--chat-chip); border-radius: var(--ak-radius-sm); }
 
-/* 桌面端项目行尾同格浮现“+”与“⋯”：
-   标题右内边距恒定预留 64px、折叠箭头固定在行尾 10px，悬停时箭头原地 120ms 淡出（零位移）、标题宽度不收缩。 */
+/* 桌面端项目行尾同格浮现“+”与“⋯”：标题右内边距恒定预留 64px，悬停时标题宽度不收缩。
+   开合由文件夹图标与下方缩进的会话表示，行尾没有折叠箭头。 */
 @media (hover: hover) and (pointer: fine) {
   .navigation-group__open {
     padding-inline-end: 64px;
-  }
-
-  .navigation-group__chevron {
-    position: absolute;
-    inset-inline-end: 10px;
-    top: 50%;
-    translate: 0 -50%;
-    pointer-events: none;
   }
 
   .navigation-group__new-chat {
@@ -1100,11 +1092,6 @@ input {
     opacity: 1;
     pointer-events: auto;
   }
-
-  .navigation-group__row:is(:hover, [data-menu-open]) .navigation-group__chevron,
-  .navigation-group__row > .navigation-group__open:focus-visible .navigation-group__chevron {
-    opacity: 0;
-  }
 }
 
 /* 项目内会话超过上限时收进“展开更多”：弱化成辅助行，箭头随展开翻转。 */
@@ -1127,21 +1114,6 @@ input {
 .navigation-group__sessions .conversation-session__title strong,
 .group-session {
   font-size: 0.8125rem;
-}
-
-.navigation-group__chevron {
-  flex: 0 0 auto;
-  color: var(--chat-faint);
-  /* lucide 图标是 SVG：独立 rotate 属性上不了合成线程，旋转写在 transform 上。 */
-  transition:
-    transform var(--ak-sys-duration-close) var(--ak-sys-motion-close),
-    opacity var(--ak-sys-duration-snap, 120ms) var(--ak-sys-motion-standard);
-}
-
-.navigation-group__open[aria-expanded="true"] .navigation-group__chevron {
-  transform: rotate(90deg);
-  transition-duration: var(--ak-sys-duration-open), var(--ak-sys-duration-snap, 120ms);
-  transition-timing-function: var(--ak-sys-motion-open), var(--ak-sys-motion-standard);
 }
 
 .navigation-group__name {
@@ -1223,11 +1195,6 @@ input {
   box-shadow: 0 calc(-1 * var(--motion-cover-gap, 0px)) 0 var(--chat-sidebar-surface);
 }
 
-/* 搜索驱动的分组开合瞬时完成。 */
-.chat-sidebar__navigation[data-searching] .navigation-group__chevron {
-  transition: none !important;
-}
-
 .navigation-group__sessions {
   display: grid;
   min-width: 0;
@@ -1262,7 +1229,7 @@ input {
 }
 
 :where([data-chat-width~="820"], [data-chat-touch]) {
-  /* 触屏没有悬停：项目行的新建对话常驻在流内右侧，折叠箭头回到流内，一次点按就在项目里开新会话。 */
+  /* 触屏没有悬停：项目行的新建对话常驻在流内右侧，一次点按就在项目里开新会话。 */
   .navigation-group__new-chat {
     position: static;
     inset-inline-end: auto;
@@ -1274,17 +1241,6 @@ input {
     pointer-events: auto;
   }
   .navigation-group__open { padding-inline: 10px 6px; }
-  .navigation-group__chevron {
-    position: static;
-    inset-inline-end: auto;
-    top: auto;
-    translate: none;
-    opacity: 1;
-  }
-  .navigation-group__row:is(:hover, [data-menu-open]) .navigation-group__chevron,
-  .navigation-group__row > .navigation-group__open:focus-visible .navigation-group__chevron {
-    opacity: 1;
-  }
   .navigation-group__row,
   .navigation-group__open,
   .group-session,
@@ -1341,7 +1297,6 @@ input {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .navigation-group__chevron,
   .navigation-group__new-chat,
   .navigation-menu-trigger,
   .navigation-section__icon,

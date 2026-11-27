@@ -361,6 +361,32 @@
   padding-block-start: 2px;
 }
 
+/* 第一个日期组标签兼任会话区标题：与"项目"等区标题同一字级和留白，区标题行的动作（排序）贴右缘。 */
+.conversation-session-group--lead,
+.conversation-session-group--lead:first-child {
+  display: flex;
+  min-height: 26px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-block: 14px 2px;
+  padding-inline: 10px 4px;
+  font-size: var(--chat-type-section, 0.8125rem);
+  font-weight: 500;
+}
+
+/* 排序是低频操作：桌面悬停会话区或键盘聚焦时才显出，触屏常显。 */
+@media (hover: hover) and (pointer: fine) {
+  .conversation-session-group--lead > .conversation-sort-trigger {
+    opacity: 0;
+    transition: opacity var(--ak-sys-duration-snap, 120ms) var(--ak-sys-motion-standard);
+  }
+  .conversation-navigation:hover .conversation-session-group--lead > .conversation-sort-trigger,
+  .conversation-session-group--lead > .conversation-sort-trigger:is(:focus-visible, [data-state="open"]) {
+    opacity: 1;
+  }
+}
+
 /* 一行标题放不下时右缘 28px 渐隐，代替省略号；行悬停或键盘聚焦 0.35s 后以 30px/s 往返滚出尾部（参考 Memoh 的 marquee）。
    只动画 --marquee-pos 一个量：位移与两侧渐隐都是它的函数，滚动与渐隐同步；越界部分被 clamp 钉住，就是两端的停顿。 */
 .marquee {
