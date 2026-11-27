@@ -142,7 +142,7 @@ export function ReplyActivityView({ activity, committed, onError, onStop, proces
       block={{ source: message.source }} refreshToken={refreshToken} /> : null;
   return <div className="message-row agent-row reply-activity" data-reply-handle={activity.handle}
     data-preview-message-id={draft?.message_id} aria-busy={activity.active}>
-    <div className="agent-content">
+    <div className="agent-content" data-akashic-private="container">
       <TimelineProcess flow={flow} draftThinking={draft?.thinking} draftThinkingActive={activity.active && !text}
         draftLead={attemptLine} beforeReasoning={beforeReasoning} />
       {activity.active && draft?.retry_status ? <RetryStatus text={draft.retry_status} attempt={draft.attempt} onStop={onStop} /> : null}
@@ -260,10 +260,10 @@ export function ChatMessageView({
         </div>
       : null;
     return (
-      <Message from="user" className="message-row user-row">
+      <Message from="user" className="message-row user-row" data-akashic-private="container">
         {attachments}
         {references}
-        {leadingContent || message.content ? <MessageContent className="user-bubble">
+        {leadingContent || message.content ? <MessageContent className="user-bubble" data-akashic-private="container">
           {leadingContent}
           {message.content ? (
             <UserTextClamp enabled>
@@ -284,7 +284,7 @@ export function ChatMessageView({
 
   return (
     <Message from="assistant" className="message-row agent-row">
-      <MessageContent className="agent-content">
+      <MessageContent className="agent-content" data-akashic-private="container">
         {leadingContent}
         {message.blocks.length ? (
           <ProcessTrace
@@ -977,9 +977,10 @@ export function TimelineMessageView({ message, lookupMessage, toolResults, onNav
     || (!("display" in part) && (part.kind === "artifact_ref" || (part.kind === "text" && !part.value.trim()))));
   // 不是用户写下的输入（定时任务、唤醒、子代理等任何插件发起）靠左显示成一条事件行。
   const automatic = input && !userInput(message);
-  return <div className={`message-row timeline-message timeline-${body.kind}${automatic ? " timeline-automatic" : ""}`}>
+  return <div className={`message-row timeline-message timeline-${body.kind}${automatic ? " timeline-automatic" : ""}`}
+    data-akashic-private={input ? "container" : undefined}>
     {input ? attachmentList : null}
-    {emptyBubble ? null : <div className={automatic ? "automatic-input" : input ? "user-bubble" : "agent-content"}>
+    {emptyBubble ? null : <div className={automatic ? "automatic-input" : input ? "user-bubble" : "agent-content"} data-akashic-private="container">
       {leadingContent}
       {leadingProcess ? <InlineReplyProcess messages={leadingProcess} toolResults={toolResults}
         beforeReasoning={beforeReasoning} /> : null}

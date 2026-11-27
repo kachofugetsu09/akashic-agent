@@ -95,7 +95,7 @@ export function ComposerReply({
   onCancel: () => void;
 }) {
   return (
-    <div className="composer-reply" aria-label={`正在回复 ${replyAuthorLabel(author, role)}`}>
+    <div className="composer-reply" data-akashic-private="container" aria-label={`正在回复 ${replyAuthorLabel(author, role)}`}>
       <Reply size={18} aria-hidden="true" />
       <div>
         <strong>回复 {replyAuthorLabel(author, role)}</strong>

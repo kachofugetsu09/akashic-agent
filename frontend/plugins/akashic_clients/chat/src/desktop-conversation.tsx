@@ -226,8 +226,9 @@ const DesktopMessageRow = React.memo(function DesktopMessageRow({
 
 function DesktopMessagePlaceholder({ message }: { message: ChatMessage }) {
   return (
-    <div className={`message-row desktop-message-placeholder ${message.role === "user" ? "user-row" : "agent-row"}`}>
-      <div className={message.role === "user" ? "user-bubble" : "agent-content"}>
+    <div className={`message-row desktop-message-placeholder ${message.role === "user" ? "user-row" : "agent-row"}`}
+      data-akashic-private={message.role === "user" ? "container" : undefined}>
+      <div className={message.role === "user" ? "user-bubble" : "agent-content"} data-akashic-private="container">
         {message.reply ? <p className="plain-message-response">回复 · {message.reply.preview}</p> : null}
         {message.blocks.map((block, index) => (
           <p className="plain-message-response" key={block.kind === "tool" ? block.callId : `thinking-${index}`}>

@@ -1094,6 +1094,7 @@ type HostMountContext = PluginUiHostContext & {
 type HostMountFacts = Pick<HostMountContext, "slot" | "sessionId" | "messageId" | "block" | "scope">;
 
 interface HostRenderer {
+  order?: number;
   accepts?(block: unknown): boolean;
   prefetch?(context: HostMountContext): Promise<void>;
   mount(host: HTMLElement, context: HostMountContext): void | (() => void);
@@ -1126,9 +1127,10 @@ function slotWaiting(name: InlineSlotName): boolean {
 // 只属于某个 owner 的插槽（工具结果）只问该插件；没有 owner 时谁也不认领。
 const OWNED_SLOTS = new Set<InlineSlotName>(["tool.result"]);
 
+// 同一插槽按渲染器声明的 order 升序（默认 0），相同时保持目录顺序。
 function slotMatches(name: InlineSlotName, block: unknown, prefetch: boolean, owner?: string): SlotMatch[] {
   if (OWNED_SLOTS.has(name) && !owner) return [];
-  return catalog.plugins.flatMap((plugin) => {
+  return catalog.plugins.flatMap((plugin): SlotMatch[] => {
     if (owner !== undefined && plugin.id !== owner) return [];
     const loaded = definitions.get(plugin.id);
     // 同一个插件同时提供 scope.meta 与旧 scope.badge 时，新界面只走结构化 scope.meta，避免双重展示；
@@ -1144,7 +1146,7 @@ function slotMatches(name: InlineSlotName, block: unknown, prefetch: boolean, ow
     try { accepted = !renderer?.accepts || renderer.accepts(block); }
     catch (cause) { error = cause instanceof Error ? cause.message : String(cause); }
     return renderer && accepted && (!prefetch || renderer.prefetch) ? [{ plugin, renderer, error }] : [];
-  });
+  }).sort((a, b) => (a.renderer.order ?? 0) - (b.renderer.order ?? 0));
 }
 
 /** 宿主据此决定附件交给插件插槽还是普通附件条；调用方需随目录版本重新渲染。 */

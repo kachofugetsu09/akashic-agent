@@ -335,10 +335,17 @@ export interface SidebarPanelProvider {
  * - `data-chat-wide` / `data-chat-low` / `data-chat-short` / `data-chat-touch`：聊天根上的宽屏、矮视口、矮触屏、触控为主。
  * - `data-chat-modal`：聊天打开的锁页面模态层（ADR 0126），外壳隐藏聊天前先保留它。
  * - `data-chat-raise-composer`：挂在输入区里弹层的根上；窄屏铺满时宿主把输入区抬到浮动标题条之上。
+ * - `data-akashic-private`：用户隐私所在，截屏打码一类插件只认这个标记（宿主与插件给自己输出的元素打）：
+ *   `title` 是用户事物的名称（会话、分组、引用标题），可换成骨架条；`content` 是这个元素本身承载的内容，可模糊；
+ *   `container` 表示它的子元素是内容（子元素里另带标记的按子元素自己的标记处理），容器外观保持清晰；
+ *   `region` 不模糊，只表示里面的 title / data-tip 提示同样是隐私。带标记子树里的提示都按隐私处理。
  */
 export type ChatDomAttribute =
   | "data-chat-width" | "data-chat-wide" | "data-chat-low" | "data-chat-short" | "data-chat-touch"
-  | "data-chat-modal" | "data-chat-raise-composer";
+  | "data-chat-modal" | "data-chat-raise-composer" | "data-akashic-private";
+
+/** `data-akashic-private` 的取值。 */
+export type ChatPrivateKind = "title" | "content" | "container" | "region";
 
 /**
  * 顶栏说明行的一项。宿主按 scope 与 parent 建树、子项状态冒泡到父项，空间不够时沿树收起：
@@ -485,6 +492,8 @@ export interface MessageAttachmentFacts {
 }
 
 export interface PluginUiRenderer<S extends PluginUiMountSlotName = PluginUiMountSlotName> {
+  /** 同一插槽里多个插件的先后：按 order 升序（默认 0），相同时按目录顺序。 */
+  order?: number;
   accepts?(block: PluginUiSlotBlock<S>): boolean;
   prefetch?(context: PluginUiContext<S>): Promise<void>;
   mount(host: HTMLElement, context: PluginUiContext<S>): void | (() => void);

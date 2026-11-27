@@ -379,6 +379,7 @@ export const DesktopComposer = memo(function DesktopComposer({
           ref={textareaRef}
           autoFocus={autoFocus}
           className="composer__textarea !min-h-0"
+          data-akashic-private="content"
           value={input}
           onChange={onInputChange}
           onKeyDown={onComposerKeyDown}
@@ -486,7 +487,7 @@ function ComposerAttachments({ onPresenceChange, onRestoreText }: {
   };
   if (!hasAttachments) return null;
   return <>
-    <div ref={trayRef} className="composer-tray" role="list" aria-label={`附件，${files.length} 个`}>
+    <div ref={trayRef} className="composer-tray" data-akashic-private="container" role="list" aria-label={`附件，${files.length} 个`}>
       {files.map((file) => <div key={file.id} role="listitem" data-attachment-id={file.id} style={{ "--reflow-name": `attachment-${file.id}` } as CSSProperties}>
         <ComposerAttachment file={file} onRemove={(refocus) => remove(file.id, refocus)} onRestoreText={onRestoreText} onPreview={preview.open} />
       </div>)}
