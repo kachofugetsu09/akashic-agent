@@ -137,6 +137,10 @@ disabled = true
 plugin = "privacy_mask@release"
 disabled = true
 
+[rows."screenshot"]
+plugin = "screenshot@release"
+disabled = true
+
 [rows."vision"]
 plugin = "vision@release"
 disabled = true

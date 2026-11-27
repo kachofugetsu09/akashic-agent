@@ -116,6 +116,9 @@ plugin = "working_directory@release"
 [rows."privacy_mask"]
 plugin = "privacy_mask@release"
 
+[rows."screenshot"]
+plugin = "screenshot@release"
+
 [rows."vision"]
 plugin = "vision@release"
 
