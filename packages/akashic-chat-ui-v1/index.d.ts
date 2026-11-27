@@ -564,7 +564,8 @@ export interface ScopeMetaRecord {
   readonly item: ScopeMetaItem;
 }
 
-/** 分组行自包含视图扩展：插件可接管行内图标与悬停浮卡内容，宿主继续拥有导航投影、搜索、焦点与 120Hz 开合外框。 */
+/** 分组行自包含视图扩展：插件可接管行内图标与悬停浮卡内容，宿主继续拥有导航投影、搜索、焦点与 120Hz 开合外框。
+ * 浮卡内容可用 navigation.css 公开的 group-hover-card__* 类与宿主外观一致。 */
 export interface NavigationGroupView {
   renderLeading?: (props: {
     group: NavigationGroup;
@@ -713,8 +714,8 @@ export const ChoiceMenu: ComponentType<{
 }>;
 /** 过长时滚动显示的单行文字。 */
 export const MarqueeText: ComponentType<{ children: ReactNode; still?: boolean }>;
-/** 工具结果里的长文本：先给预览（tail 看末尾，否则看开头），可原地展开全文。 */
-export const ToolText: ComponentType<{ text: string; tail: boolean; className: string }>;
+/** 工具结果里的长文本：先给预览（tail 看末尾，否则看开头），可原地展开全文。不给 className 时是工具结果正文的外观。 */
+export const ToolText: ComponentType<{ text: string; tail: boolean; className?: string }>;
 /** 工具结果的通用数据展示：结构可展开，标量保留原文。 */
 export const ToolData: ComponentType<{ value: unknown }>;
 export function formatDuration(durationMs: number): string;

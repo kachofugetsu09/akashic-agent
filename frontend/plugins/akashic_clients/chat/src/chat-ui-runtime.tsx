@@ -111,7 +111,10 @@ const ChatUi = {
   MarqueeText,
   ChoiceMenu,
   copyText,
-  ToolText: PreviewText,
+  // 插件不必知道宿主的类名：不给 className 时就是工具结果正文的样子。
+  ToolText({ text, tail, className = "tool-result" }: { text: string; tail: boolean; className?: string }) {
+    return <PreviewText text={text} tail={tail} className={className} />;
+  },
   ToolData: ToolDataValue,
   formatDuration: formatToolDuration,
 };

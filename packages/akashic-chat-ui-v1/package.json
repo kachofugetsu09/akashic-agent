@@ -4,8 +4,15 @@
   "private": false,
   "description": "Public contract and runtime atoms for Akashic chat plugin UI slots",
   "types": "index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts"
+    },
+    "./navigation.css": "./navigation.css"
+  },
   "files": [
-    "index.d.ts"
+    "index.d.ts",
+    "navigation.css"
   ],
   "peerDependencies": {
     "react": "^19.0.0"

@@ -37,39 +37,7 @@
   background: var(--ak-paper-sheet);
 }
 
-.destination-row__copy { display: grid; min-width: 0; flex: 1; grid-template-columns: minmax(0, 1fr); }
-
-.destination-row__name { display: flex; min-width: 0; align-items: baseline; gap: 8px; }
-
-.destination-row__name strong {
-  min-width: 0;
-  flex: 0 1 auto;
-  overflow: hidden;
-  font-size: 0.9375rem;
-  font-weight: 650;
-  letter-spacing: 0.01em;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-.destination-row__name time,
 .destination-row__name .session-status-slot { margin-inline-start: auto; flex: none; align-self: center; }
-
-.destination-row__name time {
-  color: var(--chat-faint);
-  font-size: 0.75rem;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-
-.destination-row__preview {
-  overflow: hidden;
-  color: var(--chat-muted);
-  font-size: 0.8125rem;
-  line-height: 1.35;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
 
 .destination-row__open[data-unread] .destination-row__preview { color: var(--chat-ink); }
 
