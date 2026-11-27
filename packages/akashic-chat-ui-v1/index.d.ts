@@ -581,14 +581,12 @@ export interface ScopeMetaRecord {
 export interface NavigationGroupView {
   renderLeading?: (props: {
     group: NavigationGroup;
-    iconProvider?: IconProvider | null;
   }) => ReactNode;
   renderHoverCard?: (props: {
     group: NavigationGroup;
     meta: readonly ScopeMetaItem[];
     metaRecords: readonly ScopeMetaRecord[];
     hasActions: boolean;
-    iconProvider?: IconProvider | null;
   }) => ReactNode;
 }
 
