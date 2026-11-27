@@ -192,19 +192,29 @@ class OperationRegistry:
             })
         return {"operations": rows}
 
+    # 渐进式 help：按命令路径逐层展开。没写到命令时只列下一层（分组一行、命令一句话），写到具体命令才给参数。
     def render_help(self, path: tuple[str, ...] = (), *, actor: ActorKind = "agent") -> str:
         ops = cast(list[dict[str, object]], self.describe(path, actor=actor)["operations"])
         if not ops:
             return f"未找到匹配命令: {' '.join(path)}" if path else "当前没有可用命令。"
-        lines = ["可用命令（使用 `help <group>` 或 `describe <cmd>` 查看详情）："]
+        leaf = [item for item in ops if tuple(cast(list[str], item["path"])) == path]
+        if leaf and len(ops) == 1:
+            return _render_command(leaf[0])
+        # 1. 按下一层名字归拢：直接是命令的给一句话说明，下面还有命令的列出子命令名。
+        children: dict[str, list[dict[str, object]]] = {}
         for item in ops:
-            lines.append(f"  {' '.join(cast(list[str], item['path']))} — {item['summary']}")
-            all_opts = list(cast(list[dict[str, object]], item["options"]))
-            for ext in cast(list[dict[str, object]], item["extensions"]):
-                all_opts.extend(cast(list[dict[str, object]], ext["options"]))
-            for opt in all_opts:
-                tag = " [set-once]" if opt["set_once"] else ""
-                lines.append(f"    {opt['flag']} ({opt['type']}){tag}: {opt['description']}")
+            full = cast(list[str], item["path"])
+            if len(full) > len(path):
+                children.setdefault(full[len(path)], []).append(item)
+        prefix = " ".join(path)
+        title = f"{prefix} 下的命令" if path else "命令分组"
+        lines = [f"{title}（`help {prefix + ' ' if prefix else ''}<名字>` 逐层展开，写到具体命令时列出参数）："]
+        for name, items in sorted(children.items()):
+            lines.append(_render_child(path + (name,), items))
+        # 2. 当前路径本身也是命令时（同时有子命令），把它的参数附在最后。
+        if leaf:
+            lines.append("")
+            lines.append(_render_command(leaf[0]))
         return "\n".join(lines)
 
     def receipt(self, request_id: str) -> OperationResult | None:
@@ -353,3 +363,30 @@ class OperationRegistry:
             if ext_outputs else result
         )
         return final
+
+
+# 一个下层条目：正好是一条命令时给说明与必填参数；下面还有命令时列出下一层名字。
+def _render_child(path: tuple[str, ...], items: list[dict[str, object]]) -> str:
+    label = " ".join(path)
+    exact = [item for item in items if tuple(cast(list[str], item["path"])) == path]
+    if exact and len(items) == 1:
+        required = [cast(str, opt["flag"]) for opt in cast(list[dict[str, object]], exact[0]["options"]) if opt.get("required")]
+        return f"  {label}{' ' + ' '.join(f'{flag} …' for flag in required) if required else ''} — {exact[0]['summary']}"
+    names = sorted({cast(list[str], item["path"])[len(path)] for item in items if len(cast(list[str], item["path"])) > len(path)})
+    shown = "、".join(names[:8]) + (f" 等 {len(names)} 项" if len(names) > 8 else "")
+    return f"  {label} … — {len(items)} 个命令：{shown}"
+
+
+# 一条命令的完整用法：说明、主参数与扩展参数。
+def _render_command(item: dict[str, object]) -> str:
+    lines = [f"{' '.join(cast(list[str], item['path']))} — {item['summary']}"]
+    all_opts = list(cast(list[dict[str, object]], item["options"]))
+    for ext in cast(list[dict[str, object]], item["extensions"]):
+        all_opts.extend(cast(list[dict[str, object]], ext["options"]))
+    for opt in all_opts:
+        tag = " [set-once]" if opt["set_once"] else ""
+        need = " [必填]" if opt.get("required") else ""
+        lines.append(f"  {opt['flag']} ({opt['type']}){need}{tag}: {opt['description']}")
+    if not all_opts:
+        lines.append("  （无参数）")
+    return "\n".join(lines)
