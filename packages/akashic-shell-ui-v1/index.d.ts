@@ -1,7 +1,7 @@
 import type { WebEntry, WebMountView, WebUiDisposer } from "@akashic/web-ui-v1";
 
 /**
- * Shell 底栏动作入口。label/iconSvg/order 是可序列化投影，页面可以把它们
+ * Shell 底栏动作入口（对话页只常驻排序第一项，其余进顶栏「⋯」）。label/iconSvg/order 是可序列化投影，页面可以把它们
  * 转发进自己的 iframe 渲染；onActivate 永远留在贡献者的宿主域，由页面在收到
  * 激活消息后回调，不跨 realm 传递函数。
  */

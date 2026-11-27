@@ -4,6 +4,7 @@ import "./style.css";
 import { akashicBrandIcon, markup } from "@akashic/plugin-kit/brand";
 import { PluginInventory, inventoryResource, type InventoryResource } from "./plugin-inventory";
 import { SystemVersion } from "./system-version";
+import { registerAppearance } from "./appearance";
 import { FIRST_INSTALL_ROUTE, mountFirstInstall } from "./first-install";
 import { holdWhileInstalling } from "./install-hold";
 import type {
@@ -140,6 +141,7 @@ export function activate(ctx: WebHostContextV1): WebUiDisposer {
       iconSvg: SETTINGS_ICON,
       onActivate: () => settingsLauncher.open(),
     })),
+    registerAppearance(ctx),
   ];
   return () => {
     for (const dispose of disposers.reverse()) dispose();

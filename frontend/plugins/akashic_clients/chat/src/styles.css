@@ -404,7 +404,7 @@ input {
   color: var(--chat-ink);
 }
 
-/* 底部动作：一行。第一个动作带字占满，其余是图标；低频入口不各占一行。 */
+/* 底部动作：只有宿主的第一个动作（功能设置），带字占满一行。 */
 .chat-sidebar__footer {
   display: flex;
   flex: 0 0 auto;
@@ -467,72 +467,6 @@ input {
 
 .chat-sidebar__action:active {
   background: color-mix(in oklab, var(--md-sys-color-on-surface) 8%, transparent);
-}
-
-.chat-sidebar__icon-action {
-  display: inline-grid;
-  width: 36px;
-  height: 36px;
-  flex: 0 0 auto;
-  place-items: center;
-  border: 0;
-  border-radius: var(--ak-radius-sm);
-  padding: 0;
-  color: var(--chat-muted);
-  background: transparent;
-  cursor: pointer;
-}
-.chat-sidebar__icon-action svg { width: 18px; height: 18px; }
-.chat-sidebar__icon-action .chat-sidebar__action-icon { display: inline-grid; place-items: center; }
-@media (hover: hover) {
-  .chat-sidebar__icon-action:hover { color: var(--chat-ink); background: color-mix(in oklab, var(--ak-ink-primary) 6%, transparent); }
-}
-.chat-sidebar__icon-action:focus-visible { color: var(--chat-ink); outline: 2px solid var(--ak-rule-focus); outline-offset: 2px; }
-.chat-sidebar__icon-action:active { background: color-mix(in oklab, var(--ak-ink-primary) 8%, transparent); }
-.chat-sidebar__icon-action[data-state="open"] { color: var(--chat-ink); background: color-mix(in oklab, var(--ak-ink-primary) 6%, transparent); }
-
-/* 主题菜单：明暗是一排分段按钮（带连续滑动胶囊底块），配色是带色票的单选列表；触屏行高放到 44px。 */
-.theme-menu { width: min(264px, calc(100vw - 24px)); border: 1px solid var(--ak-rule-subtle); border-radius: var(--ak-radius-md); padding: 6px;
-  color: var(--ak-ink-primary); background: var(--ak-paper-raised); font-family: var(--ak-type-ui); }
-.theme-menu__label { padding: 6px 8px 4px; color: var(--ak-ink-secondary); font-size: 0.75rem; font-weight: 500; }
-.theme-menu__modes { position: relative; display: grid; grid-template-columns: repeat(3, 1fr); gap: 2px; padding: 2px;
-  border-radius: var(--ak-radius-sm); background: color-mix(in oklab, var(--ak-ink-primary) 6%, transparent); }
-.theme-menu__mode-pill {
-  position: absolute;
-  inset-block: 2px;
-  inset-inline-start: 2px;
-  width: calc((100% - 8px) / 3);
-  border-radius: calc(var(--ak-radius-sm) - 2px);
-  background: var(--ak-paper-editing);
-  box-shadow: 0 0 0 1px var(--ak-rule-subtle);
-  transform: translateX(calc(var(--chat-mode-index, 0) * (100% + 2px)));
-  transition: transform var(--chat-mode-duration, 175ms) cubic-bezier(0.22, 1, 0.36, 1);
-  pointer-events: none;
-}
-.theme-menu__modes:dir(rtl) .theme-menu__mode-pill {
-  transform: translateX(calc(var(--chat-mode-index, 0) * -1 * (100% + 2px)));
-}
-@media (prefers-reduced-motion: reduce) {
-  .theme-menu__mode-pill { transition: none; }
-}
-.theme-menu__mode, .theme-menu__family { position: relative; z-index: 1; display: flex; align-items: center; outline: none; cursor: pointer; user-select: none; }
-.theme-menu__mode { min-height: 32px; justify-content: center; gap: 6px; border-radius: calc(var(--ak-radius-sm) - 2px);
-  color: var(--ak-ink-secondary); font-size: 0.8125rem; white-space: nowrap; transition: color var(--ak-sys-duration-short) var(--ak-sys-motion-standard); }
-.theme-menu__mode[data-state="checked"] { color: var(--ak-ink-primary); font-weight: 550; }
-.theme-menu__family { min-height: 36px; gap: 10px; border-radius: var(--ak-radius-sm); padding-inline: 8px; color: var(--ak-ink-primary); font-size: 0.875rem; }
-.theme-menu__mode:not([data-state="checked"])[data-highlighted], .theme-menu__family[data-highlighted] { background: color-mix(in oklab, var(--ak-ink-primary) 8%, transparent); }
-.theme-menu__name { flex: 1 1 auto; min-width: 0; }
-.theme-menu__check { display: inline-flex; color: var(--ak-ink-primary); }
-/* 色票是一小张纸：纸面底色、一道墨色、一个强调色圆点。 */
-.theme-menu__swatch { position: relative; flex: 0 0 auto; width: 28px; height: 20px; border-radius: var(--ak-radius-xs);
-  background: var(--swatch-paper); box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--ak-ink-primary) 14%, transparent); }
-.theme-menu__swatch::before { position: absolute; inset-block-start: 6px; inset-inline-start: 5px; width: 11px; height: 2px;
-  border-radius: 1px; background: var(--swatch-ink); content: ""; }
-.theme-menu__swatch::after { position: absolute; inset-block-end: 4px; inset-inline-end: 4px; width: 7px; height: 7px;
-  border-radius: 50%; background: var(--swatch-accent); content: ""; }
-@media (pointer: coarse) {
-  .theme-menu__mode { min-height: 40px; }
-  .theme-menu__family { min-height: 44px; }
 }
 
 /* 搜索命中只换墨色并加粗下划线，不铺底色块，列表仍然安静。 */
@@ -875,7 +809,6 @@ input {
   .chat-sidebar__brand-row,
   .chat-sidebar__search,
   .chat-sidebar__action { min-height: 44px; }
-  .chat-sidebar__icon-action { width: 44px; height: 44px; }
   .chat-sidebar__new,
   .conversation-heading__new,
   .conversation-heading__action { width: 44px; height: 44px; }
@@ -2863,11 +2796,6 @@ form.composer:focus-within [data-slot="input-group"] {
 
 /* —— 桌面 WebUI：非对称 Lucide 光学对齐 —— */
 .chat-sidebar__search > .lucide-search {
-  translate: 0.5px -0.5px;
-}
-
-.theme-menu__mode > :is(.lucide-moon, .lucide-sun-moon),
-.chat-sidebar__footer-actions :is(.lucide-moon, .lucide-sun-moon) {
   translate: 0.5px -0.5px;
 }
 

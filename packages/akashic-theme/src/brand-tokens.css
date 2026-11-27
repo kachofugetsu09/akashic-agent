@@ -83,11 +83,9 @@
 @supports (corner-shape: superellipse(1.25)) {
   :where(
     .user-bubble,
-    .theme-menu,
-    .theme-menu__modes,
-    .theme-menu__mode-pill,
-    .theme-menu__mode,
-    .theme-menu__family,
+    .shell-appearance__modes,
+    .shell-appearance__mode,
+    .shell-appearance__families,
     .sidebar-panels:not([data-sheet]),
     .shell-settings-dialog,
     .shell-plugin-cards,

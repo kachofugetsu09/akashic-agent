@@ -338,9 +338,10 @@ shell.settings-plugins，分节自己声明子目录即可拥有更深层级。
 
 `shell.rail-actions.v1` 是 Shell 声明的底栏动作目录（合同包 `@akashic/shell-ui-v1`）。entry 由可序列化投影
 （`id`/`label`/`iconSvg`/`order`）和宿主域 `onActivate` 回调组成；Shell 把 entry 列表作为 props 传给每个页面，
-页面自己决定是否在左栏底部渲染。对话页经 postMessage 桥把投影转给 chat iframe 渲染，激活消息回到宿主域后才调
-`onActivate`——函数不跨 realm。「功能设置」是第一个真实消费者；顶栏不再硬编码该入口。页面缺失时 Shell 不受影响，
-只是没有地方显示这些动作。
+页面自己决定在哪里渲染。对话页经 postMessage 桥把投影转给 chat iframe 渲染，激活消息回到宿主域后才调
+`onActivate`——函数不跨 realm。对话页只把排序第一的动作（「功能设置」）常驻在侧栏底部，其余动作（例如截屏打码）
+是低频的整屏开关，收进对话顶栏的「⋯」菜单；插件不能在底栏加常驻图标。主题不是底栏动作，在设置·外观分节里
+（shell-ui 自己注册的普通 `shell.settings.v1` 分节）。页面缺失时 Shell 不受影响，只是没有地方显示这些动作。
 
 `shell.settings.v1` 与 `shell.settings-plugins.v1` 是 Shell 声明的设置工作区目录（合同包同为
 `@akashic/shell-ui-v1`）。顶层分节（初始配置、模型）注册进前者，普通插件的配置表单注册进后者，
