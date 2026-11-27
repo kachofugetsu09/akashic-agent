@@ -2,6 +2,7 @@ import { ChevronDown, ChevronRight, Folder, FolderPlus, Plus, SlidersHorizontal,
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import type { NavigationControls, NavigationForm, NavigationFormControls, NavigationGroup, NavigationGroupView } from "@akashic/chat-ui-v1";
+import { foregroundOverlay } from "@akashic/web-ui-v1";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { NavigationRowMenu, type NavigationRowAction } from "./navigation-row-menu";
 import { IconSwap } from "./icon-swap";
@@ -275,18 +276,6 @@ export function FolderMark({ size = 18 }: {
   return <Folder size={size} aria-hidden="true" />;
 }
 
-/** 仅把真正在屏幕上可见的菜单/对话框视为阻塞浮卡，忽略插件挂在 DOM 里的隐藏占位节点（如 display: none）。 */
-function hasVisibleOverlay(): boolean {
-  for (const el of document.querySelectorAll("[role='menu'], [role='dialog']")) {
-    if (!(el instanceof HTMLElement)) continue;
-    if (el.closest("[hidden], [inert], [aria-hidden='true']")) continue;
-    if (el.getClientRects().length === 0) continue;
-    if (window.getComputedStyle(el).visibility === "hidden") continue;
-    return true;
-  }
-  return false;
-}
-
 function GroupHoverCard({ anchor, groupRef, group, hasActions, portalTarget, viewOwnerKey, groupView }: {
   anchor: DOMRect;
   groupRef: GroupRef;
@@ -495,7 +484,7 @@ export function GroupNavigationRow({
       const button = openButtonRef.current;
       if (!button || !button.isConnected) return;
       // 仅在真正可见的右键菜单或对话框打开时不叠出浮卡。
-      if (button.closest("[data-state='open']") || hasVisibleOverlay()) return;
+      if (button.closest("[data-state='open']") || foregroundOverlay()) return;
       setHoverCard({
         anchor: button.getBoundingClientRect(),
         portalTarget: button.closest(".akashic-chat") ?? document.body,

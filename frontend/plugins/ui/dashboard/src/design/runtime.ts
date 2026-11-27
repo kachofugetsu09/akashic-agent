@@ -18,6 +18,7 @@ import {
   MaterialFilterChip,
   MaterialIconButton,
 } from "../../../../../../packages/akashic-theme/src/material-react";
+import { foregroundOverlay, overlaySelector } from "./overlay";
 
 const WebUi = {
   currentTheme,
@@ -32,6 +33,8 @@ const WebUi = {
   MaterialButton,
   MaterialFilterChip,
   MaterialIconButton,
+  foregroundOverlay,
+  overlaySelector,
 };
 
 // The shared runtime handed to dynamically-imported plugin modules. The static

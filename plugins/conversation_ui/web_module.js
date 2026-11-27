@@ -1,4 +1,5 @@
 import { mountChat } from "@akashic/chat-app-v1";
+import { foregroundOverlay } from "@akashic/web-ui-v1";
 
 const WIDTH_KEY = "akashic.conversation.tools.width";
 const SAMPLES_KEY = "akashic.conversation.tools.samples";
@@ -226,9 +227,7 @@ function overlayOwnsKey(event, panel) {
   const target = event.target;
   const overlay = typeof target?.closest === "function" ? target.closest(OVERLAY_ROLES) : null;
   if (overlay && !(overlay.getAttribute("role") === "listbox" && panel.contains(overlay))) return true;
-  const page = target?.ownerDocument ?? document;
-  return [...page.querySelectorAll("[aria-modal='true'], dialog[open], [role='menu']")]
-    .some((node) => node.checkVisibility?.() ?? true);
+  return foregroundOverlay(target?.ownerDocument ?? document) !== null;
 }
 
 // 给 chat 的快捷键面板用：Mod 换成本平台的写法。

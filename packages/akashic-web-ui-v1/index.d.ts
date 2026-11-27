@@ -73,6 +73,11 @@ export const MaterialButton: ComponentType<MaterialButtonProps>;
 export const MaterialIconButton: ComponentType<MaterialIconButtonProps>;
 export const MaterialFilterChip: ComponentType<MaterialFilterChipProps>;
 
+/** The one definition of a foreground overlay: modal or open dialogs, dialog and menu roles. */
+export const overlaySelector: string;
+/** Topmost overlay actually visible in `doc`; hidden placeholders do not count. */
+export function foregroundOverlay(doc?: Document): HTMLElement | null;
+
 export interface WebMountDefinition {
   id: string;
   cardinality: WebMountCardinality;
