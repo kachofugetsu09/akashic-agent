@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import ExitStack, AsyncExitStack
 from dataclasses import dataclass
@@ -234,15 +235,32 @@ class OwnerState:
 
     def __init__(self, log: _MessageLog):
         self._log = log
+        self._adopting = threading.Lock()
 
     def open(self, ctx: Context) -> OwnerStore:
-        return self._log.owner("plugin:" + ctx.require_runtime_identity(OWNER_STATE, self).plugin_id)
+        plugin_id = ctx.require_runtime_identity(OWNER_STATE, self).plugin_id
+        self._adopt_moved(ctx, plugin_id)
+        return self._log.owner("plugin:" + plugin_id)
+
+    # 换来源（pkg move）后第一次打开：新数据目录里的 .moved-from 写着旧插件 ID，把旧 ID 的记录改归新 ID 后删掉标记。
+    def _adopt_moved(self, ctx: Context, plugin_id: str) -> None:
+        marker = ctx.data_root / ".moved-from"
+        if not marker.is_file():
+            return
+        with self._adopting:
+            if not marker.is_file():
+                return
+            old = marker.read_text(encoding="utf-8").strip()
+            if old and old != plugin_id:
+                _ = self._log.adopt_owner("plugin:" + old, "plugin:" + plugin_id)
+            marker.unlink()
 
     def open_scoped(self, ctx: Context, scope: str) -> OwnerStore:
         """同一 owner 的独立子空间；其他消费者的 key 扫描互不可见。"""
         if not isinstance(scope, str) or not scope or ":" in scope:
             raise ValueError("owner state 子空间名必须是非空且不含冒号的字符串")
         owner = ctx.require_runtime_identity(OWNER_STATE, self).plugin_id
+        self._adopt_moved(ctx, owner)
         return self._log.owner(f"plugin:{owner}:{scope}")
 
     async def transact_joint(self, writes: Sequence[OwnerWrite]) -> tuple[object, ...]:

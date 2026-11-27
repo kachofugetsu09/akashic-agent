@@ -1,19 +1,21 @@
 """换来源：把已装的 name@旧来源 换成另一个来源里的同名包，插件 ID 随来源改成 name@新来源。
 
-插件 ID 落在三处持久状态里：选择记录、数据目录 plugin-data/<name>-<来源>、ledger 的 owner_records（plugin:<ID>[:子空间]）。
-选择记录由卸载和安装各自维护；这里补另外两处，让新来源的插件接着用原来的数据。
+插件 ID 落在三处持久状态里：选择记录（卸载、安装各自维护）、数据目录 plugin-data/<name>-<来源>（这里复制），
+以及插件经 ledger 存的状态（ledger 按新数据目录里的 .moved-from 标记自己改名，Core 不碰它的库）。
 """
 
 from __future__ import annotations
 
 import shutil
-import sqlite3
-from contextlib import closing
 from pathlib import Path
 
 from agent.plugins.manifest import workspace_plugin_data_dir
 from agent.plugins.package_ops import Context, Outcome, remove_one, install_one
 from agent.plugins.packages import list_release_heads, read_state
+
+
+# 换来源标记：写在新数据目录里，内容是旧插件 ID；ledger 读到后把旧 ID 的 owner 记录改归新 ID，再删掉标记。
+MOVED_FROM = ".moved-from"
 
 
 # 逐个换来源；ctx 是目标来源。names 写完整的旧 ID（phone-use@local）。
@@ -22,7 +24,7 @@ def move_many(ctx: Context, plugin_ids: list[str]) -> list[Outcome]:
     return [_move_one(ctx, plugin_id, heads) for plugin_id in plugin_ids]
 
 
-# 1. 校验；2. 卸旧（停下来，数据保留）；3. 复制数据目录、owner 记录改名；4. 装新，装不上就把 owner 记录改回去。
+# 1. 校验；2. 卸旧（停下来，数据保留）；3. 复制数据目录并留下迁移标记；4. 装新，装不上就撤掉复制出的目录。
 def _move_one(ctx: Context, old_id: str, heads: dict[str, str]) -> Outcome:
     name, _, old_marketplace = old_id.partition("@")
     new_id = ctx.identity(name)
@@ -36,19 +38,19 @@ def _move_one(ctx: Context, old_id: str, heads: dict[str, str]) -> Outcome:
     removed = remove_one(ctx, installed[old_id])
     if removed.result != "removed":
         return Outcome(name, "failed", f"卸载 {old_id} 未完成：{removed.detail}")
-    # 3. 旧包已停，数据目录和 owner 记录都没有写入者了。
+    # 3. 旧包已停，数据目录没有写入者了。插件存在 ledger 里的状态由 ledger 在新插件第一次打开时按标记改归新 ID。
     old_dir = workspace_plugin_data_dir(ctx.workspace, name, old_marketplace)
+    new_dir = workspace_plugin_data_dir(ctx.workspace, name, ctx.marketplace)
     if old_dir.is_dir():
-        _ = shutil.copytree(old_dir, workspace_plugin_data_dir(ctx.workspace, name, ctx.marketplace),
-                            ignore=_special_files)
-    moved = _rename_owner(ctx.workspace, old_id, new_id)
-    # 4. 新包装不上时 owner 记录改回旧 ID，重新装回旧来源就能接着用；复制出的数据目录留着无害。
+        _ = shutil.copytree(old_dir, new_dir, ignore=_special_files)
+    new_dir.mkdir(parents=True, exist_ok=True)
+    _ = (new_dir / MOVED_FROM).write_text(old_id, encoding="utf-8")
+    # 4. 新包装不上：撤掉复制出的目录（含标记），旧数据和状态都没动过，可从原来源重新安装。
     outcome = install_one(ctx, read_state(ctx.workspace, ctx.repo), new_id, heads[name])
     if outcome.result not in {"installed", "restart-required"}:
-        _ = _rename_owner(ctx.workspace, new_id, old_id)
-        return Outcome(name, "failed", f"{new_id} 未装上（{outcome.detail}）；{old_id} 已卸载，数据和 owner 记录都在，"
-                       f"可从原来源重新安装")
-    return Outcome(name, outcome.result, f"{old_id} → {new_id}，迁移 {moved} 条 owner 记录")
+        shutil.rmtree(new_dir, ignore_errors=True)
+        return Outcome(name, "failed", f"{new_id} 未装上（{outcome.detail}）；{old_id} 已卸载，数据都在，可从原来源重新安装")
+    return Outcome(name, outcome.result, f"{old_id} → {new_id}")
 
 
 def _precheck(ctx: Context, old_id: str, new_id: str, ids: set[str], heads: dict[str, str]) -> str:
@@ -73,29 +75,3 @@ def _precheck(ctx: Context, old_id: str, new_id: str, ids: set[str], heads: dict
 def _special_files(directory: str, names: list[str]) -> list[str]:
     base = Path(directory)
     return [item for item in names if not ((base / item).is_dir() or (base / item).is_file()) or (base / item).is_symlink()]
-
-
-# owner 记录改名：plugin:<旧ID> 与 plugin:<旧ID>:<子空间>；新 owner 已有同键不同内容时拒绝，整体回滚。
-def _rename_owner(workspace: Path, old_id: str, new_id: str) -> int:
-    path = workspace / "sessions.db"
-    if not path.exists():
-        return 0
-    old, new = f"plugin:{old_id}", f"plugin:{new_id}"
-    match = "(owner = ? OR substr(owner, 1, ?) = ?)"
-    arguments = (old, len(old) + 1, old + ":")
-    renamed = f"? || substr(owner, {len(old) + 1})"
-    with closing(sqlite3.connect(path, timeout=60)) as db, db:
-        if db.execute("SELECT 1 FROM sqlite_master WHERE name='owner_records'").fetchone() is None:
-            return 0
-        conflicts = db.execute(
-            f"""SELECT o.owner, o.key FROM owner_records AS o
-                JOIN owner_records AS n ON n.owner = ? || substr(o.owner, {len(old) + 1}) AND n.key = o.key
-                WHERE (o.owner = ? OR substr(o.owner, 1, ?) = ?)
-                  AND (n.version IS NOT o.version OR n.value IS NOT o.value)""",
-            (new, *arguments)).fetchall()
-        if conflicts:
-            raise RuntimeError(f"{new} 已有不同内容的同键记录，拒绝覆盖: {conflicts[:3]}")
-        moved = db.execute(f"UPDATE OR IGNORE owner_records SET owner = {renamed} WHERE {match}",
-                           (new, *arguments)).rowcount
-        _ = db.execute(f"DELETE FROM owner_records WHERE {match}", arguments)
-    return moved
