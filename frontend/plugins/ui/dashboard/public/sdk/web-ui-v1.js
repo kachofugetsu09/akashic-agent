@@ -14,4 +14,6 @@ export const {
   MaterialButton,
   MaterialFilterChip,
   MaterialIconButton,
+  foregroundOverlay,
+  overlaySelector,
 } = W;

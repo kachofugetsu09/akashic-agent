@@ -1,7 +1,7 @@
 import type { WebHostContextV1 } from "@akashic/web-ui-v1";
 
 type Http = WebHostContextV1["http"];
-interface NavigateDetail { go?: () => void; wait?: () => void; reason?: string }
+type Navigation = WebHostContextV1["navigation"];
 
 /**
  * 扩展包安装进行中暂缓界面换代：每装好一个包目录就变一次，装完只换一次，外框不反复重建。
@@ -15,7 +15,7 @@ export function kickInstallHold(): void {
 }
 
 // 外框挂载时启用：先读一次任务状态（页面重开时接上在装的任务），装着就每 2 秒再读。
-export function holdWhileInstalling(http: Http): () => void {
+export function holdWhileInstalling(http: Http, navigation: Navigation): () => void {
   let running = false;
   let held: (() => void) | null = null;
   let timer = 0;
@@ -28,7 +28,7 @@ export function holdWhileInstalling(http: Http): () => void {
     window.clearInterval(timer); timer = 0;
     const go = held; held = null;
     if (go) go();
-    else if (was) window.dispatchEvent(new CustomEvent("akashic:configuration-submitted"));
+    else if (was) navigation.expectCatalogChange();
   };
   const read = async () => {
     if (reading) return;
@@ -42,18 +42,15 @@ export function holdWhileInstalling(http: Http): () => void {
       } else release();
     } catch { release(); } finally { reading = false; }
   };
-  const onNavigate = (event: Event) => {
-    const detail = (event as CustomEvent<NavigateDetail>).detail;
-    if (!running || detail?.reason !== "catalog" || !detail.go) return;
-    event.preventDefault();
-    detail.wait?.();
-    held = detail.go;
-  };
-  window.addEventListener("akashic:before-navigate", onNavigate);
+  const stopGuard = navigation.guard((request) => {
+    if (!running || request.reason !== "catalog") return;
+    request.hold({ resume: true });
+    held = request.go;
+  });
   current = { kick: () => void read() };
   void read();
   return () => {
-    window.removeEventListener("akashic:before-navigate", onNavigate);
+    stopGuard();
     window.clearInterval(timer);
     current = null;
   };

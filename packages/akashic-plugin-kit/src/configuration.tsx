@@ -310,13 +310,12 @@ export function Configuration({ctx, definition, embed, stored}: {ctx: WebHostCon
   useEffect(() => {
     if (!edited && !busy) return;
     const unload = (event: BeforeUnloadEvent) => { event.preventDefault(); };
-    const navigate = (event: Event) => {
-      const detail = (event as CustomEvent<{go: () => void; reason?: string}>).detail;
-      if (detail.reason === "catalog" && needsRebind.current && !draftEditing.current && sessionStorage.getItem(lastKey)) return;
-      event.preventDefault(); if (detail.reason === "catalog") return; if (busy) { setNotice("配置正在生效中，请稍候；离开不会取消提交。"); return; } setLeave(() => (event as CustomEvent<{go: () => void}>).detail.go); };
-    window.addEventListener("beforeunload", unload); window.addEventListener("akashic:before-navigate", navigate);
-    return () => { window.removeEventListener("beforeunload", unload); window.removeEventListener("akashic:before-navigate", navigate); };
-  }, [edited, busy]);
+    const stopGuard = ctx.navigation.guard((request) => {
+      if (request.reason === "catalog" && needsRebind.current && !draftEditing.current && sessionStorage.getItem(lastKey)) return;
+      request.hold(); if (request.reason === "catalog") return; if (busy) { setNotice("配置正在生效中，请稍候；离开不会取消提交。"); return; } setLeave(() => request.go); });
+    window.addEventListener("beforeunload", unload);
+    return () => { window.removeEventListener("beforeunload", unload); stopGuard(); };
+  }, [edited, busy, ctx]);
   const change = (key: string, value: unknown) => { edits.current += 1; setValues(previous => ({...previous, [key]: value})); markDirty(true); setPreset(false); setNotice(""); };
   const save = async (event: React.FormEvent): Promise<void> => {
     event.preventDefault(); if (!status || enabled === null || inFlightRequest.current !== null || busy) return;
@@ -328,7 +327,7 @@ export function Configuration({ctx, definition, embed, stored}: {ctx: WebHostCon
     // 发送前只保存非敏感操作 ID；响应丢失或模块撤回后仍可查原回执。
     sessionStorage.setItem(pendingKey, id);
     setBusy(true); setError(""); setNotice("正在校验并应用配置…");
-    window.dispatchEvent(new CustomEvent("akashic:configuration-submitted"));
+    ctx.navigation.expectCatalogChange();
     try {
       const receipt = await request<{request_id: string; state: string; error: string}>(ctx, path, {
         method: "POST", headers: {"Content-Type": "application/json"},
