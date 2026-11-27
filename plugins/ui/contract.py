@@ -172,7 +172,6 @@ PluginUiSlot = Literal[
     "navigation.groups",
     "navigation.destinations",
     "sidebar.panels",
-    "icon.provider",
 ]
 
 PLUGIN_UI_V1_SLOTS = frozenset(
@@ -200,7 +199,7 @@ PLUGIN_UI_V1_SLOTS = frozenset(
     }
 )
 
-PLUGIN_UI_SLOTS = PLUGIN_UI_V1_SLOTS | frozenset({"scope.meta", "icon.provider"})
+PLUGIN_UI_SLOTS = PLUGIN_UI_V1_SLOTS | frozenset({"scope.meta"})
 
 class PluginUiQueryHandler(Protocol):
     def __call__(

@@ -186,8 +186,9 @@ async def test_plugin_ui_v1_v2_catalog_and_file_asset_isolation(tmp_path: Path) 
             PluginUiDefinition(
                 "plugin_ui.js",
                 stylesheet="plugin_ui.css",
-                slots=("icon.provider",),
+                slots=(),
                 assets_dir="static/chunks",
+                client_kernel=True,
             ),
             query=lambda method, payload, *, session_id, turn_id: {},
         )
@@ -222,19 +223,23 @@ async def test_plugin_ui_v1_v2_catalog_and_file_asset_isolation(tmp_path: Path) 
         assert [item["id"] for item in v1_items] == ["akasha"]
         assert v1_items[0]["slots"] == ["scope.badge"]
 
-        # 2. protocol=2 暴露完整插件、bundle_sha256 与实际入口文件名，且 catalog_revision 与 v1 区分。
+        # 2. protocol=2 隐藏纯微内核插件，protocol=3 暴露完整插件、bundle_sha256 与实际入口文件名。
         v2 = await provider.catalog(protocol=2)
         assert v2["catalog_revision"] != v1["catalog_revision"]
         v2_by_id = {str(item["id"]): item for item in cast(list[dict[str, object]], v2["items"])}
-        assert set(v2_by_id) == {"akasha", "kubai_icons"}
+        assert set(v2_by_id) == {"akasha"}
         assert v2_by_id["akasha"]["module_path"] == "message_ui.js"
         assert set(cast(list[str], v2_by_id["akasha"]["slots"])) == {"scope.badge", "scope.meta"}
 
-        kubai_item = v2_by_id["kubai_icons"]
+        v3 = await provider.catalog(protocol=3)
+        v3_by_id = {str(item["id"]): item for item in cast(list[dict[str, object]], v3["items"])}
+        assert set(v3_by_id) == {"akasha", "kubai_icons"}
+        kubai_item = v3_by_id["kubai_icons"]
         rev = str(kubai_item["revision"])
         bundle_sha = str(kubai_item["bundle_sha256"])
         assert kubai_item["module_path"] == "plugin_ui.js"
         assert kubai_item["stylesheet_path"] == "plugin_ui.css"
+        assert kubai_item["client_kernel"] is True
 
         # 3. 路径式文件读取返回单文件独立 sha256 与原始 bytes，错摘要或缺失路径均被拒。
         chunk_a = await provider.file_asset("kubai_icons", rev, bundle_sha, "static/chunks/a.js")
@@ -252,12 +257,12 @@ async def test_plugin_ui_v1_v2_catalog_and_file_asset_isolation(tmp_path: Path) 
         # 4. 修改任意 chunk 内容会改变 bundle_sha256；非法文件类型与越界链接在登记阶段即被拒。
         before_asset = resolve_plugin_ui_asset(
             kubai_dir, module="plugin_ui.js", stylesheet="plugin_ui.css",
-            slots=("icon.provider",), assets_dir="static/chunks",
+            slots=(), assets_dir="static/chunks", client_kernel=True,
         )
         (chunks_dir / "b.js").write_text("export const b = 3;\n", encoding="utf-8")
         after_asset = resolve_plugin_ui_asset(
             kubai_dir, module="plugin_ui.js", stylesheet="plugin_ui.css",
-            slots=("icon.provider",), assets_dir="static/chunks",
+            slots=(), assets_dir="static/chunks", client_kernel=True,
         )
         assert before_asset.bundle_sha256 != after_asset.bundle_sha256
 
@@ -265,7 +270,7 @@ async def test_plugin_ui_v1_v2_catalog_and_file_asset_isolation(tmp_path: Path) 
         with pytest.raises(RuntimeError, match="不支持的文件类型"):
             resolve_plugin_ui_asset(
                 kubai_dir, module="plugin_ui.js", stylesheet=None,
-                slots=("icon.provider",), assets_dir="static/chunks",
+                slots=(), assets_dir="static/chunks", client_kernel=True,
             )
         (chunks_dir / "evil.svg").unlink()
 
@@ -275,7 +280,7 @@ async def test_plugin_ui_v1_v2_catalog_and_file_asset_isolation(tmp_path: Path) 
         with pytest.raises(RuntimeError, match="非法文件"):
             resolve_plugin_ui_asset(
                 kubai_dir, module="plugin_ui.js", stylesheet=None,
-                slots=("icon.provider",), assets_dir="static/chunks",
+                slots=(), assets_dir="static/chunks", client_kernel=True,
             )
     finally:
         await provider.aclose()

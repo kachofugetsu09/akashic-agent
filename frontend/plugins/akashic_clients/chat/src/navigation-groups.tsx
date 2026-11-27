@@ -3,13 +3,12 @@ import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, use
 import { createPortal } from "react-dom";
 import type { NavigationControls, NavigationForm, NavigationFormControls, NavigationGroup, NavigationGroupView } from "@akashic/chat-ui-v1";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { GroupIcon } from "./group-icon";
 import { NavigationRowMenu, type NavigationRowAction } from "./navigation-row-menu";
 import { IconSwap } from "./icon-swap";
 import { SessionStatusLabel, SessionStatusMark, summarizeStatus, type SessionStatus } from "./session-status-mark";
 import { MarqueeText } from "./marquee-text";
 import { followingInView, motionTiming, settle, slideClose, slideOpen } from "./motion";
-import { NavigationGroupMount, PluginUiSlot, navigationGroupSources, navigationGroupsPending, onPageShown, onPluginUiSlotInvalidated, useIconProvider, usePluginUiCatalogVersion, type NavigationGroupSource } from "./plugin-ui-runtime";
+import { NavigationGroupMount, PluginUiSlot, navigationGroupSources, navigationGroupsPending, onPageShown, onPluginUiSlotInvalidated, useDefaultIconProvider, usePluginUiCatalogVersion, type NavigationGroupSource } from "./plugin-ui-runtime";
 import { InvokePluginRender, SafePluginBoundary } from "./chat-kernel-react";
 import { createScopeFields } from "./scope-fields";
 import { useScopeMeta } from "./scope-meta-store";
@@ -266,14 +265,25 @@ export function GroupNavigation({
   </section>;
 }
 
-/** 分组图标：默认 folder，支持插件传入 kubai-icons/line 图标名与纸面语义色。 */
-export function FolderMark({ icon, color, size = 18, trigger = "parent" }: {
+/** 分组默认文件夹图标；完整视觉与色板由业务插件通过 navigationViews 自包含渲染。 */
+export function FolderMark({ size = 18 }: {
   icon?: string;
   color?: string;
   size?: number;
   trigger?: "hover" | "parent" | "none";
 }) {
-  return <GroupIcon name={icon} color={color} size={size} trigger={trigger} />;
+  return <Folder size={size} aria-hidden="true" />;
+}
+
+/** 仅把真正在屏幕上可见的菜单/对话框视为阻塞浮卡，忽略插件挂在 DOM 里的隐藏占位节点（如 display: none）。 */
+function hasVisibleOverlay(): boolean {
+  for (const el of document.querySelectorAll("[role='menu'], [role='dialog']")) {
+    if (!(el instanceof HTMLElement)) continue;
+    if (el.getClientRects().length === 0) continue;
+    if (window.getComputedStyle(el).visibility === "hidden") continue;
+    return true;
+  }
+  return false;
 }
 
 function GroupHoverCard({ anchor, groupRef, group, hasActions, portalTarget, viewOwnerKey, groupView }: {
@@ -287,7 +297,7 @@ function GroupHoverCard({ anchor, groupRef, group, hasActions, portalTarget, vie
 }) {
   // 直接订阅共享 scope.meta 协调器：浮卡打开期间若数据抵达或失效重核，原地刷新，不依赖刮 DOM。
   const records = useScopeMeta({ dimension: groupRef.dimension, value: groupRef.id });
-  const loadedIconProvider = useIconProvider("kubai-line");
+  const iconProvider = useDefaultIconProvider();
   const cardWidth = 264;
   const gap = 10;
   const margin = 12;
@@ -300,7 +310,7 @@ function GroupHoverCard({ anchor, groupRef, group, hasActions, portalTarget, vie
   const defaultBody = <>
     <div className="group-hover-card__head">
       <span className="group-hover-card__icon">
-        <GroupIcon name={group.icon} color={group.color} size={16} trigger="none" />
+        <Folder size={16} aria-hidden="true" />
       </span>
       <strong className="group-hover-card__title">{group.label}</strong>
     </div>
@@ -324,7 +334,7 @@ function GroupHoverCard({ anchor, groupRef, group, hasActions, portalTarget, vie
           meta: records.map((r) => r.item),
           metaRecords: records,
           hasActions,
-          iconProvider: loadedIconProvider?.provider ?? null,
+          iconProvider,
         }) ?? defaultBody}
       />
     </SafePluginBoundary>
@@ -459,12 +469,12 @@ export function GroupNavigationRow({
   const [hoverCard, setHoverCard] = useState<{ anchor: DOMRect; portalTarget: Element } | null>(null);
   // 提前登记到页面级 scope.meta 协调器，同一批分组合成一次批量查询。
   useScopeMeta({ dimension: groupRef.dimension, value: groupRef.id });
-  const loadedIconProvider = useIconProvider("kubai-line");
-  const defaultLeading = <FolderMark icon={group.icon} color={group.color} />;
+  const iconProvider = useDefaultIconProvider();
+  const defaultLeading = <FolderMark />;
   const leadingNode = groupView?.renderLeading ? (
     <SafePluginBoundary key={viewOwnerKey ?? "group-leading"} fallback={defaultLeading}>
       <InvokePluginRender
-        render={() => groupView.renderLeading?.({ group, iconProvider: loadedIconProvider?.provider ?? null }) ?? defaultLeading}
+        render={() => groupView.renderLeading?.({ group, iconProvider }) ?? defaultLeading}
       />
     </SafePluginBoundary>
   ) : defaultLeading;
@@ -483,8 +493,8 @@ export function GroupNavigationRow({
       hoverTimerRef.current = null;
       const button = openButtonRef.current;
       if (!button || !button.isConnected) return;
-      // 右键菜单或对话框打开时不叠出浮卡。
-      if (button.closest("[data-state='open']") || document.querySelector("[role='menu'], [role='dialog']")) return;
+      // 仅在真正可见的右键菜单或对话框打开时不叠出浮卡。
+      if (button.closest("[data-state='open']") || hasVisibleOverlay()) return;
       setHoverCard({
         anchor: button.getBoundingClientRect(),
         portalTarget: button.closest(".akashic-chat") ?? document.body,
@@ -511,7 +521,7 @@ export function GroupNavigationRow({
       ...(actions ?? []),
     ]}>
       {/* 搜索时只停用折叠，不禁用按钮：它是这一行唯一的键盘入口，行菜单（含"新建对话"）要靠它 Shift+F10 打开。 */}
-      <button ref={openButtonRef} type="button" className="navigation-group__open" data-row-primary="" data-kubai-trigger=""
+      <button ref={openButtonRef} type="button" className="navigation-group__open" data-row-primary=""
         onClick={searching ? undefined : () => { clearHoverCard(); onToggle(); }}
         onPointerEnter={(event) => scheduleHoverCard(event.pointerType)}
         onPointerLeave={clearHoverCard}

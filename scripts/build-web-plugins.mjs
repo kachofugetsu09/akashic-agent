@@ -70,13 +70,11 @@ const viteSdkAlias = [
   { find: /^@akashic\/theme\/(.+)$/, replacement: `${themeSrc}/$1` },
 ];
 
-// 每个插件的前端源码候选目录（按新布局 plugins/<name>/web[/src] 与旧布局 frontend/plugins/<name>/src 双路径兼容，冲突报错）。
+// 每个插件唯一的前端源码根目录约定：plugins/<name>/web[/src]。
 function pluginFrontendRoots(plugin) {
   return {
     webDir: resolve(pluginsRoot, plugin, "web"),
     webSrc: resolve(pluginsRoot, plugin, "web", "src"),
-    legacyDir: resolve(repoRoot, "frontend", "plugins", plugin),
-    legacySrc: resolve(repoRoot, "frontend", "plugins", plugin, "src"),
   };
 }
 
@@ -86,7 +84,7 @@ async function resolveUniqueFile(plugin, label, candidates) {
     if (await exists(candidate)) hits.push(candidate);
   }
   if (hits.length > 1) {
-    throw new Error(`插件 ${plugin} 的 ${label} 在新旧目录同时存在，请清理重复入口：${hits.join(", ")}`);
+    throw new Error(`插件 ${plugin} 的 ${label} 存在重复入口：${hits.join(", ")}`);
   }
   return hits[0] ?? null;
 }
@@ -118,47 +116,40 @@ const compactGeneratedModules = {
   },
 };
 
-// 1. 识别完全接管构建的插件（web/build.mjs 或 frontend/plugins/<name>/build.mjs）。
+// 1. 识别自包含构建钩子（plugins/<name>/web/build.mjs 或 build-extra.mjs）。
 const selfManaged = new Map();
 const extraBuilders = new Map();
 for (const plugin of pluginNames) {
-  const { webDir, legacyDir } = pluginFrontendRoots(plugin);
-  const fullScript = await resolveUniqueFile(plugin, "build.mjs", [
-    resolve(webDir, "build.mjs"),
-    resolve(legacyDir, "build.mjs"),
-  ]);
-  if (fullScript) {
-    await ensureLocalPluginDeps(plugin, dirname(fullScript));
+  const { webDir } = pluginFrontendRoots(plugin);
+  const fullScript = resolve(webDir, "build.mjs");
+  if (await exists(fullScript)) {
+    await ensureLocalPluginDeps(plugin, webDir);
     selfManaged.set(plugin, fullScript);
     continue;
   }
-  const extraScript = await resolveUniqueFile(plugin, "build-extra.mjs", [
-    resolve(webDir, "build-extra.mjs"),
-    resolve(legacyDir, "build-extra.mjs"),
-  ]);
-  if (extraScript) {
-    await ensureLocalPluginDeps(plugin, dirname(extraScript));
+  const extraScript = resolve(webDir, "build-extra.mjs");
+  if (await exists(extraScript)) {
+    await ensureLocalPluginDeps(plugin, webDir);
     extraBuilders.set(plugin, extraScript);
   }
 }
 
-// 2. 构建标准 Dashboard web_module（入口为 index.tsx）。
+// 2. 构建标准 Dashboard web_module（入口为 plugins/<name>/web[/src]/index.tsx）。
 const webModuleEntries = new Map();
 for (const plugin of pluginNames) {
   if (selfManaged.has(plugin)) continue;
-  const { webDir, webSrc, legacySrc } = pluginFrontendRoots(plugin);
+  const { webDir, webSrc } = pluginFrontendRoots(plugin);
   const entry = await resolveUniqueFile(plugin, "index.tsx", [
     resolve(webSrc, "index.tsx"),
     resolve(webDir, "index.tsx"),
-    resolve(legacySrc, "index.tsx"),
   ]);
   if (entry) webModuleEntries.set(plugin, entry);
 }
 
 for (const [plugin, entryPath] of webModuleEntries.entries()) {
   const sourceRoot = dirname(entryPath);
-  const { webDir, legacyDir } = pluginFrontendRoots(plugin);
-  const localModules = (await ensureLocalPluginDeps(plugin, webDir)) ?? (await ensureLocalPluginDeps(plugin, legacyDir));
+  const { webDir } = pluginFrontendRoots(plugin);
+  const localModules = await ensureLocalPluginDeps(plugin, webDir);
   await build({
     configFile: false,
     root: repoRoot,
@@ -181,7 +172,7 @@ for (const [plugin, entryPath] of webModuleEntries.entries()) {
       },
     },
     build: {
-      target: plugin === "computer" ? "es2022" : undefined,
+      target: "es2022",
       outDir: resolve(repoRoot, "plugins", plugin),
       emptyOutDir: false,
       minify: "esbuild",
@@ -224,11 +215,11 @@ for (const plugin of pluginNames) {
     execFileSync(process.execPath, [selfManaged.get(plugin)], { cwd: repoRoot, stdio: "inherit" });
     continue;
   }
-  const { webDir, webSrc, legacyDir, legacySrc } = pluginFrontendRoots(plugin);
-  const localModules = (await ensureLocalPluginDeps(plugin, webDir)) ?? (await ensureLocalPluginDeps(plugin, legacyDir));
+  const { webDir, webSrc } = pluginFrontendRoots(plugin);
+  const localModules = await ensureLocalPluginDeps(plugin, webDir);
   for (const [source, output] of slotEntries) {
     const candidates = [];
-    for (const dir of [webSrc, webDir, legacySrc]) {
+    for (const dir of [webSrc, webDir]) {
       for (const extension of ["tsx", "ts", "js"]) {
         candidates.push(resolve(dir, `${source}.${extension}`));
       }
