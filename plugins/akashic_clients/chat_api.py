@@ -392,7 +392,7 @@ def create_chat_app(
 
     @app.get("/api/chat/plugin-ui/catalog")
     async def plugin_ui_catalog(
-        protocol: Literal[1, 2] = Query(1),
+        protocol: int = Query(1, ge=1, le=2),
     ) -> dict[str, object]:
         if plugin_ui_scope is not None:
             async with plugin_ui_scope() as provider:

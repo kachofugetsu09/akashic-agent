@@ -280,3 +280,58 @@ async def test_plugin_ui_v1_v2_catalog_and_file_asset_isolation(tmp_path: Path) 
     finally:
         await provider.aclose()
         await root.dispose()
+
+
+@pytest.mark.asyncio
+async def test_chat_api_catalog_protocol_http_query_coercion(tmp_path: Path) -> None:
+    """验证 HTTP 层 /api/chat/plugin-ui/catalog 对 ?protocol=1|2 的真实查询参数解析（防 Literal 整数 422 回归）。"""
+    import httpx
+    from plugins.akashic_clients.chat_api import create_chat_app
+    from plugins.akashic_clients.web_chat import WebChatChannel
+
+    root = CompositionRoot("chat-api-protocol")
+    plugin_dir = tmp_path / "demo"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "plugin_ui.js").write_text("export default { slots: {} };\n", encoding="utf-8")
+
+    async def providers(ctx: Context) -> None:
+        directory = PluginUiSlots(ctx)
+        await ctx.provide(UI_SLOTS, directory)
+        await ctx.provide(PLUGIN_UI, LivePluginUiProvider(ctx, directory))
+
+    async def demo_plugin(ctx: Context) -> None:
+        async def query(method: str, payload: dict[str, object], *, session_id: str | None, turn_id: str | None) -> dict[str, object]:
+            del method, payload, session_id, turn_id
+            return {}
+        await ctx.require(UI_SLOTS).register_plugin_ui(
+            ctx, PluginUiDefinition(module="plugin_ui.js", slots=("scope.badge", "scope.meta")), query=query,
+        )
+
+    await root.mount(providers, name="ui")
+    provider = cast(LivePluginUiProvider, root.context.require(PLUGIN_UI))
+
+    try:
+        await root.mount(
+            demo_plugin, name="demo", inject=(UI_SLOTS,),
+            runtime=PluginRuntime("demo", "release", plugin_dir, tmp_path, tmp_path, {}),
+        )
+        app = create_chat_app(workspace=tmp_path, channel=cast(WebChatChannel, object()), plugin_ui_provider=provider)
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            r_default = await client.get("/api/chat/plugin-ui/catalog")
+            assert r_default.status_code == 200
+            assert r_default.json()["items"][0]["slots"] == ["scope.badge"]
+
+            r_v1 = await client.get("/api/chat/plugin-ui/catalog?protocol=1")
+            assert r_v1.status_code == 200
+            assert r_v1.json()["items"][0]["slots"] == ["scope.badge"]
+
+            r_v2 = await client.get("/api/chat/plugin-ui/catalog?protocol=2")
+            assert r_v2.status_code == 200
+            assert r_v2.json()["items"][0]["slots"] == ["scope.badge", "scope.meta"]
+
+            r_bad = await client.get("/api/chat/plugin-ui/catalog?protocol=99")
+            assert r_bad.status_code == 422
+    finally:
+        await provider.aclose()
+        await root.dispose()

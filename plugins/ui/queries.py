@@ -581,6 +581,10 @@ class LivePluginUiProvider:
     def _catalog_item(self, binding: PluginUiBinding, *, protocol: int = 1) -> dict[str, object] | None:
         asset = binding.asset
         if protocol == 1:
+            # 含额外相对分块文件的插件无法通过旧 /asset 单文件 URL 解析相对 import，v1 视图统一隐藏。
+            entry_count = 1 + (1 if asset.stylesheet_sha256 is not None else 0)
+            if len(asset.files) > entry_count:
+                return None
             v1_slots = [slot for slot in asset.slots if slot in PLUGIN_UI_V1_SLOTS]
             # 仅对声明了槽但全为 v2 新增槽的插件在 v1 视图中隐藏，保留原本空 slots 的登记。
             if asset.slots and not v1_slots:

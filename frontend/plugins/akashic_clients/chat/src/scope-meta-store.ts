@@ -17,14 +17,21 @@ export interface ScopeMetaRecord {
 interface OwnerCache {
   revision: string;
   values: Map<string, readonly ScopeMetaItem[]>;
+  stale: Set<string>;
   pending: Set<string>;
-  failed: Set<string>;
+  failedUntil: Map<string, number>;
   controller: AbortController;
 }
 
+interface RequestedScopeEntry {
+  scope: { dimension: string; value: string };
+  refs: number;
+}
+
 const BATCH_SIZE = 100;
+const RETRY_COOLDOWN_MS = 5_000;
 const ownerCaches = new Map<string, OwnerCache>();
-const requestedScopes = new Map<string, { dimension: string; value: string }>();
+const requestedScopes = new Map<string, RequestedScopeEntry>();
 const listeners = new Set<() => void>();
 let storeVersion = 0;
 let initialized = false;
@@ -59,7 +66,12 @@ function invalidateAllCaches() {
     cache.controller.abort();
     cache.controller = new AbortController();
     cache.pending.clear();
-    cache.failed.clear();
+    cache.failedUntil.clear();
+    // 保留现有值避免 UI 闪白，仅对当前仍挂载的 scope 标 stale，促使下次 flush 重拉。
+    for (const key of cache.values.keys()) {
+      if (requestedScopes.has(key)) cache.stale.add(key);
+      else cache.values.delete(key);
+    }
   }
 }
 
@@ -84,8 +96,9 @@ function getOrCreateCache(source: ScopeMetaSource): OwnerCache {
   const created: OwnerCache = {
     revision: source.pluginRevision,
     values: new Map(),
+    stale: new Set(),
     pending: new Set(),
-    failed: new Set(),
+    failedUntil: new Map(),
     controller: new AbortController(),
   };
   ownerCaches.set(source.pluginId, created);
@@ -124,12 +137,16 @@ function flushMissing() {
   reconcileOwners();
   const sources = scopeMetaSources();
   if (!sources.length || !requestedScopes.size) return;
+  const now = Date.now();
   for (const source of sources) {
     const cache = getOrCreateCache(source);
     const missing: { dimension: string; value: string }[] = [];
-    for (const [key, scope] of requestedScopes.entries()) {
-      if (cache.values.has(key) || cache.pending.has(key) || cache.failed.has(key)) continue;
-      missing.push(scope);
+    for (const [key, entry] of requestedScopes.entries()) {
+      if (cache.pending.has(key)) continue;
+      const retryAt = cache.failedUntil.get(key) ?? 0;
+      if (retryAt > now) continue;
+      if (cache.values.has(key) && !cache.stale.has(key)) continue;
+      missing.push(entry.scope);
     }
     if (!missing.length) continue;
     // 分片满足插件单次查询上限（如 akasha 200 项与 64 KiB 载荷限制）。
@@ -139,24 +156,28 @@ function flushMissing() {
       keys.forEach((key) => cache.pending.add(key));
       const { controller } = cache;
       const revision = source.pluginRevision;
-      void source.provider.load(batch, source.context(controller.signal)).then(
+      // 用 Promise.resolve().then 包装，防止 provider.load 同步抛错中断 flush 并卡住 pending。
+      void Promise.resolve().then(() => source.provider.load(batch, source.context(controller.signal))).then(
         (result) => {
           const current = ownerCaches.get(source.pluginId);
           if (!current || current.revision !== revision || controller.signal.aborted) return;
           keys.forEach((key) => current.pending.delete(key));
           const record = result && typeof result === "object" && !Array.isArray(result) ? result : {};
           for (const key of keys) {
+            if (!requestedScopes.has(key)) continue;
             current.values.set(key, normalizeItems((record as Record<string, unknown>)[key]));
-            current.failed.delete(key);
+            current.stale.delete(key);
+            current.failedUntil.delete(key);
           }
           emit();
         },
         (error: unknown) => {
           const current = ownerCaches.get(source.pluginId);
           if (!current || current.revision !== revision || controller.signal.aborted) return;
+          const retryAt = Date.now() + RETRY_COOLDOWN_MS;
           keys.forEach((key) => {
             current.pending.delete(key);
-            current.failed.add(key);
+            if (requestedScopes.has(key)) current.failedUntil.set(key, retryAt);
           });
           console.warn(`[scope.meta] load failed for ${source.pluginId}`, error);
           emit();
@@ -164,6 +185,30 @@ function flushMissing() {
       );
     }
   }
+}
+
+function retainScope(dimension: string, value: string): () => void {
+  const key = `${dimension}:${value}`;
+  const existing = requestedScopes.get(key);
+  if (existing) {
+    existing.refs += 1;
+  } else {
+    requestedScopes.set(key, { scope: { dimension, value }, refs: 1 });
+  }
+  scheduleFlush();
+  return () => {
+    const entry = requestedScopes.get(key);
+    if (!entry) return;
+    entry.refs -= 1;
+    if (entry.refs > 0) return;
+    requestedScopes.delete(key);
+    for (const cache of ownerCaches.values()) {
+      cache.values.delete(key);
+      cache.stale.delete(key);
+      cache.pending.delete(key);
+      cache.failedUntil.delete(key);
+    }
+  };
 }
 
 function readRecords(scope: { dimension: string; value: string } | null): ScopeMetaRecord[] {
@@ -198,7 +243,7 @@ function subscribe(listener: () => void): () => void {
   return () => { listeners.delete(listener); };
 }
 
-/** 订阅单个 scope 的结构化元信息（按 owner/revision 隔离、自动去重与分片批量查询）。 */
+/** 订阅单个 scope 的结构化元信息（按 owner/revision 隔离、引用计数回收、自动去重与分片批量查询）。 */
 export function useScopeMeta(scope: { dimension: string; value: string } | null): readonly ScopeMetaRecord[] {
   const version = useSyncExternalStore(subscribe, () => storeVersion, () => 0);
   const dimension = scope?.dimension ?? "";
@@ -206,10 +251,8 @@ export function useScopeMeta(scope: { dimension: string; value: string } | null)
   useEffect(() => {
     if (!dimension || !value) return;
     ensureSubscribed();
-    const key = `${dimension}:${value}`;
-    requestedScopes.set(key, { dimension, value });
-    scheduleFlush();
-  }, [dimension, value, version]);
+    return retainScope(dimension, value);
+  }, [dimension, value]);
   return useMemo(() => {
     void version;
     return dimension && value ? readRecords({ dimension, value }) : [];
