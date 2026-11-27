@@ -6,11 +6,11 @@ import reactYouMightNotNeedAnEffect from "eslint-plugin-react-you-might-not-need
 import tseslint from "typescript-eslint";
 
 export default tseslint.config(
-  { ignores: ["static/dashboard/*.js"] },
+  { ignores: ["static/dashboard/*.js", "plugins/*/web/node_modules/**", "frontend/plugins/*/node_modules/**", "**/.generated/**"] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
-    files: ["frontend/plugins/ui/dashboard/src/**/*.{ts,tsx}", "frontend/plugins/akashic_clients/chat/src/**/*.{ts,tsx}", "plugins/**/*.ts", "types/**/*.d.ts"],
+    files: ["frontend/plugins/ui/dashboard/src/**/*.{ts,tsx}", "frontend/plugins/akashic_clients/chat/src/**/*.{ts,tsx}", "plugins/**/*.{ts,tsx}", "types/**/*.d.ts"],
     languageOptions: {
       ecmaVersion: 2021,
       globals: globals.browser,

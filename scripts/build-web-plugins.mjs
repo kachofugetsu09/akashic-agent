@@ -13,28 +13,98 @@ import webUiPreset from "../packages/akashic-web-ui-v1/tailwind-preset.mjs";
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const pluginsRoot = resolve(repoRoot, "plugins");
+const pluginKitRoot = resolve(repoRoot, "packages", "akashic-plugin-kit");
+const pluginKitPkg = JSON.parse(await readFile(resolve(pluginKitRoot, "package.json"), "utf8"));
+const pluginKitExports = Object.fromEntries(
+  Object.entries(pluginKitPkg.exports ?? {}).map(([subpath, target]) => {
+    const cleanKey = subpath.replace(/^\.\//, "");
+    const resolved = resolve(pluginKitRoot, String(target));
+    if (!resolved.startsWith(`${pluginKitRoot}/`)) {
+      throw new Error(`@akashic/plugin-kit export 越界: ${subpath} -> ${target}`);
+    }
+    return [cleanKey, resolved];
+  }),
+);
+const themeSrc = resolve(repoRoot, "packages", "akashic-theme", "src");
+
+const exists = (path) => access(path).then(() => true, (error) => {
+  if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return false;
+  throw error;
+});
+
 const pluginNames = (await readdir(pluginsRoot, { withFileTypes: true }))
   .filter((entry) => entry.isDirectory())
   .map((entry) => entry.name)
   .sort();
-const sourceRoots = new Map();
-const modules = (await Promise.all(pluginNames.map(async (plugin) => {
-  for (const sourceRoot of [resolve(repoRoot, "frontend/plugins", plugin, "src"), resolve(pluginsRoot, plugin, "web")]) {
-    try {
-      await access(resolve(sourceRoot, "index.tsx"));
-      sourceRoots.set(plugin, sourceRoot);
-      return plugin;
-    } catch (error) {
-      if (!(error && typeof error === "object" && "code" in error && error.code === "ENOENT")) throw error;
-    }
+
+// 统一的构建期 SDK 解析：严格按 @akashic/plugin-kit/package.json 的 exports 白名单映射，防止拼写漂移或路径穿越。
+const esbuildSdkAlias = {
+  name: "akashic-sdk-alias",
+  setup(buildApi) {
+    buildApi.onResolve({ filter: /^@akashic\/plugin-kit\/.+/ }, (args) => {
+      const subpath = args.path.slice("@akashic/plugin-kit/".length);
+      const target = pluginKitExports[subpath];
+      if (!target) {
+        return { errors: [{ text: `@akashic/plugin-kit 未导出子路径: ${args.path}` }] };
+      }
+      return { path: target };
+    });
+    buildApi.onResolve({ filter: /^@akashic\/theme\/.+/ }, async (args) => {
+      const subpath = args.path.slice("@akashic/theme/".length);
+      const target = resolve(themeSrc, subpath);
+      if (!target.startsWith(`${themeSrc}/`)) {
+        return { errors: [{ text: `@akashic/theme 路径越界: ${args.path}` }] };
+      }
+      for (const candidate of [target, `${target}.tsx`, `${target}.ts`, `${target}.js`, `${target}.mjs`, `${target}.css`]) {
+        if (await exists(candidate)) return { path: candidate };
+      }
+      return { errors: [{ text: `@akashic/theme 子路径不存在: ${args.path}` }] };
+    });
+  },
+};
+
+const viteSdkAlias = [
+  ...Object.entries(pluginKitExports).map(([subpath, replacement]) => ({
+    find: `@akashic/plugin-kit/${subpath}`,
+    replacement,
+  })),
+  { find: /^@akashic\/theme\/(.+)$/, replacement: `${themeSrc}/$1` },
+];
+
+// 每个插件的前端源码候选目录（按新布局 plugins/<name>/web[/src] 与旧布局 frontend/plugins/<name>/src 双路径兼容，冲突报错）。
+function pluginFrontendRoots(plugin) {
+  return {
+    webDir: resolve(pluginsRoot, plugin, "web"),
+    webSrc: resolve(pluginsRoot, plugin, "web", "src"),
+    legacyDir: resolve(repoRoot, "frontend", "plugins", plugin),
+    legacySrc: resolve(repoRoot, "frontend", "plugins", plugin, "src"),
+  };
+}
+
+async function resolveUniqueFile(plugin, label, candidates) {
+  const hits = [];
+  for (const candidate of candidates) {
+    if (await exists(candidate)) hits.push(candidate);
   }
-  return null;
-}))).filter((plugin) => plugin !== null);
+  if (hits.length > 1) {
+    throw new Error(`插件 ${plugin} 的 ${label} 在新旧目录同时存在，请清理重复入口：${hits.join(", ")}`);
+  }
+  return hits[0] ?? null;
+}
+
+async function ensureLocalPluginDeps(plugin, dir) {
+  const pkg = resolve(dir, "package.json");
+  const mods = resolve(dir, "node_modules");
+  if (await exists(pkg) && !(await exists(mods))) {
+    throw new Error(`插件 ${plugin} 缺少本地依赖，请先执行：npm ci --prefix ${dir.slice(repoRoot.length + 1)} --ignore-scripts`);
+  }
+  return (await exists(mods)) ? mods : null;
+}
 
 const compactGeneratedModules = {
   name: "compact-generated-modules",
-  async generateBundle(_options, bundle) {
-    for (const output of Object.values(bundle)) {
+  async generateBundle(_options, outputBundle) {
+    for (const output of Object.values(outputBundle)) {
       if (output.type === "chunk") {
         const result = await transform(output.code, {
           format: "esm",
@@ -49,14 +119,57 @@ const compactGeneratedModules = {
   },
 };
 
-for (const plugin of modules) {
-  const sourceRoot = sourceRoots.get(plugin);
+// 1. 识别完全接管构建的插件（web/build.mjs 或 frontend/plugins/<name>/build.mjs）。
+const selfManaged = new Map();
+const extraBuilders = new Map();
+for (const plugin of pluginNames) {
+  const { webDir, legacyDir } = pluginFrontendRoots(plugin);
+  const fullScript = await resolveUniqueFile(plugin, "build.mjs", [
+    resolve(webDir, "build.mjs"),
+    resolve(legacyDir, "build.mjs"),
+  ]);
+  if (fullScript) {
+    await ensureLocalPluginDeps(plugin, dirname(fullScript));
+    selfManaged.set(plugin, fullScript);
+    continue;
+  }
+  const extraScript = await resolveUniqueFile(plugin, "build-extra.mjs", [
+    resolve(webDir, "build-extra.mjs"),
+    resolve(legacyDir, "build-extra.mjs"),
+  ]);
+  if (extraScript) {
+    await ensureLocalPluginDeps(plugin, dirname(extraScript));
+    extraBuilders.set(plugin, extraScript);
+  }
+}
+
+// 2. 构建标准 Dashboard web_module（入口为 index.tsx）。
+const webModuleEntries = new Map();
+for (const plugin of pluginNames) {
+  if (selfManaged.has(plugin)) continue;
+  const { webDir, webSrc, legacySrc } = pluginFrontendRoots(plugin);
+  const entry = await resolveUniqueFile(plugin, "index.tsx", [
+    resolve(webSrc, "index.tsx"),
+    resolve(webDir, "index.tsx"),
+    resolve(legacySrc, "index.tsx"),
+  ]);
+  if (entry) webModuleEntries.set(plugin, entry);
+}
+
+for (const [plugin, entryPath] of webModuleEntries.entries()) {
+  const sourceRoot = dirname(entryPath);
+  const { webDir, legacyDir } = pluginFrontendRoots(plugin);
+  const localModules = (await ensureLocalPluginDeps(plugin, webDir)) ?? (await ensureLocalPluginDeps(plugin, legacyDir));
   await build({
     configFile: false,
     root: repoRoot,
     plugins: [react(), compactGeneratedModules],
     define: {
       "process.env.NODE_ENV": JSON.stringify("production"),
+    },
+    resolve: {
+      alias: viteSdkAlias,
+      ...(localModules ? { paths: [localModules] } : {}),
     },
     css: {
       postcss: {
@@ -75,7 +188,7 @@ for (const plugin of modules) {
       minify: "esbuild",
       sourcemap: false,
       lib: {
-        entry: resolve(sourceRoot, "index.tsx"),
+        entry: entryPath,
         formats: ["es"],
         fileName: "web_module",
         cssFileName: "web_module",
@@ -92,72 +205,87 @@ for (const plugin of modules) {
   });
 }
 
-
-// 聊天插槽模块与宿主共用 React 与 @akashic/chat-ui-v1，由页面 import map 解析。
-const chatSlotModule = (source, outfile) => bundle({
-  entryPoints: [resolve(repoRoot, source)], bundle: true, format: "esm", target: "es2022", minify: true, jsx: "automatic",
-  external: ["react", "react/jsx-runtime", "react-dom/client", "@akashic/chat-ui-v1"], outfile: resolve(pluginsRoot, outfile),
+// 3. 构建标准聊天插槽模块（plugin-ui / runner-ui / message-ui），与宿主共用 React 与 @akashic/chat-ui-v1。
+const chatSlotModule = (source, outfile, localModules) => bundle({
+  entryPoints: [source],
+  bundle: true,
+  format: "esm",
+  target: "es2022",
+  minify: true,
+  jsx: "automatic",
+  external: ["react", "react/jsx-runtime", "react-dom/client", "@akashic/chat-ui-v1"],
+  plugins: [esbuildSdkAlias],
+  ...(localModules ? { nodePaths: [localModules] } : {}),
+  outfile: resolve(pluginsRoot, outfile),
 });
 
-// 约定入口：插件自己在 frontend/plugins/<name>/src/ 放 plugin-ui、runner-ui 或 message-ui（.tsx/.ts/.js），
-// 分别产出 plugins/<name>/ 下的 plugin_ui.js、runner_ui.js、message_ui.js；这里不点名插件。有专用构建段的插件在 customBuilt 里。
 const slotEntries = [["plugin-ui", "plugin_ui"], ["runner-ui", "runner_ui"], ["message-ui", "message_ui"]];
-const customBuilt = new Set(["visuals"]);
-const exists = (path) => access(path).then(() => true, (error) => {
-  if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return false;
-  throw error;
-});
-for (const plugin of pluginNames.filter((name) => !customBuilt.has(name))) {
-  // 通用自备构建钩子：插件在 frontend/plugins/<name>/build.mjs 自行控制分包与依赖，避免在 Core 里写特判。
-  const customScript = resolve(repoRoot, `frontend/plugins/${plugin}/build.mjs`);
-  if (await exists(customScript)) {
-    const pluginPkg = resolve(repoRoot, `frontend/plugins/${plugin}/package.json`);
-    const pluginModules = resolve(repoRoot, `frontend/plugins/${plugin}/node_modules`);
-    if (await exists(pluginPkg) && !(await exists(pluginModules))) {
-      throw new Error(`插件 ${plugin} 缺少本地依赖，请先执行：npm ci --prefix frontend/plugins/${plugin} --ignore-scripts --omit=peer`);
-    }
-    execFileSync(process.execPath, [customScript], { cwd: repoRoot, stdio: "inherit" });
+const legacyCustomBuilt = new Set(["visuals"]);
+
+for (const plugin of pluginNames) {
+  if (selfManaged.has(plugin)) {
+    execFileSync(process.execPath, [selfManaged.get(plugin)], { cwd: repoRoot, stdio: "inherit" });
     continue;
   }
+  if (legacyCustomBuilt.has(plugin)) continue;
+  const { webDir, webSrc, legacyDir, legacySrc } = pluginFrontendRoots(plugin);
+  const localModules = (await ensureLocalPluginDeps(plugin, webDir)) ?? (await ensureLocalPluginDeps(plugin, legacyDir));
   for (const [source, output] of slotEntries) {
-    for (const extension of ["tsx", "ts", "js"]) {
-      const entry = `frontend/plugins/${plugin}/src/${source}.${extension}`;
-      if (await exists(resolve(repoRoot, entry))) {
-        await chatSlotModule(entry, `${plugin}/${output}.js`);
-        break;
+    const candidates = [];
+    for (const dir of [webSrc, webDir, legacySrc]) {
+      for (const extension of ["tsx", "ts", "js"]) {
+        candidates.push(resolve(dir, `${source}.${extension}`));
       }
     }
+    const hit = await resolveUniqueFile(plugin, `${source}.*`, candidates);
+    if (hit) await chatSlotModule(hit, `${plugin}/${output}.js`, localModules);
+  }
+  if (extraBuilders.has(plugin)) {
+    execFileSync(process.execPath, [extraBuilders.get(plugin)], { cwd: repoRoot, stdio: "inherit" });
   }
 }
 
-// 以下两段是有专用构建的插件，源码或插件目录不存在时跳过（它们可以从 Core 迁出）。
-const hasVisuals = pluginNames.includes("visuals") && await exists(resolve(repoRoot, "frontend/plugins/visuals/src/charts.ts"));
-const hasDesign = pluginNames.includes("design") && await exists(resolve(repoRoot, "frontend/plugins/design/editor/main.ts"));
-const hasFileViewer = pluginNames.includes("file_viewer") && await exists(resolve(repoRoot, "frontend/plugins/file_viewer/viewer/main.ts"));
+// 4. 过渡期兼容：仍未迁出到各自 build.mjs 的 visuals / design / file_viewer 专用构建段（待 PR D/E 迁出后删除）。
+const visualsRoot = await resolveUniqueFile("visuals", "charts.ts", [
+  resolve(pluginsRoot, "visuals/web/src/charts.ts"),
+  resolve(pluginsRoot, "visuals/web/charts.ts"),
+  resolve(repoRoot, "frontend/plugins/visuals/src/charts.ts"),
+]);
+const designEditorMain = await resolveUniqueFile("design", "editor/main.ts", [
+  resolve(pluginsRoot, "design/web/editor/main.ts"),
+  resolve(repoRoot, "frontend/plugins/design/editor/main.ts"),
+]);
+const fileViewerMain = await resolveUniqueFile("file_viewer", "viewer/main.ts", [
+  resolve(pluginsRoot, "file_viewer/web/viewer/main.ts"),
+  resolve(repoRoot, "frontend/plugins/file_viewer/viewer/main.ts"),
+]);
 
-// 可视化使用同一份 frame 模板完成服务端预检与浏览器展示；图表工具包内联进模板，不另开脚本入口。
+const hasVisuals = Boolean(visualsRoot) && !selfManaged.has("visuals");
+const hasDesign = Boolean(designEditorMain) && !selfManaged.has("design") && !extraBuilders.has("design");
+const hasFileViewer = Boolean(fileViewerMain) && !selfManaged.has("file_viewer") && !extraBuilders.has("file_viewer");
+
 if (hasVisuals) {
+  const visualsDir = dirname(visualsRoot);
   const visualCharts = await bundle({
-    entryPoints: [resolve(repoRoot, "frontend/plugins/visuals/src/charts.ts")],
+    entryPoints: [visualsRoot],
     bundle: true, format: "iife", target: "es2022", minify: true, write: false,
   });
-  const visualFrameSource = await readFile(resolve(repoRoot, "frontend/plugins/visuals/src/frame.html"), "utf8");
+  const visualFrameSource = await readFile(resolve(visualsDir, "frame.html"), "utf8");
   if (visualFrameSource.split("/*visual-charts*/").length !== 2) throw new Error("visuals frame.html 必须恰有一处 /*visual-charts*/ 占位符");
   const visualFrame = visualFrameSource
     .replace("/*visual-charts*/", () => visualCharts.outputFiles[0].text.trim().replaceAll("</script", "<\\/script"));
   await bundle({
-    entryPoints: [resolve(repoRoot, "frontend/plugins/visuals/src/plugin-ui.ts")],
+    entryPoints: [resolve(visualsDir, "plugin-ui.ts")],
     bundle: true, format: "esm", target: "es2022", minify: true,
-    plugins: [{ name: "frame-template", setup(build) {
-      build.onResolve({ filter: /\.html\?raw$/ }, args => ({ path: resolve(args.resolveDir, args.path.slice(0, -4)), namespace: "frame" }));
-      build.onLoad({ filter: /.*/, namespace: "frame" }, async args => ({
+    plugins: [esbuildSdkAlias, { name: "frame-template", setup(b) {
+      b.onResolve({ filter: /\.html\?raw$/ }, args => ({ path: resolve(args.resolveDir, args.path.slice(0, -4)), namespace: "frame" }));
+      b.onLoad({ filter: /.*/, namespace: "frame" }, async args => ({
         contents: args.path.endsWith("frame.html") ? visualFrame : await readFile(args.path, "utf8"), loader: "text" }));
     } }],
     outfile: resolve(pluginsRoot, "visuals/message_ui.js"),
   });
   await writeFile(resolve(pluginsRoot, "visuals/frame.html"), visualFrame);
-  await copyFile(resolve(repoRoot, "frontend/plugins/visuals/src/bootstrap.html"), resolve(pluginsRoot, "visuals/bootstrap.html"));
-
+  await copyFile(resolve(visualsDir, "bootstrap.html"), resolve(pluginsRoot, "visuals/bootstrap.html"));
 }
 
 const themeBuild = await bundle({ entryPoints: [resolve(repoRoot, "packages/akashic-theme/src/theme-runtime.ts")],
@@ -171,9 +299,8 @@ if (hasVisuals) {
   );
 }
 
-// 设计编辑器（Vue + open-pencil + CanvasKit WASM + 字体）单独打包成一个入口，按内容哈希命名放进不入库的 static/（发布时随插件制品一起打包），
 if (hasDesign) {
-  // 标签模块第一次打开时建 iframe 加载 editor.html；Node 内置模块只在 open-pencil 的无头分支里用到，留作外部。
+  const designEditorDir = dirname(designEditorMain);
   const designAssets = resolve(pluginsRoot, "design/static");
   await rm(designAssets, { recursive: true, force: true });
   const designOptions = {
@@ -185,8 +312,7 @@ if (hasDesign) {
     external: ["node:*", "fs", "path", "module", "url", "worker_threads"],
     loader: { ".wasm": "file", ".ttf": "file", ".woff2": "file" },
   };
-  const designName = (path) => path.slice(path.lastIndexOf("/") + 1);
-  // open-pencil 按 Vite 的 new URL("./x.ts", import.meta.url) 写法起 Worker：先单独打包两个 Worker，再把编辑器里的地址换成产物地址。
+  const designName = (p) => p.slice(p.lastIndexOf("/") + 1);
   const openPencilCore = resolve(repoRoot, "node_modules/@open-pencil/core/dist");
   const designWorkerBuild = await bundle({ ...designOptions, entryPoints: {
     "export-worker": resolve(openPencilCore, "io/formats/fig/export-worker.js"),
@@ -194,24 +320,22 @@ if (hasDesign) {
   } });
   const designWorkers = Object.fromEntries(Object.entries(designWorkerBuild.metafile.outputs)
     .filter(([, output]) => output.entryPoint)
-    .map(([path, output]) => [output.entryPoint.endsWith("export-worker.js") ? "export-worker" : "worker", `/design/assets/${designName(path)}`]));
+    .map(([p, output]) => [output.entryPoint.endsWith("export-worker.js") ? "export-worker" : "worker", `/design/assets/${designName(p)}`]));
   const designWorkerUrls = {
     name: "design-worker-urls",
-    setup(build) {
-      build.onLoad({ filter: /@open-pencil[\\/]core[\\/]dist[\\/](io[\\/]formats[\\/]fig[\\/]export|kiwi[\\/]fig[\\/]session[\\/]client)\.js$/ }, async (args) => ({
+    setup(b) {
+      b.onLoad({ filter: /@open-pencil[\\/]core[\\/]dist[\\/](io[\\/]formats[\\/]fig[\\/]export|kiwi[\\/]fig[\\/]session[\\/]client)\.js$/ }, async (args) => ({
         loader: "js",
         contents: (await readFile(args.path, "utf8")).replace(/new URL\("\.\/(export-worker|worker)\.ts", import\.meta\.url\)/gu,
           (_, name) => `new URL(${JSON.stringify(designWorkers[name])}, import.meta.url)`),
       }));
     },
   };
-  // Agent 写的 JSX 是可执行代码：renderJSX 改为交给不透明源沙箱求值（editor/jsx.ts），编辑器页面里的 new Function 一律拒绝。
-  // 依赖换了文件布局时 onLoad 根本不会被调用：构建结束后再核对补丁恰好打上一次。
   let designJSXPatched = 0;
   const designJSXEval = {
     name: "design-jsx-sandbox",
-    setup(build) {
-      build.onLoad({ filter: /@open-pencil[\\/]design-jsx[\\/]dist[\\/]chunks[\\/]fields\.js$/ }, async (args) => {
+    setup(b) {
+      b.onLoad({ filter: /@open-pencil[\\/]design-jsx[\\/]dist[\\/]chunks[\\/]fields\.js$/ }, async (args) => {
         designJSXPatched += 1;
         const source = await readFile(args.path, "utf8");
         const patched = source
@@ -219,45 +343,38 @@ if (hasDesign) {
             "const tree = await __akashicEvaluateJSX(jsxString, helperWarnings);")
           .replace('new Function("React", "__helpers", code)(mini_react_exports, designJSXHelpers(warnings))',
             '(() => { throw new Error("设计 JSX 只在沙箱里求值"); })()');
-        if (patched.split("__akashicEvaluateJSX").length !== 2 || patched.includes("new Function"))
-          throw new Error("open-pencil 的 JSX 求值代码变了，需要更新 design-jsx-sandbox 补丁");
-        const client = JSON.stringify(resolve(repoRoot, "frontend/plugins/design/editor/jsx.ts"));
+        if (patched.split("__akashicEvaluateJSX").length !== 2 || patched.includes("new Function(")) {
+          throw new Error(`@open-pencil/design-jsx 的 fields.js 已变化，无法确认 JSX 沙箱补丁（${args.path}）`);
+        }
+        const client = JSON.stringify(resolve(designEditorDir, "jsx.ts"));
         return { loader: "js", contents: `import { evaluateJSX as __akashicEvaluateJSX } from ${client};\n${patched}` };
       });
     },
   };
-  // 沙箱页自带脚本（内联），由 dashboard 按文件名给它单独的 CSP：只放行 eval，不连网、不取同源。
   const designSandbox = await bundle({ ...designOptions, write: false, metafile: false,
-    entryPoints: [resolve(repoRoot, "frontend/plugins/design/editor/jsx-sandbox.ts")] });
+    entryPoints: [resolve(designEditorDir, "jsx-sandbox.ts")] });
   const designSandboxScript = designSandbox.outputFiles.find((file) => file.path.endsWith(".js")).text.replaceAll("</script", "<\\/script");
   await writeFile(resolve(designAssets, "jsx.html"),
     `<!doctype html><meta charset="utf-8"><title>JSX</title><script type="module">${designSandboxScript}</script>\n`);
-  // 网页预览的运行页：原样拷贝，dashboard 按文件名给它网页沙箱的 CSP。
-  await writeFile(resolve(designAssets, "preview.html"), await readFile(resolve(repoRoot, "frontend/plugins/design/editor/preview.html"), "utf8"));
+  await writeFile(resolve(designAssets, "preview.html"), await readFile(resolve(designEditorDir, "preview.html"), "utf8"));
   const designBuild = await bundle({ ...designOptions, plugins: [designWorkerUrls, designJSXEval],
-    entryPoints: { editor: resolve(repoRoot, "frontend/plugins/design/editor/main.ts"),
-      worker: resolve(repoRoot, "frontend/plugins/design/editor/headless.ts") } });
+    entryPoints: { editor: designEditorMain, worker: resolve(designEditorDir, "headless.ts") } });
   if (designJSXPatched !== 1) throw new Error(`design-jsx-sandbox 补丁命中 ${designJSXPatched} 次，应为 1 次`);
   const designOutputs = Object.entries(designBuild.metafile.outputs);
   const designEntry = designOutputs.find(([, output]) => output.entryPoint?.endsWith("editor/main.ts"));
   const designWorkerEntry = designOutputs.find(([, output]) => output.entryPoint?.endsWith("editor/headless.ts"));
   if (!designEntry || !designWorkerEntry) throw new Error("设计编辑器没有产出入口");
-  // 服务端无头画布的入口页：后端在无头浏览器里打开它执行 Agent 的设计工具，不经过 dashboard 路由。
   await writeFile(resolve(designAssets, "worker.html"),
     `<!doctype html><meta charset="utf-8"><title>设计</title><script type="module" src="/design/assets/${designName(designWorkerEntry[0])}"></script>\n`);
-  // Agent 的设计工具表：名字、描述、参数 schema 取自 open-pencil 的核心工具，与画布里执行的是同一份定义。
-  // 去掉要联网取图库的 stock_photo、执行任意代码的 eval，以及只对用户画布有意义的选择与视口工具（Agent 在服务端的无头画布上执行）。
   const { CORE_TOOLS } = await import("@open-pencil/core");
   const { toJsonSchema } = await import("@valibot/to-json-schema");
-  // render 的描述后面接上 open-pencil 自己的 JSX 写法参考，与它内置 AI 拿到的说明一致。
   const { JSX_REFERENCE } = await import("@open-pencil/design-jsx");
   const DESIGN_EXCLUDED = new Set(["stock_photo", "eval", "get_selection", "viewport_zoom_to_fit"]);
   await writeFile(resolve(designAssets, "tools.json"), JSON.stringify(CORE_TOOLS.filter((tool) => !DESIGN_EXCLUDED.has(tool.name))
     .map((tool) => ({ name: tool.name, description: tool.name === "render" ? `${tool.description}\n\n${JSX_REFERENCE}` : tool.description,
       parameters: toJsonSchema(tool.input, { errorMode: "ignore" }) }))));
-  // iframe 拿不到外壳页面的主题变量：与可视化预览一样内联主题 CSS 与品牌变量，按 data-theme 切换明暗。
   const designTheme = themeModule.themeCss() + await readFile(resolve(repoRoot, "packages/akashic-theme/src/brand-tokens.css"), "utf8");
-  const designStyles = designOutputs.filter(([path]) => path.endsWith(".css")).map(([path]) => designName(path));
+  const designStyles = designOutputs.filter(([p]) => p.endsWith(".css")).map(([p]) => designName(p));
   await writeFile(resolve(designAssets, "editor.html"), `<!doctype html>
 <html lang="zh-CN" data-theme="light">
 <head>
@@ -273,7 +390,6 @@ ${designStyles.map((name) => `<link rel="stylesheet" href="/design/assets/${name
 `);
 }
 
-// 文档阅读器（PDF.js + @silurus/ooxml Rust/WASM）单独打包到 plugins/file_viewer/static/，在同源 iframe 里按需加载。
 if (hasFileViewer) {
   const readerAssets = resolve(pluginsRoot, "file_viewer/static");
   const stagingAssets = resolve(pluginsRoot, "file_viewer/.static-staging");
@@ -297,7 +413,7 @@ if (hasFileViewer) {
   await cp(resolve(repoRoot, "node_modules/pdfjs-dist/standard_fonts"), resolve(stagingAssets, "standard_fonts"), { recursive: true });
 
   const readerBuild = await bundle({
-    entryPoints: { viewer: resolve(repoRoot, "frontend/plugins/file_viewer/viewer/main.ts") },
+    entryPoints: { viewer: fileViewerMain },
     bundle: true, format: "esm", target: "es2022", minify: true, metafile: true,
     outdir: stagingAssets, entryNames: "[name]-[hash]", assetNames: "[name]-[hash]",
     publicPath: "/file_viewer/assets/", legalComments: "none",
@@ -313,11 +429,11 @@ if (hasFileViewer) {
     external: ["node:*", "fs", "path", "module", "url", "worker_threads"],
     loader: { ".wasm": "file", ".woff2": "file" },
   });
-  const assetName = (path) => path.slice(path.lastIndexOf("/") + 1);
+  const assetName = (p) => p.slice(p.lastIndexOf("/") + 1);
   const readerOutputs = Object.entries(readerBuild.metafile.outputs);
   const readerEntry = readerOutputs.find(([, output]) => output.entryPoint?.endsWith("viewer/main.ts"));
   if (!readerEntry) throw new Error("文档阅读器没有产出入口");
-  const readerStyles = readerOutputs.filter(([path]) => path.endsWith(".css")).map(([path]) => assetName(path));
+  const readerStyles = readerOutputs.filter(([p]) => p.endsWith(".css")).map(([p]) => assetName(p));
   const readerTheme = themeModule.themeCss() + await readFile(resolve(repoRoot, "packages/akashic-theme/src/brand-tokens.css"), "utf8");
   await writeFile(resolve(stagingAssets, "viewer.html"), `<!doctype html>
 <html lang="zh-CN" data-theme="light">

@@ -3,8 +3,8 @@ import { createRoot } from "react-dom/client";
 import { createPortal } from "react-dom";
 import type { WebHostContextV1, WebResource, WebUiDisposer } from "@akashic/web-ui-v1";
 import type { RenderSettingsRoute, ShellSettingsRenderProps } from "@akashic/shell-ui-v1";
-import { Confirm, request, type EmbedProps, type Status } from "../../../../packages/akashic-plugin-kit/src/configuration";
-import { akashicBrandIcon } from "../../shell_ui/src/brand";
+import { Confirm, request, type EmbedProps, type Status } from "@akashic/plugin-kit/configuration";
+import { akashicBrandIcon } from "@akashic/plugin-kit/brand";
 import "./style.css";
 
 /** 初始配置是引导清单：勾选列表图标，不复用通用设置齿轮。 */

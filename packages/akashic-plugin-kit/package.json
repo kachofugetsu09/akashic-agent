@@ -2,7 +2,16 @@
   "name": "@akashic/plugin-kit",
   "version": "1.0.0",
   "private": true,
+  "type": "module",
   "description": "插件前端共用的配置表单、连接表单与元数据存储；构建时打包进各插件的 web_module",
+  "exports": {
+    "./brand": "./src/brand.ts",
+    "./configuration": "./src/configuration.tsx",
+    "./connection-form": "./src/connection-form.js",
+    "./connection-form.js": "./src/connection-form.js",
+    "./markdown-prose": "./src/markdown-prose.ts",
+    "./meta-store": "./src/meta-store.ts"
+  },
   "akashic": {
     "kind": "library"
   }

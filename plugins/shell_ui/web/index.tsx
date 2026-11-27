@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { createRoot } from "react-dom/client";
 import "./style.css";
-import { akashicBrandIcon, markup } from "./brand";
+import { akashicBrandIcon, markup } from "@akashic/plugin-kit/brand";
 import { PluginInventory, inventoryResource, type InventoryResource } from "./plugin-inventory";
 import { SystemVersion } from "./system-version";
 import { FIRST_INSTALL_ROUTE, mountFirstInstall } from "./first-install";

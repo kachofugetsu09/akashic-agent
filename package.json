@@ -11,7 +11,7 @@
     "build:chat:watch": "vite build --config frontend/plugins/akashic_clients/chat/vite.config.ts --watch",
     "dev:chat": "vite --config frontend/plugins/akashic_clients/chat/vite.harness.config.ts",
     "dev": "vite --config frontend/plugins/ui/dashboard/vite.config.ts",
-    "lint": "eslint \"frontend/plugins/ui/dashboard/src/**/*.{ts,tsx}\" \"frontend/plugins/akashic_clients/chat/src/**/*.{ts,tsx}\" \"plugins/**/*.ts\" \"types/**/*.d.ts\"",
+    "lint": "eslint \"frontend/plugins/ui/dashboard/src/**/*.{ts,tsx}\" \"frontend/plugins/akashic_clients/chat/src/**/*.{ts,tsx}\" \"plugins/*/web/**/*.{ts,tsx}\" \"types/**/*.d.ts\"",
     "measure:webui-performance:browser": "node scripts/webui-performance/run-browser-scenarios.mjs",
     "serve:webui-performance:fixture": "node scripts/webui-performance/serve-desktop-fixture.mjs",
     "baseline:webui-performance:build": "node scripts/webui-performance/run-build-baseline.mjs --update-baseline",
