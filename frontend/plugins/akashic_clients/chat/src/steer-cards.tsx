@@ -8,7 +8,7 @@ export function SteerCards({ items, onWithdraw }: { items: StagedSteer[]; onWith
     {items.map((item) => <li key={item.id} className="steer-card">
       <div>
         <span className="steer-card__label" role="status">下一步交给模型</span>
-        <p>{item.text}</p>
+        <p data-akashic-private="content">{item.text}</p>
       </div>
       <button type="button" onClick={() => onWithdraw(item.id)} aria-label="撤回到输入框" data-tip="撤回到输入框">
         <Undo2 size={16} aria-hidden="true" />

@@ -8,11 +8,13 @@
     ".": {
       "types": "./index.d.ts"
     },
-    "./navigation.css": "./navigation.css"
+    "./navigation.css": "./navigation.css",
+    "./header-marker.css": "./header-marker.css"
   },
   "files": [
     "index.d.ts",
-    "navigation.css"
+    "navigation.css",
+    "header-marker.css"
   ],
   "peerDependencies": {
     "react": "^19.0.0"

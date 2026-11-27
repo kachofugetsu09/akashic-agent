@@ -1,0 +1,36 @@
+/* 顶栏标记的公开样式词汇：HeaderMarker 组件的外观；插件自己画标记（例如面板里放开关）时用同一组类名。
+   紧凑外壳（data-chat-width~="820" 或 data-chat-short）里只留图标，面板相对标题栏左右各留 16px 铺开。 */
+.header-marker { position: relative; display: flex; min-width: 4.5rem; max-width: calc(14rem + 12px); flex: 0 0 auto; padding-inline-start: 12px; font-size: var(--chat-type-caption, 0.75rem); }
+.header-marker__trigger { display: inline-flex; max-width: 100%; min-height: 32px; align-items: center; gap: 6px; padding-inline: 8px; border: 0; border-radius: var(--ak-radius-sm); background: transparent; color: var(--chat-faint); font: inherit; cursor: pointer; transition: color var(--ak-sys-duration-short) var(--ak-sys-motion-standard); }
+.header-marker__trigger > span { min-width: 0; overflow: hidden; white-space: nowrap; }
+.header-marker__trigger svg { flex: 0 0 auto; }
+
+.header-marker__trigger[aria-expanded="true"] { color: var(--chat-ink); }
+@media (hover: hover) {
+  .header-marker__trigger:hover { color: var(--chat-ink); }
+}
+.header-marker__trigger[data-alert] { color: var(--ak-color-status-error); }
+.header-marker__trigger:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 2px; }
+.header-marker__panel { position: absolute; z-index: 20; inset-block-start: calc(100% + 4px); inset-inline-end: 0; display: grid; gap: 8px; inline-size: min(26rem, calc(100vw - 32px)); padding: 12px; border: 0; border-radius: var(--ak-radius-md); background: var(--ak-paper-canvas); box-shadow: 0 0 0 1px var(--ak-rule-subtle), var(--ak-elevation-float); color: var(--chat-muted); line-height: 1.5; }
+.header-marker__panel p { margin: 0; text-wrap: pretty; }
+.header-marker__panel [data-tone="error"] { color: var(--ak-color-status-error); overflow-wrap: anywhere; }
+.header-marker__panel code { overflow-wrap: anywhere; font-family: var(--ak-type-technical); font-size: var(--chat-type-control); display: block; padding: 6px 8px; border-radius: var(--ak-radius-sm); background: var(--chat-chip); color: var(--chat-ink); }
+.header-marker__actions { display: flex; gap: 4px; margin-inline-start: -8px; }
+.header-marker__actions button { min-height: 32px; padding-inline: 8px; border: 0; border-radius: var(--ak-radius-sm); background: transparent; color: var(--chat-muted); font: inherit; cursor: pointer; }
+@media (hover: hover) {
+  .header-marker__actions button:hover { background: var(--chat-chip); color: var(--chat-ink); }
+}
+.header-marker__actions button:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 2px; }
+
+:where([data-chat-width~="820"], [data-chat-short]) {
+  .header-marker { min-width: 0; flex: 0 0 auto; padding-inline-start: 0; }
+  .header-marker__trigger { width: 44px; height: 44px; justify-content: center; padding: 0; }
+  .header-marker__trigger > span { display: none; }
+  .header-marker__trigger svg { width: 18px; height: 18px; }
+  .header-marker { position: static; }
+  .header-marker__panel { inset-inline: 16px; inline-size: auto; }
+}
+
+@media (forced-colors: active) {
+  .header-marker__panel { outline: 1px solid CanvasText; }
+}

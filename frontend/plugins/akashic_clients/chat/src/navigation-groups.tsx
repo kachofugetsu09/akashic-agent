@@ -518,7 +518,7 @@ export function GroupNavigationRow({
         <IconSwap state={Boolean(collapsedStatus)} a={leadingNode}
           b={<span className="navigation-group__icon"><SessionStatusMark status={collapsedStatus ?? lastStatus} /></span>} />
         <SessionStatusLabel status={collapsedStatus} />
-        <span className="navigation-group__name"><MarqueeText>{group.label}</MarqueeText></span>
+        <span className="navigation-group__name" data-akashic-private="title"><MarqueeText>{group.label}</MarqueeText></span>
         {/* 仅对尚未迁到 scope.meta 的旧插件挂载 scope.badge；已提供 scope.meta 的同 owner 自动跳过。 */}
         <PluginUiSlot name="scope.badge" scope={{ dimension: groupRef.dimension, value: groupRef.id }} quiet />
         <ChevronRight size={14} aria-hidden="true" className="navigation-group__chevron" />
@@ -554,7 +554,7 @@ export function GroupNavigationRow({
             onClick={() => onSelectSession(session.id)}
             onPointerEnter={() => onPrefetchSession?.(session.id)}
             onFocus={() => onPrefetchSession?.(session.id)}>
-            <span className="group-session__title"><MarqueeText>{session.title}</MarqueeText></span>
+            <span className="group-session__title" data-akashic-private="title"><MarqueeText>{session.title}</MarqueeText></span>
             <SessionStatusMark status={session.status} />
           </button>)}
           {/* 截断行跟在最后一条会话后面；展开后原地换成“收起”，位置不动。 */}

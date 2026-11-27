@@ -334,7 +334,7 @@ export const ConversationSessionRow = memo(function ConversationSessionRow({ ses
     className={`conversation-session editing ${session.active ? "active" : ""}`}
     onClick={(event) => event.stopPropagation()}>
     <span className="conversation-session__copy">
-      <span className="conversation-session__title">
+      <span className="conversation-session__title" data-akashic-private="title">
         <input
           ref={renameInputRef}
           className="conversation-session-title-input"
@@ -401,7 +401,7 @@ export const ConversationSessionRow = memo(function ConversationSessionRow({ ses
       onFocus={() => { if (!session.unavailable) onPrefetch?.(session.id); }}
       onDoubleClick={startRename}>
       <span className="conversation-session__copy">
-        <span className="conversation-session__title">
+        <span className="conversation-session__title" data-akashic-private="title">
           <strong><MarqueeText>{session.title}</MarqueeText></strong>
           {deleteBusy ? <span className="session-write-status" role="status">正在删除…</span> : null}
         </span>

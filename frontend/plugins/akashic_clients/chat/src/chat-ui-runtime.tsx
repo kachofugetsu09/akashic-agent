@@ -7,6 +7,7 @@ import { ChevronDown } from "lucide-react";
 import { copyText } from "./copy-text";
 import { MarqueeText } from "./marquee-text";
 import { formatToolDuration, PreviewText, ToolDataValue } from "./tool-result-view";
+import "../../../../../packages/akashic-chat-ui-v1/header-marker.css";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuRadioGroup,
   DropdownMenuRadioItem, DropdownMenuTrigger,
@@ -48,7 +49,7 @@ function HeaderMarker({ icon, label, alert = false, ariaLabel, panelLabel, child
     <button ref={triggerRef} type="button" className="header-marker__trigger" data-alert={alert || undefined}
       aria-expanded={open} aria-label={ariaLabel} onClick={() => setOpen((value) => !value)}>
       {icon}
-      <span><MarqueeText still>{label}</MarqueeText></span>
+      <span data-akashic-private="content"><MarqueeText still>{label}</MarqueeText></span>
     </button>
     {open ? <div className="header-marker__panel" role="group" aria-label={panelLabel} data-escape-layer="">
       {children}

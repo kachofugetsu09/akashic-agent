@@ -195,7 +195,7 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
             </button> : null} />
         </header>
         <Conversation className="conversation" resize="instant">
-          <ConversationContent className={conversationLayout ? "conversation-content" : "conversation-content empty"}>
+          <ConversationContent className={conversationLayout ? "conversation-content" : "conversation-content empty"} data-akashic-private="region">
             {historyFailed ? <div className="history-switch-loading is-failed" role="alert">
               <p>没能读取这段对话的记录{controller.historyFailure ? `：${controller.historyFailure}` : "。"}</p>
               <button type="button" onClick={controller.retryHistory}>重试</button>
@@ -565,10 +565,11 @@ function SessionHeadingTitle({ heading, value, onRename }: {
       setBusy(false);
     }
   };
-  if (!editing) return <h1 title={heading} onDoubleClick={start}><MarqueeText>{heading}</MarqueeText></h1>;
+  if (!editing) return <h1 title={heading} data-akashic-private="title" onDoubleClick={start}><MarqueeText>{heading}</MarqueeText></h1>;
   return <><input
     ref={inputRef}
     className="conversation-heading-input"
+    data-akashic-private="title"
     value={draft}
     maxLength={200}
     aria-label="重命名会话"

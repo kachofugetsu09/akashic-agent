@@ -227,8 +227,8 @@ function MetaLine({ lineRef: ref, project, levels, open, onOpen }: {
   const more = level.hidden ? <button type="button" className="header-meta__more" aria-label={`另有 ${level.hidden} 项`}
     onClick={() => onOpen("")}>+{level.hidden}</button> : null;
   return <div ref={ref} className="header-meta" data-open={open || undefined}>
-    <div className="header-meta__group header-meta__path">
-      {project ? <button type="button" className="header-meta__project" onClick={() => onOpen(PLACE)}>{project}</button> : null}
+    <div className="header-meta__group header-meta__path" data-akashic-private="container">
+      {project ? <button type="button" className="header-meta__project" data-akashic-private="title" onClick={() => onOpen(PLACE)}>{project}</button> : null}
       {level.path.map((node) => item(node, "path"))}
     </div>
     {level.aggregate ? <div className="header-meta__group">
@@ -336,8 +336,8 @@ function SessionInfoPanel({ open, anchor, compact, roots, project, focus, onFocu
     style={{ "--depth": depth } as React.CSSProperties}>
     <button type="button" className="header-meta-node__row" data-focus={node.key === focus} aria-expanded={node.item.detail ? node.key === focus : undefined}
       onClick={() => onFocus(node.key)}>
-      <MetaIcon node={node} small={false} /><span className="header-meta-node__label">{node.item.label}</span>
-      <span className="header-meta-node__value">{node.item.value ?? node.item.text ?? ""}</span>
+      <MetaIcon node={node} small={false} /><span className="header-meta-node__label" data-akashic-private="content">{node.item.label}</span>
+      <span className="header-meta-node__value" data-akashic-private="content">{node.item.value ?? node.item.text ?? ""}</span>
       {node.kids.length && node.subtree !== "info" ? <span className="header-meta__flag" data-tone={node.subtree} aria-hidden="true" /> : <span />}
     </button>
     {node.key === focus && node.item.detail ? <MetaDetail key={`${node.key}#${node.owner}`} detail={node.item.detail} /> : null}
@@ -348,14 +348,14 @@ function SessionInfoPanel({ open, anchor, compact, roots, project, focus, onFocu
     if (!nodes.length && !title) return null;
     return <section aria-label={label}>
       <h2 className="header-meta-panel__scope" data-focus={name === PLACE && focus === PLACE}
-        tabIndex={name === PLACE && focus === PLACE ? -1 : undefined}>{label}{title ? <b>{title}</b> : null}</h2>
+        tabIndex={name === PLACE && focus === PLACE ? -1 : undefined}>{label}{title ? <b data-akashic-private="title">{title}</b> : null}</h2>
       {nodes.map((node) => row(node, 0))}
     </section>;
   };
   const state = open ? "open" : "closed";
   return <>
     {compact ? <div className="header-meta-scrim" data-state={state} onClick={onClose} /> : null}
-    <div ref={ref} className="header-meta-panel" data-state={state} data-sheet={compact || undefined} style={place} role="dialog" aria-modal={compact} tabIndex={-1}
+    <div ref={ref} className="header-meta-panel" data-akashic-private="region" data-state={state} data-sheet={compact || undefined} style={place} role="dialog" aria-modal={compact} tabIndex={-1}
       aria-label="会话信息" data-escape-layer="" inert={!open ? true : undefined} onTransitionEnd={onTransitionEnd} onKeyDown={compact ? trapTab : undefined}>
       {compact ? <button type="button" className="header-meta-panel__close" aria-label="关闭会话信息" onClick={onClose}>
         <X size={18} strokeWidth={1.75} aria-hidden="true" /></button> : null}
@@ -376,5 +376,5 @@ function MetaDetail({ detail }: { detail: NonNullable<HeaderMetaItem["detail"]> 
     try { cleanup = latest.current(host); } catch (error) { console.error("[header-meta] detail failed", error); }
     return () => { try { cleanup?.(); } finally { host.replaceChildren(); } };
   }, []);
-  return <div ref={ref} className="header-meta-node__detail" />;
+  return <div ref={ref} className="header-meta-node__detail" data-akashic-private="content" />;
 }

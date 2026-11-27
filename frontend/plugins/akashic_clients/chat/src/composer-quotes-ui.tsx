@@ -29,6 +29,7 @@ export function ComposerQuotes({ draftKey, sessionId }: { draftKey: string; sess
               <button
                 type="button"
                 className="composer-reference__title composer-reference__jump"
+                data-akashic-private="title"
                 title={tooltip}
                 onClick={() => jumpToSource(item)}
               >
@@ -36,7 +37,7 @@ export function ComposerQuotes({ draftKey, sessionId }: { draftKey: string; sess
                 {item.preview ? ` · ${item.preview}` : ""}
               </button>
             ) : (
-              <span className="composer-reference__title" title={tooltip}>
+              <span className="composer-reference__title" data-akashic-private="title" title={tooltip}>
                 {item.label}
                 {item.preview ? ` · ${item.preview}` : ""}
               </span>

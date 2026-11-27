@@ -33,7 +33,7 @@ export function ComposerReferences({ draftKey }: { draftKey: string }) {
           {references.map((reference) => (
             <span className="composer-reference" key={reference.sessionId}>
               <MessagesSquare size={15} aria-hidden="true" />
-              <span className="composer-reference__title" title={reference.title}>{reference.title}</span>
+              <span className="composer-reference__title" data-akashic-private="title" title={reference.title}>{reference.title}</span>
               <button type="button" aria-label={`取消引用 ${reference.title}`}
                 onClick={() => removeReference(draftKey, reference.sessionId)}>
                 <X size={15} aria-hidden="true" />
