@@ -332,7 +332,9 @@ def _parser() -> argparse.ArgumentParser:
     sync = commands.add_parser("sync", help="安装应装集合", parents=[common])
     _ = sync.add_argument("--dry-run", action="store_true", help="只打印，不做修改")
     _ = sync.add_argument("--timeout", type=float, default=120.0, help="在线等待每个包到终态的秒数")
-    for name, help_text in (("install", "安装包"), ("upgrade", "升级已装的包：不带名字时升级全部来源，--source 只升级一个来源"), ("remove", "卸载包，保留数据")):
+    for name, help_text in (("install", "安装包"), ("upgrade", "升级已装的包：不带名字时升级全部来源，--source 只升级一个来源"),
+                            ("remove", "卸载包，保留数据"),
+                            ("move", "换来源：pkg move <名称@旧来源> --source <新来源>，数据目录与插件状态随 ID 迁过去")):
         command = commands.add_parser(name, help=help_text, parents=[common])
         _ = command.add_argument("names", nargs="*" if name == "upgrade" else "+")
         _ = command.add_argument("--timeout", type=float, default=120.0, help="在线等待每个包到终态的秒数")
@@ -344,7 +346,7 @@ def pkg_main(arguments: list[str], *, workspace: Path, config_path: Path) -> int
     options = _parser().parse_args(arguments)
     repo = resolve_repo(cast(str | None, options.repo))
     try:
-        if options.command in {"install", "upgrade", "remove"} or (options.command == "sync" and not options.dry_run):
+        if options.command in {"install", "upgrade", "remove", "move"} or (options.command == "sync" and not options.dry_run):
             return _run_write(options, workspace, config_path, repo)
         with read_only_manifest_facts():
             return _dispatch(options, workspace, repo)
