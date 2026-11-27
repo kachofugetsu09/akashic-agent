@@ -11,7 +11,10 @@ import "./header-meta.css";
 // 标题下的说明行：插件经 header.meta 登记说明项，宿主建树、冒泡、沿树收起，点开是整棵树的会话信息面板。
 type Tone = HeaderMetaItem["tone"];
 const TONE_RANK: Record<Tone, number> = { alert: 0, live: 1, info: 2 };
-const SCOPES = new Set(["project", "session", "account"]);
+// "project" 是宿主自己的「在哪」范围（所在分组、目录、分支），不是 projects 插件的名字。
+// boundary-ok: 宿主定义的范围名，见 @akashic/chat-ui-v1 HeaderMetaItem.scope
+const PLACE = "project";
+const SCOPES = new Set([PLACE, "session", "account"]);
 const MAX_ITEMS = 32;
 
 interface MetaNode {
@@ -90,7 +93,7 @@ function buildTree(published: ReadonlyMap<string, Published>): MetaNode[] {
 // 由最丰富到最省的排法：先缩短路径，再把顶层项收进 +N；需要注意的不收，最后一档才合并。
 function lineLevels(roots: MetaNode[], compact: boolean, project: boolean): LineLevel[] {
   const path: MetaNode[] = [];
-  for (let node = roots.find((root) => root.item.scope === "project" && root.item.path); node; node = node.kids.find((kid) => kid.item.path)) {
+  for (let node = roots.find((root) => root.item.scope === PLACE && root.item.path); node; node = node.kids.find((kid) => kid.item.path)) {
     path.push(node);
   }
   const activity = roots.filter((root) => root.item.scope === "session" && (root.item.text || root.subtree !== "info")).sort(byUrgency);
@@ -225,7 +228,7 @@ function MetaLine({ lineRef: ref, project, levels, open, onOpen }: {
     onClick={() => onOpen("")}>+{level.hidden}</button> : null;
   return <div ref={ref} className="header-meta" data-open={open || undefined}>
     <div className="header-meta__group header-meta__path">
-      {project ? <button type="button" className="header-meta__project" onClick={() => onOpen("project")}>{project}</button> : null}
+      {project ? <button type="button" className="header-meta__project" onClick={() => onOpen(PLACE)}>{project}</button> : null}
       {level.path.map((node) => item(node, "path"))}
     </div>
     {level.aggregate ? <div className="header-meta__group">
@@ -341,11 +344,11 @@ function SessionInfoPanel({ open, anchor, compact, roots, project, focus, onFocu
     {node.kids.length ? <div className="header-meta-node__kids">{node.kids.map((kid) => row(kid, depth + 1))}</div> : null}
   </div>;
   const scope = (name: HeaderMetaItem["scope"], label: string, title?: string) => {
-    const nodes = roots.filter((root) => root.item.scope === name).sort(name === "project" ? byWeight : byUrgency);
+    const nodes = roots.filter((root) => root.item.scope === name).sort(name === PLACE ? byWeight : byUrgency);
     if (!nodes.length && !title) return null;
     return <section aria-label={label}>
-      <h2 className="header-meta-panel__scope" data-focus={name === "project" && focus === "project"}
-        tabIndex={name === "project" && focus === "project" ? -1 : undefined}>{label}{title ? <b>{title}</b> : null}</h2>
+      <h2 className="header-meta-panel__scope" data-focus={name === PLACE && focus === PLACE}
+        tabIndex={name === PLACE && focus === PLACE ? -1 : undefined}>{label}{title ? <b>{title}</b> : null}</h2>
       {nodes.map((node) => row(node, 0))}
     </section>;
   };
@@ -356,7 +359,7 @@ function SessionInfoPanel({ open, anchor, compact, roots, project, focus, onFocu
       aria-label="会话信息" data-escape-layer="" inert={!open ? true : undefined} onTransitionEnd={onTransitionEnd} onKeyDown={compact ? trapTab : undefined}>
       {compact ? <button type="button" className="header-meta-panel__close" aria-label="关闭会话信息" onClick={onClose}>
         <X size={18} strokeWidth={1.75} aria-hidden="true" /></button> : null}
-      {scope("project", "项目", project)}{scope("session", "本会话")}{scope("account", "账号")}
+      {scope(PLACE, "项目", project)}{scope("session", "本会话")}{scope("account", "账号")}
       {roots.length ? null : <p className="header-meta-panel__empty">工作目录、代理任务、后台任务等状态出现后会列在这里。</p>}
     </div>
   </>;

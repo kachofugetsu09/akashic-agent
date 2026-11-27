@@ -1,3 +1,41 @@
+/* 外壳里统一标题带和工具区几何（:scope 是本页的挂载点）。放在最前：本页后面的同特异度规则仍然优先。 */
+:scope .conversation-page.has-tools .conversation-tools-toggle {
+  inset-block-start: 8px;
+  inset-inline-end: 16px;
+  min-block-size: 36px;
+  padding-inline: 12px;
+  border-color: var(--ak-rule-default);
+  background: var(--ak-paper-editing);
+  box-shadow: none;
+  backdrop-filter: none;
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+/* 触控输入下开关可点区域不小于 44px（design.md 3.5）。 */
+@media (pointer: coarse) {
+  :scope .conversation-page.has-tools .conversation-tools-toggle {
+    min-block-size: 44px;
+  }
+}
+
+:scope .conversation-tools {
+  box-sizing: border-box;
+  border-inline-start: 1px solid var(--ak-rule-subtle);
+  background: var(--ak-paper-quiet);
+}
+
+:scope .conversation-tools-bar {
+  block-size: 53px;
+  align-items: center;
+  gap: 8px;
+  padding-inline: 12px 8px;
+}
+
+:scope .conversation-tool-panel {
+  /* 工具区是“顶栏 + 1fr”网格，内容行已经扣掉顶栏，这里不再扣。 */
+  block-size: 100%;
+}
+
 .conversation-page {
   --conversation-tools-width: 42vw;
   position: relative;

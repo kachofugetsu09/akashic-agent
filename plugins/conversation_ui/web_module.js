@@ -79,8 +79,7 @@ function connectChat(chatHost, railActions) {
     // 收起工具区后焦点回到输入框；聊天还没渲染出输入框时不移动焦点。
     focusTarget: () => chatHost.querySelector("textarea") ?? undefined,
     // 点按钮收起时回到标题行的工作台按钮；紧凑外壳里它收在「⋯」菜单中，回到菜单按钮。
-    actionTarget: () => chatHost.querySelector("button[data-header-action='workbench'], .conversation-heading__more")
-      ?? chatHost.querySelector("textarea") ?? undefined,
+    actionTarget: () => handle.headerActionTarget("workbench") ?? chatHost.querySelector("textarea") ?? undefined,
   };
 }
 

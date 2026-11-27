@@ -1,4 +1,4 @@
-/* 导航的公开样式词汇：插件接管分组浮卡内容（NavigationGroupView.renderHoverCard 及其子槽）
+/* 导航的公开样式词汇：插件接管分组行图标（renderLeading）、分组浮卡内容（renderHoverCard 及其子槽）
    或目的地行内容（NavigationDestinationView.renderContent）时，用这些类名与宿主外观一致。 */
 .group-hover-card__head {
   display: flex;
@@ -123,3 +123,4 @@
   white-space: nowrap;
   text-overflow: ellipsis;
 }
+.navigation-group__icon { display: grid; width: 18px; height: 18px; flex: 0 0 18px; place-items: center; }

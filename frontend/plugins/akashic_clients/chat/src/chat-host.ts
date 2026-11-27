@@ -18,6 +18,8 @@ export interface ChatHandle {
   setWorkbenchIntents(names: unknown): void;
   quote(quote: unknown): void;
   shown(): void;
+  // 标题行上某个宿主动作的按钮；紧凑外壳里动作收进「⋯」菜单时给菜单按钮。宿主收起面板后把焦点还给它。
+  headerActionTarget(id: string): HTMLElement | null;
 }
 
 let link: ChatHostLink | null = null;

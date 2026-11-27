@@ -1,5 +1,6 @@
 /* 模型连接表单的公共样式词汇：models 的连接对话框与各连接类型（models.connection-types.v1）共用。
-   models 引入它并经挂载树继承给子条目；只属于某个连接类型的样式由该插件自己提供。 */
+   models 引入它并经挂载树继承给子条目；只属于某个连接类型的样式由该插件自己提供。
+   表单头部的关闭按钮标 data-close，models 据此在编辑已有连接时隐藏它。 */
 .settings-dialog-header,
 .settings-dialog-footer {
   display: flex;
