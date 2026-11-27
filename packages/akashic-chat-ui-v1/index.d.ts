@@ -107,15 +107,15 @@ export interface PluginUiSlotFacts {
   /** 完整回答之后。 */
   "turn.after_answer": { sessionId: string; messageId: string };
   /**
-   * 完整回答悬停工具栏里的操作，排在宿主按钮前；宿主给其中的 button 套用工具栏按钮样式。
-   * 浮层请挂到 document.body，避免继承工具栏样式或被消息裁切。
+   * 完整回答的操作菜单：插件不渲染界面，只经 menu.publish 登记菜单项。
+   * 宿主把它们排进右键菜单和「⋯」菜单（回复、复制之后），不画常驻按钮。
    */
-  "message.actions": { sessionId: string; messageId: string };
+  "message.actions": { sessionId: string; messageId: string; menu: MessageMenuControls };
   /**
-   * 完整回答的说明行，紧跟在时间后面，与时间同字号同墨色；只放安静的短文字（例如本轮用量），不放按钮。
-   * 和时间一起在宽屏悬停时显现，不另占一行。
+   * 完整回答的信息：插件不渲染界面，只经 meta.publish 登记信息项。
+   * 宿主决定放进时间后面那行小字，还是只放进点开小字后的明细。
    */
-  "message.meta": { sessionId: string; messageId: string };
+  "message.meta": { sessionId: string; messageId: string; meta: MessageMetaControls };
   /** 本插件注册的工具的一次结果；只交给工具 owner。 */
   "tool.result": { block: ToolResultFacts };
   /** 消息里的一个附件；插件按文件名、媒体类型在 accepts 里认领。 */
@@ -378,6 +378,40 @@ export interface HeaderMetaItem {
 }
 
 /** 说明行的宿主能力：挂载卸载或切换会话时宿主自动撤回本插件的说明项。 */
+export interface MessageMetaItem {
+  /** 本插件内唯一。 */
+  id: string;
+  /** 明细里这一行的名称，例如「输出」。 */
+  label: string;
+  /** 明细里的精确值，例如「5,438 tokens」。 */
+  value: string;
+  /** 小字里的短文字，例如「5.4k tokens」；不给时只出现在明细里。 */
+  text?: string;
+  /** alert 是异常（已中断、超出预算）：直接露在小字里，用警示色。 */
+  tone?: "info" | "alert";
+}
+
+export interface MessageMetaControls {
+  /** 替换本插件在这条回答上的全部信息项；传 [] 撤回。 */
+  publish(items: readonly MessageMetaItem[]): void;
+}
+
+export interface MessageMenuItem {
+  /** 本插件内唯一；也用作打点名。 */
+  id: string;
+  /** 菜单里的文字。 */
+  label: string;
+  /** 16px 线性图标的 SVG 源码，描边用 currentColor。 */
+  iconSvg?: string;
+  /** 用户选中时调用；处在点击或按键的处理函数里，可以调用 selectMessages、workbench.open。 */
+  run(): void;
+}
+
+export interface MessageMenuControls {
+  /** 替换本插件在这条回答上的全部菜单项；传 [] 撤回。 */
+  publish(items: readonly MessageMenuItem[]): void;
+}
+
 export interface HeaderMetaControls {
   /** 替换本插件当前的全部说明项；传 [] 撤回。 */
   publish(items: readonly HeaderMetaItem[]): void;

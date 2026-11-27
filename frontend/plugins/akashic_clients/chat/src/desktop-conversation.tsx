@@ -6,7 +6,8 @@ import { userInput, timelineReply, timelineReplyText, timelineText, type Timelin
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useStickToBottomContext } from "use-stick-to-bottom";
 
-import { MessageReplyReference, SharedMessageActions } from "./message-actions";
+import { MessageReplyReference } from "./message-actions";
+import { MessageInfo, useMessageContextMenu } from "./message-info";
 import { useMessageSelectionActive } from "./message-selection";
 import { PluginUiSlot } from "./plugin-ui-runtime";
 import type { ChatMessage } from "./chat-message";
@@ -259,20 +260,11 @@ function WebMessageMeta({
   onReply: () => void;
   onCopy: () => void;
 }) {
-  return (
-    <div className={`shared-message-meta ${message.role}`}>
-      {message.delivery ? <span className="shared-message-delivery" role="status">
-        {message.delivery === "retrying" ? "网络不稳，正在重发…" : "发送中…"}
-      </span> : message.createdAt ? <time dateTime={message.createdAt}>{formatMessageTime(message.createdAt)}</time> : null}
-      <SharedMessageActions
-        canReply={canReply}
-        canCopy={Boolean(message.content)}
-        copied={copied}
-        onReply={onReply}
-        onCopy={onCopy}
-      />
-    </div>
-  );
+  return <MessageInfo role={message.role === "user" ? "user" : "assistant"} timestamp={message.createdAt} copied={copied}
+    lead={message.delivery ? <span className="shared-message-delivery" role="status">
+      {message.delivery === "retrying" ? "网络不稳，正在重发…" : "发送中…"}
+    </span> : message.createdAt ? <time dateTime={message.createdAt}>{formatMessageTime(message.createdAt)}</time> : null}
+    onReply={canReply ? onReply : undefined} onCopy={message.content ? onCopy : undefined} />;
 }
 
 const chatMessageTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
@@ -362,6 +354,7 @@ export const DesktopTimelineMessages = React.memo(function DesktopTimelineMessag
     if (message && actionsEnabled && (message.body.kind === "input" || message.body.kind === "output")) onReply(timelineReply(message));
   }, [byId, onReply, actionsEnabled]);
   useNarrowMessageGestures(scrollRef, swipeReply);
+  useMessageContextMenu(scrollRef);
   const toolResults = useMemo(() => timelineToolResults(messages), [messages]);
   const groups = useMemo(() => timelineReplyGroups(messages, activities, replySynced), [messages, activities, replySynced]);
   const inputStarts = useMemo(() => timelineInputStarts(messages), [messages]);
@@ -459,20 +452,14 @@ export const DesktopTimelineMessages = React.memo(function DesktopTimelineMessag
           disabled={!actionsEnabled} onRetry={onRetry} /> : undefined} />
     {isEngineAbandon(message) || failures.abandonable.has(message.id) ? <TimelineAbandon disabled={!actionsEnabled} onAbandon={onAbandon} /> : null}
     {/* 轮次未结束的输出还会接着长，时间与复制等落定后挂在末条上，和实时视图一致。 */}
-    {!compactionBoundary && !groups.hiddenBodies.has(message.id) && !groups.moved.has(message.id) && !groups.joined.has(message.id) && !groups.unsettled.has(message.id) ? <div className={`shared-message-meta timeline-meta ${message.body.kind === "input" ? "user" : "assistant"}`}>
-      <time dateTime={message.timestamp}>{formatMessageTime(message.timestamp)}</time>
-      {message.body.kind === "output" && message.body.finish === "complete" ? <PluginUiSlot
-        name="message.meta" sessionId={message.session_id} messageId={message.id} quiet /> : null}
-      <SharedMessageActions
-        canReply={actionsEnabled && (message.body.kind === "input" || message.body.kind === "output")}
-        canCopy={Boolean(timelineText(message))} copied={copiedMessageId === message.id}
-        onReply={() => onReply(timelineReply(message))}
-        onEdit={userInput(message) && timelineText(message)
-          ? () => onEditInput(timelineText(message)) : undefined}
-        onCopy={() => { void copyText(timelineReplyText(messages, message)).then(() => onCopied(message.id)).catch(onError); }}
-        extra={message.body.kind === "output" && message.body.finish === "complete" ? <PluginUiSlot
-          name="message.actions" sessionId={message.session_id} messageId={message.id} quiet /> : null} />
-    </div> : null}
+    {!compactionBoundary && !groups.hiddenBodies.has(message.id) && !groups.moved.has(message.id) && !groups.joined.has(message.id) && !groups.unsettled.has(message.id) ? <MessageInfo
+      role={message.body.kind === "input" ? "user" : "assistant"} timestamp={message.timestamp}
+      lead={<time dateTime={message.timestamp}>{formatMessageTime(message.timestamp)}</time>}
+      slots={message.body.kind === "output" && message.body.finish === "complete" ? { sessionId: message.session_id, messageId: message.id } : undefined}
+      copied={copiedMessageId === message.id}
+      onReply={actionsEnabled && (message.body.kind === "input" || message.body.kind === "output") ? () => onReply(timelineReply(message)) : undefined}
+      onEdit={userInput(message) && timelineText(message) ? () => onEditInput(timelineText(message)) : undefined}
+      onCopy={timelineText(message) ? () => { void copyText(timelineReplyText(messages, message)).then(() => onCopied(message.id)).catch(onError); } : undefined} /> : null}
     {userInput(message) && !hostedInputs.has(message.id) ? <div className="message-row agent-row">
       <div className="agent-content">{recallSlot(message)}</div>
     </div> : null}

@@ -1,3 +1,4 @@
+import { MessageMenuHost } from "./message-info";
 import { type ReplyActivity, type TimelineReply, timelineReplyGroups, timelineToolResults, timelineInputStarts, timelineSourceKey, timelineSourceRefreshTokens } from "./message-timeline";
 import React, { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useStickToBottomContext } from "use-stick-to-bottom";
@@ -220,6 +221,7 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
             timelineMessages={timelineMessages} replyActivities={replyActivities} />
           {hasMessages ? <ThreadFind {...find} host={findHost} revision={`${timelineMessages.length}:${timelineMessages.at(-1)?.id ?? ""}`} /> : null}
           {hasMessages ? <MessageSelectionLayer sessionId={activeSessionId} /> : null}
+          {hasMessages ? <MessageMenuHost /> : null}
           <NarrowReadingChrome />
           <ToggleKeepsPlace />
           {historyWindow ? null : <ReadingReturnButton generating={isGeneratingChatStatus(status)} />}

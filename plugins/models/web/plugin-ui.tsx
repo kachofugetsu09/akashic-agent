@@ -4,23 +4,19 @@ import { chatModelState, modelProblem, type ChatModelState } from "./capsule-dat
 import { ModelCapsulePicker } from "./capsule-picker";
 import { formatModelCallStats, readModelCallStats } from "./call-stats";
 import "./capsule.css";
-import "./message-ui.css";
 import { usagePanel } from "./usage-panel";
 
 const number = (value: unknown) => new Intl.NumberFormat("zh-CN").format(Number(value || 0));
+const compact = (value: number) => value < 1000 ? String(value)
+  : value < 1e6 ? `${(value / 1000).toFixed(value < 1e4 ? 1 : 0).replace(/\.0$/, "")}k` : `${(value / 1e6).toFixed(1).replace(/\.0$/, "")}M`;
 
-// 回答说明行：时间后面跟本轮全部模型调用的真实输出 token；没有完整用量时不占位。
-function answerUsage(host: HTMLElement, context: PluginUiContext<"message.meta">) {
+// 回答信息：小字里是压缩过的输出 token（5.4k tokens），明细里是精确值；没有完整用量时不登记。
+function answerUsage(_host: HTMLElement, context: PluginUiContext<"message.meta">) {
   let active = true;
   context.query("usage.message", { message_id: context.messageId }, { cache: "immutable" }).then((result) => {
     if (!active || typeof result.output_tokens !== "number") return;
-    const text = `${number(result.output_tokens)} tokens`;
-    const row = document.createElement("span");
-    row.className = "models-usage-meta";
-    row.title = `本轮输出 ${text}`;
-    row.setAttribute("aria-label", `本轮输出 ${text}`);
-    row.textContent = text;
-    host.replaceChildren(row);
+    context.meta.publish([{ id: "output", label: "输出", text: `${compact(result.output_tokens)} tokens`,
+      value: `${number(result.output_tokens)} tokens` }]);
   }).catch(() => undefined);
   return () => { active = false; };
 }
