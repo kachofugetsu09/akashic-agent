@@ -2198,20 +2198,60 @@ button.tool-step-summary:active {
 }
 @keyframes shared-delivery-reveal { from { opacity: 0; translate: 0 2px; } }
 
-/* 插件说明紧跟时间，同字号同墨色；空的时候不占位。 */
-.plugin-ui-slot[data-slot="message.meta"] { display: contents; }
-.plugin-ui-slot[data-slot="message.meta"] > .plugin-ui-host:not(:empty) { display: inline-flex; align-items: center; gap: 4px; }
-.plugin-ui-slot[data-slot="message.meta"] > .plugin-ui-host:not(:empty)::before { content: "·"; }
-
-/* 插件操作与宿主按钮排在同一行；挂载点要有盒子，宿主靠它判断进入视口后才挂载插件。 */
-.plugin-ui-slot[data-slot="message.actions"] {
-  display: contents;
-}
-
-.plugin-ui-slot[data-slot="message.actions"] > .plugin-ui-host {
-  display: flex;
+/* 时间与插件信息是一行淡色小字；有插件信息时整行是一个按钮，点开在下方看明细。异常项直接露出、用警示色。 */
+.message-info {
+  display: inline-flex;
+  min-width: 0;
+  min-height: 24px;
   align-items: center;
+  gap: 4px;
+  border: 0;
+  border-radius: var(--ak-radius-xs);
+  padding: 0 4px;
+  margin-inline: -4px;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
 }
+.message-info > span::before { content: "· "; }
+.message-info > span[data-tone="alert"] { color: var(--ak-color-status-warning); }
+.message-info[aria-expanded="true"] { color: var(--ak-ink-primary); }
+@media (hover: hover) {
+  .message-info:hover { color: var(--ak-ink-primary); }
+}
+
+/* 插件挂载点：插件只登记信息和菜单项，不画界面；0 尺寸但留在文档流里，宿主仍能按进入视口来挂载。 */
+.message-info__sources {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+}
+.shared-message-meta { position: relative; }
+
+.message-info__detail {
+  display: grid;
+  width: fit-content;
+  grid-template-columns: auto auto;
+  gap: 2px 16px;
+  margin: 0 0 8px;
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: var(--chat-type-caption);
+  font-variant-numeric: tabular-nums;
+}
+.message-info__detail.user { margin-inline-start: auto; }
+.message-info__detail > div { display: contents; }
+.message-info__detail dt { color: var(--ak-ink-muted); }
+.message-info__detail dd { margin: 0; color: var(--ak-ink-secondary); }
+.message-info__detail [data-tone="alert"] dd { color: var(--ak-color-status-warning); }
+
+/* 共用菜单的定位点：「⋯」的左下角或右键的位置。 */
+.message-menu__anchor { position: fixed; width: 0; height: 0; pointer-events: none; }
+.message-menu__icon { display: inline-grid; width: 16px; height: 16px; place-items: center; }
+.message-menu__icon > svg { width: 16px; height: 16px; }
 
 /* 热区与视觉尺寸的唯一 owner；窄屏断点只改这两个变量（触控目标 ≥44px，视觉仍 24px）。 */
 .shared-message-actions {

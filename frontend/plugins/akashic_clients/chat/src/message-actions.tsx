@@ -1,50 +1,6 @@
-import type { ReactNode } from "react";
-import { Copy, PencilLine, Reply, X } from "lucide-react";
-
-import { CheckGlyph, IconSwap } from "./icon-swap";
+import { Reply, X } from "lucide-react";
 
 export type ReplyRole = "user" | "assistant";
-
-export function SharedMessageActions({
-  canReply,
-  canCopy,
-  copied,
-  onReply,
-  onCopy,
-  onEdit,
-  extra,
-}: {
-  canReply: boolean;
-  canCopy: boolean;
-  copied: boolean;
-  onReply: () => void;
-  onCopy: () => void;
-  /** 只给用户自己的提问：把原文放回输入框，改一改再问。 */
-  onEdit?: () => void;
-  /** 插件提供的操作，排在宿主按钮前。 */
-  extra?: ReactNode;
-}) {
-  return (
-    <div className="shared-message-actions">
-      {extra}
-      {onEdit ? (
-        <button type="button" onClick={onEdit} aria-label="放回输入框编辑" data-tip="放回输入框编辑">
-          <PencilLine size={16} aria-hidden="true" />
-        </button>
-      ) : null}
-      {canReply ? (
-        <button type="button" onClick={onReply} aria-label="引用此消息">
-          <Reply size={16} aria-hidden="true" />
-        </button>
-      ) : null}
-      {canCopy ? (
-        <button className={copied ? "copied" : ""} type="button" onClick={onCopy} aria-label={copied ? "已复制" : "复制消息"}>
-          <IconSwap state={copied} a={<Copy size={16} aria-hidden="true" />} b={<CheckGlyph />} />
-        </button>
-      ) : null}
-    </div>
-  );
-}
 
 export function MessageReplyReference({
   role,

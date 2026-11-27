@@ -82,6 +82,7 @@ const round = (value: number): number => Math.round(value * 10) / 10;
 function describe(node: Node | null): string {
   const element = node instanceof Element ? node : node?.parentElement ?? null;
   if (!element) return "";
+  // boundary-ok: data-perf 是前端打点的公开约定，由本模块定义，任何单元都可以给动作标名
   const labelled = element.closest<HTMLElement>("[data-perf]");
   if (labelled?.dataset.perf) return labelled.dataset.perf;
   const owner = element.closest(INTERACTIVE) ?? element;

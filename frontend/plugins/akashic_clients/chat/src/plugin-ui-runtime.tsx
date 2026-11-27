@@ -12,7 +12,7 @@ import { readToolIcon } from "./message-timeline";
 import { chatKernel, type ChatKernelLease } from "./chat-kernel";
 import { ChatSlotOutlet, useChatSlotEntries } from "./chat-kernel-react";
 
-import type { ChatKernelDisposer, ChatPluginRuntimeContext, ComposerControls, ComposerSuggestProvider, DestinationControls, DestinationForm, HeaderMetaControls, NavigationControls, NavigationDestinationView, NavigationDestinationsProvider, NavigationForm, NavigationFormControls, NavigationGroupView, NavigationGroupsProvider, NavigationNotice, PluginUiDefinition, PluginUiHostContext, PluginUiMountSlotName, PluginUiQueryOptions, PluginUiSlotFacts, PluginUiSlotName, ScopeFieldControls, ScopeMetaProvider, SidebarPanelControls, SidebarPanelProvider, ToolIconFacts, ToolIconProvider, ToolIconSpec, ToolSummaryFacts, ToolSummaryProvider, ToolTaskSummary } from "@akashic/chat-ui-v1";
+import type { ChatKernelDisposer, ChatPluginRuntimeContext, ComposerControls, ComposerSuggestProvider, DestinationControls, DestinationForm, HeaderMetaControls, MessageMenuControls, MessageMetaControls, NavigationControls, NavigationDestinationView, NavigationDestinationsProvider, NavigationForm, NavigationFormControls, NavigationGroupView, NavigationGroupsProvider, NavigationNotice, PluginUiDefinition, PluginUiHostContext, PluginUiMountSlotName, PluginUiQueryOptions, PluginUiSlotFacts, PluginUiSlotName, ScopeFieldControls, ScopeMetaProvider, SidebarPanelControls, SidebarPanelProvider, ToolIconFacts, ToolIconProvider, ToolIconSpec, ToolSummaryFacts, ToolSummaryProvider, ToolTaskSummary } from "@akashic/chat-ui-v1";
 
 // 插槽合同由 @akashic/chat-ui-v1 发布，宿主与插件共用同一份类型。
 export type { ComposerSuggestProvider, ComposerSuggestion, PluginUiContext, PluginUiDefinition, PluginUiQueryOptions, PluginUiRenderer, PluginUiSlotName } from "@akashic/chat-ui-v1";
@@ -1087,11 +1087,13 @@ type HostMountContext = PluginUiHostContext & {
   form?: NavigationFormControls;
   navigation?: NavigationControls;
   panel?: SidebarPanelControls;
-  meta?: HeaderMetaControls;
+  meta?: HeaderMetaControls | MessageMetaControls;
+  menu?: MessageMenuControls;
   destination?: DestinationControls;
   close?: () => void;
 };
 type HostMountFacts = Pick<HostMountContext, "slot" | "sessionId" | "messageId" | "block" | "scope">;
+export type PluginMountExtra = Pick<HostMountContext, "form" | "navigation" | "panel" | "meta" | "menu" | "destination" | "close">;
 
 interface HostRenderer {
   order?: number;
@@ -1101,7 +1103,7 @@ interface HostRenderer {
 }
 
 // 挂载点按插槽给出的事实：插件合同里的事实去掉宿主自己构造的输入框与表单控制。
-type HostSlotFacts<S extends InlineSlotName> = Omit<PluginUiSlotFacts[S], "composer" | "fields">
+type HostSlotFacts<S extends InlineSlotName> = Omit<PluginUiSlotFacts[S], "composer" | "fields" | "meta" | "menu">
   & (S extends "scope.fields" ? { fields: ScopeFields } : unknown);
 
 interface SlotMatch {
@@ -1165,8 +1167,10 @@ export function PluginUiSlot<S extends InlineSlotName>(props: {
   fallback?: React.ReactNode;
   /** Mount failures can use a shorter fallback than an absent renderer. */
   errorFallback?: React.ReactNode;
+  /** 宿主按插件给的登记能力（消息信息、菜单）；同一插件要拿到同一身份，变化即重新挂载。 */
+  extra?: (pluginId: string) => PluginMountExtra;
 } & HostSlotFacts<S>) {
-  const { name, owner, refreshToken, prefetch = false, quiet = false, fallback = null, errorFallback = fallback } = props;
+  const { name, owner, refreshToken, prefetch = false, quiet = false, fallback = null, errorFallback = fallback, extra } = props;
   const { sessionId, messageId, block, scope, fields } = props as unknown as Omit<HostMountFacts, "slot"> & { fields?: ScopeFields };
   const version = useRegistryVersion();
   const renderers = slotMatches(name, block, prefetch, owner);
@@ -1198,6 +1202,7 @@ export function PluginUiSlot<S extends InlineSlotName>(props: {
           prefetch={prefetch}
           refreshToken={refreshToken}
           fields={fields}
+          extra={extra?.(plugin.id)}
           context={{ slot: name, sessionId, messageId, block, scope }}
         />
       ))}
@@ -1239,7 +1244,7 @@ function MountedPlugin({
   prefetch?: boolean;
   fields?: ScopeFields;
   /** 宿主外框给这次挂载的额外能力（分组表单与提示）；身份变化即重新挂载。 */
-  extra?: Pick<HostMountContext, "form" | "navigation" | "panel" | "meta" | "destination" | "close">;
+  extra?: PluginMountExtra;
   context: HostMountFacts;
   refreshToken?: string | number;
 }) {
