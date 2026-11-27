@@ -28,7 +28,6 @@ import {
 import type { NavigationRowAction } from "./navigation-row-menu";
 import { PluginUiSlot } from "./plugin-ui-runtime";
 import { SidebarPanelLauncher } from "./sidebar-panels";
-import { ThemeMenu } from "./theme-menu";
 import { DestinationFormDialog, DestinationNotice, IdentityDestinationRow, type IdentityDestinationState } from "./navigation-destinations";
 import type { DestinationControls, DestinationForm } from "@akashic/chat-ui-v1";
 
@@ -283,7 +282,7 @@ export interface DesktopSidebarProps {
   initialSessionRows?: number;
 }
 
-/** 会话导航竖栏；底部动作由宿主 Shell 经 shell.rail-actions.v1 桥下发，主题行是 chat 域原生。 */
+/** 会话导航竖栏；底部动作由宿主 Shell 经 shell.rail-actions.v1 桥下发：第一项留在底栏，其余进顶栏「⋯」。 */
 
 // 品牌剪影跟随主题墨色。
 const brandMask = { WebkitMaskImage: `url(${akashicBrandIcon})`, maskImage: `url(${akashicBrandIcon})` };
@@ -571,7 +570,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
     // 分组已不在的会话也落在这里，同样可以置顶（后端已接受带分组的会话）。
     return row ? [...pinAction({ kind: "session", id: row.id }, false), ...destinationActions(session)] : [];
   }, [pinAction, destinationActions]);
-  const railActions = useShellRailActions();
+  const railAction = useShellRailActions()[0];
   // 有目的地时品牌行让给联系人行，功能与新会话挪到搜索框右边。
   const brandActions = <span className="chat-sidebar__brand-actions">
     <SidebarPanelLauncher sheet={!!onOpenPanels} onOpenSheet={onOpenPanels} />
@@ -729,22 +728,16 @@ export const DesktopSidebar = memo(function DesktopSidebar({
       />
       {activeSessionId && <PluginUiSlot name="drawer.panel" sessionId={activeSessionId} quiet />}
       </div>
-      {/* 底栏只占一行：第一个动作带字占满，其余动作与主题收成图标，名称进提示。 */}
-      <div className="chat-sidebar__footer">
-        {railActions.map((action, index) => (
-          <button key={action.id} type="button" className={index === 0 ? "chat-sidebar__action" : "chat-sidebar__icon-action"}
-            aria-label={index === 0 ? undefined : action.label} data-tip={index === 0 ? undefined : action.label}
-            onClick={() => {
-              const activate = () => activateShellRailAction(action.id);
-              if (onRailAction) onRailAction(activate); else activate();
-            }}>
-            <span className="chat-sidebar__action-icon" aria-hidden="true"
-              dangerouslySetInnerHTML={{ __html: action.iconSvg }} />
-            {index === 0 ? <span>{action.label}</span> : null}
-          </button>
-        ))}
-        <ThemeMenu />
-      </div>
+      {/* 底栏只留宿主的第一个动作（功能设置）；其余低频动作在顶栏「⋯」里，主题在设置·外观里。 */}
+      {railAction ? <div className="chat-sidebar__footer">
+        <button type="button" className="chat-sidebar__action" onClick={() => {
+          const activate = () => activateShellRailAction(railAction.id);
+          if (onRailAction) onRailAction(activate); else activate();
+        }}>
+          <span className="chat-sidebar__action-icon" aria-hidden="true" dangerouslySetInnerHTML={{ __html: railAction.iconSvg }} />
+          <span>{railAction.label}</span>
+        </button>
+      </div> : null}
       {rail ? <SidebarRailResizer rail={rail} sidebarRef={sidebarRef} /> : null}
       {destinationForm && destination?.source && destinationControls ? <DestinationFormDialog source={destination.source}
         form={destinationForm} controls={destinationControls} onClose={() => { setDestinationForm(null); destination.reload(); }} /> : null}

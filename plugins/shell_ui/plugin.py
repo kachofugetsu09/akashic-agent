@@ -34,7 +34,7 @@ async def apply(ctx: Context) -> None:
         _ = await child.require(UI).register(
             child, web="web_module.js",
             dashboard=lambda: inventory,
-            requires=("web.root.v1", "shell.rail-actions.v1"),
+            requires=("web.root.v1", "shell.rail-actions.v1", "shell.settings.v1"),
             provides=("shell.pages.v1", "shell.rail-actions.v1", "shell.settings.v1", "shell.settings-plugins.v1"),
             contract_digests={
                 "shell.rail-actions.v1": "911133603ab7d50f616775e0352f90506345d61ee12d1865a63d18a656bb045c",
