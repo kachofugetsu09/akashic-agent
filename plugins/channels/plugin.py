@@ -22,6 +22,8 @@ async def apply(ctx: Context) -> None:
             benefit="在手机上直接给 Akashic 发消息，不用打开网页；主动消息也会发到这里。",
             preview=(PreviewLine("你 · Telegram", "帮我记一下，周五下午三点看牙。"),
                      PreviewLine("Akashic", "记下了：周五 15:00 看牙。前一天晚上提醒你？")),
+            # 要先在聊天软件里建机器人，默认不带新手进去。
+            default_on=False,
         ))
     await ctx.inject((ONBOARDING,), contribute, name="onboarding")
 

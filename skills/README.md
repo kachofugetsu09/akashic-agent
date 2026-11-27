@@ -10,6 +10,10 @@
 
 ## 当前内置技能
 
+- `setup`
+  - 替用户配置功能或插件：看引导里还缺什么，只问密钥和花钱这类自己定不了的，保存后确认就绪；用户跳过新手引导后靠它补齐。
+  - 文件：`skills/setup/SKILL.md`
+
 - `develop-akashic-plugin`
   - 给自己扩展能力：编写工具、WebUI 页面、Skill 或后台服务插件；附扩展点速查、WebUI 限制和可直接安装的模板。
   - 文件：`skills/develop-akashic-plugin/SKILL.md`

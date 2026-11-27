@@ -117,6 +117,8 @@ class Registry:
                 "installs": ability is not None and ability.installs,
                 "pitch": "" if ability is None else ability.pitch,
                 "benefit": "" if ability is None else ability.benefit,
+                "default_on": ability is None or ability.default_on,
+                "caution": "" if ability is None else ability.caution,
                 "preview": [] if ability is None else [{"speaker": line.speaker, "text": line.text} for line in ability.preview],
             })
         return result

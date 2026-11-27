@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import type { WebHostContextV1, WebResource } from "@akashic/web-ui-v1";
 import { Configuration, request, Field, Check, ModelField, type EmbedProps, type FormProps, type Status } from "@akashic/plugin-kit/configuration";
 
-interface DeclaredField { name: string; label: string; kind: "text" | "lines" | "number" | "toggle" | "model" | "secret"; hint: string; }
+interface DeclaredField { name: string; label: string; kind: "text" | "lines" | "number" | "toggle" | "model" | "secret"; hint: string; advanced?: boolean; }
 interface DeclaredForm { id: string; title: string; description: string; fields: DeclaredField[]; authorize: {label: string; hint: string} | null; }
 // 引导按 route「plugin-settings/<插件 ID>」内嵌单张表单，Shell 把斜杠后的部分作为 subroute 传入。
 type DeclaredProps = EmbedProps & {subroute?: string};
@@ -99,7 +99,13 @@ function DeclaredForms({ctx, embed, declared, configs}: {ctx: WebHostContextV1; 
       if (value) dirty.current.add(form.id); else dirty.current.delete(form.id);
       embed.dirty?.(dirty.current.size > 0);
     }}} definition={{id: form.id, title: form.title, description: form.description, switchable: false,
-      endpoint: `${ENDPOINT}/${encodeURIComponent(form.id)}/config`, fields: props => <>{form.fields.map(field => renderField(field, props))}</>}} />
+      endpoint: `${ENDPOINT}/${encodeURIComponent(form.id)}/config`, fields: props => <>
+        {form.fields.filter(field => !field.advanced).map(field => renderField(field, props))}
+        {form.fields.some(field => field.advanced) && <details>
+          <summary>更多设置（已有推荐值，一般不用改）</summary>
+          {form.fields.filter(field => field.advanced).map(field => renderField(field, props))}
+        </details>}
+      </>}} />
     {form.authorize && <Authorization ctx={ctx} form={form} done={() => { void configs.get(form.id)!.refresh().catch(() => undefined); embed.changed?.(); }} />}
   </section>)}</>;
 }

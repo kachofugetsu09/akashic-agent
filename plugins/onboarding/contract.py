@@ -34,6 +34,10 @@ class Ability:
     required: bool = False
     # 这一组会安装新插件（如首装挑选扩展包）：排在必需项之后、能力挑选之前；状态带 running 时引导暂缓界面换代，装完续在原处。
     installs: bool = False
+    # 能力卡默认是否打开：要外部账号或会持续花钱的能力写 False，新手一路「继续」不会被带进去。
+    default_on: bool = True
+    # 打开前必须知道的代价（例如持续消耗 token），卡片上常驻显示。
+    caution: str = ""
 
 
 class Onboarding(Protocol):
