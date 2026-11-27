@@ -10,7 +10,7 @@ import { PluginUiSlot } from "./plugin-ui-runtime";
 // 一个分组选项：图标与插件短标签并排，挑项目时能看清归属与记忆策略。
 function ScopeOption({ dimension, group }: { dimension: string; group: NavigationGroup }) {
   return <span className="new-chat-scope__option">
-    <FolderMark icon={group.icon} size={16} trigger="none" />
+    <FolderMark icon={group.icon} color={group.color} size={16} trigger="none" />
     <span>
       <strong><MarqueeText still>{group.label}</MarqueeText></strong>
       <PluginUiSlot name="scope.badge" scope={{ dimension, value: group.id }} quiet />
@@ -35,7 +35,7 @@ export function NewChatScope({ groups, onStart, onUngrouped }: {
       <button type="button" className="new-chat-scope" aria-label={`${label}：${active?.label ?? `不归属${label}`}，点按更换`}>
         <span className="new-chat-scope__dimension">{label}</span>
         {active ? <span className="new-chat-scope__option">
-          <FolderMark icon={active.icon} size={16} trigger="none" />
+          <FolderMark icon={active.icon} color={active.color} size={16} trigger="none" />
           <strong><MarqueeText still>{active.label}</MarqueeText></strong>
           <PluginUiSlot name="scope.badge" scope={{ dimension: active.dimension, value: active.id }} quiet />
         </span> : <span>不归属{label}</span>}

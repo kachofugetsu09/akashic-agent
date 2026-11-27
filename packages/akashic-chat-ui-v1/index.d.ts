@@ -165,6 +165,8 @@ export interface NavigationGroup {
   detail?: string;
   /** 可选图标标识（由宿主从精选 kubai-icons/line 集渲染）；省略或未识别时回退为默认文件夹。 */
   icon?: string;
+  /** 可选图标语义色（pine / blue / ochre / plum / teal / cinnabar）；省略时随墨色。 */
+  color?: string;
 }
 
 /** 分组新建或分组动作的对话框：宿主给外框、标题与按钮，插件在表单区挂自己的内容。 */
@@ -545,5 +547,7 @@ export function copyText(text: string): Promise<void>;
 export const GroupIconPicker: ComponentType<{
   value: string | null;
   onChange(icon: string | null): void;
+  color?: string | null;
+  onColorChange?(color: string | null): void;
   disabled?: boolean;
 }>;

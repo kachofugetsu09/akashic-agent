@@ -14,17 +14,47 @@ function loadCatalog(): Promise<CatalogModule> {
 
 const SEARCH_RESULT_LIMIT = 96;
 
-/** 侧栏分组图标：默认 folder 同步渲染，其余图标按官方分类 chunk 懒加载，均支持父行悬停弹簧微动效。 */
-export function GroupIcon({ name, size = 18, trigger = "parent", className }: {
+export interface GroupIconColorOption {
+  readonly id: string | null;
+  readonly label: string;
+  readonly cssValue: string;
+}
+
+/** 纸面语义色板：直接复用主题校准过的 --ak-chart-1..6，自动适配浅色纸感与深色墨纸。 */
+export const GROUP_ICON_COLORS: readonly GroupIconColorOption[] = [
+  { id: null, label: "墨色", cssValue: "var(--ak-ink-secondary)" },
+  { id: "pine", label: "松绿", cssValue: "var(--ak-chart-3)" },
+  { id: "blue", label: "靛蓝", cssValue: "var(--ak-chart-1)" },
+  { id: "ochre", label: "赭石", cssValue: "var(--ak-chart-2)" },
+  { id: "plum", label: "暮紫", cssValue: "var(--ak-chart-4)" },
+  { id: "teal", label: "青瓷", cssValue: "var(--ak-chart-6)" },
+  { id: "cinnabar", label: "朱砂", cssValue: "var(--ak-chart-5)" },
+];
+
+const COLOR_MAP: Readonly<Record<string, string>> = Object.fromEntries(
+  GROUP_ICON_COLORS.filter((item): item is GroupIconColorOption & { id: string } => item.id !== null)
+    .map((item) => [item.id, item.cssValue]),
+);
+
+export function resolveGroupIconColor(color?: string | null): string | undefined {
+  if (!color) return undefined;
+  return COLOR_MAP[color.trim()];
+}
+
+/** 侧栏分组图标：默认 folder 同步渲染，其余图标按官方分类 chunk 懒加载，均支持父行悬停弹簧微动效与纸面语义色。 */
+export function GroupIcon({ name, color, size = 18, trigger = "parent", className }: {
   name?: string | null;
+  color?: string | null;
   size?: number;
   trigger?: "hover" | "parent" | "none";
   className?: string;
 }) {
   const cls = className ? `group-mark ${className}` : "group-mark";
   const clean = typeof name === "string" ? name.trim() : "";
+  const cssColor = resolveGroupIconColor(color);
   const fallback = <Folder
     size={size}
+    color={cssColor}
     variant="outline"
     strokeWidth={1.75}
     trigger={trigger}
@@ -35,6 +65,7 @@ export function GroupIcon({ name, size = 18, trigger = "parent", className }: {
   return <DynamicIcon
     name={clean}
     size={size}
+    color={cssColor}
     variant="outline"
     strokeWidth={1.75}
     trigger={trigger}
@@ -44,10 +75,12 @@ export function GroupIcon({ name, size = 18, trigger = "parent", className }: {
   />;
 }
 
-/** 供插件表单（例如项目右键「更换图标」）复用的宿主图标选择器：完整接入 kubai-icons/line 官方分类与关键词搜索。 */
-export function GroupIconPicker({ value, onChange, disabled = false }: {
+/** 供插件表单（例如项目右键「更换图标」）复用的宿主图标选择器：完整接入 kubai-icons/line 官方分类、搜索与纸面语义色板。 */
+export function GroupIconPicker({ value, onChange, color = null, onColorChange, disabled = false }: {
   value: string | null;
   onChange: (icon: string | null) => void;
+  color?: string | null;
+  onColorChange?: (color: string | null) => void;
   disabled?: boolean;
 }) {
   const [catalog, setCatalog] = useState<CatalogModule | null>(null);
@@ -68,6 +101,7 @@ export function GroupIconPicker({ value, onChange, disabled = false }: {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const selected = value?.trim() || "folder";
+  const selectedColor = color && COLOR_MAP[color] ? color : null;
   const keyword = query.trim().toLowerCase();
 
   const visibleIcons: readonly IconCatalogEntry[] = useMemo(() => {
@@ -88,24 +122,45 @@ export function GroupIconPicker({ value, onChange, disabled = false }: {
     return activeCat?.icons ?? [];
   }, [catalog, categoryId, keyword]);
 
+  const canReset = selected !== "folder" || selectedColor !== null;
+
   return <div className="group-icon-picker">
     <div className="group-icon-picker__summary">
       <span className="group-icon-picker__preview" data-kubai-trigger="">
-        <GroupIcon name={selected} size={20} trigger="parent" />
+        <GroupIcon name={selected} color={selectedColor} size={20} trigger="parent" />
       </span>
       <span className="group-icon-picker__meta">
         <strong>{selected === "folder" ? "默认文件夹" : selected}</strong>
         <small>{catalog ? `共 ${catalog.ALL_LINE_ICONS.length} 枚线性图标 · 悬停可预览动效` : "正在加载图标分类…"}</small>
       </span>
-      {selected !== "folder" ? <button
+      {canReset ? <button
         type="button"
         className="group-icon-picker__reset"
         disabled={disabled}
-        onClick={() => onChange(null)}
+        onClick={() => { onChange(null); onColorChange?.(null); }}
       >
         恢复默认
       </button> : null}
     </div>
+
+    {onColorChange ? <div className="group-icon-picker__swatches" role="radiogroup" aria-label="选择图标颜色">
+      {GROUP_ICON_COLORS.map((opt) => {
+        const active = selectedColor === opt.id;
+        return <button
+          key={opt.id ?? "ink"}
+          type="button"
+          role="radio"
+          aria-checked={active}
+          aria-label={opt.label}
+          title={opt.label}
+          disabled={disabled}
+          className="group-icon-picker__swatch"
+          onClick={() => onColorChange(opt.id)}
+        >
+          <span className="group-icon-picker__swatch-dot" style={{ background: opt.cssValue }} />
+        </button>;
+      })}
+    </div> : null}
 
     <label className="group-icon-picker__search">
       <Search size={14} aria-hidden="true" />
@@ -157,7 +212,7 @@ export function GroupIconPicker({ value, onChange, disabled = false }: {
             className="group-icon-picker__cell"
             onClick={() => onChange(item.name === "folder" ? null : item.name)}
           >
-            <GroupIcon name={item.name} size={20} trigger="parent" />
+            <GroupIcon name={item.name} color={selectedColor} size={20} trigger="parent" />
           </button>;
         })}
     </div>
