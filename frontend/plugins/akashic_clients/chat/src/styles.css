@@ -1270,9 +1270,12 @@ input {
   font: inherit;
   font-size: var(--chat-type-caption);
   font-weight: 500;
+  white-space: nowrap;
   cursor: pointer;
   transition: color var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
 }
+/* 只写维度名时不让位：两个字被挤成竖排就读不出来了，挤不下由输入卡转成两行。 */
+.new-chat-scope:not(:has(.new-chat-scope__option)) { flex: none; }
 @media (hover: hover) {
   .new-chat-scope:hover { color: var(--md-sys-color-on-surface); }
 }
@@ -1282,7 +1285,7 @@ input {
 }
 .new-chat-scope .new-chat-scope__option { gap: 6px; }
 :where([data-chat-width~="820"], [data-chat-touch]) {
-  .new-chat-scope { height: 44px; }
+  .new-chat-scope { height: 44px; min-width: 44px; justify-content: center; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -2274,6 +2277,7 @@ form.composer:focus-within [data-slot="input-group"] {
   display: contents !important;
 }
 
+.composer.is-compact .composer__trail { display: contents; }
 .composer.is-compact .composer-tool { order: -1; }
 .composer.is-compact .composer__lead { display: flex; order: 1; }
 .composer.is-compact .composer-action-button { order: 2; }
