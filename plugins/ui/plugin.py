@@ -59,6 +59,7 @@ class Registration:
     lifecycle_effect: Effect | None = None
     binding: DashboardBinding | None = None
     initialized: bool = False
+    configuration_key: ServiceKey[Configuration] | None = None
 
 
 class ConfigRequest(BaseModel):
@@ -102,6 +103,11 @@ class Ui:
                 return context.require(key).receipt(request_id)
             except KeyError as error:
                 raise HTTPException(404, "配置回执不存在") from error
+
+    def configurations(self) -> Mapping[str, Configuration]:
+        # 换代中的贡献方不列出：它的设置服务即将被新一代替换。
+        return {owner: entry.ctx.require(entry.configuration_key) for owner, entry in self._entries.items()
+                if entry.configuration_key is not None and entry.ctx.fiber.state is FiberState.ACTIVE}
 
     @property
     def root_instance_token(self) -> object:
@@ -160,7 +166,7 @@ class Ui:
             ctx, dashboard, has_web=module is not None, registry=self, navigation_paths=navigation_paths,
             configuration_key=configuration_key, configuration_prefix=configuration_prefix,
         )
-        registration = Registration(ctx, module, resources, registration_uuid)
+        registration = Registration(ctx, module, resources, registration_uuid, configuration_key=configuration_key)
 
         async def initialize(_event: object = None) -> None:
             """Build this registration in its real owner lifecycle scope."""

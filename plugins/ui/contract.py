@@ -113,6 +113,9 @@ class UiRegistry(Protocol):
 
     def bindings(self) -> tuple[DashboardBinding, ...]: ...
 
+    # 经 configuration_key 登记的设置（插件 ID -> 设置服务），供 Self-CLI 与网页读写同一份设置。
+    def configurations(self) -> Mapping[str, Configuration]: ...
+
 class WebUiProvider(Protocol):
     async def bootstrap(self) -> bytes: ...
 

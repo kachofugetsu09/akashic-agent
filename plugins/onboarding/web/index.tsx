@@ -15,7 +15,7 @@ const brandMask = { WebkitMaskImage: `url(${akashicBrandIcon})`, maskImage: `url
 
 interface Step { id: string; title: string; group: string; group_title: string; route: string; }
 interface PreviewLine { speaker: string; text: string; }
-interface Group { key: string; title: string; required: boolean; installs: boolean; pitch: string; benefit: string; preview: PreviewLine[]; }
+interface Group { key: string; title: string; required: boolean; installs: boolean; pitch: string; benefit: string; default_on?: boolean; caution?: string; preview: PreviewLine[]; }
 interface Catalog { steps: Step[]; groups: Group[]; }
 interface StepStatus extends Partial<Status> { fault?: string; running?: boolean; }
 type Statuses = Record<string, StepStatus>;
@@ -127,10 +127,12 @@ function phasesOf(catalog: Catalog, statuses: Statuses, chosen: ReadonlySet<stri
   ];
 }
 
-// 默认选中：未被明确关闭的可选能力；已关闭的保持关闭，尊重之前的决定。
+// 默认选中：插件声明默认打开、且未被明确关闭的可选能力；已经设好的照常选中，已关闭的保持关闭。
 function initialChoice(catalog: Catalog, statuses: Statuses): Set<string> {
-  return new Set(catalog.groups.filter(group => isAbility(group) && !catalog.steps
-    .filter(step => step.group === group.key).some(step => statuses[step.id]?.enabled === false)).map(group => group.key));
+  return new Set(catalog.groups.filter(group => isAbility(group)
+    && (group.default_on !== false || groupReady(catalog, statuses, group.key))
+    && !catalog.steps.filter(step => step.group === group.key).some(step => statuses[step.id]?.enabled === false))
+    .map(group => group.key));
 }
 
 // 读取目录与各步状态；打开、保存后与窗口回到前台时重读，不轮询。
@@ -416,6 +418,7 @@ function AbilityCard({group, on, done, blocked, toggle}: {group: Group; on: bool
     {done ? <span className="onboarding-chip">已开启</span>
       : <button type="button" role="switch" className="onboarding-switch" aria-checked={on} aria-labelledby={id} onClick={toggle} />}
     {group.benefit && <p>{group.benefit}</p>}
+    {group.caution && !done && <p className="onboarding-caution">{group.caution}</p>}
     {blocked && <p className="onboarding-blocked">{blocked}</p>}
     {(on || done) && group.preview.length > 0 && <div className="onboarding-preview" aria-label="示例">
       {group.preview.map((line, i) => <div key={i}><span>{line.speaker}</span><p>{line.text}</p></div>)}
@@ -461,7 +464,7 @@ function Done({catalog, statuses, chosen}: {catalog: Catalog; statuses: Statuses
   const missing = catalog.groups.some(group => group.required && !groupReady(catalog, statuses, group.key));
   return <>
     <Heading title={missing ? "还差一步才能对话" : "说第一句话吧"}
-      lead={missing ? "还没有可用的对话模型。可以随时在功能设置里连接。" : "这些设置都可以在功能设置里随时修改，新装的插件也会出现在那里。"} />
+      lead={missing ? "还没有可用的对话模型。可以随时在功能设置里连接。" : "这些设置都可以在功能设置里随时修改，也可以直接跟它说，比如「帮我把值班配好」。"} />
     <ul className="onboarding-summary">
       {catalog.groups.filter(group => !group.installs).map(group => {
         const on = groupReady(catalog, statuses, group.key);

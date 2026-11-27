@@ -358,6 +358,12 @@
   font-size: 0.875rem;
 }
 
+.onboarding-ability > .onboarding-caution {
+  grid-column: 1 / -1;
+  color: var(--ak-color-status-warning);
+  font-size: 0.8125rem;
+}
+
 .onboarding-ability > .onboarding-blocked {
   grid-column: 1 / -1;
   color: var(--ak-color-status-warning);

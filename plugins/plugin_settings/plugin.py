@@ -68,4 +68,4 @@ async def apply(ctx: Context) -> None:
     await ctx.provide(SETTINGS_FORMS, forms, binding_contributors=forms.contributors)
     _ = await ctx.require(UI).register(ctx, web="web_module.js", dashboard=lambda: import_module(".dashboard", __package__),
                                        requires=("shell.settings-plugins.v1",), contract_digests=SETTINGS_SLOT)
-    _ = await ctx.inject((OPERATIONS_V1,), lambda child: register_ops(child, forms), name="operations")
+    _ = await ctx.inject((OPERATIONS_V1,), lambda child: register_ops(child, forms, ctx.require(UI)), name="operations")
