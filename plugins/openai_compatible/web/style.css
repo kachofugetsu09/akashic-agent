@@ -1,0 +1,43 @@
+/* 本连接类型自己的表单样式；公共词汇来自 @akashic/plugin-kit/connection-form.css（由 models 提供）。 */
+.settings-secret-field { position: relative; display: flex; align-items: center; min-width: 0; }
+.settings-secret:has(.settings-secret-actions) input { padding-inline-end: 4.5rem; }
+.settings-secret-actions { position: absolute; inset-block: 0; inset-inline-end: 4px; display: inline-flex; align-items: center; gap: 2px; }
+.settings-secret-actions button { position: relative; display: inline-grid; width: 28px; height: 28px; place-items: center; padding: 0; border: 0; border-radius: var(--ak-radius-xs); color: var(--ak-ink-secondary); background: transparent; cursor: pointer; transition: color var(--ak-sys-duration-short) var(--ak-sys-motion-standard), background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard); }
+.settings-secret-actions button::after { position: absolute; inset: -8px -2px; content: ""; }
+.settings-secret-actions button[hidden] { display: none; }
+@media (hover: hover) {
+  .settings-secret-actions button:hover { color: var(--ak-ink-primary); background: color-mix(in oklab, var(--ak-ink-primary) 6%, transparent); } }
+.settings-secret-actions button:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 1px; }
+.settings-secret-actions button[data-copied="true"] { color: var(--ak-sys-color-success); background: color-mix(in oklab, var(--ak-sys-color-success) 12%, transparent); }
+.settings-secret-actions button[data-copy-error="true"] { color: var(--ak-color-status-error); }
+@media (pointer: coarse) {
+  .settings-secret:has(.settings-secret-actions) input { padding-inline-end: 5.5rem; }
+  .settings-secret-actions { gap: 4px; }
+  .settings-secret-actions button { width: 36px; height: 36px; }
+  .settings-secret-actions button::after { inset: -4px 0; } }
+
+.settings-advanced { margin-block-start: 1rem; }
+.settings-advanced summary {
+  width: fit-content;
+  min-height: 2.75rem;
+  align-content: center;
+  color: var(--md-sys-color-primary);
+  font-size: var(--md-sys-typescale-label-large-size);
+  font-weight: var(--md-sys-typescale-label-large-weight);
+  cursor: pointer;
+}
+.settings-advanced summary:focus-visible {
+  outline: 2px solid var(--md-sys-color-primary);
+  outline-offset: 2px;
+}
+.settings-advanced > p {
+  margin: 0 0 0.75rem;
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: var(--md-sys-typescale-body-medium-size);
+  line-height: 1.5;
+}
+:scope .settings-advanced summary { min-height: 2rem; color: var(--ak-ink-secondary); font-size: 0.75rem; font-weight: 500; }
+.settings-key-row { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 0.25rem 1rem; margin: -0.25rem 0 0; color: var(--ak-ink-secondary); font-size: 0.75rem; }
+.settings-key-row > span { font-family: var(--ak-type-technical); }
+.settings-key-link { color: var(--ak-color-action-primary); font-weight: 500; text-decoration: none; }
+.settings-key-link:hover { text-decoration: underline; }

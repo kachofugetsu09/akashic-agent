@@ -1,0 +1,233 @@
+/* 模型连接表单的公共样式词汇：models 的连接对话框与各连接类型（models.connection-types.v1）共用。
+   models 引入它并经挂载树继承给子条目；只属于某个连接类型的样式由该插件自己提供。 */
+.settings-dialog-header,
+.settings-dialog-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.5rem;
+}
+.settings-dialog-title {
+  margin: 0;
+  font-family: var(--md-ref-typeface-brand);
+  font-weight: 500;
+  letter-spacing: -0.02em;
+}
+.settings-dialog-description {
+  margin: 0.4rem 0 0;
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: var(--md-sys-typescale-body-medium-size);
+  line-height: 1.5;
+}
+
+.settings-primary-button,
+.settings-secondary-button,
+.settings-icon-button {
+  display: inline-flex;
+  min-height: 2.75rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  border: 0;
+  border-radius: var(--ak-radius-sm);
+  padding: 0 1.125rem;
+  font-size: var(--md-sys-typescale-label-large-size);
+  font-weight: var(--md-sys-typescale-label-large-weight);
+  cursor: pointer;
+  /* motion-exempt: 误报，.settings-icon-button 是 HTML 按钮不是 SVG 图标，scale 能合成 */
+  transition-property: color, background-color, scale;
+  transition-duration: var(--ak-sys-duration-short);
+  transition-timing-function: var(--ak-sys-motion-standard);
+}
+.settings-primary-button:has(> svg) {
+  padding-inline: calc(1.125rem - 2px) 1.125rem;
+}
+.settings-primary-button { color: var(--md-sys-color-on-primary); background: var(--md-sys-color-primary); }
+.settings-primary-button:hover { background: color-mix(in srgb, var(--md-sys-color-primary) 92%, var(--md-sys-color-on-primary) 8%); }
+.settings-secondary-button { border: 1px solid var(--md-sys-color-outline); color: var(--md-sys-color-primary); background: transparent; }
+.settings-secondary-button:hover { background: color-mix(in srgb, var(--md-sys-color-primary) 8%, transparent); }
+.settings-icon-button { width: 2.75rem; border-radius: var(--ak-radius-full); padding: 0; color: var(--md-sys-color-on-surface-variant); background: transparent; }
+.settings-icon-button:hover { color: var(--md-sys-color-on-surface); background: color-mix(in srgb, var(--md-sys-color-on-surface) 8%, transparent); }
+.settings-primary-button:active,
+.settings-secondary-button:active,
+.settings-icon-button:active { scale: 0.98; }
+.settings-primary-button:disabled,
+.settings-secondary-button:disabled { cursor: default; opacity: 0.45; }
+.settings-primary-button:focus-visible,
+.settings-secondary-button:focus-visible,
+.settings-icon-button:focus-visible,
+.settings-form-grid input:focus-visible,
+.settings-form-grid select:focus-visible,
+.settings-discovery-manual input:focus-visible {
+  outline: 2px solid var(--md-sys-color-primary);
+  outline-offset: 2px;
+}
+
+.settings-dialog-actions { display: flex; align-items: center; gap: 0.75rem; }
+.settings-form-grid input,
+.settings-form-grid select {
+  width: 100%;
+  min-height: 2.75rem;
+  border: 1px solid var(--md-sys-color-outline);
+  border-radius: var(--ak-radius-xs);
+  padding-inline: 0.75rem;
+  color: var(--md-sys-color-on-surface);
+  background: var(--md-sys-color-surface);
+  font-size: var(--md-sys-typescale-body-medium-size);
+}
+.settings-dialog {
+  z-index: 81;
+  display: grid;
+  width: min(38rem, 100%);
+  max-width: none;
+  max-height: 100%;
+  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
+  overflow: hidden;
+  overscroll-behavior: contain;
+  border: 1px solid var(--ak-rule-default);
+  border-radius: var(--ak-radius-md);
+  padding: 0;
+  color: var(--md-sys-color-on-surface);
+  background: var(--md-sys-color-surface-container-high);
+  box-shadow: var(--ak-elevation-overlay);
+}
+.settings-dialog-header { align-items: start; padding: 1.25rem 1.5rem 1rem; }
+.settings-dialog-heading { min-width: 0; }
+.settings-dialog-description { max-width: 58ch; text-wrap: pretty; }
+.settings-dialog-title { margin-block-start: 0.4rem; font-size: var(--md-sys-typescale-title-large-size); line-height: 1.25; letter-spacing: -0.015em; text-wrap: balance; }
+.settings-dialog-form { display: grid; min-height: 0; grid-template-rows: minmax(0, 1fr) auto; grid-template-columns: minmax(0, 1fr); }
+.settings-dialog-body { overflow: auto; padding: 0.25rem 1.5rem 1.5rem; overscroll-behavior: contain; }
+.settings-dialog--inline {
+  width: 100%;
+  max-height: none;
+  grid-template-rows: none;
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.settings-dialog--inline .settings-dialog-form { grid-template-rows: none; }
+.settings-dialog--inline .settings-dialog-body { overflow: visible; }
+.settings-dialog--inline .settings-dialog-footer { background: transparent; }
+
+.settings-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem 0.8rem; }
+.settings-form-grid label { position: relative; display: grid; gap: 0.4rem; }
+.settings-form-grid label > span { color: var(--md-sys-color-on-surface); font-size: var(--md-sys-typescale-label-medium-size); font-weight: 650; }
+.settings-form-grid .is-wide { grid-column: 1 / -1; }
+.settings-secret input { width: 100%; padding-inline-end: 2.6rem; }
+.settings-secret > button { position: absolute; inset: auto 0.1rem 0.1rem auto; display: grid; width: 2.55rem; height: 2.55rem; place-items: center; border: 0; border-radius: var(--ak-radius-xs); color: var(--md-sys-color-on-surface-variant); background: transparent; cursor: pointer; }
+.settings-secret > button:hover { color: var(--md-sys-color-on-surface); }
+.settings-secret > button:focus-visible { outline: 2px solid var(--md-sys-color-primary); outline-offset: -2px; }
+.settings-text-button:focus-visible {
+  outline: 2px solid var(--md-sys-color-primary);
+  outline-offset: 2px;
+}
+.settings-discovery-manual > p {
+  margin: 0 0 0.75rem;
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: var(--md-sys-typescale-body-medium-size);
+  line-height: 1.5;
+}
+.settings-credential-note {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0.75rem 0 0;
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: var(--md-sys-typescale-body-medium-size);
+}
+.settings-text-button {
+  min-height: 2.75rem;
+  border: 0;
+  border-radius: var(--ak-radius-sm);
+  padding-inline: 0.5rem;
+  color: var(--md-sys-color-primary);
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+.settings-text-button:hover { background: color-mix(in srgb, var(--md-sys-color-primary) 8%, transparent); }
+.settings-discovery-manual label { display: grid; gap: 0.4rem; }
+.settings-discovery-manual label > span {
+  font-size: var(--md-sys-typescale-label-medium-size);
+  font-weight: 650;
+}
+.settings-discovery-manual input {
+  width: 100%;
+  min-height: 2.75rem;
+  border: 1px solid var(--md-sys-color-outline);
+  border-radius: var(--ak-radius-xs);
+  padding-inline: 0.75rem;
+  color: var(--md-sys-color-on-surface);
+  background: var(--md-sys-color-surface);
+  font-size: var(--md-sys-typescale-body-medium-size);
+}
+.settings-discovery-manual > p { margin-block: 0.55rem 0; }
+.settings-inline-error { margin: 0.8rem 0 0 !important; border-radius: var(--ak-radius-sm); padding: 0.7rem 0.875rem; color: var(--md-sys-color-on-error-container); background: var(--md-sys-color-error-container); font-size: var(--md-sys-typescale-body-medium-size) !important; }
+.settings-dialog-footer { min-height: 4.5rem; margin: 0; border-block-start: 1px solid var(--md-sys-color-outline-variant); padding: 0.75rem 1.5rem calc(0.75rem + env(safe-area-inset-bottom)); background: var(--md-sys-color-surface-container-high); }
+.settings-dialog-footer-note { display: inline-flex; align-items: center; gap: 0.4rem; color: var(--md-sys-color-on-surface-variant); font-size: var(--md-sys-typescale-body-medium-size); }
+@media (max-width: 50rem) {
+  .settings-dialog { max-height: 100%; border-radius: var(--ak-radius-lg); }
+  .settings-dialog-header { padding: 1.1rem 1.1rem 0.9rem; }
+  .settings-dialog-body { padding: 0.25rem 1.1rem 1.2rem; }
+  .settings-form-grid { grid-template-columns: 1fr; }
+  .settings-form-grid .is-wide { grid-column: auto; }
+  .settings-dialog-footer { align-items: stretch; flex-direction: column; padding-inline: 1.1rem; }
+  .settings-dialog-footer-note { display: none; }
+  .settings-dialog-actions { width: 100%; flex-direction: column; }
+  .settings-dialog-footer .settings-primary-button,
+.settings-dialog-footer .settings-secondary-button { width: 100%; }
+  .settings-form-grid input,
+.settings-form-grid select,
+.settings-discovery-manual input { font-size: 1rem; }
+}
+@media (max-width: 30rem) {
+  .settings-dialog { border-inline: 0; border-block-end: 0; border-radius: var(--ak-radius-lg) var(--ak-radius-lg) 0 0; align-self: end; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .settings-primary-button { transition-duration: 0.01ms; }
+}
+.settings-dialog--inline.is-edit > .settings-dialog-header,
+.settings-dialog--inline.is-edit .settings-dialog-footer { display: none; }
+@media (max-height: 30rem) {
+  .settings-dialog-body { overflow: visible; }
+}
+@media (max-width: 760px) {
+  .settings-dialog-body { overflow: visible; }
+  .settings-dialog,
+.settings-dialog-form,
+.settings-form-grid label { min-width: 0; }
+  .settings-form-grid,
+.settings-form-grid label { grid-template-columns: minmax(0, 1fr); }
+  .settings-form-grid input,
+.settings-form-grid select { min-width: 0; max-width: 100%; box-sizing: border-box; }
+  .settings-dialog-actions { min-width: 0; }
+  .settings-dialog-actions button,
+.settings-dialog-footer button { min-width: 0; height: auto; min-height: 44px; white-space: normal; overflow-wrap: anywhere; }
+  .settings-dialog-description { font-size: 1rem; line-height: 1.5; }
+}
+.settings-dialog--inline .settings-dialog-header { padding: 0.875rem 1rem 0.25rem; }
+.settings-dialog--inline .settings-dialog-description { font-size: 0.75rem; }
+.settings-dialog--inline .settings-dialog-body { padding: 0.5rem 1rem 1rem; }
+.settings-dialog--inline .settings-dialog-footer { gap: 0.75rem; border-block-start: 1px solid var(--ak-rule-subtle); padding: 0.625rem 1rem; }
+.settings-dialog--inline .settings-dialog-footer .settings-primary-button,
+.settings-dialog--inline .settings-dialog-footer .settings-secondary-button { min-height: 2.25rem; padding-inline: 0.875rem; }
+.settings-dialog--inline .settings-dialog-body > .settings-form-grid { grid-template-columns: minmax(0, 1fr); gap: 0.5rem; }
+.settings-dialog--inline .settings-dialog-body > .settings-form-grid > label { grid-template-columns: 6rem minmax(0, 1fr); align-items: center; gap: 1rem; }
+.settings-dialog--inline .settings-dialog-body > .settings-form-grid > label > span { color: var(--ak-ink-secondary); font-weight: 500; text-align: end; }
+.settings-dialog--inline .settings-dialog-body > .settings-form-grid input,
+.settings-dialog--inline .settings-dialog-body > .settings-form-grid select { min-height: 2.25rem; }
+.settings-dialog--inline .settings-dialog-body > .settings-form-grid > .settings-secret > button { inset: 50% 0.125rem auto auto; width: 2rem; height: 2rem; translate: 0 -50%; }
+@media (max-width: 640px) {
+  .settings-dialog--inline .settings-dialog-body > .settings-form-grid > label { grid-template-columns: minmax(0, 1fr); gap: 0.3rem; }
+  .settings-dialog--inline .settings-dialog-body > .settings-form-grid > label > span { text-align: start; }
+  .settings-dialog--inline .settings-dialog-body > .settings-form-grid > .settings-secret > button { inset: auto 0.125rem 0.125rem auto; translate: none; }
+}
+.settings-dialog--inline .settings-credential-note { font-size: 0.75rem; }
+.settings-dialog--inline .settings-primary-button,
+.settings-dialog--inline .settings-secondary-button { min-height: 2.25rem; padding-inline: 0.875rem; font-size: 0.875rem; }
+.settings-dialog-footer:has(> [data-manual]) { justify-content: space-between; }
+.settings-dialog-footer > [data-manual] { min-height: 2.25rem; padding-inline: 0.25rem; font-size: 0.75rem; }

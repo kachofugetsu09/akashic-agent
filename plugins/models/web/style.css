@@ -38,10 +38,7 @@
 
 .settings-header,
 .settings-header-actions,
-.settings-section > header,
-.settings-dialog-header,
-.settings-model-discovery > header,
-.settings-dialog-footer {
+.settings-section > header {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -49,8 +46,7 @@
 }
 
 .settings-header { align-items: end; margin-block-end: 1.5rem; }
-.settings-header h1,
-.settings-dialog-title {
+.settings-header h1 {
   margin: 0;
   font-family: var(--md-ref-typeface-brand);
   font-weight: 500;
@@ -58,69 +54,24 @@
 }
 .settings-header h1 { font-size: var(--md-sys-typescale-headline-medium-size); line-height: 1.25; }
 .settings-header p,
-.settings-dialog-description,
-.settings-section header p,
-.settings-model-discovery header p {
+.settings-section header p {
   margin: 0.4rem 0 0;
   color: var(--md-sys-color-on-surface-variant);
   font-size: var(--md-sys-typescale-body-medium-size);
   line-height: 1.5;
 }
-
-.settings-primary-button,
-.settings-secondary-button,
-.settings-icon-button {
-  display: inline-flex;
-  min-height: 2.75rem;
-  align-items: center;
-  justify-content: center;
-  gap: 0.5rem;
-  border: 0;
-  border-radius: var(--ak-radius-sm);
-  padding: 0 1.125rem;
-  font-size: var(--md-sys-typescale-label-large-size);
-  font-weight: var(--md-sys-typescale-label-large-weight);
-  cursor: pointer;
-  /* motion-exempt: 误报，.settings-icon-button 是 HTML 按钮不是 SVG 图标，scale 能合成 */
-  transition-property: color, background-color, scale;
-  transition-duration: var(--ak-sys-duration-short);
-  transition-timing-function: var(--ak-sys-motion-standard);
-}
-.settings-primary-button:has(> svg) {
-  padding-inline: calc(1.125rem - 2px) 1.125rem;
-}
-.settings-primary-button { color: var(--md-sys-color-on-primary); background: var(--md-sys-color-primary); }
-.settings-primary-button:hover { background: color-mix(in srgb, var(--md-sys-color-primary) 92%, var(--md-sys-color-on-primary) 8%); }
-.settings-secondary-button { border: 1px solid var(--md-sys-color-outline); color: var(--md-sys-color-primary); background: transparent; }
-.settings-secondary-button:hover { background: color-mix(in srgb, var(--md-sys-color-primary) 8%, transparent); }
-.settings-icon-button { width: 2.75rem; border-radius: var(--ak-radius-full); padding: 0; color: var(--md-sys-color-on-surface-variant); background: transparent; }
-.settings-icon-button:hover { color: var(--md-sys-color-on-surface); background: color-mix(in srgb, var(--md-sys-color-on-surface) 8%, transparent); }
-.settings-primary-button:active,
-.settings-secondary-button:active,
-.settings-icon-button:active,
 .settings-template-tile:active { scale: 0.98; }
-.settings-primary-button:disabled,
-.settings-secondary-button:disabled { cursor: default; opacity: 0.45; }
-.settings-primary-button:focus-visible,
-.settings-secondary-button:focus-visible,
-.settings-icon-button:focus-visible,
 .settings-template-tile:focus-visible,
-.settings-form-grid input:focus-visible,
-.settings-form-grid select:focus-visible,
 .settings-discovery-result select:focus-visible,
-.settings-discovery-manual input:focus-visible,
 .settings-role-grid select:focus-visible {
   outline: 2px solid var(--md-sys-color-primary);
   outline-offset: 2px;
 }
 
-.settings-dialog-actions { display: flex; align-items: center; gap: 0.75rem; }
-
 
 .settings-section + .settings-section { margin-block-start: 2rem; }
 .settings-section > header { align-items: end; margin-block-end: 0.75rem; }
-.settings-section h2,
-.settings-model-discovery h3 { margin: 0; font-size: var(--md-sys-typescale-title-medium-size); font-weight: 600; letter-spacing: -0.01em; }
+.settings-section h2 { margin: 0; font-size: var(--md-sys-typescale-title-medium-size); font-weight: 600; letter-spacing: -0.01em; }
 .settings-section > header > span { color: var(--md-sys-color-on-surface-variant); font-size: var(--md-sys-typescale-label-medium-size); }
 
 /* 添加服务商：按接入方式分组，组内一格一种方式；图标、名称与一句说明，已连接的在右侧标出。 */
@@ -382,9 +333,7 @@
 .settings-role-pick:hover { background: var(--ak-paper-quiet); }
 .settings-role-pick-value { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .settings-role-pick > svg { flex: none; width: 1rem; height: 1rem; color: var(--ak-ink-secondary); translate: 0 -0.5px; }
-.settings-role-grid select,
-.settings-form-grid input,
-.settings-form-grid select {
+.settings-role-grid select {
   width: 100%;
   min-height: 2.75rem;
   border: 1px solid var(--md-sys-color-outline);
@@ -415,74 +364,9 @@ dialog.settings-scrim {
   color: inherit;
 }
 dialog.settings-scrim::backdrop { background: transparent; }
-.settings-dialog {
-  z-index: 81;
-  display: grid;
-  width: min(38rem, 100%);
-  max-width: none;
-  max-height: 100%;
-  grid-template-rows: auto minmax(0, 1fr);
-  grid-template-columns: minmax(0, 1fr);
-  gap: 0;
-  overflow: hidden;
-  overscroll-behavior: contain;
-  border: 1px solid var(--ak-rule-default);
-  border-radius: var(--ak-radius-md);
-  padding: 0;
-  color: var(--md-sys-color-on-surface);
-  background: var(--md-sys-color-surface-container-high);
-  box-shadow: var(--ak-elevation-overlay);
-}
-.settings-dialog-header { align-items: start; padding: 1.25rem 1.5rem 1rem; }
-.settings-dialog-heading { min-width: 0; }
-.settings-dialog-description { max-width: 58ch; text-wrap: pretty; }
-.settings-dialog-title { margin-block-start: 0.4rem; font-size: var(--md-sys-typescale-title-large-size); line-height: 1.25; letter-spacing: -0.015em; text-wrap: balance; }
-.settings-dialog-form { display: grid; min-height: 0; grid-template-rows: minmax(0, 1fr) auto; grid-template-columns: minmax(0, 1fr); }
-.settings-dialog-body { overflow: auto; padding: 0.25rem 1.5rem 1.5rem; overscroll-behavior: contain; }
 
 /* 就地展开的编辑器：压平弹窗外壳，内容随页面滚动，不再自持滚动区与阴影。 */
-.settings-dialog--inline {
-  width: 100%;
-  max-height: none;
-  grid-template-rows: none;
-  overflow: visible;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  box-shadow: none;
-}
-.settings-dialog--inline .settings-dialog-form { grid-template-rows: none; }
-.settings-dialog--inline .settings-dialog-body { overflow: visible; }
-.settings-dialog--inline .settings-dialog-footer { background: transparent; }
-
-.settings-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem 0.8rem; }
-.settings-form-grid label { position: relative; display: grid; gap: 0.4rem; }
-.settings-form-grid label > span { color: var(--md-sys-color-on-surface); font-size: var(--md-sys-typescale-label-medium-size); font-weight: 650; }
-.settings-form-grid .is-wide,
-.settings-login-card.is-wide { grid-column: 1 / -1; }
-.settings-secret-field { position: relative; display: flex; align-items: center; min-width: 0; }
-.settings-secret input { width: 100%; padding-inline-end: 2.6rem; }
-.settings-secret:has(.settings-secret-actions) input { padding-inline-end: 4.5rem; }
 /* 兼容仍采用 .settings-secret > button 的插件（如 Gemini / OpenCode Go） */
-.settings-secret > button { position: absolute; inset: auto 0.1rem 0.1rem auto; display: grid; width: 2.55rem; height: 2.55rem; place-items: center; border: 0; border-radius: var(--ak-radius-xs); color: var(--md-sys-color-on-surface-variant); background: transparent; cursor: pointer; }
-.settings-secret > button:hover { color: var(--md-sys-color-on-surface); }
-.settings-secret > button:focus-visible { outline: 2px solid var(--md-sys-color-primary); outline-offset: -2px; }
-.settings-secret-actions { position: absolute; inset-block: 0; inset-inline-end: 4px; display: inline-flex; align-items: center; gap: 2px; }
-.settings-secret-actions button { position: relative; display: inline-grid; width: 28px; height: 28px; place-items: center; padding: 0; border: 0; border-radius: var(--ak-radius-xs); color: var(--ak-ink-secondary); background: transparent; cursor: pointer; transition: color var(--ak-sys-duration-short) var(--ak-sys-motion-standard), background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard); }
-.settings-secret-actions button::after { position: absolute; inset: -8px -2px; content: ""; }
-.settings-secret-actions button[hidden] { display: none; }
-@media (hover: hover) {
-  .settings-secret-actions button:hover { color: var(--ak-ink-primary); background: color-mix(in oklab, var(--ak-ink-primary) 6%, transparent); }
-}
-.settings-secret-actions button:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 1px; }
-.settings-secret-actions button[data-copied="true"] { color: var(--ak-sys-color-success); background: color-mix(in oklab, var(--ak-sys-color-success) 12%, transparent); }
-.settings-secret-actions button[data-copy-error="true"] { color: var(--ak-color-status-error); }
-@media (pointer: coarse) {
-  .settings-secret:has(.settings-secret-actions) input { padding-inline-end: 5.5rem; }
-  .settings-secret-actions { gap: 4px; }
-  .settings-secret-actions button { width: 36px; height: 36px; }
-  .settings-secret-actions button::after { inset: -4px 0; }
-}
 
 .settings-inline-confirm { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; padding: 10px 14px; border-block-start: 1px solid var(--ak-rule-subtle); background: color-mix(in oklab, var(--ak-color-status-warning) 7%, var(--ak-paper-quiet)); font-size: var(--models-type-caption); line-height: 1.45; }
 .settings-inline-confirm__text { flex: 1 1 14rem; min-width: 0; color: var(--ak-ink-primary); }
@@ -493,111 +377,22 @@ dialog.settings-scrim::backdrop { background: transparent; }
 }
 .settings-inline-confirm__cancel { border: 1px solid var(--ak-rule-default); background: var(--ak-paper-canvas); color: var(--ak-ink-primary); }
 .settings-inline-confirm__danger { border: 1px solid transparent; background: var(--ak-color-status-error); color: var(--ak-paper-canvas); }
-
-.settings-advanced { margin-block-start: 1rem; }
-.settings-advanced summary {
-  width: fit-content;
-  min-height: 2.75rem;
-  align-content: center;
-  color: var(--md-sys-color-primary);
-  font-size: var(--md-sys-typescale-label-large-size);
-  font-weight: var(--md-sys-typescale-label-large-weight);
-  cursor: pointer;
-}
-.settings-advanced summary:focus-visible,
-.settings-text-button:focus-visible {
-  outline: 2px solid var(--md-sys-color-primary);
-  outline-offset: 2px;
-}
-.settings-advanced > p,
 .settings-discovery-result > p,
-.settings-discovery-manual > p,
-.settings-discovery-status,
 .settings-discovery-summary {
   margin: 0 0 0.75rem;
   color: var(--md-sys-color-on-surface-variant);
   font-size: var(--md-sys-typescale-body-medium-size);
   line-height: 1.5;
 }
-.settings-credential-note {
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-  margin: 0.75rem 0 0;
-  color: var(--md-sys-color-on-surface-variant);
-  font-size: var(--md-sys-typescale-body-medium-size);
-}
-
-.settings-login-card,
-.settings-device-login {
-  display: flex;
-  min-height: 4.25rem;
-  align-items: center;
-  gap: 0.75rem;
-  border: 1px solid var(--md-sys-color-outline-variant);
-  border-radius: var(--ak-radius-md);
-  padding: 0.625rem 0.875rem;
-  background: transparent;
-}
-.settings-login-card > span { display: grid; }
-.settings-login-card small { margin-block-start: 0.2rem; color: var(--md-sys-color-on-surface-variant); font-size: var(--md-sys-typescale-body-medium-size); }
-.settings-login-card button { min-height: 2.5rem; margin-inline-start: auto; border: 0; border-radius: var(--ak-radius-full); padding: 0 0.875rem; color: var(--md-sys-color-primary); background: transparent; font-size: var(--md-sys-typescale-label-large-size); font-weight: var(--md-sys-typescale-label-large-weight); cursor: pointer; }
-.settings-login-card button:hover { background: color-mix(in srgb, var(--md-sys-color-primary) 10%, transparent); }
 
 /* 登录状态卡：顶行是状态图标、现状与下一步；等待授权时下面是验证码、登录链接与剩余时间。 */
-.settings-device-login { display: block; margin-block-start: 0.8rem; padding: 0.875rem 1rem; }
-.settings-device-login[data-state="failed"] { border-color: color-mix(in srgb, var(--md-sys-color-error) 45%, transparent); }
-.settings-device-wait { display: grid; gap: 0.75rem; }
-.settings-device-head { display: flex; align-items: center; gap: 0.75rem; }
-.settings-device-head > svg { flex: none; color: var(--ak-ink-secondary); }
-.settings-device-head.is-done > svg { color: var(--ak-sys-color-success); }
-.settings-device-head.is-failed > svg { color: var(--md-sys-color-error); }
-.settings-device-head > span { display: grid; min-width: 0; flex: 1; gap: 0.15rem; }
-.settings-device-head small { color: var(--ak-ink-secondary); font-size: var(--models-type-caption); line-height: 1.5; overflow-wrap: anywhere; }
-.settings-device-head > button,
-.settings-device-link > a,
-.settings-device-login [data-copy] { display: inline-flex; flex: none; min-height: 2.25rem; align-items: center; gap: 0.375rem; border: 0; border-radius: var(--ak-radius-sm); padding: 0 0.75rem; color: var(--ak-color-action-primary); background: transparent; font: inherit; font-size: var(--models-type-caption); font-weight: 600; text-decoration: none; cursor: pointer; }
-.settings-device-head > button:hover,
-.settings-device-link > a:hover,
-.settings-device-login [data-copy]:hover { background: color-mix(in srgb, var(--ak-color-action-primary) 10%, transparent); }
-.settings-device-code { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; border-radius: var(--ak-radius-sm); padding: 0.625rem 0.5rem 0.625rem 1rem; background: var(--ak-paper-sheet); }
-.settings-device-code strong { font-family: var(--ak-type-technical); font-size: 1.5rem; font-weight: 600; letter-spacing: 0.16em; font-variant-numeric: tabular-nums; user-select: all; white-space: nowrap; }
-.settings-device-link { display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
-.settings-device-link > a { border: 1px solid var(--ak-rule-default); }
-.settings-device-link code { min-width: 0; flex: 1; overflow: hidden; color: var(--ak-ink-secondary); font-family: var(--ak-type-technical); font-size: var(--models-type-caption); text-overflow: ellipsis; white-space: nowrap; user-select: all; }
-.settings-device-note { color: var(--ak-ink-secondary); font-size: var(--models-type-caption); font-variant-numeric: tabular-nums; }
-@media (max-width: 34rem) {
-  .settings-device-link { flex-wrap: wrap; }
-  .settings-device-link code { flex-basis: 100%; order: 3; }
-}
-
-.settings-model-discovery { margin-block-start: 1.5rem; border-block-start: 1px solid var(--md-sys-color-outline-variant); padding-block-start: 1.25rem; }
-.settings-model-discovery > header { align-items: center; margin-block-end: 1rem; }
-.settings-model-discovery h3 { margin: 0; font-size: var(--md-sys-typescale-title-medium-size); font-weight: 600; line-height: 1.3; }
-.settings-model-discovery > header p { margin-block-start: 0.25rem; }
-.settings-model-discovery > p { max-width: 62ch; margin: 0.75rem 0 0; color: var(--md-sys-color-on-surface-variant); font-size: var(--md-sys-typescale-body-medium-size); line-height: 1.5; text-wrap: pretty; }
 .settings-model-discovery--automatic { padding-block-end: 0.25rem; }
-.settings-discovery-empty { display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem 0.75rem; }
-.settings-text-button {
-  min-height: 2.75rem;
-  border: 0;
-  border-radius: var(--ak-radius-sm);
-  padding-inline: 0.5rem;
-  color: var(--md-sys-color-primary);
-  background: transparent;
-  font: inherit;
-  cursor: pointer;
-}
-.settings-text-button:hover { background: color-mix(in srgb, var(--md-sys-color-primary) 8%, transparent); }
-.settings-discovery-result label,
-.settings-discovery-manual label { display: grid; gap: 0.4rem; }
-.settings-discovery-result label > span,
-.settings-discovery-manual label > span {
+.settings-discovery-result label { display: grid; gap: 0.4rem; }
+.settings-discovery-result label > span {
   font-size: var(--md-sys-typescale-label-medium-size);
   font-weight: 650;
 }
-.settings-discovery-result select,
-.settings-discovery-manual input {
+.settings-discovery-result select {
   width: 100%;
   min-height: 2.75rem;
   border: 1px solid var(--md-sys-color-outline);
@@ -607,32 +402,7 @@ dialog.settings-scrim::backdrop { background: transparent; }
   background: var(--md-sys-color-surface);
   font-size: var(--md-sys-typescale-body-medium-size);
 }
-.settings-discovery-result > p,
-.settings-discovery-manual > p { margin-block: 0.55rem 0; }
-.settings-manual-confirm {
-  display: grid !important;
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: start;
-  gap: 0.625rem !important;
-  margin-block-start: 0.8rem;
-  color: var(--md-sys-color-on-surface);
-  font-size: var(--md-sys-typescale-body-medium-size);
-  line-height: 1.45;
-}
-.settings-manual-confirm input {
-  width: 1.25rem;
-  height: 1.25rem;
-  min-height: 1.25rem;
-  margin: 0.05rem 0 0;
-  border: 0;
-  padding: 0;
-  accent-color: var(--md-sys-color-primary);
-  background: transparent;
-}
-.settings-discovery-status { margin-block: 0.75rem 0; }
-.settings-inline-error { margin: 0.8rem 0 0 !important; border-radius: var(--ak-radius-sm); padding: 0.7rem 0.875rem; color: var(--md-sys-color-on-error-container); background: var(--md-sys-color-error-container); font-size: var(--md-sys-typescale-body-medium-size) !important; }
-.settings-dialog-footer { min-height: 4.5rem; margin: 0; border-block-start: 1px solid var(--md-sys-color-outline-variant); padding: 0.75rem 1.5rem calc(0.75rem + env(safe-area-inset-bottom)); background: var(--md-sys-color-surface-container-high); }
-.settings-dialog-footer-note { display: inline-flex; align-items: center; gap: 0.4rem; color: var(--md-sys-color-on-surface-variant); font-size: var(--md-sys-typescale-body-medium-size); }
+.settings-discovery-result > p { margin-block: 0.55rem 0; }
 
 .settings-toast-region { position: fixed; z-index: 100; inset: auto 1.25rem 1.25rem auto; }
 .settings-toast { display: flex; min-width: min(22rem, calc(100vw - 2.5rem)); align-items: center; gap: 0.7rem; border-radius: var(--ak-radius-sm); padding: 0.75rem 0.875rem; color: var(--ak-sys-color-on-success-container); background: var(--ak-sys-color-success-container); box-shadow: var(--ak-elevation-raised); }
@@ -649,35 +419,19 @@ dialog.settings-scrim::backdrop { background: transparent; }
   .settings-role-grid { grid-template-columns: minmax(0, 1fr); }
   .settings-role-grid label { grid-template-columns: 1fr; }
   .settings-scrim { padding: 0.75rem; }
-  .settings-dialog { max-height: 100%; border-radius: var(--ak-radius-lg); }
-  .settings-dialog-header { padding: 1.1rem 1.1rem 0.9rem; }
-  .settings-dialog-body { padding: 0.25rem 1.1rem 1.2rem; }
-  .settings-form-grid { grid-template-columns: 1fr; }
-  .settings-form-grid .is-wide,
-  .settings-login-card.is-wide { grid-column: auto; }
-  .settings-dialog-footer { align-items: stretch; flex-direction: column; padding-inline: 1.1rem; }
-  .settings-dialog-footer-note { display: none; }
-  .settings-dialog-actions { width: 100%; flex-direction: column; }
-  .settings-dialog-footer .settings-primary-button,
-  .settings-dialog-footer .settings-secondary-button { width: 100%; }
-  .settings-form-grid input,
-  .settings-form-grid select,
   .settings-discovery-result select,
-  .settings-discovery-manual input,
-  .settings-find input,
-  .settings-model-filter input { font-size: 1rem; }
+.settings-find input,
+.settings-model-filter input { font-size: 1rem; }
 }
 
 @media (max-width: 30rem) {
   .settings-card-meta small { display: none; }
   .settings-scrim { padding: 0; }
-  .settings-dialog { border-inline: 0; border-block-end: 0; border-radius: var(--ak-radius-lg) var(--ak-radius-lg) 0 0; align-self: end; }
   .settings-toast-region { inset: auto 0.75rem 0.75rem; }
   .settings-toast { min-width: 0; width: 100%; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .settings-primary-button,
   .settings-template-tile { transition-duration: 0.01ms; }
   .is-spinning { animation-duration: 1.8s; }
 }
@@ -726,8 +480,6 @@ dialog.settings-scrim::backdrop { background: transparent; }
 .settings-model-manage .settings-model-hint:empty { display: none; }
 
 /* 编辑态底栏归宿主：插件自己的标题与底栏隐藏，取消与保存靠右。 */
-.settings-dialog--inline.is-edit > .settings-dialog-header,
-.settings-dialog--inline.is-edit .settings-dialog-footer { display: none; }
 .settings-detail-footer { display: flex; justify-content: end; gap: 0.5rem; border-block-start: 1px solid var(--ak-rule-subtle); padding: 0.75rem 1rem; }
 @media (max-width: 640px) {
   .settings-detail-row { grid-template-columns: minmax(0, 1fr); gap: 0.25rem; }
@@ -841,28 +593,12 @@ dialog.settings-scrim::backdrop { background: transparent; }
 /* 短屏和大字下让标题随表单一起滚动，避免把正文压到可视区之外。 */
 @media (max-height: 30rem) {
   .settings-dialog:not(.embedding-form) { display: block; overflow: auto; }
-  .settings-dialog-body { overflow: visible; }
 }
 
 @media (max-width: 760px) {
   .settings-dialog:not(.embedding-form) { display: block; overflow: auto; }
-  .settings-dialog-body { overflow: visible; }
-  .settings-dialog,
-  .settings-dialog-form,
-  .settings-form-grid label { min-width: 0; }
-  .settings-form-grid,
-  .settings-form-grid label { grid-template-columns: minmax(0, 1fr); }
-  .settings-login-card { min-width: 0; flex-wrap: wrap; }
-  .settings-login-card > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
-  .settings-form-grid input,
-  .settings-form-grid select { min-width: 0; max-width: 100%; box-sizing: border-box; }
-  .settings-dialog-actions { min-width: 0; }
-  .settings-dialog-actions button,
-  .settings-dialog-footer button { min-width: 0; height: auto; min-height: 44px; white-space: normal; overflow-wrap: anywhere; }
   .settings-card-copy strong { white-space: normal; overflow-wrap: break-word; }
-  .settings-header p,
-  .settings-dialog-description,
-  .settings-model-discovery > p { font-size: 1rem; line-height: 1.5; }
+  .settings-header p { font-size: 1rem; line-height: 1.5; }
 }
 
 /* 设置·用量：订阅卡两列栅格；Token 汇总四格数字、柱状图与按模型/来源的小表。 */
@@ -924,23 +660,6 @@ dialog.settings-scrim::backdrop { background: transparent; }
 }
 
 /* 就地编辑器：标签在左、字段在右的两列表单，行距收紧；窄屏退回上下堆叠。 */
-.settings-dialog--inline .settings-dialog-header { padding: 0.875rem 1rem 0.25rem; }
-.settings-dialog--inline .settings-dialog-description { font-size: var(--models-type-caption); }
-.settings-dialog--inline .settings-dialog-body { padding: 0.5rem 1rem 1rem; }
-.settings-dialog--inline .settings-dialog-footer { gap: 0.75rem; border-block-start: 1px solid var(--ak-rule-subtle); padding: 0.625rem 1rem; }
-.settings-dialog--inline .settings-dialog-footer .settings-primary-button,
-.settings-dialog--inline .settings-dialog-footer .settings-secondary-button { min-height: 2.25rem; padding-inline: 0.875rem; }
-.settings-dialog--inline .settings-dialog-body > .settings-form-grid { grid-template-columns: minmax(0, 1fr); gap: 0.5rem; }
-.settings-dialog--inline .settings-dialog-body > .settings-form-grid > label { grid-template-columns: 6rem minmax(0, 1fr); align-items: center; gap: 1rem; }
-.settings-dialog--inline .settings-dialog-body > .settings-form-grid > label > span { color: var(--ak-ink-secondary); font-weight: 500; text-align: end; }
-.settings-dialog--inline .settings-dialog-body > .settings-form-grid input,
-.settings-dialog--inline .settings-dialog-body > .settings-form-grid select { min-height: 2.25rem; }
-.settings-dialog--inline .settings-dialog-body > .settings-form-grid > .settings-secret > button { inset: 50% 0.125rem auto auto; width: 2rem; height: 2rem; translate: 0 -50%; }
-@media (max-width: 640px) {
-  .settings-dialog--inline .settings-dialog-body > .settings-form-grid > label { grid-template-columns: minmax(0, 1fr); gap: 0.3rem; }
-  .settings-dialog--inline .settings-dialog-body > .settings-form-grid > label > span { text-align: start; }
-  .settings-dialog--inline .settings-dialog-body > .settings-form-grid > .settings-secret > button { inset: auto 0.125rem 0.125rem auto; translate: none; }
-}
 
 /* 节标题栏：小号灰字标题，右侧是查找框与文字操作；不用大号标题加说明段落。 */
 .settings-section-bar { display: flex; min-height: 2.25rem; align-items: center; gap: 0.75rem; margin-block-end: 0.5rem; padding-inline: 0.125rem; }
@@ -960,16 +679,10 @@ dialog.settings-scrim::backdrop { background: transparent; }
 }
 
 /* 统一小号节标题：覆盖旧的 h2/h3 字阶。 */
-.settings-section .settings-section-label,
-.settings-dialog--inline .settings-model-discovery h3 { color: var(--ak-ink-secondary); font-size: var(--models-type-caption); font-weight: 600; letter-spacing: 0.04em; }
-.settings-dialog--inline .settings-model-discovery header p,
-.settings-dialog--inline .settings-credential-note { font-size: var(--models-type-caption); }
+.settings-section .settings-section-label { color: var(--ak-ink-secondary); font-size: var(--models-type-caption); font-weight: 600; letter-spacing: 0.04em; }
 /* 新建表单挂在所选格子下面，格子已写明服务商，表单不再重复大标题。 */
 .settings-template-group .settings-dialog-title { display: none; }
 /* 高级设置：小三角加灰字，默认折叠。 */
-.settings-dialog--inline .settings-advanced summary { min-height: 2rem; color: var(--ak-ink-secondary); font-size: var(--models-type-caption); font-weight: 500; }
-.settings-dialog--inline .settings-primary-button,
-.settings-dialog--inline .settings-secondary-button { min-height: 2.25rem; padding-inline: 0.875rem; font-size: var(--models-type-body); }
 /* 场景行：名称与用途一行半，选择器收窄。 */
 .settings-binding { min-height: 3.25rem; padding-block: 0.5rem; }
 .settings-binding strong { font-size: var(--models-type-body); font-weight: 600; }
@@ -979,18 +692,8 @@ dialog.settings-scrim::backdrop { background: transparent; }
 .settings-find input:focus,
 .settings-find input:focus-visible,
 .settings-model-filter input:focus-visible { outline: none; box-shadow: none; }
-.settings-dialog--inline .settings-dialog-body > .settings-form-grid > .settings-login-card { margin-inline-start: 7rem; }
-@media (max-width: 640px) {
-  .settings-dialog--inline .settings-dialog-body > .settings-form-grid > .settings-login-card { margin-inline-start: 0; }
-}
 
 /* 只填密钥的新建：密钥下方一行「去拿密钥」与服务地址。 */
-.settings-key-row { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 0.25rem 1rem; margin: -0.25rem 0 0; color: var(--ak-ink-secondary); font-size: var(--models-type-caption); }
-.settings-key-row > span { font-family: var(--ak-type-technical); }
-.settings-key-link { color: var(--ak-color-action-primary); font-weight: 500; text-decoration: none; }
-.settings-key-link:hover { text-decoration: underline; }
-.settings-dialog-footer:has(> [data-manual]) { justify-content: space-between; }
-.settings-dialog-footer > [data-manual] { min-height: 2.25rem; padding-inline: 0.25rem; font-size: var(--models-type-caption); }
 
 /* 模型表：勾选、型号、上下文、识图、更多；表头勾选是「全部」，展开行放其余参数。 */
 .settings-model-table { display: grid; grid-template-columns: 2rem minmax(0, 1fr) 4.5rem 5.5rem 2.75rem; align-items: center; overflow: hidden; border: 1px solid var(--ak-rule-subtle); border-radius: var(--ak-radius-md); }
