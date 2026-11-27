@@ -7,10 +7,10 @@ import { MarqueeText } from "./marquee-text";
 import { FolderMark, type GroupRef, type NavigationGroupsState } from "./navigation-groups";
 import { PluginUiSlot } from "./plugin-ui-runtime";
 
-// 一个分组选项：图标线型与插件短标签并排，第一次挑项目时就能把线型和含义对上号。
+// 一个分组选项：图标与插件短标签并排，挑项目时能看清归属与记忆策略。
 function ScopeOption({ dimension, group }: { dimension: string; group: NavigationGroup }) {
   return <span className="new-chat-scope__option">
-    <FolderMark />
+    <FolderMark icon={group.icon} size={16} trigger="none" />
     <span>
       <strong><MarqueeText still>{group.label}</MarqueeText></strong>
       <PluginUiSlot name="scope.badge" scope={{ dimension, value: group.id }} quiet />
@@ -35,7 +35,7 @@ export function NewChatScope({ groups, onStart, onUngrouped }: {
       <button type="button" className="new-chat-scope" aria-label={`${label}：${active?.label ?? `不归属${label}`}，点按更换`}>
         <span className="new-chat-scope__dimension">{label}</span>
         {active ? <span className="new-chat-scope__option">
-          <FolderMark />
+          <FolderMark icon={active.icon} size={16} trigger="none" />
           <strong><MarqueeText still>{active.label}</MarqueeText></strong>
           <PluginUiSlot name="scope.badge" scope={{ dimension: active.dimension, value: active.id }} quiet />
         </span> : <span>不归属{label}</span>}
