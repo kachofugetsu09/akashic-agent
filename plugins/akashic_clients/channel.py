@@ -290,6 +290,7 @@ class _GenerationAkashicAdapter:
             self._message_scope,
             reply_status=self._reply_status,
             plugin_events=self._follow_plugin_ui,
+            plugin_slot_events=self._follow_plugin_ui_slots,
         )
         self._web.bind_message_display(self._message_display)
         self._web.bind_steer(self)
@@ -407,6 +408,16 @@ class _GenerationAkashicAdapter:
                 await provider.follow(session_id, emit)
             except Exception:
                 logger.exception("plugin ui follow stopped: %s", session_id)
+            await asyncio.sleep(_PLUGIN_UI_RETRY_S)
+
+    async def _follow_plugin_ui_slots(self, emit: PluginUiEmit) -> None:
+        while True:
+            async with self._open_request_scope() as scope:
+                provider = cast(PluginUiProvider, scope.require(PLUGIN_UI))
+            try:
+                await provider.follow_slots(emit)
+            except Exception:
+                logger.exception("plugin ui slot follow stopped")
             await asyncio.sleep(_PLUGIN_UI_RETRY_S)
 
     def attach_runtime(self, ports: ChannelRuntimePorts) -> None:

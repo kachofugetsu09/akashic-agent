@@ -409,6 +409,28 @@ class LivePluginUiProvider:
                 _ = task.cancel()
             _ = await asyncio.gather(*tasks, return_exceptions=True)
 
+    async def follow_slots(self, emit: PluginUiEmit) -> None:
+        """Forward slot-level invalidations until cancelled or the UI owner closes."""
+
+        closed = asyncio.ensure_future(self._closed.wait())
+        changed: asyncio.Task[Literal[True]] | None = None
+        seen = dict(self._slots.slot_epochs())
+        try:
+            while not self._closed.is_set():
+                changed = asyncio.ensure_future(self._slots.slot_changed().wait())
+                current = dict(self._slots.slot_epochs())
+                for slot, epoch in sorted(current.items()):
+                    if seen.get(slot, 0) < epoch:
+                        seen[slot] = epoch
+                        await emit({"slot": slot, "epoch": epoch})
+                _ = await asyncio.wait((changed, closed), return_when=asyncio.FIRST_COMPLETED)
+                _ = changed.cancel()
+                changed = None
+        finally:
+            for waiter in (closed, changed):
+                if waiter is not None:
+                    _ = waiter.cancel()
+
     # 当前 Root 下注册了 follow、已 ACTIVE 且 available 的插件，与目录可见条件一致，并报告是否有 available 回调出错；
     # UI owner 已失效时返回 None。
     async def _follow_bindings(self) -> tuple[dict[str, PluginUiBinding], bool] | None:

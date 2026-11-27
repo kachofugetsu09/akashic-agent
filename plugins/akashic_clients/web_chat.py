@@ -215,6 +215,7 @@ class WebChatChannel:
         self._session_activity: Callable[[], AsyncGenerator[dict[str, object], None]] | None = None
         self._message_display: MessageDisplayReader | None = None
         self._plugin_events: Callable[[str, PluginUiEmit], Coroutine[Any, Any, None]] | None = None
+        self._plugin_slot_events: Callable[[PluginUiEmit], Coroutine[Any, Any, None]] | None = None
         self._followers: dict[WebSocket, tuple[str, asyncio.Task[None]]] = {}
         self._stopping = False
         self._presentation_subscription: StreamSubscription | None = None
@@ -246,6 +247,7 @@ class WebChatChannel:
         *,
         reply_status: Callable[[str], AsyncGenerator[dict[str, object], None]] | None = None,
         plugin_events: Callable[[str, PluginUiEmit], Coroutine[Any, Any, None]] | None = None,
+        plugin_slot_events: Callable[[PluginUiEmit], Coroutine[Any, Any, None]] | None = None,
     ) -> None:
         """Bind a request scope factory instead of retaining a host provider."""
 
@@ -264,6 +266,10 @@ class WebChatChannel:
             if self._plugin_events is not None and self._plugin_events != plugin_events:
                 raise RuntimeError("Web plugin events reader 不允许替换")
             self._plugin_events = plugin_events
+        if plugin_slot_events is not None:
+            if self._plugin_slot_events is not None and self._plugin_slot_events != plugin_slot_events:
+                raise RuntimeError("Web plugin slot events reader 不允许替换")
+            self._plugin_slot_events = plugin_slot_events
 
     @asynccontextmanager
     async def _open_message_catalog(self) -> AsyncIterator[MessageCatalog]:
@@ -505,6 +511,11 @@ class WebChatChannel:
         try:
             async with asyncio.TaskGroup() as tasks:
                 metadata_task = tasks.create_task(self._follow_metadata(websocket)) if watch_sessions else None
+                slot_events_task = (
+                    tasks.create_task(self._follow_plugin_slots(websocket))
+                    if watch_sessions and self._plugin_slot_events is not None
+                    else None
+                )
                 activity = None if self._session_activity is None else tasks.create_task(
                     self._send_session_activity(websocket))
                 try:
@@ -522,6 +533,8 @@ class WebChatChannel:
                 finally:
                     if metadata_task is not None:
                         metadata_task.cancel()
+                    if slot_events_task is not None:
+                        slot_events_task.cancel()
                     await self._cancel_follow(websocket)
                     if activity is not None:
                         activity.cancel()
@@ -536,6 +549,13 @@ class WebChatChannel:
         async with aclosing(changes):
             async for epoch in changes:
                 await websocket.send_json({"type": "sessions.changed", "version": 2, "catalog_epoch": epoch})
+
+    async def _follow_plugin_slots(self, websocket: WebSocket) -> None:
+        """连接级插件插槽失效通知；只发槽位与单调序号，客户端据此按需重读。"""
+        assert self._plugin_slot_events is not None
+        async def send_slot_event(frame: dict[str, object]) -> None:
+            await websocket.send_json({"type": "plugin_ui.slot_invalidated", **frame})
+        await self._plugin_slot_events(send_slot_event)
     async def _send_session_activity(self, websocket: WebSocket) -> None:
         """只发送变化的摘要；连接断开后由连接 scope 取消并排空。"""
         assert self._session_activity is not None

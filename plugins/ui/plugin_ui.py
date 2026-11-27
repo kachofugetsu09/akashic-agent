@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import inspect
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import cast
 from uuid import uuid4
@@ -13,7 +13,7 @@ from uuid import uuid4
 from agent.plugin_composition import Context, CompositionError, Effect, FiberState
 from plugins.ui.contract import (
     UI_SLOTS, PLUGIN_UI_SLOTS, PluginUiAsset, PluginUiBinding, PluginUiDefinition,
-    PluginUiDescriptor, PluginUiFollowHandler, PluginUiQueryHandler,
+    PluginUiDescriptor, PluginUiFollowHandler, PluginUiQueryHandler, PluginUiSlot,
 )
 
 
@@ -24,6 +24,8 @@ class PluginUiSlots:
         self._ctx = ctx
         self._registrations: dict[str, PluginUiBinding] = {}
         self._changed = asyncio.Event()
+        self._slot_epochs: dict[str, int] = {}
+        self._slot_changed = asyncio.Event()
 
     def contributors(self) -> tuple[Context, ...]:
         self._ctx._require_current()  # pyright: ignore[reportPrivateUsage]
@@ -38,6 +40,28 @@ class PluginUiSlots:
 
     def changed(self) -> asyncio.Event:
         return self._changed
+
+    def slot_epochs(self) -> Mapping[str, int]:
+        return dict(self._slot_epochs)
+
+    def slot_changed(self) -> asyncio.Event:
+        return self._slot_changed
+
+    def invalidate_slot(self, ctx: Context, slot: PluginUiSlot) -> None:
+        """Record a slot-level invalidation for one registered plugin owner."""
+        ctx._require_current()  # pyright: ignore[reportPrivateUsage]
+        provider_token = self.root_instance_token
+        if ctx.root_instance_token is not provider_token or ctx.require(UI_SLOTS) is not self:
+            raise ValueError("Plugin UI 失效通知不能跨实际 Root 或 provider")
+        if not isinstance(slot, str) or slot not in PLUGIN_UI_SLOTS:
+            raise ValueError(f"Plugin UI slot 无效: {slot}")
+        owner = ctx.runtime.plugin_id
+        binding = self._registrations.get(owner)
+        if binding is None or binding.context is not ctx or slot not in binding.descriptor.slots:
+            raise ValueError(f"插件 {owner} 未登记 slot: {slot}")
+        self._slot_epochs[slot] = self._slot_epochs.get(slot, 0) + 1
+        self._slot_changed.set()
+        self._slot_changed = asyncio.Event()
 
     # 唤醒等待者并换一个新事件，下一次变化重新等待。
     def _notify(self) -> None:
