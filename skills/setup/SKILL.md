@@ -16,7 +16,7 @@ description: 替用户配置功能或插件（值班、Telegram、记忆、联�
 ## 2. 读当前设置
 
 - `self settings form list`：`forms` 是带字段说明的表单，`configurations` 是其余可读写设置的插件 ID。
-- `self settings show --key <插件 ID>`：当前值、默认值和 `expected_input`。保存时必须带上这个值，读完别人又改过时保存会被拒，重读再保存即可。
+- `self settings show --key <插件 ID>`：当前值（`values`）、默认值（`defaults`）、是否就绪，以及 `input_ref`。保存时把 `input_ref` 作为 `--expected_input` 传回；读完别人又改过时保存会被拒，重读再保存即可。
 
 ## 3. 只问自己定不了的
 
@@ -28,7 +28,7 @@ description: 替用户配置功能或插件（值班、Telegram、记忆、联�
 
 ## 4. 保存并确认生效
 
-- `self settings save --key <插件 ID> --request_id <新 UUID> --expected_input <读到的值> --values '<JSON>'`，只写要改的字段。
+- `self settings save --key <插件 ID> --request_id <新 UUID> --expected_input <读到的 input_ref> --values '<JSON>'`，只写要改的字段。
 - 保存后重新读 `self onboarding status`（或 `settings show` 的 `ready`），确认真的就绪再告诉用户已经设好。没就绪时如实说明 `reason`，不要说「已完成」。
 
 ## 常见配置

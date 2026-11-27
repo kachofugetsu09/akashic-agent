@@ -120,11 +120,11 @@ async def register_ops(ctx: Context, forms: SettingsForms, ui: UiRegistry) -> No
     specs = (
         OperationSpec("plugin_settings.forms", ("settings", "form", "list"), "列出可读写设置的插件：声明式表单（带字段）与通用设置", list_forms,
                       mirrors=("http:plugin_settings:GET /api/dashboard/plugin_settings/forms",)),
-        OperationSpec("plugin_settings.read", ("settings", "show"), "读取一个插件的当前设置与 expected_input", _read(forms, ui, False), (_KEY,),
+        OperationSpec("plugin_settings.read", ("settings", "show"), "读取一个插件的当前设置；保存时把其中的 input_ref 作为 expected_input", _read(forms, ui, False), (_KEY,),
                       mirrors=("http:plugin_settings:GET /api/dashboard/plugin_settings/{key}/config",)),
         OperationSpec("plugin_settings.save", ("settings", "save"), "保存一个插件的设置（secret 字段只写入，不回显）", _save(forms, ui), (
             _KEY, _REQUEST_ID,
-            OptionSpec("expected_input", "settings show 返回的 expected_input（64 位十六进制）", required=True),
+            OptionSpec("expected_input", "settings show 返回的 input_ref（64 位十六进制）", required=True),
             OptionSpec("values", "字段值 JSON 对象；空值回到默认", "json", required=True),
         ), mirrors=("http:plugin_settings:POST /api/dashboard/plugin_settings/{key}/config",)),
         OperationSpec("plugin_settings.receipt", ("settings", "receipt"), "读取一次设置保存的回执", _read(forms, ui, True),
