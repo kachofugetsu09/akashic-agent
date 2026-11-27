@@ -2202,11 +2202,12 @@ button.tool-step-summary:active {
 .message-info {
   display: inline-flex;
   min-width: 0;
+  min-height: 24px;
   align-items: center;
   gap: 4px;
   border: 0;
   border-radius: var(--ak-radius-xs);
-  padding: 2px 4px;
+  padding: 0 4px;
   margin-inline: -4px;
   color: inherit;
   background: transparent;
