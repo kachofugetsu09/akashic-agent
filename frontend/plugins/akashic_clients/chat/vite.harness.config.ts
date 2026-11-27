@@ -57,6 +57,8 @@ export default defineConfig({
     alias: {
       "@": resolve(here, "src"),
       mermaid: resolve(here, "src", "mermaid-stub.ts"),
+      // 夹具没有外壳运行时（WebUi）；聊天在夹具里只用到浮层判断，直接打包同一份实现。
+      "@akashic/web-ui-v1": resolve(repoRoot, "frontend", "plugins", "ui", "dashboard", "src", "design", "overlay.ts"),
     },
   },
   worker: { format: "es" },
