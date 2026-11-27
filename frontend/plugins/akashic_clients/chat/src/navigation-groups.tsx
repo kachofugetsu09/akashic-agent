@@ -1,7 +1,7 @@
 import { ChevronDown, ChevronRight, Folder, FolderPlus, Plus, SlidersHorizontal, Sparkles } from "lucide-react";
-import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { Component, Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import type { NavigationControls, NavigationForm, NavigationFormControls, NavigationGroup } from "@akashic/chat-ui-v1";
+import type { NavigationControls, NavigationForm, NavigationFormControls, NavigationGroup, NavigationGroupView } from "@akashic/chat-ui-v1";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { GroupIcon } from "./group-icon";
 import { NavigationRowMenu, type NavigationRowAction } from "./navigation-row-menu";
@@ -9,9 +9,23 @@ import { IconSwap } from "./icon-swap";
 import { SessionStatusLabel, SessionStatusMark, summarizeStatus, type SessionStatus } from "./session-status-mark";
 import { MarqueeText } from "./marquee-text";
 import { followingInView, motionTiming, settle, slideClose, slideOpen } from "./motion";
-import { NavigationGroupMount, PluginUiSlot, navigationGroupSources, navigationGroupsPending, onPageShown, onPluginUiSlotInvalidated, usePluginUiCatalogVersion, type NavigationGroupSource } from "./plugin-ui-runtime";
+import { NavigationGroupMount, PluginUiSlot, navigationGroupSources, navigationGroupsPending, onPageShown, onPluginUiSlotInvalidated, useIconProvider, usePluginUiCatalogVersion, type NavigationGroupSource } from "./plugin-ui-runtime";
 import { createScopeFields } from "./scope-fields";
 import { useScopeMeta } from "./scope-meta-store";
+
+/** 隔离插件自包含导航渲染回调的局部错误边界：插件视图出错时自动回退宿主默认外观，不影响导航面。 */
+class PluginViewBoundary extends Component<
+  { fallback: ReactNode; children: ReactNode },
+  { failed: boolean }
+> {
+  state = { failed: false };
+  static getDerivedStateFromError() { return { failed: true }; }
+  render() { return this.state.failed ? this.props.fallback : this.props.children; }
+}
+
+function InvokeView({ render }: { render: () => ReactNode }): ReactNode {
+  return render();
+}
 
 /** 会话所在的分组：会话维度名与它的一个取值。 */
 export interface GroupRef {
@@ -253,6 +267,7 @@ export function GroupNavigation({
     {groups.map((group) => {
       const ref = { dimension: provider.dimension, id: group.id };
       return <GroupNavigationRow key={group.id} groupRef={ref} group={group}
+        viewOwnerKey={section.source.key} groupView={section.source.view}
         items={sessionsByGroup.get(groupKey(ref)) ?? []}
         open={searching || expanded.has(groupKey(ref))}
         active={active?.dimension === ref.dimension && active.id === ref.id}
@@ -274,15 +289,18 @@ export function FolderMark({ icon, color, size = 18, trigger = "parent" }: {
   return <GroupIcon name={icon} color={color} size={size} trigger={trigger} />;
 }
 
-function GroupHoverCard({ anchor, groupRef, group, hasActions, portalTarget }: {
+function GroupHoverCard({ anchor, groupRef, group, hasActions, portalTarget, viewOwnerKey, groupView }: {
   anchor: DOMRect;
   groupRef: GroupRef;
   group: NavigationGroup;
   hasActions: boolean;
   portalTarget: Element;
+  viewOwnerKey?: string;
+  groupView?: NavigationGroupView;
 }) {
   // 直接订阅共享 scope.meta 协调器：浮卡打开期间若数据抵达或失效重核，原地刷新，不依赖刮 DOM。
   const records = useScopeMeta({ dimension: groupRef.dimension, value: groupRef.id });
+  const loadedIconProvider = useIconProvider("kubai-line");
   const cardWidth = 264;
   const gap = 10;
   const margin = 12;
@@ -292,26 +310,37 @@ function GroupHoverCard({ anchor, groupRef, group, hasActions, portalTarget }: {
     : Math.max(margin, Math.min(anchor.left, window.innerWidth - cardWidth - margin));
   const estHeight = 48 + records.length * 54 + (group.detail ? 44 : 0) + (hasActions ? 36 : 0);
   const top = Math.max(margin, Math.min(anchor.top - 4, window.innerHeight - estHeight - margin));
-  return createPortal(
-    <div className="group-hover-card" role="tooltip" style={{ left, top }}>
-      <div className="group-hover-card__head">
-        <span className="group-hover-card__icon">
-          <GroupIcon name={group.icon} color={group.color} size={16} trigger="none" />
-        </span>
-        <strong className="group-hover-card__title">{group.label}</strong>
+  const defaultBody = <>
+    <div className="group-hover-card__head">
+      <span className="group-hover-card__icon">
+        <GroupIcon name={group.icon} color={group.color} size={16} trigger="none" />
+      </span>
+      <strong className="group-hover-card__title">{group.label}</strong>
+    </div>
+    {records.map(({ key, item }) => <div key={key} className="group-hover-card__section">
+      <div className="group-hover-card__kicker">
+        <span className={`group-hover-card__dot group-hover-card__dot--${item.tone ?? "muted"}`} aria-hidden="true" />
+        <span className="group-hover-card__policy">{item.label}</span>
       </div>
-      {records.map(({ key, item }) => <div key={key} className="group-hover-card__section">
-        <div className="group-hover-card__kicker">
-          <span className={`group-hover-card__dot group-hover-card__dot--${item.tone ?? "muted"}`} aria-hidden="true" />
-          <span className="group-hover-card__policy">{item.label}</span>
-        </div>
-        {item.description ? <p className="group-hover-card__desc">{item.description}</p> : null}
-      </div>)}
-      {group.detail ? <div className="group-hover-card__section group-hover-card__dir">
-        <code className="group-hover-card__path">{group.detail}</code>
-      </div> : null}
-      {hasActions ? <div className="group-hover-card__foot">右键或点行尾菜单查看更多操作</div> : null}
-    </div>,
+      {item.description ? <p className="group-hover-card__desc">{item.description}</p> : null}
+    </div>)}
+    {group.detail ? <div className="group-hover-card__section group-hover-card__dir">
+      <code className="group-hover-card__path">{group.detail}</code>
+    </div> : null}
+    {hasActions ? <div className="group-hover-card__foot">右键或点行尾菜单查看更多操作</div> : null}
+  </>;
+  const customBody = groupView?.renderHoverCard ? (
+    <PluginViewBoundary key={viewOwnerKey ?? "group-hover"} fallback={defaultBody}>
+      <InvokeView render={() => groupView.renderHoverCard?.({
+        group,
+        meta: records.map((r) => r.item),
+        hasActions,
+        iconProvider: loadedIconProvider?.provider ?? null,
+      }) ?? defaultBody} />
+    </PluginViewBoundary>
+  ) : defaultBody;
+  return createPortal(
+    <div className="group-hover-card" role="tooltip" style={{ left, top }}>{customBody}</div>,
     portalTarget,
   );
 }
@@ -332,11 +361,13 @@ export function groupFormActions(source: NavigationGroupSource, group: Navigatio
 
 /** 同一个分组行用于置顶和分区，展开状态由导航层按 groupKey 持有。 */
 export function GroupNavigationRow({
-  groupRef, group, items, open, active, pendingSessionId, onToggle, onNewChat,
+  groupRef, group, viewOwnerKey, groupView, items, open, active, pendingSessionId, onToggle, onNewChat,
   onSelectSession, onPrefetchSession, actions, searching = false, renderSession,
 }: {
   groupRef: GroupRef;
   group: NavigationGroup;
+  viewOwnerKey?: string;
+  groupView?: NavigationGroupView;
   items: GroupSessionItem[];
   open: boolean;
   active: boolean;
@@ -438,6 +469,13 @@ export function GroupNavigationRow({
   const [hoverCard, setHoverCard] = useState<{ anchor: DOMRect; portalTarget: Element } | null>(null);
   // 提前登记到页面级 scope.meta 协调器，同一批分组合成一次批量查询。
   useScopeMeta({ dimension: groupRef.dimension, value: groupRef.id });
+  const loadedIconProvider = useIconProvider("kubai-line");
+  const defaultLeading = <FolderMark icon={group.icon} color={group.color} />;
+  const leadingNode = groupView?.renderLeading ? (
+    <PluginViewBoundary key={viewOwnerKey ?? "group-leading"} fallback={defaultLeading}>
+      <InvokeView render={() => groupView.renderLeading?.({ group, iconProvider: loadedIconProvider?.provider ?? null }) ?? defaultLeading} />
+    </PluginViewBoundary>
+  ) : defaultLeading;
   const clearHoverCard = useCallback(() => {
     if (hoverTimerRef.current !== null) {
       window.clearTimeout(hoverTimerRef.current);
@@ -488,7 +526,7 @@ export function GroupNavigationRow({
         onPointerDown={clearHoverCard}
         onContextMenu={clearHoverCard}
         aria-expanded={open} aria-disabled={searching || undefined}>
-        <IconSwap state={Boolean(collapsedStatus)} a={<FolderMark icon={group.icon} color={group.color} />}
+        <IconSwap state={Boolean(collapsedStatus)} a={leadingNode}
           b={<span className="navigation-group__icon"><SessionStatusMark status={collapsedStatus ?? lastStatus} /></span>} />
         <SessionStatusLabel status={collapsedStatus} />
         <span className="navigation-group__name"><MarqueeText>{group.label}</MarqueeText></span>
@@ -502,6 +540,8 @@ export function GroupNavigationRow({
         group={group}
         hasActions={Boolean(actions && actions.length > 0)}
         portalTarget={hoverCard.portalTarget}
+        viewOwnerKey={viewOwnerKey}
+        groupView={groupView}
       /> : null}
       {/* 桌面端悬停或聚焦项目行时浮现，触屏常驻：无需先展开文件夹即可一步在该项目新建对话。 */}
       <button type="button" className="navigation-section__icon navigation-group__new-chat" aria-label={`在 ${group.label} 中新建对话`}

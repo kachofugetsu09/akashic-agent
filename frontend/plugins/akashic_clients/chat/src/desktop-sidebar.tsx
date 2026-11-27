@@ -690,6 +690,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
         {destination?.value ? <div className="chat-sidebar__brand-row chat-sidebar__brand-row--destination">
           <IdentityDestinationRow destination={destination.value} mark={brandMask} status={destinationRow?.status}
             updatedAt={destinationRow?.updatedAt} active={Boolean(destinationId) && activeSessionId === destinationId}
+            viewOwnerKey={destination.source?.key} destinationView={destination.source?.view}
             actions={(destination.source?.provider.actions ?? []).map(({ label, form }) => ({
               label, icon: <ArrowUpToLine size={18} aria-hidden="true" />, onSelect: () => openDestinationForm(form) }))}
             onOpen={() => destinationId ? onSelectSession(destinationId) : destination.open()} />
@@ -769,6 +770,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
             const known = knownGroups.get(groupKey(ref));
             if (known && groups) return visibleGroup(groupKey(ref), known.group.label) ? <GroupNavigationRow
               key={groupKey(ref)} groupRef={ref} group={known.group}
+              viewOwnerKey={known.section.source.key} groupView={known.section.source.view}
               items={sessionsByGroup.get(groupKey(ref)) ?? []}
               open={searching || navigationPins.expandedGroups.has(groupKey(ref))}
               active={activeGroupKey === groupKey(ref)} pendingSessionId={pendingSessionId}

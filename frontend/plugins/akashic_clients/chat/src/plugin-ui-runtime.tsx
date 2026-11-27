@@ -10,7 +10,7 @@ import { openInWorkbench, subscribeWorkbenchIntents, workbenchAccepts } from "./
 import { selectMessages } from "./message-selection";
 import { readToolIcon } from "./message-timeline";
 
-import type { ComposerControls, ComposerSuggestProvider, DestinationControls, DestinationForm, HeaderMetaControls, IconProvider, NavigationControls, NavigationDestinationsProvider, NavigationForm, NavigationFormControls, NavigationGroupsProvider, NavigationNotice, PluginUiDefinition, PluginUiHostContext, PluginUiMountSlotName, PluginUiQueryOptions, PluginUiSlotFacts, PluginUiSlotName, ScopeFieldControls, ScopeMetaProvider, SidebarPanelControls, SidebarPanelProvider, ToolIconFacts, ToolIconProvider, ToolIconSpec, ToolSummaryFacts, ToolSummaryProvider, ToolTaskSummary } from "@akashic/chat-ui-v1";
+import type { ComposerControls, ComposerSuggestProvider, DestinationControls, DestinationForm, HeaderMetaControls, IconProvider, NavigationControls, NavigationDestinationView, NavigationDestinationsProvider, NavigationForm, NavigationFormControls, NavigationGroupView, NavigationGroupsProvider, NavigationNotice, PluginUiDefinition, PluginUiHostContext, PluginUiMountSlotName, PluginUiQueryOptions, PluginUiSlotFacts, PluginUiSlotName, ScopeFieldControls, ScopeMetaProvider, SidebarPanelControls, SidebarPanelProvider, ToolIconFacts, ToolIconProvider, ToolIconSpec, ToolSummaryFacts, ToolSummaryProvider, ToolTaskSummary } from "@akashic/chat-ui-v1";
 
 // 插槽合同由 @akashic/chat-ui-v1 发布，宿主与插件共用同一份类型。
 export type { ComposerSuggestProvider, ComposerSuggestion, PluginUiContext, PluginUiDefinition, PluginUiQueryOptions, PluginUiRenderer, PluginUiSlotName } from "@akashic/chat-ui-v1";
@@ -484,7 +484,33 @@ function parseDefinition(value: unknown, plugin: PluginUiCatalogItem): PluginUiD
   if (declaredSlots !== [...plugin.slots].sort().join("|")) {
     throw new Error(`插件界面 slots 与 catalog 不一致: ${plugin.id}`);
   }
-  return { slots: merged as PluginUiDefinition["slots"] };
+  const rawNavViews = (value as { navigationViews?: unknown }).navigationViews;
+  const navigationViews = parseNavigationViews(rawNavViews);
+  return {
+    slots: merged as PluginUiDefinition["slots"],
+    ...(navigationViews ? { navigationViews } : {}),
+  };
+}
+
+function parseNavigationViews(value: unknown): PluginUiDefinition["navigationViews"] | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const raw = value as { groups?: unknown; destinations?: unknown };
+  const out: NonNullable<PluginUiDefinition["navigationViews"]> = {};
+  if (raw.groups && typeof raw.groups === "object" && !Array.isArray(raw.groups)) {
+    const g = raw.groups as Partial<Record<keyof NavigationGroupView, unknown>>;
+    const groupView: NavigationGroupView = {};
+    if (typeof g.renderLeading === "function") groupView.renderLeading = g.renderLeading as NavigationGroupView["renderLeading"];
+    if (typeof g.renderHoverCard === "function") groupView.renderHoverCard = g.renderHoverCard as NavigationGroupView["renderHoverCard"];
+    if (groupView.renderLeading || groupView.renderHoverCard) out.groups = groupView;
+  }
+  if (raw.destinations && typeof raw.destinations === "object" && !Array.isArray(raw.destinations)) {
+    const d = raw.destinations as Partial<Record<keyof NavigationDestinationView, unknown>>;
+    const destView: NavigationDestinationView = {};
+    if (typeof d.renderLeading === "function") destView.renderLeading = d.renderLeading as NavigationDestinationView["renderLeading"];
+    if (typeof d.renderContent === "function") destView.renderContent = d.renderContent as NavigationDestinationView["renderContent"];
+    if (destView.renderLeading || destView.renderContent) out.destinations = destView;
+  }
+  return out.groups || out.destinations ? out : undefined;
 }
 
 function isScopeMetaProvider(value: unknown): value is ScopeMetaProvider {
@@ -679,6 +705,7 @@ export interface NavigationGroupSource {
   pluginId: string;
   pluginRevision: string;
   provider: NavigationGroupsProvider;
+  view?: NavigationGroupView;
   context(signal: AbortSignal): Pick<PluginUiHostContext, "query">;
 }
 
@@ -749,12 +776,17 @@ export function navigationGroupSources(): NavigationGroupSource[] {
   return catalog.plugins.flatMap((plugin) => {
     const loaded = definitions.get(plugin.id);
     const provider = loaded?.revision === plugin.revision ? loaded.definition.slots["navigation.groups"] : undefined;
-    return provider ? [groupSource(plugin, provider)] : [];
+    const view = loaded?.revision === plugin.revision ? loaded.definition.navigationViews?.groups : undefined;
+    return provider ? [groupSource(plugin, provider, view)] : [];
   });
 }
 
-function groupSource(plugin: PluginUiCatalogItem, provider: NavigationGroupsProvider): NavigationGroupSource {
-  return { key: `${plugin.id}:${plugin.revision}`, pluginId: plugin.id, pluginRevision: plugin.revision, provider,
+function groupSource(
+  plugin: PluginUiCatalogItem,
+  provider: NavigationGroupsProvider,
+  view?: NavigationGroupView,
+): NavigationGroupSource {
+  return { key: `${plugin.id}:${plugin.revision}`, pluginId: plugin.id, pluginRevision: plugin.revision, provider, view,
     context: (signal) => ({
       query: (method, payload = {}) => queryWebPluginUi({
         pluginId: plugin.id, pluginRevision: plugin.revision, method, payload, slot: "navigation.groups", signal,
@@ -789,6 +821,7 @@ export interface DestinationSource {
   pluginId: string;
   pluginRevision: string;
   provider: NavigationDestinationsProvider;
+  view?: NavigationDestinationView;
   context(signal: AbortSignal): Pick<PluginUiHostContext, "query">;
 }
 
@@ -798,7 +831,8 @@ export function identityDestinationSource(): DestinationSource | null {
     const loaded = definitions.get(plugin.id);
     const provider = loaded?.revision === plugin.revision ? loaded.definition.slots["navigation.destinations"] : undefined;
     if (provider?.placement !== "identity") continue;
-    return { key: `${plugin.id}:${plugin.revision}`, pluginId: plugin.id, pluginRevision: plugin.revision, provider,
+    const view = loaded?.revision === plugin.revision ? loaded.definition.navigationViews?.destinations : undefined;
+    return { key: `${plugin.id}:${plugin.revision}`, pluginId: plugin.id, pluginRevision: plugin.revision, provider, view,
       context: (signal) => ({
         query: (method, payload = {}) => queryWebPluginUi({
           pluginId: plugin.id, pluginRevision: plugin.revision, method, payload, slot: "navigation.destinations", signal,
