@@ -15,7 +15,7 @@ import { DesktopComposer, type ComposerApi } from "./desktop-composer";
 import { onWorkbenchQuote } from "./shell-workbench";
 import { DesktopConversationMessages, DesktopTimelineMessages, messageDayKey, withoutLeadingOrphanResults } from "./desktop-conversation";
 import { MediaGalleryViewer, ReplyActivityView } from "./message-view";
-import { MessageSquarePlus } from "lucide-react";
+import { MessageSquarePlus, PanelLeftOpen } from "lucide-react";
 import { ThreadFind, useThreadFind } from "./thread-find";
 import { MessageSelectionLayer } from "./message-selection";
 import { CompactNavigation } from "./compact-navigation";
@@ -134,7 +134,7 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
 
   return (
     <main className="chat-shell">
-      <div className="chat-shell-body" ref={shellRef} style={rail.style}>
+      <div className="chat-shell-body" ref={shellRef} style={rail.style} data-rail-collapsed={rail.collapsed || undefined}>
         <DesktopSidebar
             surface={surface} sessions={sidebarSessions}
             activeSessionId={activeSessionId} pendingSessionId={pendingSessionId} chatReady={chatReady}
@@ -151,6 +151,11 @@ export function DesktopChatView({ controller }: DesktopChatViewProps) {
 
         <section className={`chat-main${conversationLayout ? "" : " is-empty"}`}>
         <header className={`conversation-heading${!activeSessionId && !activeGroup ? " is-blank" : ""}`}>
+          {/* 宽屏侧栏收起后，展开入口落在标题行最前；紧凑外壳由样式隐藏，用抽屉。 */}
+          {rail.collapsed ? <button type="button" className="conversation-heading__rail" aria-label="展开侧栏" data-tip="展开侧栏"
+            onClick={() => rail.setCollapsed(false)}>
+            <PanelLeftOpen size={20} strokeWidth={1.75} aria-hidden="true" />
+          </button> : null}
           <CompactNavigation
             surface={surface} sessions={sidebarSessions}
             activeSessionId={activeSessionId} pendingSessionId={pendingSessionId} chatReady={chatReady}

@@ -2504,6 +2504,30 @@ form.composer:focus-within [data-slot="input-group"] {
   background: var(--ak-color-status-success);
 }
 
+/* 宽屏侧栏整列收起：对话占满；标题行最前给展开入口，新会话入口随侧栏一起挪到标题行。 */
+.chat-shell-body[data-rail-collapsed],
+.akashic-chat .chat-shell-body[data-rail-collapsed] { grid-template-columns: minmax(0, 1fr); }
+.chat-shell-body[data-rail-collapsed] > .chat-sidebar { display: none; }
+.chat-shell-body[data-rail-collapsed] .conversation-heading__new { display: inline-grid; }
+.conversation-heading__rail {
+  display: inline-grid;
+  width: 36px;
+  height: 36px;
+  flex: 0 0 auto;
+  place-items: center;
+  margin-inline-start: -8px;
+  border: 0;
+  border-radius: var(--ak-radius-sm);
+  padding: 0;
+  color: var(--chat-ink);
+  background: transparent;
+  cursor: pointer;
+}
+.conversation-heading__rail:focus-visible { background: color-mix(in oklab, var(--md-sys-color-on-surface) 6%, transparent); }
+@media (hover: hover) {
+  .conversation-heading__rail:hover { background: color-mix(in oklab, var(--md-sys-color-on-surface) 6%, transparent); }
+}
+
 /* 紧凑外壳（抽屉导航）：窄屏，或手机横屏——触屏且高度不足 30rem 时宽度虽超过 820px，常驻侧栏也会把对话挤窄。
    平板高度都在 48rem 以上，不会命中第二个条件。同一条件用于触控尺寸与矮屏规则，改动时一并修改。 */
 :where([data-chat-width~="820"], [data-chat-short]) {
@@ -2511,6 +2535,8 @@ form.composer:focus-within [data-slot="input-group"] {
   &.akashic-chat .chat-shell-body {
     grid-template-columns: minmax(0, 1fr);
   }
+
+  .chat-shell-body[data-rail-collapsed] .conversation-heading__rail { display: none; }
 
   .chat-sidebar {
     display: none;

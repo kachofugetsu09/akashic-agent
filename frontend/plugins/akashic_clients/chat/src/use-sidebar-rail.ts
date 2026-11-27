@@ -5,6 +5,7 @@ export const SIDEBAR_RAIL_MAX_REM = 26;
 export const SIDEBAR_RAIL_STEP_REM = 0.5;
 const RAIL_WIDTH_KEY = "akashic.chat.rail-width";
 const RAIL_SAMPLES_KEY = "akashic.chat.rail-samples";
+const RAIL_COLLAPSED_KEY = "akashic.chat.rail-collapsed";
 
 export interface RailSample {
   widthPx: number;
@@ -160,6 +161,14 @@ function readRailSamples(): RailSample[] {
   }
 }
 
+function readRailCollapsed(): boolean {
+  try {
+    return localStorage.getItem(RAIL_COLLAPSED_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
 function rootFontPx(): number {
   return parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
 }
@@ -181,12 +190,25 @@ export interface SidebarRailControl {
   stepBy: (deltaRem: number, widthPx: number) => void;
   /** 双击复位：移除 inline 覆盖与存储偏好。 */
   reset: () => void;
+  /** 宽屏侧栏整列收起；紧凑外壳本来就没有常驻侧栏，不受影响。 */
+  collapsed: boolean;
+  setCollapsed: (collapsed: boolean) => void;
 }
 
 /** 侧栏宽度偏好：静置时只写 --chat-rail-width 一个值；首次渲染前同步读取，挂载无回跳。 */
 export function useSidebarRail(shellRef: RefObject<HTMLDivElement | null>): SidebarRailControl {
   const [widthRem, setWidthRem] = useState<number | null>(readRailWidth);
   const [samples, setSamples] = useState<RailSample[]>(readRailSamples);
+  const [collapsed, setCollapsedState] = useState<boolean>(readRailCollapsed);
+  const setCollapsed = useCallback((next: boolean) => {
+    setCollapsedState(next);
+    try {
+      if (next) localStorage.setItem(RAIL_COLLAPSED_KEY, "1");
+      else localStorage.removeItem(RAIL_COLLAPSED_KEY);
+    } catch {
+      /* 存储禁用时只影响本次浏览。 */
+    }
+  }, []);
   const favourite = useMemo(() => favouriteRailWidth(samples), [samples]);
   const drag = useRef<{
     x: number;
@@ -352,5 +374,5 @@ export function useSidebarRail(shellRef: RefObject<HTMLDivElement | null>): Side
     ? undefined
     : { "--chat-rail-width": `${widthRem}rem` } as CSSProperties, [widthRem]);
 
-  return { widthRem, snapPointPx: favourite?.widthPx ?? null, style, dragStart, dragTo, dragEnd, stepBy, reset };
+  return { widthRem, snapPointPx: favourite?.widthPx ?? null, style, dragStart, dragTo, dragEnd, stepBy, reset, collapsed, setCollapsed };
 }

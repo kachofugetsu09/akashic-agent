@@ -5,6 +5,7 @@ import {
   PinOff,
   ArrowUpDown,
   ArrowUpToLine,
+  PanelLeftClose,
   X,
 } from "lucide-react";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
@@ -579,6 +580,10 @@ export const DesktopSidebar = memo(function DesktopSidebar({
     <button type="button" className="chat-sidebar__new" aria-label="新会话" title="新会话" onClick={newChat}>
       <MessageSquarePlus size={18} strokeWidth={1.75} aria-hidden="true" />
     </button>
+    {rail ? <button type="button" className="chat-sidebar__new" aria-label="收起侧栏" title="收起侧栏"
+      onClick={() => rail.setCollapsed(true)}>
+      <PanelLeftClose size={18} strokeWidth={1.75} aria-hidden="true" />
+    </button> : null}
   </span>;
 
   return (
