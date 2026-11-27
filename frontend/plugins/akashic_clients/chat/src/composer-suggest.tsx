@@ -273,7 +273,7 @@ function SuggestMenu({ id, items, query, sigil, active, title, empty, status, er
 }) {
   const counts = new Map<string, number>();
   items.forEach((item) => counts.set(item.token, (counts.get(item.token) ?? 0) + 1));
-  return <div id={id} className="composer-suggest" role="listbox" aria-label={title} data-escape-layer
+  return <div id={id} className="composer-suggest" role="listbox" aria-label={title}
     onMouseDown={(event) => event.preventDefault()}>
     {items.map((item, index) => <Fragment key={item.key}>
       {item.source !== items[index - 1]?.source ? <div className="composer-suggest__section">{item.group}</div> : null}

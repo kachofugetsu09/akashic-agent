@@ -24,12 +24,6 @@ export interface ConversationTab extends WebEntry {
   multiple?: boolean;
   /** 新标签页里工具名后面的一句说明，≤ 40 字符。 */
   hint?: string;
-  /**
-   * 切到（或打开）这个工具并把焦点移进去的快捷键："Ctrl+`" 或 "Mod+Shift+字母"（Mod 在 macOS 是 ⌘）。
-   * 浏览器、对话页与宿主占用的组合（Mod+Shift+A/B/C/I/J/N/O/P/Q/R/T/V/W/Z）不能用；工具之间重复时按 order 先到先得，后来者的标签保留但不响应快捷键；
-   * 标签自己处理过的按键（preventDefault）、按住不放的自动重复都不触发。宿主另占 Mod+J（开关工具区）与 Mod+\（上下分屏）。
-   */
-  shortcut?: string;
 }
 
 /** 来自用户点击的意图；宿主已校验名字、大小（payload JSON ≤ 16 KiB）与会话是当前会话。 */
@@ -102,10 +96,6 @@ export interface ConversationTabView {
    * 多开工具据此判断自己记下的“实例 → 后端资源”对应里哪些已经过期（标签已关）。
    */
   readonly instances: readonly string[];
-  /** 新开这个工具的一个实例，放在本标签之后并聚焦；只用于多开工具（如终端里新开终端的快捷键）。 */
-  openNew(): void;
-  /** 切到本组里相邻的标签（delta 为 1 或 -1）并聚焦；本组只有一个标签时返回 false，什么也不做。 */
-  cycle(delta: 1 | -1): boolean;
   /** 标签标题，≤ 80 字符，null 恢复为 label。 */
   setTitle(title: string | null): void;
   /** 标签自报的状态：busy 在标签上亮琥珀色点；detail（≤ 24 字符）只出现在提示与新标签页里，不占标签宽度。 */

@@ -121,7 +121,7 @@ interface ConversationTabView {
   当前停在新标签页时再打开工具，就地替换这一页。
 - **分屏**：最多上下两组，标签可拖到另一组（自定义 MIME `application/x-akashic-tab`）。
   布局按会话记为 `{open, focus, groups:[{tabs, active}]}`，旧的 `{tabs, active}` 照常读入。
-- **快捷键与标题栏入口**：宿主占 Mod+J（开关工具区，对话右上角工作台按钮常驻切换）与 Mod+\（上下分屏），工具自己声明各自的键：终端 Ctrl+`，文件 Mod+Shift+E（`header: true` 常驻对话标题栏），改动 Mod+Shift+G，电脑 Mod+Shift+D。
+- **标题栏入口**：工作台不设快捷键（全局只保留 Ctrl/⌘+F，见 packages/akashic-theme/design.md）；对话右上角的工作台按钮常驻切换，文件（`header: true`）常驻对话标题栏，其余工具从「+」打开。
   对话 iframe 同源，宿主直接在它的 window 上监听；有对话框或菜单打开、或按键已被 preventDefault 时不接。
   对话页的快捷键面板（Ctrl+/）多出“工作台”一组，由宿主经 `akashic.chat-tools` 下发。
 - **回复里的文件路径**：服务端绝对路径（`/…`、`~/…`）或相对路径加常见扩展名（可带 `:行号`）的行内代码显示为可点；工作台里没有工具接受 `workspace.file.open.v1` 时保持原样。

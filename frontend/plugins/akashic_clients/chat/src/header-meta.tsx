@@ -356,7 +356,7 @@ function SessionInfoPanel({ open, anchor, compact, roots, project, focus, onFocu
   return <>
     {compact ? <div className="header-meta-scrim" data-state={state} onClick={onClose} /> : null}
     <div ref={ref} className="header-meta-panel" data-akashic-private="region" data-state={state} data-sheet={compact || undefined} style={place} role="dialog" aria-modal={compact} tabIndex={-1}
-      aria-label="会话信息" data-escape-layer="" inert={!open ? true : undefined} onTransitionEnd={onTransitionEnd} onKeyDown={compact ? trapTab : undefined}>
+      aria-label="会话信息" inert={!open ? true : undefined} onTransitionEnd={onTransitionEnd} onKeyDown={compact ? trapTab : undefined}>
       {compact ? <button type="button" className="header-meta-panel__close" aria-label="关闭会话信息" onClick={onClose}>
         <X size={18} strokeWidth={1.75} aria-hidden="true" /></button> : null}
       {scope(PLACE, "项目", project)}{scope("session", "本会话")}{scope("account", "账号")}

@@ -10,7 +10,7 @@ import { DesktopChatApp } from "./desktop-chat-app";
 import { warmMessageRenderer } from "./message-view";
 import { notifyShown } from "./plugin-ui-runtime";
 import { setShellRailActions } from "./shell-rail-actions";
-import { receiveWorkbenchQuote, setHostShortcuts, setWorkbenchIntents } from "./shell-workbench";
+import { receiveWorkbenchQuote, setWorkbenchIntents } from "./shell-workbench";
 import { setPageBuild } from "./use-desktop-chat-controller";
 import { WebUiErrorBoundary } from "./webui-error-boundary";
 
@@ -41,7 +41,6 @@ function chatHandle(frame: HTMLElement): ChatHandle {
   return {
     setRailActions: setShellRailActions,
     setHeaderActions,
-    setShortcuts: setHostShortcuts,
     setWorkbenchIntents,
     quote(quote) {
       if (typeof quote === "object" && quote !== null) receiveWorkbenchQuote(quote as Record<string, unknown>);
@@ -76,12 +75,11 @@ export function mountChat(host: HTMLElement, link: ChatHostLink): MountedChat {
   const disconnect = connectHost(link);
   const stopLayout = observeChatLayout(frame);
   const stopKeys = setKeyScope(frame);
-  // 3. 宿主投影（底栏动作、工作台意图与快捷键）是模块级状态，上一次挂载可能留下：每次挂载从空开始，卸载时撤回。
+  // 3. 宿主投影（底栏动作、标题行动作与工作台意图）是模块级状态，上一次挂载可能留下：每次挂载从空开始，卸载时撤回。
   const handle = chatHandle(frame);
   const clearProjection = () => {
     handle.setRailActions([]);
     handle.setHeaderActions([]);
-    handle.setShortcuts([]);
     handle.setWorkbenchIntents([]);
   };
   clearProjection();

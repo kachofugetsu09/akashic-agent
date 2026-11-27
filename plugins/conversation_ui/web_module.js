@@ -1,5 +1,4 @@
 import { mountChat } from "@akashic/chat-app-v1";
-import { foregroundOverlay } from "@akashic/web-ui-v1";
 
 const WIDTH_KEY = "akashic.conversation.tools.width";
 const SAMPLES_KEY = "akashic.conversation.tools.samples";
@@ -94,8 +93,6 @@ function checkTabs(entries) {
       || (entry.background !== undefined && typeof entry.background !== "boolean")
       || (entry.multiple !== undefined && typeof entry.multiple !== "boolean")
       || (entry.hint !== undefined && (typeof entry.hint !== "string" || entry.hint.length > HINT_LIMIT))
-      || (entry.shortcut !== undefined && (typeof entry.shortcut !== "string"
-        || !ENTRY_SHORTCUT.test(entry.shortcut) || RESERVED_SHORTCUTS.has(entry.shortcut)))
       || (entry.accepts !== undefined && (!Array.isArray(entry.accepts)
         || entry.accepts.some((name) => typeof name !== "string" || !INTENT_NAME.test(name))))
     ) {
@@ -107,7 +104,6 @@ function checkTabs(entries) {
   const sorted = [...valid].sort((left, right) =>
     (left.order ?? 0) - (right.order ?? 0) || left.id.localeCompare(right.id));
   const ids = new Set();
-  const keys = new Map();
   const tabs = [];
   for (const entry of sorted) {
     if (ids.has(entry.id)) {
@@ -115,12 +111,6 @@ function checkTabs(entries) {
       continue;
     }
     ids.add(entry.id);
-    if (entry.shortcut !== undefined && keys.has(entry.shortcut)) {
-      console.warn(`对话工具快捷键 ${entry.shortcut} 已被 ${keys.get(entry.shortcut)} 使用，${entry.id} 不再响应它`);
-      tabs.push({ ...entry, shortcut: undefined });
-      continue;
-    }
-    if (entry.shortcut !== undefined) keys.set(entry.shortcut, entry.id);
     tabs.push(entry);
   }
   return tabs;
@@ -171,15 +161,6 @@ function saveWidth(value) {
 // Codex 20×20 右栏图标：连续超椭圆圆角，作顶栏工作台开关。
 const TOOL_ICON = '<svg viewBox="0 0 20 20" fill="none" data-icon="fill" aria-hidden="true"><path fill-rule="evenodd" clip-rule="evenodd" d="M5.5 2.877C3.476 2.877 1.835 4.518 1.835 6.542V13.459C1.835 15.483 3.476 17.124 5.5 17.124H14.5C16.524 17.124 18.165 15.483 18.165 13.459V6.542C18.165 4.518 16.524 2.877 14.5 2.877H5.5ZM11.835 15.794H5.5C4.21 15.794 3.165 14.748 3.165 13.459V6.542C3.165 5.252 4.21 4.207 5.5 4.207H11.835V15.794ZM14.5 4.207C15.79 4.207 16.835 5.252 16.835 6.542V13.459C16.835 14.748 15.79 15.794 14.5 15.794H13.165V4.207H14.5Z" fill="currentColor"/></svg>';
 
-// 工作台的快捷键列给聊天的快捷键面板。
-function toolShortcuts(entries) {
-  return [
-    { label: "打开或收起工作台", keys: shortcutKeys(HOST_SHORTCUTS.toggle) },
-    { label: "工作台上下分屏", keys: shortcutKeys(HOST_SHORTCUTS.split) },
-    ...entries.filter((entry) => entry.shortcut).map((entry) => ({ label: `打开${entry.label}`, keys: shortcutKeys(entry.shortcut) })),
-  ];
-}
-
 const NARROW_QUERY = "(max-width: 68rem)";
 const INTENT_NAME = /^[a-z][a-z0-9_-]*(\.[a-z0-9_-]+)*\.v[0-9]+$/;
 const INTENT_LIMIT = 16 * 1024;
@@ -191,13 +172,6 @@ const TITLE_LIMIT = 80;
 const DETAIL_LIMIT = 24;
 const HINT_LIMIT = 40;
 const LAUNCH_LABEL = "新标签页";
-// 工具可声明的快捷键：Ctrl+` 或 Mod+Shift+字母（Mod 在 macOS 是 ⌘）；浏览器、对话页与宿主自己占用的组合不能用
-// （含 macOS 的重做 ⌘⇧Z 与纯文本粘贴 Mod+Shift+V）。
-const ENTRY_SHORTCUT = /^(?:Ctrl\+`|Mod\+Shift\+[A-Z])$/;
-const RESERVED_SHORTCUTS = new Set([..."ABCIJNOPQRTVWZ"].map((key) => `Mod+Shift+${key}`));
-const HOST_SHORTCUTS = { toggle: "Mod+J", split: "Mod+\\" };
-const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform);
-const OVERLAY_ROLES = "[role='dialog'], [role='alertdialog'], [role='menu'], [role='listbox'], [role='combobox'][aria-expanded='true']";
 const FOCUS_FIRST = ["textarea, [contenteditable='true']", "input, select, button, a[href], [tabindex]:not([tabindex='-1'])"];
 const ICONS = {
   close: '<path d="M18 6 6 18M6 6l12 12"/>',
@@ -209,30 +183,6 @@ const ICONS = {
   chevronRight: '<path d="m9 18 6-6-6-6"/>',
   chevronDown: '<path d="m6 9 6 6 6-6"/>',
 };
-
-// 按键换成快捷键写法（与 entry.shortcut 同一套）；输入法组合中、带 Alt 的不算。
-function shortcutOf(event) {
-  if (event.altKey || event.isComposing) return null;
-  if (event.code === "Backquote" && event.ctrlKey && !event.metaKey && !event.shiftKey) return "Ctrl+`";
-  if (!(IS_MAC ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey)) return null;
-  const key = event.key.length === 1 ? event.key.toUpperCase() : "";
-  if (!event.shiftKey && (key === "J" || key === "\\")) return `Mod+${key}`;
-  return event.shiftKey && /^[A-Z]$/.test(key) ? `Mod+Shift+${key}` : null;
-}
-
-// 按键来自浮层（对话框、菜单、下拉列表、展开的组合框）内部，或页面上开着模态对话框、菜单时，快捷键让给浮层。
-// 工作台面板里常驻的列表（如改动的文件列表）不算浮层：面板里的按键由标签自己 preventDefault 认领。
-function overlayOwnsKey(event, panel) {
-  const target = event.target;
-  const overlay = typeof target?.closest === "function" ? target.closest(OVERLAY_ROLES) : null;
-  if (overlay && !(overlay.getAttribute("role") === "listbox" && panel.contains(overlay))) return true;
-  return foregroundOverlay(target?.ownerDocument ?? document) !== null;
-}
-
-// 给 chat 的快捷键面板用：Mod 换成本平台的写法。
-function shortcutKeys(spec) {
-  return spec.split("+").map((key) => (key === "Mod" ? (IS_MAC ? "⌘" : "Ctrl") : key));
-}
 
 function svgIcon(name) {
   return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]}</svg>`;
@@ -603,8 +553,6 @@ function createTabLifecycle(tools, isActive, currentSession, hooks) {
       setIndicator: (indicator) => hooks.indicator(record, indicator),
       onClose: (listener) => subscribe("close", record.key, listener, null),
       get instances() { return hooks.instances(record); },
-      openNew: () => hooks.openNew(record),
-      cycle: (delta) => hooks.cycle(record, delta),
     };
   }
 
@@ -723,7 +671,6 @@ function mountTools(root, chat, tools, entries) {
   };
   const handled = new Set();
   const revealed = new Set();
-  const shortcuts = new Map(entries.filter((entry) => entry.shortcut).map((entry) => [entry.shortcut, entry]));
   const allTabs = () => state.groups.flatMap((group) => group.tabs);
   const groupOf = (record) => state.groups.find((group) => group.tabs.includes(record)) ?? null;
   const focusedGroup = () => state.groups[state.focus] ?? state.groups[0];
@@ -759,20 +706,6 @@ function mountTools(root, chat, tools, entries) {
       update();
     },
     instances: (record) => allTabs().filter((item) => item.entry === record.entry && item.instance).map((item) => item.instance),
-    // 标签自己的“新开”：同一工具的新实例放在它后面，并把焦点移进去。
-    openNew(record) {
-      if (!record.entry?.multiple) throw new Error("openNew 只用于可多开的工具");
-      const opened = openTool(record.entry, null, false, groupOf(record) ?? focusedGroup());
-      if (opened) focusInto(opened);
-    },
-    // 在本组里切到相邻的标签（任何工具），焦点跟过去；只有一个标签时不动。
-    cycle(record, delta) {
-      const group = groupOf(record);
-      if (!group || group.tabs.length < 2 || (delta !== 1 && delta !== -1)) return false;
-      const next = group.tabs[(group.tabs.indexOf(record) + delta + group.tabs.length) % group.tabs.length];
-      if (activate(next.key)) focusInto(next);
-      return true;
-    },
   });
   let disposed = false;
   let dragging = null;
@@ -867,7 +800,7 @@ function mountTools(root, chat, tools, entries) {
     chrome.maximize.setAttribute("aria-pressed", String(state.maximized));
     chrome.maximize.innerHTML = svgIcon(state.maximized ? "collapse" : "expand");
     const split = state.groups.length > 1;
-    const splitLabel = `${split ? "取消分屏" : "上下分屏"}（${shortcutKeys(HOST_SHORTCUTS.split).join("+")}）`;
+    const splitLabel = split ? "取消分屏" : "上下分屏";
     // 先显示要用的组再搬面板，搬完再隐藏不用的组：面板只在可见的容器之间搬，滚动位置不丢。
     if (split) chrome.groups[1].root.hidden = false;
     for (const record of allTabs()) placePanel(record);
@@ -911,7 +844,7 @@ function mountTools(root, chat, tools, entries) {
         }
         const action = shell.clusterActionBtn;
         action.textContent = `成组 · ${selectedCount}`;
-        action.title = `将选中的 ${selectedCount} 个标签合成可折叠组 (${IS_MAC ? "⌘G" : "Ctrl+G"})`;
+        action.title = `将选中的 ${selectedCount} 个标签合成可折叠组`;
         action.onclick = () => groupSelectedIn(group);
         items.push(action);
       }
@@ -991,15 +924,14 @@ function mountTools(root, chat, tools, entries) {
   // 开关按钮只留在收起态/窄屏态的聊天顶栏里，避免左右重复出现工作台开关。
   function updateToggle() {
     const pending = [...new Set([...records.singles(), ...allTabs()])].find((record) => record.attention || record.indicator?.busy);
-    const keys = shortcutKeys(HOST_SHORTCUTS.toggle).join("+");
     const sharedDesktopHeader = state.open && !narrow.matches && !state.maximized;
     if (sharedDesktopHeader) {
       chat.handle.setHeaderActions([]);
       return;
     }
     const label = state.open
-      ? `收起工作台（${keys}）`
-      : pending ? `打开工作台（${keys}）· ${pending.label ?? pending.entry.label}有新活动` : `打开工作台（${keys}）`;
+      ? "收起工作台"
+      : pending ? `打开工作台 · ${pending.label ?? pending.entry.label}有新活动` : "打开工作台";
     chat.handle.setHeaderActions([
       { id: "workbench", label: state.open ? "收起工作台" : "工作台", hint: label, iconSvg: TOOL_ICON, attention: !state.open && Boolean(pending), active: state.open },
     ]);
@@ -1249,23 +1181,6 @@ function mountTools(root, chat, tools, entries) {
     return "inserted";
   }
 
-  // 9. 快捷键：Mod+J 开关工具区，Mod+\ 分屏，工具声明的组合切到（或打开）该工具并把焦点移进去。
-  //    聊天与工具区同一文档，在 window 上监听；页面不可见、浮层占着键盘、标签自己处理过的按键（如终端里）都不接。
-  //    按住不放的自动重复只吞掉，不反复开合。
-  function onShortcut(event) {
-    const spec = event.defaultPrevented || root.offsetParent === null ? null : shortcutOf(event);
-    const entry = spec ? shortcuts.get(spec) : null;
-    if (!entry && spec !== HOST_SHORTCUTS.toggle && spec !== HOST_SHORTCUTS.split) return;
-    if (overlayOwnsKey(event, chrome.panel)) return;
-    event.preventDefault();
-    if (event.repeat) return;
-    if (spec === HOST_SHORTCUTS.toggle) {
-      if (state.open) closePanel(chat.focusTarget());
-      else openPanel(true);
-    } else if (spec === HOST_SHORTCUTS.split) toggleSplit();
-    else focusTool(entry);
-  }
-
   function focusTool(entry) {
     const existing = allTabs().findLast((record) => record.entry === entry);
     const record = existing ? activate(existing.key) : openTool(entry);
@@ -1297,7 +1212,7 @@ function mountTools(root, chat, tools, entries) {
     update();
   }
 
-  // 标签条的指针与键盘：点选、⌘/Ctrl/Shift 多选成组、中键关闭、关闭按钮；方向键与 Home/End 在本组里换标签，Delete 关闭，⌘G 成组。
+  // 标签条的指针与键盘：点选、⌘/Ctrl/Shift 多选成组、中键关闭、关闭按钮；方向键与 Home/End 在本组里换标签。
   function onStripClick(event) {
     const record = allTabs().find((item) => item.item.contains(event.target));
     if (!record) return;
@@ -1313,12 +1228,6 @@ function mountTools(root, chat, tools, entries) {
   }
 
   function onStripKey(event) {
-    const mod = IS_MAC ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey;
-    if (!event.isComposing && mod && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "g" && selectedKeys.size >= 2) {
-      const stripIndex = chrome.groups.findIndex((shell) => shell.bar.contains(event.target));
-      const targetGroup = state.groups[stripIndex] ?? focusedGroup();
-      if (targetGroup && groupSelectedIn(targetGroup)) { event.preventDefault(); return; }
-    }
     const record = allTabs().find((item) => item.button === event.target);
     const group = record ? groupOf(record) : null;
     if (!group) return;
@@ -1336,8 +1245,7 @@ function mountTools(root, chat, tools, entries) {
     });
     const at = visibleTabs.indexOf(record);
     const keys = at >= 0 ? { ArrowRight: at + 1, ArrowLeft: at - 1, Home: 0, End: visibleTabs.length - 1 } : {};
-    if (event.key === "Delete") closeTab(record);
-    else if (event.key in keys && visibleTabs.length) activate(visibleTabs[(keys[event.key] + visibleTabs.length) % visibleTabs.length].key, true);
+    if (event.key in keys && visibleTabs.length) activate(visibleTabs[(keys[event.key] + visibleTabs.length) % visibleTabs.length].key, true);
     else return;
     event.preventDefault();
   }
@@ -1412,7 +1320,6 @@ function mountTools(root, chat, tools, entries) {
   root.classList.add("has-tools");
   root.append(chrome.splitter, chrome.panel);
   root.addEventListener("keydown", onKeydown);
-  window.addEventListener("keydown", onShortcut);
   window.addEventListener("resize", sizing.fit);
   Object.assign(chat.hooks, {
     session: applySession, overlay: followChatOverlay, intent: routeIntent,
@@ -1430,7 +1337,6 @@ function mountTools(root, chat, tools, entries) {
       }
     },
   });
-  chat.handle.setShortcuts(toolShortcuts(entries));
   chat.handle.setWorkbenchIntents(intentNames(entries));
   for (const record of records.singles()) if (record.entry.background) lifecycle.mount(record);
   return {
@@ -1443,7 +1349,6 @@ function mountTools(root, chat, tools, entries) {
       chat.handle.setHeaderActions([]);
       narrow.removeEventListener("change", onNarrow);
       root.removeEventListener("keydown", onKeydown);
-      window.removeEventListener("keydown", onShortcut);
       window.removeEventListener("resize", sizing.fit);
       lifecycle.dispose();
     },

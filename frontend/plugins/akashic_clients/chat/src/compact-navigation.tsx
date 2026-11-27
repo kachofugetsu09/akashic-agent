@@ -7,7 +7,6 @@ import { GroupFormDialog, type GroupFormRequest } from "./navigation-groups";
 import { DestinationFormDialog } from "./navigation-destinations";
 import type { DestinationForm } from "@akashic/chat-ui-v1";
 import { reportShellOverlay } from "./shell-rail-actions";
-import { chatLayerOpen, keyForChat } from "./chat-host";
 import { chatLayout, subscribeChatLayout } from "./chat-layout";
 import { useSidebarPanelAlert } from "./sidebar-panels";
 
@@ -41,23 +40,8 @@ export const CompactNavigation = memo(function CompactNavigation(props: DesktopS
     setOpen(false);
   }, []);
   const overlayOpen = open || formRequest !== null || destinationForm !== null;
-  const searchOnOpen = useRef(false);
-  // 关闭后回到打开前的位置：快捷键打开时是当时的焦点（输入框里写到一半的草稿，光标位置由 textarea 自己保留），点按钮打开时是按钮。
+  // 关闭后回到打开前的位置：点按钮打开时是按钮。
   const returnFocus = useRef<HTMLElement | null>(null);
-  // 必要 effect：常驻侧栏被隐藏时 Ctrl/⌘+K 没有可见的搜索框，改为打开抽屉并聚焦其中的搜索（平板竖屏接键盘）。
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (!keyForChat(event) || !chatLayout().compact || !(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey || event.isComposing) return;
-      if (event.key.toLowerCase() !== "k") return;
-      if (chatLayerOpen()) return;
-      event.preventDefault();
-      searchOnOpen.current = true;
-      returnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-      setOpen(true);
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, []);
   // 必要 effect：平板旋转、分屏拖宽时视口离开紧凑断点，抽屉藏了但模态遮罩还压着整页，必须跟着关掉。
   useEffect(() => {
     if (!open) return;
@@ -89,19 +73,10 @@ export const CompactNavigation = memo(function CompactNavigation(props: DesktopS
         onOpenAutoFocus={(event) => {
           event.preventDefault();
           const dialog = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
-          const focusSearch = searchOnOpen.current;
-          searchOnOpen.current = false;
           // 同步 focus() 会在 Radix 刚改完 DOM/aria-hidden 时强制全页样式与布局重算；
           // 延后到下一帧（布局已自然完成）聚焦，既保留无障碍焦点又不阻塞点击当帧（#2239）。
           window.requestAnimationFrame(() => {
             if (!dialog?.isConnected) return;
-            if (focusSearch) {
-              const search = dialog.querySelector<HTMLInputElement>(".chat-sidebar__search input");
-              if (search) {
-                search.focus();
-                return;
-              }
-            }
             (dialog.querySelector<HTMLElement>(".chat-sidebar__new") ?? dialog).focus({ preventScroll: true });
           });
         }}

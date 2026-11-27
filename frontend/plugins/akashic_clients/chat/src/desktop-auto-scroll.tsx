@@ -392,37 +392,6 @@ export function ReadingReturnButton({ generating }: { generating: boolean }) {
   </button>;
 }
 
-// 焦点在输入框时 PageUp/PageDown 翻对话（参考 Slack、Discord）：发送后焦点留在输入框，不必先点进消息区才能往回读。
-// 草稿本身长到能滚动时仍交给输入框；一页是标题条与输入卡之间的可见高度，留 48px 重叠以便接着读。
-export function ComposerPageKeys() {
-  const { scrollRef, stopScroll } = useStickToBottomContext();
-
-  // 必要 effect：输入框在 Conversation 之外，只能在 document 上接它的按键。
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if ((event.key !== "PageUp" && event.key !== "PageDown") || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
-      // 输入法组合中翻的是候选页（Safari 确认候选时还会补发 keyCode 229）；别处已处理的按键也不接管。
-      if (event.isComposing || event.keyCode === 229 || event.defaultPrevented) return;
-      const input = event.target;
-      const scroller = scrollRef.current;
-      if (!(input instanceof HTMLTextAreaElement) || !input.closest(".composer") || !scroller) return;
-      if (input.scrollHeight > input.clientHeight + 1) return;
-      event.preventDefault();
-      const heading = scroller.closest(".chat-main")?.querySelector(".conversation-heading")?.getBoundingClientRect();
-      const composer = input.closest(".composer-wrap")?.getBoundingClientRect();
-      const frame = scroller.getBoundingClientRect();
-      const top = Math.max(frame.top, heading?.bottom ?? frame.top);
-      const bottom = Math.min(frame.bottom, composer && composer.height > 0 ? composer.top : frame.bottom);
-      const page = Math.max(bottom - top - 48, 120);
-      // 往回翻要先解除贴底跟随，否则生成中下一帧又被拉回底部。
-      if (event.key === "PageUp") stopScroll();
-      scroller.scrollBy({ top: event.key === "PageUp" ? -page : page, behavior: "smooth" });
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [scrollRef, stopScroll]);
-  return null;
-}
 
 // 点开或收起折叠行（工具、思考、长提问等）时离开贴底跟随：贴底时内容一变高就被拉回底部，
 // 刚点的那一行从指尖下往上跑，展开的内容还会被吸顶行盖住。离开后由「回到底部」按钮接回。

@@ -14,7 +14,6 @@ export interface ChatHostLink {
 export interface ChatHandle {
   setRailActions(actions: unknown): void;
   setHeaderActions(actions: unknown): void;
-  setShortcuts(shortcuts: unknown): void;
   setWorkbenchIntents(names: unknown): void;
   quote(quote: unknown): void;
   shown(): void;

@@ -51,7 +51,7 @@ function HeaderMarker({ icon, label, alert = false, ariaLabel, panelLabel, child
       {icon}
       <span data-akashic-private="content"><MarqueeText still>{label}</MarqueeText></span>
     </button>
-    {open ? <div className="header-marker__panel" role="group" aria-label={panelLabel} data-escape-layer="">
+    {open ? <div className="header-marker__panel" role="group" aria-label={panelLabel}>
       {children}
     </div> : null}
   </div>;
