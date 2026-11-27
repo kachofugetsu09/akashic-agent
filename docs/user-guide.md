@@ -71,7 +71,7 @@ python main.py pkg source remove fleet         # 已装的包保留，只是不�
 - 来源名称就是插件 ID 的后缀（`calendar@fleet`），装过包以后不要改名。
 - 私有仓库用 GitHub fine-grained token，只给这一个仓库的 Contents 只读权限。token 单独存放在插件目录的 `source-tokens/` 下，只在拉取时临时交给 git，不写进任何仓库配置。
 - 同名包按来源顺序查找：官方源永远排第一，私有源按登记顺序。
-- 已装的插件想换到另一个来源（比如私有源里的插件进了官方源）：`python main.py pkg move calendar@fleet --source release`。插件 ID 会变成 `calendar@release`，数据目录和插件自己存的状态一起迁过去；新来源装不上时状态会改回旧 ID，可以从原来源重装。
+- 已装的插件想换到另一个来源（比如私有源里的插件进了官方源）：`python main.py pkg move calendar@fleet --source release`。插件 ID 会变成 `calendar@release`，数据目录和插件自己存的状态一起迁过去；新来源装不上时旧数据不动，可以从原来源重装。来源名与原 ID 后缀相同时（例如 `pkg move calendar@github --source github`）ID 不变，只是改从这个来源重装，适合修正 `pkg list` 里来源显示成 `git:...` 的包。
 
 ## 换端口
 
