@@ -213,13 +213,7 @@ def build_web_assets(
         ),
     }
     _run_web_command(["npm", "ci", "--ignore-scripts"], cwd=source, env=env)
-    plugin_pkg_dirs = sorted(
-        {
-            pkg.parent
-            for pattern in ("plugins/*/web/package.json", "frontend/plugins/*/package.json")
-            for pkg in source.glob(pattern)
-        }
-    )
+    plugin_pkg_dirs = sorted(pkg.parent for pkg in source.glob("plugins/*/web/package.json"))
     for plugin_dir in plugin_pkg_dirs:
         if not (plugin_dir / "package-lock.json").is_file():
             raise ValueError(f"插件前端声明了 package.json 但缺少 package-lock.json: {plugin_dir.relative_to(source)}")

@@ -110,18 +110,11 @@ const SLOT_NAMES = new Set<PluginUiSlotName>([
   "navigation.groups",
   "navigation.destinations",
   "sidebar.panels",
-  "icon.provider",
 ]);
 
 const kernelLeases = new Map<string, ChatKernelLease>();
-const bridgeLeases = new Map<string, ChatKernelLease>();
 
 function disposePluginLeases(id: string) {
-  const bridge = bridgeLeases.get(id);
-  if (bridge) {
-    bridgeLeases.delete(id);
-    bridge.dispose();
-  }
   const lease = kernelLeases.get(id);
   if (lease) {
     kernelLeases.delete(id);
@@ -152,12 +145,6 @@ export function receivePluginUiCatalog(next: PluginUiCatalog): Promise<void> {
     const nextById = new Map(next.plugins.map((item) => [item.id, item.revision]));
     for (const [id, lease] of [...kernelLeases.entries()]) {
       if (nextById.get(id) !== lease.pluginRevision) disposePluginLeases(id);
-    }
-    for (const [id, lease] of [...bridgeLeases.entries()]) {
-      if (nextById.get(id) !== lease.pluginRevision) {
-        bridgeLeases.delete(id);
-        lease.dispose();
-      }
     }
   }
   emitChange();
@@ -367,7 +354,7 @@ type LoadedPluginModule = {
 async function activateCatalog(next: PluginUiCatalog): Promise<boolean> {
   const current = () => catalog.catalogRevision === next.catalogRevision && !catalog.updating;
   const listed = new Set(next.plugins.map((plugin) => plugin.id));
-  retirePlugins([...new Set([...definitions.keys(), ...styleNodes.keys(), ...kernelLeases.keys(), ...bridgeLeases.keys()])]
+  retirePlugins([...new Set([...definitions.keys(), ...styleNodes.keys(), ...kernelLeases.keys()])]
     .filter((id) => !listed.has(id)));
   const results = await Promise.allSettled(next.plugins.map(async (plugin) => {
     const alreadyLoaded = definitions.get(plugin.id)?.revision === plugin.revision
@@ -428,20 +415,6 @@ function installPlugin(
       }),
     );
     kernelLeases.set(plugin.id, lease);
-  }
-
-  // 显式优先、桥接仅补缺：若插件未在 activate 中显式提供 icon.provider 服务但声明了 legacy 槽，则自动桥接。
-  const legacyIconProvider = definition.slots["icon.provider"];
-  if (legacyIconProvider) {
-    const hasExplicit = chatKernel
-      .listServices<IconProvider>("icon.provider")
-      .some((record) => record.ownerId === plugin.id && record.ownerRevision === plugin.revision);
-    if (!hasExplicit) {
-      bridgeLeases.set(
-        plugin.id,
-        chatKernel.provideHostService(plugin.id, plugin.revision, "icon.provider", legacyIconProvider),
-      );
-    }
   }
 
   definitions.set(plugin.id, { revision: plugin.revision, definition });
@@ -538,8 +511,8 @@ function parseDefinition(value: unknown, plugin: PluginUiCatalogItem): PluginUiD
       if (name in merged) {
         throw new Error(`插件界面 slot 与 provider 重复定义: ${plugin.id}.${name}`);
       }
-      if (name !== "scope.meta" && name !== "icon.provider") {
-        throw new Error(`插件界面 provider 仅支持 v2 扩展槽: ${plugin.id}.${name}`);
+      if (name !== "scope.meta") {
+        throw new Error(`插件界面 provider 仅支持 scope.meta: ${plugin.id}.${name}`);
       }
       merged[name] = provider;
     }
@@ -554,8 +527,7 @@ function parseDefinition(value: unknown, plugin: PluginUiCatalogItem): PluginUiD
       : name === "scope.meta" ? isScopeMetaProvider(renderer)
       : name === "navigation.groups" ? isGroupsProvider(renderer)
       : name === "navigation.destinations" ? isDestinationsProvider(renderer)
-      : name === "sidebar.panels" ? isPanelProvider(renderer)
-      : name === "icon.provider" ? isIconProvider(renderer) : isRenderer(renderer);
+      : name === "sidebar.panels" ? isPanelProvider(renderer) : isRenderer(renderer);
     if (!valid) {
       throw new Error(`插件界面 renderer 无效: ${plugin.id}.${name}`);
     }
@@ -598,20 +570,6 @@ function isScopeMetaProvider(value: unknown): value is ScopeMetaProvider {
   const provider = value as Partial<Record<keyof ScopeMetaProvider, unknown>>;
   return typeof provider.load === "function"
     && (provider.peek === undefined || typeof provider.peek === "function");
-}
-
-function isIconProvider(value: unknown): value is IconProvider {
-  if (typeof value !== "object" || value === null) return false;
-  const provider = value as Partial<Record<keyof IconProvider, unknown>>;
-  return typeof provider.id === "string" && Boolean(provider.id)
-    && typeof provider.label === "string" && Boolean(provider.label)
-    && isComponentLike(provider.Icon)
-    && (provider.Picker === undefined || isComponentLike(provider.Picker));
-}
-
-function isComponentLike(value: unknown): boolean {
-  if (typeof value === "function") return true;
-  return typeof value === "object" && value !== null && "$$typeof" in value;
 }
 
 function isRenderer(value: unknown): value is HostRenderer {
@@ -818,44 +776,10 @@ export function scopeMetaSources(): ScopeMetaSource[] {
 }
 
 /** 已加载的图标提供方；按 providerId 显式匹配，不按加载顺序猜测。 */
-export interface LoadedIconProvider {
-  key: string;
-  pluginId: string;
-  pluginRevision: string;
-  provider: IconProvider;
-}
-
-export function iconProviderById(providerId: string): LoadedIconProvider | null {
-  if (catalog.updating) return null;
-  for (const record of chatKernel.listServices<IconProvider>("icon.provider")) {
-    if (record.value.id === providerId) {
-      return {
-        key: `${record.ownerId}:${record.ownerRevision}`,
-        pluginId: record.ownerId,
-        pluginRevision: record.ownerRevision,
-        provider: record.value,
-      };
-    }
-  }
-  return null;
-}
-
-/** 经 ChatKernel 服务表订阅图标提供方：只读冻结快照保证 Object.is 稳定，不打断业务表单焦点与草稿。 */
-export function useIconProvider(providerId: string): LoadedIconProvider | null {
+/** 经 ChatKernel 服务表订阅首个可用图标服务（不绑定任何特定图标插件名）。 */
+export function useDefaultIconProvider(): IconProvider | null {
   const services = useChatServices<IconProvider>("icon.provider");
-  return useMemo(() => {
-    for (const record of services) {
-      if (record.value.id === providerId) {
-        return {
-          key: `${record.ownerId}:${record.ownerRevision}`,
-          pluginId: record.ownerId,
-          pluginRevision: record.ownerRevision,
-          provider: record.value,
-        };
-      }
-    }
-    return null;
-  }, [services, providerId]);
+  return services.length > 0 ? services[0].value : null;
 }
 
 export function navigationGroupSources(): NavigationGroupSource[] {

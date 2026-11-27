@@ -404,18 +404,6 @@ export class ChatKernel {
     };
   }
 
-  /** 宿主直连服务注册（用于桥接尚未迁移的 legacy slot，遵循显式优先、桥接补缺）。 */
-  provideHostService<T>(ownerId: string, ownerRevision: string, serviceId: string, value: T): ChatKernelLease {
-    return this.activate(
-      ownerId,
-      ownerRevision,
-      () => Promise.reject(new Error("桥接宿主服务不支持直接 query")),
-      (ctx) => {
-        ctx.services.provide(serviceId, value);
-      },
-    );
-  }
-
   listServices<T>(serviceId: string): readonly ChatServiceRecord<T>[] {
     return (this.serviceSnapshots.get(serviceId) ?? EMPTY_LIST) as readonly ChatServiceRecord<T>[];
   }

@@ -22,12 +22,11 @@ export type PluginUiSlotName =
   | "scope.meta"
   | "navigation.groups"
   | "navigation.destinations"
-  | "sidebar.panels"
-  | "icon.provider";
+  | "sidebar.panels";
 
 /** 宿主挂载插件元素的插槽；其余为数据源或能力提供方，由宿主外框统一调度与隔离。 */
 export type PluginUiMountSlotName = Exclude<PluginUiSlotName,
-  "composer.suggest" | "tool.icon" | "tool.summary" | "scope.meta" | "navigation.groups" | "navigation.destinations" | "sidebar.panels" | "icon.provider">;
+  "composer.suggest" | "tool.icon" | "tool.summary" | "scope.meta" | "navigation.groups" | "navigation.destinations" | "sidebar.panels">;
 
 export type WorkbenchIntentStatus = "handled" | "unhandled" | "invalid" | "failed";
 
@@ -165,7 +164,7 @@ export interface NavigationGroup {
   label: string;
   /** 悬停时的补充说明，例如固定目录。 */
   detail?: string;
-  /** 可选图标标识（由宿主从精选 kubai-icons/line 集渲染）；省略或未识别时回退为默认文件夹。 */
+  /** 可选图标标识（由业务插件结合图标服务渲染）；省略时由默认文件夹兜底。 */
   icon?: string;
   /** 可选图标语义色（pine / blue / ochre / plum / teal / cinnabar）；省略时随墨色。 */
   color?: string;
@@ -548,7 +547,7 @@ export interface IconPickerViewProps {
 
 /** icon.provider 能力定义：只负责图标渲染与可选的浏览选择界面，与分组业务与主题色板解耦。 */
 export interface IconProvider {
-  /** 提供方稳定标识，例如 "kubai-line"。 */
+  /** 提供方稳定标识。 */
   id: string;
   /** 可读名称，例如 "Kubai 线性图标"。 */
   label: string;
@@ -673,12 +672,10 @@ export interface PluginUiDefinition {
     "navigation.groups"?: NavigationGroupsProvider;
     "navigation.destinations"?: NavigationDestinationsProvider;
     "sidebar.panels"?: SidebarPanelProvider;
-    "icon.provider"?: IconProvider;
   };
   /** 可选扩展区：与 slots 合并解析，供同时需要兼容旧版前端的插件挂载 v2 数据源。 */
   providers?: {
     "scope.meta"?: ScopeMetaProvider;
-    "icon.provider"?: IconProvider;
   };
   /** 可选导航呈现自包含扩展：老 v1/v2 浏览器自动忽略，新宿主在局部错误边界内委派插件渲染行内内容。 */
   navigationViews?: {
@@ -722,11 +719,3 @@ export const ToolText: ComponentType<{ text: string; tail: boolean; className: s
 export const ToolData: ComponentType<{ value: unknown }>;
 export function formatDuration(durationMs: number): string;
 export function copyText(text: string): Promise<void>;
-/** 宿主的分组图标选择器：复用聊天宿主内置的 kubai-icons/line 精选集，插件无需各自打包图标运行时。 */
-export const GroupIconPicker: ComponentType<{
-  value: string | null;
-  onChange(icon: string | null): void;
-  color?: string | null;
-  onColorChange?(color: string | null): void;
-  disabled?: boolean;
-}>;
