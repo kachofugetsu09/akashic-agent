@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import "./style.css";
 import { akashicBrandIcon, markup } from "@akashic/plugin-kit/brand";
 import { PluginInventory, inventoryResource, type InventoryResource } from "./plugin-inventory";
+import { PluginSources } from "./plugin-sources";
 import { SystemVersion } from "./system-version";
 import { registerAppearance } from "./appearance";
 import { FIRST_INSTALL_ROUTE, mountFirstInstall } from "./first-install";
@@ -262,7 +263,7 @@ function Shell({ pages, railActions, settings, settingsPlugins, http, navigation
   // 窄屏两级页面：nav 是分节列表，content 是分节内容；宽屏两栏同时可见，这个状态不起作用。
   const [settingsPane, setSettingsPane] = useState<"nav" | "content">("content");
   // 插件分节的两个 tab：插件列表管理启停，插件配置是成员自己的设置表单。
-  const [pluginsTab, setPluginsTab] = useState<"list" | "config">("list");
+  const [pluginsTab, setPluginsTab] = useState<"list" | "config" | "sources">("list");
   // 插件分节 tab 的滑动底线：测量当前选中 tab 的位置与宽度，与顶栏指示器保持同一连续过渡体验。
   useLayoutEffect(() => {
     const bar = settingsTabsRef.current;
@@ -675,9 +676,11 @@ function Shell({ pages, railActions, settings, settingsPlugins, http, navigation
             <div ref={settingsTabsRef} className="shell-settings-tabs" role="tablist" aria-label="插件">
               <button type="button" role="tab" aria-selected={pluginsTab === "list"} onClick={() => setPluginsTab("list")}>插件列表</button>
               <button type="button" role="tab" aria-selected={pluginsTab === "config"} onClick={() => setPluginsTab("config")}>插件配置</button>
+              <button type="button" role="tab" aria-selected={pluginsTab === "sources"} onClick={() => setPluginsTab("sources")}>来源</button>
               <div className="shell-settings-tabs__indicator" aria-hidden="true" />
             </div>
-            {pluginsTab === "list" ? null : pluginCards.length === 0
+            {pluginsTab === "sources" && <PluginSources http={http} active={settingsOpen} />}
+            {pluginsTab !== "config" ? null : pluginCards.length === 0
               ? <p className="shell-inventory-empty">已启用的插件都没有设置项</p> : <PluginCardList
               cards={pluginCards}
               view={settingsPlugins}

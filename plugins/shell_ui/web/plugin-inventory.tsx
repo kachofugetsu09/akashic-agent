@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import type { WebHostContextV1, WebResource } from "@akashic/web-ui-v1";
 import { markup } from "@akashic/plugin-kit/brand";
 import { InstallablePackages } from "./plugin-installable";
+import { PluginUpdates } from "./plugin-sources";
 
 type Phase = "active" | "pending" | "failed" | "disabled" | "stopping" | "loading";
 
@@ -122,6 +123,7 @@ export function PluginInventory({ http, inventory, active }: {
       </div>}
     </div>
     {loadError && <p className="shell-inventory-error" role="alert">{loadError}</p>}
+    <PluginUpdates http={http} active={active} onDone={load} />
     {main.length > 0 && <section className="shell-inventory-group">
       <h4>插件 <span>{main.length}</span></h4>
       {list(main)}

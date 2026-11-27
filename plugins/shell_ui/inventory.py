@@ -44,6 +44,20 @@ class InstallRequest(BaseModel):
     first_install: bool = False
 
 
+class UpgradeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    # 不给 source 是全部来源；names 为空是这个范围里的全部插件。
+    source: str | None = None
+    names: list[str] = []
+
+
+class SourceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    name: str
+    url: str
+    token: str = ""
+
+
 class EnabledRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     enabled: bool
@@ -195,6 +209,44 @@ def register(app: FastAPI, context: DashboardContext) -> None:
             raise HTTPException(404, str(error)) from error
         except (RuntimeError, ValueError, OSError) as error:
             raise HTTPException(502, str(error)) from error
+
+    @app.get("/api/dashboard/plugins/updates")
+    async def updates() -> Row:
+        try:
+            return await context.require(INVENTORY).installer.updates()
+        except (RuntimeError, ValueError, OSError) as error:
+            raise HTTPException(502, str(error)) from error
+
+    @app.post("/api/dashboard/plugins/upgrade")
+    async def upgrade(request: UpgradeRequest) -> Row:
+        try:
+            return await context.require(INVENTORY).installer.upgrade(request.source, request.names)
+        except InstallBusy as error:
+            raise HTTPException(409, str(error)) from error
+        except (RuntimeError, ValueError, OSError) as error:
+            raise HTTPException(502, str(error)) from error
+
+    @app.get("/api/dashboard/plugins/sources")
+    async def sources() -> Row:
+        try:
+            return {"sources": await context.require(INVENTORY).installer.sources()}
+        except (RuntimeError, ValueError, OSError) as error:
+            raise HTTPException(502, str(error)) from error
+
+    # 登记前 pkg 会先确认地址真的是插件源；读不到或格式不对是这次请求的拒收（422），原因原样给用户。
+    @app.post("/api/dashboard/plugins/sources")
+    async def add_source(request: SourceRequest) -> Row:
+        try:
+            return {"sources": await context.require(INVENTORY).installer.add_source(request.name, request.url, request.token)}
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
+
+    @app.delete("/api/dashboard/plugins/sources/{name}")
+    async def remove_source(name: str) -> Row:
+        try:
+            return {"sources": await context.require(INVENTORY).installer.remove_source(name)}
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
 
     # 首装只用核心：不装扩展包，引导里的"选择功能"一步就此完成。
     @app.delete("/api/dashboard/plugins/first-install")

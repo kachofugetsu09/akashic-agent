@@ -17,13 +17,17 @@ export function mountFirstInstall(http: Http, host: HTMLElement, props: unknown)
   return () => root.unmount();
 }
 
-// 选中包加上它们（传递）依赖的包，像 pacman 一样自动带上；返回 名字 → 需要它的已选包。
+// 依赖只在同一来源里：私有源包的 id 是 来源/包名，依赖名补上同样的前缀。
+const depId = (item: Package, dep: string) => item.id.slice(0, item.id.length - item.name.length) + dep;
+
+// 选中包加上它们（传递）依赖的包，像 pacman 一样自动带上；返回 包 id → 需要它的已选包 id。
 function pulled(packages: Map<string, Package>, selected: ReadonlySet<string>): Map<string, string> {
   const result = new Map<string, string>();
   const stack = [...selected].map(name => [name, name] as const);
   while (stack.length) {
     const [name, owner] = stack.pop()!;
-    for (const dep of packages.get(name)?.requires ?? []) {
+    const item = packages.get(name);
+    for (const dep of item ? item.requires.map(required => depId(item, required)) : []) {
       if (selected.has(dep) || result.has(dep) || !packages.has(dep)) continue;
       result.set(dep, owner);
       stack.push([dep, owner]);
@@ -90,7 +94,7 @@ function FirstInstall({ http, changed }: { http: Http; changed?: () => void }) {
 
 // 挑选：默认全选；分组可整组勾选，单个包可取消；被已选包依赖的包自动带上并说明原因。
 function Picker({ groups, submit }: { groups: Group[]; submit: (names: string[]) => Promise<void> }) {
-  const packages = useMemo(() => new Map(groups.flatMap(group => group.packages.map(item => [item.name, item] as const))), [groups]);
+  const packages = useMemo(() => new Map(groups.flatMap(group => group.packages.map(item => [item.id, item] as const))), [groups]);
   const [selected, setSelected] = useState(() => new Set(packages.keys()));
   const [busy, setBusy] = useState(false);
   const deps = pulled(packages, selected);
@@ -119,27 +123,27 @@ function Picker({ groups, submit }: { groups: Group[]; submit: (names: string[])
 function GroupBlock({ group, selected, deps, flip }: {
   group: Group; selected: ReadonlySet<string>; deps: ReadonlyMap<string, string>; flip: (items: string[], on: boolean) => void;
 }) {
-  const members = group.packages.map(item => item.name);
+  const members = group.packages.map(item => item.id);
   const count = members.filter(name => selected.has(name)).length;
   const size = group.packages.reduce((sum, item) => sum + item.size_bytes, 0);
   return <fieldset className="shell-setup-group">
     <legend>
       <label><input type="checkbox" checked={count === members.length} ref={box => { if (box) box.indeterminate = count > 0 && count < members.length; }}
         onChange={event => flip(members, event.currentTarget.checked)} />
-        <strong>{group.title}</strong><em>推荐</em><small>{members.length} 个包{size > 0 && ` · ${sizeText(size)}`}</small></label>
+        <strong>{group.title}</strong><em>{group.private ? `私有源 ${group.source}` : "推荐"}</em><small>{members.length} 个包{size > 0 && ` · ${sizeText(size)}`}</small></label>
       {group.description && <p>{group.description}</p>}
     </legend>
     <ul>
       {group.packages.map(item => {
-        const owner = deps.get(item.name);
+        const owner = deps.get(item.id)?.split("/").pop();
         const meta = [sizeText(item.size_bytes), ...item.needs.map(need => `需要 ${needText(need)}，不满足时装上但保持关闭`),
           ...(item.requires.length ? [`依赖 ${item.requires.join("、")}`] : [])].filter(Boolean);
-        return <li key={item.name}><label>
-          <input type="checkbox" checked={selected.has(item.name) || !!owner} disabled={!!owner && !selected.has(item.name)}
-            onChange={event => flip([item.name], event.currentTarget.checked)} />
+        return <li key={item.id}><label>
+          <input type="checkbox" checked={selected.has(item.id) || !!owner} disabled={!!owner && !selected.has(item.id)}
+            onChange={event => flip([item.id], event.currentTarget.checked)} />
           <span><code>{item.name}</code><small>{item.desc}</small>
             {meta.length > 0 && <small>{meta.join(" · ")}</small>}
-            {owner && !selected.has(item.name) && <small className="shell-setup-pulled">{owner} 需要它，会一并安装</small>}</span>
+            {owner && !selected.has(item.id) && <small className="shell-setup-pulled">{owner} 需要它，会一并安装</small>}</span>
         </label></li>;
       })}
     </ul>
@@ -150,7 +154,7 @@ function GroupBlock({ group, selected, deps, flip }: {
 function Progress({ task, groups, retry }: { task: Task; groups: Group[]; retry: (names: string[]) => Promise<void> }) {
   const running = task.state === "running";
   const step = task.progress;
-  const available = new Set(groups.flatMap(group => group.packages.map(item => item.name)));
+  const available = new Set(groups.flatMap(group => group.packages.map(item => item.id)));
   const failed = task.outcomes.filter(item => BAD.has(item.result));
   // 失败的排在最前，长清单里不用滚动去找。
   const outcomes = [...failed, ...task.outcomes.filter(item => !BAD.has(item.result))];

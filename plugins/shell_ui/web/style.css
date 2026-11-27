@@ -502,6 +502,21 @@
   .shell-installable-row button[aria-busy="true"] { opacity: 1; cursor: progress; color: var(--ak-ink-muted); }
   .shell-installable-row button:focus-visible { outline: 2px solid var(--ak-rule-focus); outline-offset: 2px; }
   .shell-inventory-group .shell-inventory-error { font-size: 13px; }
+  /* 插件更新条与来源页。 */
+  .shell-source-chip { margin-inline-start: 6px; padding: 0 6px; border-radius: var(--ak-radius-sm); font-size: 12px; font-weight: 400; color: var(--ak-ink-secondary); background: color-mix(in oklab, var(--ak-ink-primary) 6%, transparent); }
+  .shell-updates { display: grid; gap: 8px; }
+  .shell-updates__bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; }
+  .shell-updates__bar p { display: grid; margin: 0; font-size: 14px; }
+  .shell-updates__bar p span { font-size: 13px; color: var(--ak-ink-muted); }
+  .shell-updates__actions { display: flex; flex-wrap: wrap; gap: 8px; }
+  .shell-updates__actions button:not(.shell-setup-primary) { min-height: 36px; padding: 0 14px; font: inherit; font-size: 13px; border: 1px solid var(--ak-rule-default); border-radius: var(--ak-radius-sm); background: transparent; color: var(--ak-ink-primary); cursor: pointer; }
+  .shell-updates__actions button:disabled { opacity: 0.5; cursor: default; }
+  .shell-sources-form { display: grid; gap: 12px; max-width: 520px; }
+  .shell-sources-form h4 { margin: 0; font-size: 13px; font-weight: 600; color: var(--ak-ink-secondary); }
+  .shell-sources-form label { display: grid; gap: 4px; font-size: 14px; }
+  .shell-sources-form label small { display: block; font-size: 13px; color: var(--ak-ink-muted); }
+  .shell-sources-form input { min-height: 36px; padding: 0 12px; font: inherit; font-size: 14px; border: 1px solid var(--ak-rule-default); border-radius: var(--ak-radius-sm); background: transparent; color: inherit; }
+  .shell-sources-form button { justify-self: start; }
   .shell-installable-note { margin: 0; font-size: 13px; text-wrap: pretty; color: var(--ak-ink-secondary); }
   .shell-installable-log { max-height: 240px; margin: 6px 0 0; padding: 10px 12px; overflow: auto; font-size: 12px; line-height: 18px; white-space: pre-wrap; overflow-wrap: anywhere; border: 1px solid var(--ak-rule-subtle); border-radius: var(--ak-radius-sm); background: var(--ak-paper-sheet); color: var(--ak-ink-secondary); }
   /* 新手引导里的“选择功能”：按组列包，勾选即装；进度与结果逐包列出。 */
