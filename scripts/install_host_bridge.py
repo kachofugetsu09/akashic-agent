@@ -11,8 +11,10 @@ from pathlib import Path
 import re
 import secrets
 import shutil
+import signal
 import subprocess
 import sys
+import time
 
 ORIGIN = "https://github.com/kachofugetsu09/akashic-agent.git"
 IMAGE_REPO = "ghcr.io/kachofugetsu09/akashic-agent"
@@ -125,15 +127,19 @@ def prepare_source(layout: Layout, origin: str) -> None:
 
 
 # bridge 用 uv 管理的独立 Python，主次版本与镜像一致；插件环境两侧才能共用。
+# 依赖全部装完才写完成标记；中途失败的半成品环境在重跑时整体重建。
 def prepare_venv(layout: Layout, python_version: str) -> Path:
-    if not layout.python.exists():
+    ready = layout.venv / ".akashic-ready"
+    if not ready.exists():
         step(f"准备 Host Bridge 的 Python {python_version} 环境")
+        shutil.rmtree(layout.venv, ignore_errors=True)
         run("uv", "python", "install", python_version)
         run("uv", "venv", "--quiet", "--python", python_version, str(layout.venv))
         run("uv", "pip", "install", "--quiet", "--python", str(layout.python), "--require-hashes",
             "-r", str(layout.source / "docker/host-runtime/requirements.lock"))
         run("uv", "pip", "install", "--quiet", "--python", str(layout.python), "--no-deps",
             str(layout.source / "sdk/python"))
+        ready.write_text(python_version + "\n")
     return Path(run(str(layout.python), "-c", "import sys; print(sys.base_prefix)", capture=True))
 
 
@@ -193,6 +199,18 @@ def write_compose(layout: Layout, image: str, python_prefix: Path, settings: dic
         handle.write("\n".join(lines) + "\n")
 
 
+# bridge 发布给命令用的 akashic-runtime 要指向本实例的配置与工作区。
+def bridge_environment(layout: Layout) -> dict[str, str]:
+    return {"PYTHONPATH": str(layout.source), "AKASHIC_CONFIG": str(layout.state / "config.toml"),
+            "AKASHIC_WORKSPACE": str(layout.state / "workspace"),
+            "AKASHIC_PLUGIN_HOME": str(layout.state / "plugin-home")}
+
+
+# systemd 单元里的参数逐项加引号，路径含空格或 % 也不会被拆开。
+def unit_quote(value: str) -> str:
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%") + '"'
+
+
 def bridge_command(layout: Layout, digest: str) -> list[str]:
     return [str(layout.python), "-m", "plugins.host_execution.bridge.server",
             "--socket", str(layout.socket), "--token-file", str(layout.token_file), "--lease-timeout", "305",
@@ -204,14 +222,15 @@ def bridge_command(layout: Layout, digest: str) -> list[str]:
 # 两个用户级单元：bridge 常驻；Core 单元依赖它，负责 compose 起停。开机自启需要 linger。
 def install_units(layout: Layout, digest: str, project: str) -> None:
     UNIT_DIR.mkdir(parents=True, exist_ok=True)
-    compose = " ".join(compose_command(layout, project))
+    compose = " ".join(map(unit_quote, compose_command(layout, project)))
+    environment = "\n".join(f"Environment={unit_quote(f'{k}={v}')}" for k, v in bridge_environment(layout).items())
     (UNIT_DIR / BRIDGE_UNIT).write_text(f"""[Unit]
 Description=Akashic Host Bridge
 
 [Service]
-WorkingDirectory={layout.artifacts}
-Environment=PYTHONPATH={layout.source}
-ExecStart={" ".join(bridge_command(layout, digest))}
+WorkingDirectory={str(layout.artifacts).replace("%", "%%")}
+{environment}
+ExecStart={" ".join(map(unit_quote, bridge_command(layout, digest)))}
 Restart=on-failure
 RestartSec=3s
 
@@ -243,12 +262,29 @@ WantedBy=default.target
 
 # 不用 systemd 时（容器、CI、没开 systemd 的 WSL）：bridge 放后台进程，Core 直接 compose up。
 def start_foreground(layout: Layout, digest: str, project: str) -> None:
+    stop_foreground_bridge(layout)
     log = (layout.root / "host-bridge.log").open("a")
-    environment = {**os.environ, "PYTHONPATH": str(layout.source)}
+    environment = {**os.environ, **bridge_environment(layout)}
     process = subprocess.Popen(bridge_command(layout, digest), cwd=layout.artifacts, env=environment,
                                stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
     (layout.root / "host-bridge.pid").write_text(f"{process.pid}\n")
     run(*compose_command(layout, project), "up", "-d", "--no-build", "--wait", "--wait-timeout", "1200")
+
+
+# 重跑时先停掉上一次留下的 bridge，等它退出（它退出时会删 socket），再起新的。
+def stop_foreground_bridge(layout: Layout) -> None:
+    pid_file = layout.root / "host-bridge.pid"
+    if not pid_file.exists():
+        return
+    pid = int(pid_file.read_text().strip())
+    cmdline = Path(f"/proc/{pid}/cmdline")
+    if cmdline.exists() and b"plugins.host_execution.bridge.server" in cmdline.read_bytes():
+        os.kill(pid, signal.SIGTERM)
+        for _ in range(100):
+            if not cmdline.exists():
+                break
+            time.sleep(0.1)
+    pid_file.unlink()
 
 
 def preflight(systemd: bool) -> None:
@@ -276,13 +312,14 @@ def install(args: argparse.Namespace) -> None:
                 "tz": args.tz or host_timezone(),
                 "token": ensure_token(layout)}
     write_compose(layout, image, prefix, settings)
+    # 回执先于启动写下：启动失败时 login、排查与清理也能找到这次的 compose 参数。
+    (layout.root / "install.json").write_text(json.dumps(
+        {"image": image, "commit": commit, "project": args.project, "systemd": not args.no_systemd}, indent=2) + "\n")
     step("启动 Host Bridge 与 Core（首次约 1–2 分钟）")
     if args.no_systemd:
         start_foreground(layout, digest, args.project)
     else:
         install_units(layout, digest, args.project)
-    (layout.root / "install.json").write_text(json.dumps(
-        {"image": image, "commit": commit, "project": args.project, "systemd": not args.no_systemd}, indent=2) + "\n")
     login(args)
 
 

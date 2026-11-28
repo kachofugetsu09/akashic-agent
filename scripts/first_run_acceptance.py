@@ -106,7 +106,6 @@ class HostBridgeStack(Stack):
         super().__init__(image, proxy, output)
         self.root = output / "install"
         self.shell_expect = socket.gethostname()
-        self.files: list[str] = []
 
     # 宿主主机名与一个不挂进容器的宿主文件：两者都出现在工具结果里，才说明命令和文件读写在宿主执行。
     def browser_extra(self) -> list[str]:
@@ -115,17 +114,20 @@ class HostBridgeStack(Stack):
         marker.write_text("ACC-HOST-FILE\n")
         return ["--shell-expect", self.shell_expect, "--host-file", str(marker)]
 
+    # 安装器在启动前写回执；还没有回执说明容器尚未创建，日志与清理都无事可做。
     def compose(self, *args: str, capture: bool = False, check: bool = True) -> str:
-        return run(*self.files, *args, capture=capture, check=check)
+        receipt = self.root / "install.json"
+        if not receipt.exists():
+            return ""
+        sys.path.insert(0, str(ROOT / "scripts"))
+        from install_host_bridge import Layout, compose_command
+        files = compose_command(Layout(self.root, json.loads(receipt.read_text())["commit"]), self.project)
+        return run(*files, *args, capture=capture, check=check)
 
     def up(self) -> None:
         run(sys.executable, str(ROOT / "scripts/install_host_bridge.py"), "install", "--root", str(self.root),
             "--image", self.image, "--origin", str(ROOT), "--project", self.project, "--port", str(self.port),
             "--proxy", self.proxy, "--no-proxy", "emulate", "--no-systemd")
-        sys.path.insert(0, str(ROOT / "scripts"))
-        from install_host_bridge import Layout, compose_command
-        receipt = json.loads((self.root / "install.json").read_text())
-        self.files = compose_command(Layout(self.root, receipt["commit"]), self.project)
 
     def down(self) -> None:
         super().down()
@@ -170,9 +172,11 @@ def main() -> int:
         stack.compose("up", "-d", "--no-build", "--force-recreate", "--wait", "--wait-timeout", "600")
         codes.append(stack.browser("restart"))
     finally:
-        stack.logs()
-        if not args.keep:
-            stack.down()
+        try:
+            stack.logs()
+        finally:
+            if not args.keep:
+                stack.down()
     return 0 if summarize(output) and codes == [0, 0] else 1
 
 
