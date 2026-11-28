@@ -82,7 +82,7 @@ class Emulate:
         rules.append({"id": f"{case.name}-reply", "match": {"tool": "shell"},
                       "reply": [{"type": "text", "text": case.reply}]})
         self._send("POST", "/_ai/reset")
-        self._send("PUT", "/_ai/rules", {"strict": False, "models": ["akashic-mock"], "rules": rules})
+        self._send("PUT", "/_ai/rules", {"baseUrl": self._base, "strict": False, "models": ["akashic-mock"], "rules": rules})
 
     # 只看本轮：最后一次请求里，用户这条消息之后的工具结果。
     def tool_results(self, prompt: str) -> list[str]:

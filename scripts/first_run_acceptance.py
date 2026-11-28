@@ -9,17 +9,19 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import time
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
 BROWSER_IMAGE = "mcr.microsoft.com/playwright/python:v1.59.0-noble"
 EMULATE_IMAGE = "node:22-bookworm-slim"
 EMULATE_VERSION = "0.15.0"
-SEED = {"ai": {"strict": False, "timing": {"ttftMs": 0, "chunkDelayMs": 0}, "models": ["akashic-mock"], "rules": []}}
+SEED = {"ai": {"baseUrl": "http://emulate:4000", "strict": False, "timing": {"ttftMs": 0, "chunkDelayMs": 0}, "models": ["akashic-mock"], "rules": []}}
 
 
 def run(*command: str, check: bool = True, capture: bool = False) -> str:
-    result = subprocess.run(command, check=check, text=True, stdout=subprocess.PIPE if capture else None)
+    result = subprocess.run(command, check=check, text=True, stdout=subprocess.PIPE if capture else None,
+                            stderr=subprocess.STDOUT if capture else None)
     return result.stdout if capture else ""
 
 
@@ -39,10 +41,9 @@ class Stack:
         self.override.write_text(json.dumps(override))
         (output / "emulate.json").write_text(json.dumps(SEED))
 
-    def compose(self, *args: str, capture: bool = False) -> str:
-        env_proxy = ("--env-file", str(self._env_file()))
-        return run("docker", "compose", "-p", self.project, *env_proxy, "-f", str(ROOT / "compose.yaml"),
-                   "-f", str(self.override), *args, capture=capture)
+    def compose(self, *args: str, capture: bool = False, check: bool = True) -> str:
+        files = ("--env-file", str(self._env_file()), "-f", str(ROOT / "compose.yaml"), "-f", str(self.override))
+        return run("docker", "compose", "-p", self.project, *files, *args, capture=capture, check=check)
 
     def _env_file(self) -> Path:
         path = self.output / "compose.env"
@@ -61,26 +62,33 @@ class Stack:
 
     # 登录链接里是宿主映射端口；浏览器与 Core 共用网络命名空间，改回容器内的 2236。
     def login_url(self) -> str:
-        text = self.compose("exec", "-T", "akashic", "python", "main.py", "web-login", capture=True)
+        text = ""
+        for _ in range(5):
+            text = self.compose("exec", "-T", "akashic", "python", "main.py", "web-login", capture=True, check=False)
+            if re.search(r"https?://\S+", text):
+                break
+            time.sleep(3)
         match = re.search(r"https?://\S+", text)
         if match is None:
             raise RuntimeError("web-login 没有打印链接：" + text)
         return re.sub(r"^https?://[^/]+", "http://localhost:2236", match.group(0))
 
     def browser(self, phase: str) -> int:
-        container = self.compose("ps", "-q", "akashic", capture=True).strip()
+        container = run("docker", "compose", "-p", self.project, "ps", "-q", "akashic", capture=True).strip().splitlines()[-1]
         args = ["--phase", phase, "--login", self.login_url(), "--emulate", "http://emulate:4000",
                 "--model-base", "http://emulate:4000/v1", "--output", f"/out/{phase}"]
         user = f"{os.getuid()}:{os.getgid()}" if hasattr(os, "getuid") else "0:0"
+        # 官方镜像只带浏览器与系统库，Python 包按版本现装到临时 HOME。
+        proxy = ("-e", f"HTTPS_PROXY={self.proxy}", "-e", "NO_PROXY=localhost,127.0.0.1,emulate") if self.proxy else ()
+        script = ("pip install -q --user --break-system-packages playwright==1.59.0"
+                  ' && exec python /w/first_run_browser.py "$@"')
         result = subprocess.run(["docker", "run", "--rm", "--network", f"container:{container}", "--user", user,
-                                 "-e", "HOME=/tmp", "-v", f"{ROOT / 'scripts'}:/w:ro", "-v", f"{self.output}:/out",
-                                 BROWSER_IMAGE, "python", "/w/first_run_browser.py", *args], check=False)
+                                 "-e", "HOME=/tmp", *proxy, "-v", f"{ROOT / 'scripts'}:/w:ro", "-v", f"{self.output}:/out",
+                                 BROWSER_IMAGE, "sh", "-c", script, "browser", *args], check=False)
         return result.returncode
 
     def logs(self) -> None:
-        with (self.output / "core.log").open("w") as handle:
-            subprocess.run(["docker", "compose", "-p", self.project, "-f", str(ROOT / "compose.yaml"),
-                            "-f", str(self.override), "logs", "--no-color"], stdout=handle, check=False)
+        (self.output / "core.log").write_text(self.compose("logs", "--no-color", capture=True, check=False))
 
     def down(self) -> None:
         run("docker", "rm", "-f", self.emulate, check=False)
