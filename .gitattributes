@@ -1,0 +1,2 @@
+# Windows 上克隆后在 WSL2 或容器里运行：脚本必须保持 LF，否则 ./start 和 shell 脚本会报错。
+* text=auto eol=lf

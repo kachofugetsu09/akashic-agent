@@ -11,8 +11,20 @@ services:
     environment:
       # 容器内固定监听 2236；登录链接和启动提示要打印本机实际映射的端口。
       AKASHIC_PUBLIC_PORT: ${AKASHIC_PORT:-2236}
+      # 代理单独用 AKASHIC_PROXY 传入：宿主 shell 里的 127.0.0.1 代理在容器里指向容器自己，原样带入会断网。
+      # 写容器能到的地址，如 http://host.docker.internal:7897（代理软件要允许局域网连接）。
+      HTTP_PROXY: ${AKASHIC_PROXY:-}
+      HTTPS_PROXY: ${AKASHIC_PROXY:-}
+      http_proxy: ${AKASHIC_PROXY:-}
+      https_proxy: ${AKASHIC_PROXY:-}
+      NO_PROXY: localhost,127.0.0.1,host.docker.internal
+      no_proxy: localhost,127.0.0.1,host.docker.internal
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - data:/data
+      # 跟随宿主时区；Docker Desktop 与 WSL2 同样有这个文件。
+      - /etc/localtime:/etc/localtime:ro
     init: true
     stop_grace_period: 60s
     restart: "no"

@@ -13,15 +13,24 @@ Akashic 是一个会主动找你的 AI 伙伴：能聊天，能根据你订阅�
 先安装 [Docker Desktop](https://docs.docker.com/get-docker/)，并打开它。然后在终端里依次运行：
 
 ```bash
-mkdir akashic && cd akashic
+mkdir akashic
+cd akashic
 curl -fsSLO https://github.com/kachofugetsu09/akashic-agent/releases/latest/download/compose.yaml
 docker compose up -d --wait
 docker compose exec akashic python main.py web-login
 ```
 
+Windows 的 PowerShell 里把第三行的 `curl` 换成 `curl.exe`。
+
 第一次启动只装核心，大约 1 分钟，主要是下载镜像；期间终端只显示等待；想看进度，另开一个终端运行 `docker compose logs -f`。其余功能在网页引导里挑选安装。最后一条命令会打印一个登录链接，在浏览器里打开它就能进入。
 
 如果报错 `address already in use`，说明 2236 端口被别的程序占了：在同一目录创建 `.env` 文件，写一行 `AKASHIC_PORT=2237`，再运行一次 `docker compose up -d --wait`。
+
+几件要知道的事：
+
+- **代理**：装扩展包要访问 GitHub。需要代理时，在同一目录的 `.env` 里写一行 `AKASHIC_PROXY=http://host.docker.internal:7897`（端口换成你代理软件的），并在代理软件里打开“允许局域网连接”，再运行一次 `docker compose up -d --wait`。不要写 `127.0.0.1`，那在容器里指的是容器自己。
+- **电脑重启后不会自动启动**：先打开 Docker，再在 `akashic` 目录里运行 `docker compose up -d --wait`。
+- **Akashic 能碰到的范围**：它的 Shell 和文件工具只在容器里运行，看得到的是容器和数据卷，看不到你电脑上的其他文件。命令不经过拦截直接执行，所以不要把重要目录挂进容器。
 
 ### 方式二：不用 Docker（Linux 或 WSL2）
 
