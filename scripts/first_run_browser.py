@@ -30,7 +30,7 @@ class Case:
 
 CASES = [
     Case("text", "你好", [], "ACC-TEXT-OK"),
-    Case("shell", "跑个命令", [("shell", {"command": f"echo {SHELL_MARK}-$(id -u) && uname -s",
+    Case("shell", "跑个命令", [("shell", {"command": f"echo {SHELL_MARK}-$(id -u) && uname -s && hostname",
                                             "description": "验收"})],
          "ACC-SHELL-OK", [f"{SHELL_MARK}-"]),
     Case("files", "写个文件再读出来", [
@@ -229,10 +229,17 @@ def main() -> None:
     parser.add_argument("--model-base", required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--install-timeout", type=float, default=1800)
+    parser.add_argument("--shell-expect", default="", help="shell 结果里还必须出现的文本，如宿主主机名")
+    parser.add_argument("--host-file", default="", help="只在宿主上存在、内容为 ACC-HOST-FILE 的文件，验证文件工具在宿主执行")
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     emulate = Emulate(args.emulate)
     emulate.wait_ready()
+    if args.shell_expect:
+        CASES[1].expect_results.append(args.shell_expect)
+    if args.host_file:
+        CASES.insert(3, Case("host-file", "读宿主文件", [("read_file", {"path": args.host_file})],
+                             "ACC-HOST-OK", ["ACC-HOST-FILE"]))
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch()
         page = browser.new_context(viewport={"width": 1280, "height": 900}, locale="zh-CN").new_page()

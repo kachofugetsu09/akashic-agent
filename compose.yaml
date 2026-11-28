@@ -15,12 +15,13 @@ services:
       TZ: ${TZ:-}
       # 代理单独用 AKASHIC_PROXY 传入：宿主 shell 里的 127.0.0.1 代理在容器里指向容器自己，原样带入会断网。
       # 写容器能到的地址，如 http://host.docker.internal:7897（代理软件要允许局域网连接）。
+      # 局域网或其他容器里的模型服务不该走代理时，用 AKASHIC_NO_PROXY 追加，逗号分隔。
       HTTP_PROXY: ${AKASHIC_PROXY:-}
       HTTPS_PROXY: ${AKASHIC_PROXY:-}
       http_proxy: ${AKASHIC_PROXY:-}
       https_proxy: ${AKASHIC_PROXY:-}
-      NO_PROXY: localhost,127.0.0.1,host.docker.internal
-      no_proxy: localhost,127.0.0.1,host.docker.internal
+      NO_PROXY: localhost,127.0.0.1,host.docker.internal${AKASHIC_NO_PROXY:+,}${AKASHIC_NO_PROXY:-}
+      no_proxy: localhost,127.0.0.1,host.docker.internal${AKASHIC_NO_PROXY:+,}${AKASHIC_NO_PROXY:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
@@ -34,7 +35,7 @@ services:
     healthcheck:
       # 与启动器一致：聊天网关和 Web 插件目录都就绪后才显示 healthy。
       # 本机进程读门禁密钥作为凭据；未启用门禁插件时不带。
-      test: ["CMD", "python", "-c", "import json,os,urllib.request as r; u='http://127.0.0.1:2236'; s='/data/workspace/web-auth/secret'; h={'Authorization':'Bearer '+open(s).read().strip()} if os.path.exists(s) else {}; assert json.load(r.urlopen(u+'/api/shell/state', timeout=3))['chatReady']; assert json.load(r.urlopen(r.Request(u+'/api/chat/web-ui/bootstrap', headers=h), timeout=3))['modules']"]
+      test: ["CMD", "python", "-c", "import json,os,urllib.request as r; u='http://127.0.0.1:2236'; s=os.environ.get('AKASHIC_WORKSPACE','/data/workspace')+'/web-auth/secret'; h={'Authorization':'Bearer '+open(s).read().strip()} if os.path.exists(s) else {}; assert json.load(r.urlopen(u+'/api/shell/state', timeout=3))['chatReady']; assert json.load(r.urlopen(r.Request(u+'/api/chat/web-ui/bootstrap', headers=h), timeout=3))['modules']"]
       interval: 10s
       timeout: 5s
       retries: 12
