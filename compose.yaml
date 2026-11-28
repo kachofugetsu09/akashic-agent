@@ -11,8 +11,23 @@ services:
     environment:
       # 容器内固定监听 2236；登录链接和启动提示要打印本机实际映射的端口。
       AKASHIC_PUBLIC_PORT: ${AKASHIC_PORT:-2236}
+      # 时区在 .env 里写 TZ=Asia/Shanghai 这类 IANA 名称；不挂宿主 /etc/localtime（Docker Desktop 上会挂载失败）。
+      TZ: ${TZ:-}
+      # 代理单独用 AKASHIC_PROXY 传入：宿主 shell 里的 127.0.0.1 代理在容器里指向容器自己，原样带入会断网。
+      # 写容器能到的地址，如 http://host.docker.internal:7897（代理软件要允许局域网连接）。
+      HTTP_PROXY: ${AKASHIC_PROXY:-}
+      HTTPS_PROXY: ${AKASHIC_PROXY:-}
+      http_proxy: ${AKASHIC_PROXY:-}
+      https_proxy: ${AKASHIC_PROXY:-}
+      NO_PROXY: localhost,127.0.0.1,host.docker.internal
+      no_proxy: localhost,127.0.0.1,host.docker.internal
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - data:/data
+    # 插件下载的 Chromium 要用自己的沙箱，默认 seccomp 不允许它建用户命名空间；这份配置只额外放行这些调用。
+    security_opt:
+      - seccomp=docker/host-runtime/chromium-seccomp.json
     init: true
     stop_grace_period: 60s
     restart: "no"

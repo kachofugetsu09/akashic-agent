@@ -6,10 +6,12 @@ import argparse
 import json
 from pathlib import Path
 import re
+import shutil
 import subprocess
 
 
 ROOT = Path(__file__).resolve().parents[1]
+SECCOMP = ROOT / 'docker/host-runtime/chromium-seccomp.json'
 
 
 def main() -> None:
@@ -30,7 +32,12 @@ def main() -> None:
     service = document['services']['akashic']
     del service['build']
     service['image'] = args.image
-    # 2. JSON 也是合法 YAML；附件没有源码目录、构建参数或额外环境文件依赖。
+    # 2. seccomp 配置随附件放在同一目录；Compose 按 compose.yaml 所在目录解析相对路径。
+    service['security_opt'] = [f'seccomp={SECCOMP.name}' if item.startswith('seccomp=') else item
+                               for item in service['security_opt']]
+    for source in (SECCOMP, SECCOMP.with_suffix('.LICENSE')):
+        shutil.copyfile(source, args.output.parent / source.name)
+    # 3. JSON 也是合法 YAML；附件没有源码目录、构建参数或额外环境文件依赖。
     with args.output.open('x') as output:
         output.write(json.dumps(document, ensure_ascii=False, indent=2) + '\n')
 
