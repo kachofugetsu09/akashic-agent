@@ -86,9 +86,11 @@ class FileTool:
                 current = directories.snapshot(session_id)
                 if current.path is not None:
                     allowed = current.path
+            # 会话没设目录时，写入和读取一样以 workspace 为相对路径基准，不落到进程 cwd。
+            base = allowed if allowed is not None else str(self._ctx.runtime.workspace)
             try:
                 target, required_dir = await directories.resolve_target(
-                    session_id, cast(str, prepared["path"]), legacy_base=allowed,
+                    session_id, cast(str, prepared["path"]), legacy_base=base,
                 )
             except ValueError as error:
                 return str(error)
