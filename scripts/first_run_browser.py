@@ -207,7 +207,8 @@ def chat(page: Page, emulate: Emulate, case: Case) -> str:
 def after_restart(page: Page, emulate: Emulate) -> str:
     page.goto(page.url.split("#")[0])
     page.wait_for_timeout(3000)
-    page.get_by_text("ACC-TEXT-OK").first.click(timeout=15000)
+    # 标题请求不带工具，emulate 原样回显首条消息，所以侧栏标题就是"你好"。
+    page.get_by_text("你好", exact=True).first.click(timeout=15000)
     wait_text(page, "ACC-SHELL-OK", 30)
     chat(page, emulate, Case("text-again", "还在吗", [], "ACC-AGAIN-OK"))
     return "历史保留并可继续对话"
