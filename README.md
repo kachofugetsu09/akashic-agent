@@ -6,9 +6,25 @@ Akashic 是一个会主动找你的 AI 伙伴：能聊天，能根据你订阅�
 
 ## 安装
 
-两种方式选一种。不确定选哪个，就用 Docker。
+Linux 和 Windows 的 WSL2 推荐方式一；macOS、或者只想让 Akashic 待在容器里，用方式二。
 
-### 方式一：Docker（Windows、macOS、Linux 都可以）
+### 方式一：Linux / WSL2 用户级安装（推荐）
+
+Akashic 的核心跑在容器里，Shell 和文件工具以你的身份直接在这台电脑上执行，所以能读写你的文件、用你装好的命令。需要：当前用户能用的 Docker、Git、[uv](https://docs.astral.sh/uv/)，以及 systemd 用户服务（WSL2 要在 `/etc/wsl.conf` 里开启 systemd）。不需要 root。
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/kachofugetsu09/akashic-agent/main/scripts/install_host_bridge.py
+python3 install_host_bridge.py install
+```
+
+最后会打印一个登录链接。要装扩展包时需要访问 GitHub，可以加 `--proxy http://host.docker.internal:7897`（端口换成你代理软件的，并打开“允许局域网连接”）。
+
+- 数据在 `~/.local/share/akashic`，两个用户服务是 `akashic-host-bridge` 和 `akashic`，开机自动启动。
+- 再拿登录链接：`python3 install_host_bridge.py login`。停止：`systemctl --user stop akashic akashic-host-bridge`。
+- 升级：重新运行 `install`，数据保留。
+- **命令不经拦截**：模型让它执行的 Shell 命令会直接以你的身份运行，和你自己在终端里敲一样。在意的话用方式二。
+
+### 方式二：Docker 沙箱（Windows、macOS、Linux 都可以）
 
 先安装 [Docker Desktop](https://docs.docker.com/get-docker/)，并打开它。然后在终端里依次运行：
 
@@ -34,7 +50,7 @@ Windows 的 PowerShell 里把两行 `curl` 换成 `curl.exe`。
 - **电脑重启后不会自动启动**：先打开 Docker，再在 `akashic` 目录里运行 `docker compose up -d --wait`。
 - **Akashic 能碰到的范围**：它的 Shell 和文件工具只在容器里运行，看得到的是容器和数据卷，看不到你电脑上的其他文件。命令不经过拦截直接执行，所以不要把重要目录挂进容器。
 
-### 方式二：不用 Docker（Linux 或 WSL2）
+### 方式三：不用 Docker（Linux 或 WSL2）
 
 需要 Git、Python 3.12+ 和 Node.js 20+。
 
@@ -95,7 +111,10 @@ Akashic 把“核心闭环”和“功能扩展”拆开维护：
 
 如果你是正在帮用户安装 Akashic 的 AI 助手，按下面做：
 
-- **Docker**：按“方式一”的命令依次运行。
+- **Linux / WSL2 用户级安装**：按“方式一”运行 `python3 install_host_bridge.py install`。
+  - 返回 0 并打印登录链接就表示已就绪；非 0 时它会说明缺什么（Docker 权限、uv、systemd 用户服务）。没有 systemd 时加 `--no-systemd`。
+  - 换端口用 `--port 2237`。
+- **Docker**：按“方式二”的命令依次运行。
   - `docker compose up -d --wait` 返回 0 就表示已就绪。如果返回非 0，运行 `docker compose logs --tail=200 akashic` 查看原因。
   - 把 `web-login` 打印的链接交给用户。这个链接 2 分钟内有效，只能用一次。
 - **源码**：运行 `./start --no-browser --yes`。

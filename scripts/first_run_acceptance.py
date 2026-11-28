@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import socket
 import subprocess
 import sys
 import time
@@ -34,11 +35,9 @@ class Stack:
         self.proxy = proxy
         self.emulate = self.project + "-emulate"
         self.port = 20000 + int(self.project[-4:], 16) % 10000
-        override = {"services": {"akashic": {"image": image, "pull_policy": "never", "environment": {
-            # 容器网络里的 emulate 走直连；其余出网仍走 AKASHIC_PROXY。
-            "NO_PROXY": "localhost,127.0.0.1,emulate", "no_proxy": "localhost,127.0.0.1,emulate"}}}}
+        self.image = image
         self.override = output / "compose.override.json"
-        self.override.write_text(json.dumps(override))
+        self.override.write_text(json.dumps({"services": {"akashic": {"image": image, "pull_policy": "never"}}}))
         (output / "emulate.json").write_text(json.dumps(SEED))
 
     def compose(self, *args: str, capture: bool = False, check: bool = True) -> str:
@@ -47,7 +46,9 @@ class Stack:
 
     def _env_file(self) -> Path:
         path = self.output / "compose.env"
-        path.write_text(f"AKASHIC_REVISION=acceptance\nAKASHIC_PROXY={self.proxy}\nAKASHIC_PORT={self.port}\n")
+        # 容器网络里的 emulate 走直连；其余出网仍走 AKASHIC_PROXY。
+        path.write_text(f"AKASHIC_REVISION=acceptance\nAKASHIC_PROXY={self.proxy}\nAKASHIC_NO_PROXY=emulate\n"
+                        f"AKASHIC_PORT={self.port}\n")
         return path
 
     def up(self) -> None:
@@ -76,7 +77,7 @@ class Stack:
     def browser(self, phase: str) -> int:
         container = run("docker", "compose", "-p", self.project, "ps", "-q", "akashic", capture=True).strip().splitlines()[-1]
         args = ["--phase", phase, "--login", self.login_url(), "--emulate", "http://emulate:4000",
-                "--model-base", "http://emulate:4000/v1", "--output", f"/out/{phase}"]
+                "--model-base", "http://emulate:4000/v1", "--output", f"/out/{phase}", *self.browser_extra()]
         user = f"{os.getuid()}:{os.getgid()}" if hasattr(os, "getuid") else "0:0"
         # 官方镜像只带浏览器与系统库，Python 包按版本现装到临时 HOME。
         proxy = ("-e", f"HTTPS_PROXY={self.proxy}", "-e", "NO_PROXY=localhost,127.0.0.1,emulate") if self.proxy else ()
@@ -87,12 +88,50 @@ class Stack:
                                  BROWSER_IMAGE, "sh", "-c", script, "browser", *args], check=False)
         return result.returncode
 
+    def browser_extra(self) -> list[str]:
+        return []
+
     def logs(self) -> None:
         (self.output / "core.log").write_text(self.compose("logs", "--no-color", capture=True, check=False))
 
     def down(self) -> None:
         run("docker", "rm", "-f", self.emulate, check=False)
         self.compose("down", "--volumes", "--remove-orphans")
+
+
+class HostBridgeStack(Stack):
+    """默认安装方式：用 install_host_bridge.py（不装 systemd 单元）装到输出目录，Shell 在宿主执行。"""
+
+    def __init__(self, image: str, proxy: str, output: Path) -> None:
+        super().__init__(image, proxy, output)
+        self.root = output / "install"
+        self.shell_expect = socket.gethostname()
+        self.files: list[str] = []
+
+    # 宿主主机名与一个不挂进容器的宿主文件：两者都出现在工具结果里，才说明命令和文件读写在宿主执行。
+    def browser_extra(self) -> list[str]:
+        marker = self.output / "host-only" / "marker.txt"
+        marker.parent.mkdir(exist_ok=True)
+        marker.write_text("ACC-HOST-FILE\n")
+        return ["--shell-expect", self.shell_expect, "--host-file", str(marker)]
+
+    def compose(self, *args: str, capture: bool = False, check: bool = True) -> str:
+        return run(*self.files, *args, capture=capture, check=check)
+
+    def up(self) -> None:
+        run(sys.executable, str(ROOT / "scripts/install_host_bridge.py"), "install", "--root", str(self.root),
+            "--image", self.image, "--origin", str(ROOT), "--project", self.project, "--port", str(self.port),
+            "--proxy", self.proxy, "--no-proxy", "emulate", "--no-systemd")
+        sys.path.insert(0, str(ROOT / "scripts"))
+        from install_host_bridge import Layout, compose_command
+        receipt = json.loads((self.root / "install.json").read_text())
+        self.files = compose_command(Layout(self.root, receipt["commit"]), self.project)
+
+    def down(self) -> None:
+        super().down()
+        pid = self.root / "host-bridge.pid"
+        if pid.exists():
+            run("kill", pid.read_text().strip(), check=False)
 
 
 # 汇总两轮浏览器结果：任一步失败即整体失败。
@@ -114,13 +153,14 @@ def main() -> int:
     parser.add_argument("--proxy", default=os.environ.get("AKASHIC_PROXY", ""),
                         help="容器能到的出网代理，如 http://host.docker.internal:7897")
     parser.add_argument("--keep", action="store_true", help="结束后保留实例，便于排查")
+    parser.add_argument("--host-bridge", action="store_true", help="按默认安装方式验收：宿主 Host Bridge + 容器 Core")
     args = parser.parse_args()
     output = args.output.resolve()
     # 每轮用新目录，旧的 steps.json 不能冒充本轮结果。
     if output.exists() and any(output.iterdir()):
         parser.error(f"--output 必须是新目录或空目录：{output}")
     output.mkdir(parents=True, exist_ok=True)
-    stack = Stack(args.image, args.proxy, output)
+    stack = (HostBridgeStack if args.host_bridge else Stack)(args.image, args.proxy, output)
     try:
         # 1. 空数据卷首装，emulate 先就位再开浏览器。
         stack.up()
