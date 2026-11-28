@@ -56,7 +56,7 @@ class Stack:
     def start_emulate(self) -> None:
         proxy = ("-e", f"npm_config_proxy={self.proxy}", "-e", f"npm_config_https_proxy={self.proxy}") if self.proxy else ()
         run("docker", "run", "-d", "--name", self.emulate, "--network", self.project + "_default",
-            "--network-alias", "emulate", *proxy, "-v", f"{self.output}:/cfg:ro", EMULATE_IMAGE,
+            "--network-alias", "emulate", "--add-host", "host.docker.internal:host-gateway", *proxy, "-v", f"{self.output}:/cfg:ro", EMULATE_IMAGE,
             "npx", "-y", f"emulate@{EMULATE_VERSION}", "start", "--service", "ai", "--port", "4000",
             "--host", "0.0.0.0", "--seed", "/cfg/emulate.json")
 
@@ -116,21 +116,24 @@ def main() -> int:
     parser.add_argument("--keep", action="store_true", help="结束后保留实例，便于排查")
     args = parser.parse_args()
     output = args.output.resolve()
+    # 每轮用新目录，旧的 steps.json 不能冒充本轮结果。
+    if output.exists() and any(output.iterdir()):
+        parser.error(f"--output 必须是新目录或空目录：{output}")
     output.mkdir(parents=True, exist_ok=True)
     stack = Stack(args.image, args.proxy, output)
     try:
         # 1. 空数据卷首装，emulate 先就位再开浏览器。
         stack.up()
         stack.start_emulate()
-        stack.browser("fresh")
+        codes = [stack.browser("fresh")]
         # 2. 保留数据卷重建容器，核对会话与配置都还在。
         stack.compose("up", "-d", "--no-build", "--force-recreate", "--wait", "--wait-timeout", "600")
-        stack.browser("restart")
+        codes.append(stack.browser("restart"))
     finally:
         stack.logs()
         if not args.keep:
             stack.down()
-    return 0 if summarize(output) else 1
+    return 0 if summarize(output) and codes == [0, 0] else 1
 
 
 if __name__ == "__main__":

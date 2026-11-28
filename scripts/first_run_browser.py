@@ -6,6 +6,7 @@ import argparse
 from dataclasses import dataclass, field
 import json
 from pathlib import Path
+import re
 import time
 from typing import Any, Callable
 from urllib.request import Request, urlopen
@@ -41,7 +42,7 @@ CASES = [
         ("load_tools", {"plugin": "visuals@release"}),
         ("tool_call", {"name": "render_visual", "arguments": {
             "title": "验收图", "summary": "中文渲染验收", "draft": True,
-            "html": "<h1 style='font-size:48px'>中文标题 ACC</h1>"}})], "ACC-VISUAL-OK"),
+            "html": "<h1 style='font-size:48px'>中文标题 ACC</h1>"}})], "ACC-VISUAL-OK", ["草稿：验收图"]),
 ]
 
 
@@ -181,10 +182,15 @@ def install_packages(page: Page, timeout_s: float) -> str:
     button = page.get_by_role("button", name="安装 ").first
     label = button.inner_text()
     button.click()
+    # 结束后界面只会给三种结论之一；只有"已安装 N 个包"算通过。
     while time.monotonic() < deadline:
         page.wait_for_timeout(5000)
-        if page.get_by_role("button", name="继续", exact=True).is_enabled() and "正在" not in body_text(page):
-            return f"{label}；列表重试 {retries} 次"
+        text = body_text(page)
+        if "个包没有装好" in text or "安装结果未知" in text:
+            raise AssertionError(text[text.find("选择要安装的功能"):][:800])
+        done = re.search(r"已安装 \d+ 个包", text)
+        if done:
+            return f"{label}；{done.group(0)}；列表重试 {retries} 次"
     raise TimeoutError("安装没有在期限内结束")
 
 
@@ -197,7 +203,8 @@ def chat(page: Page, emulate: Emulate, case: Case) -> str:
     wait_text(page, case.reply, 120)
     results = emulate.tool_results(case.prompt)
     missing = [needle for needle in case.expect_results if not any(needle in r for r in results)]
-    errors = [r for r in results if "工具状态: error" in r]
+    # 成功结果不带状态行；error、denied 等任何状态都算失败。
+    errors = [r for r in results if "工具状态:" in r]
     if len(results) < len(case.calls) or missing or errors:
         raise AssertionError(f"工具结果 {len(results)}/{len(case.calls)}，缺少 {missing}：{errors or results}"[:1500])
     return "；".join(r[:200] for r in results) or "无工具"
