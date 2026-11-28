@@ -17,12 +17,13 @@
 
 ### Docker
 
-先停止服务，备份数据，再下载新版 `compose.yaml` 并启动：
+先停止服务，备份数据，再下载新版 `compose.yaml` 和 `chromium-seccomp.json` 并启动：
 
 ```bash
 docker compose stop
 docker run --rm -v akashic_data:/data -v "$PWD":/backup alpine tar czf /backup/akashic-data.tgz -C /data .
 curl -fsSLO https://github.com/kachofugetsu09/akashic-agent/releases/latest/download/compose.yaml
+curl -fsSLO https://github.com/kachofugetsu09/akashic-agent/releases/latest/download/chromium-seccomp.json
 docker compose up -d --wait
 ```
 

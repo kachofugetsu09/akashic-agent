@@ -25,6 +25,9 @@ services:
       - data:/data
       # 跟随宿主时区；Docker Desktop 与 WSL2 同样有这个文件。
       - /etc/localtime:/etc/localtime:ro
+    # 插件下载的 Chromium 要用自己的沙箱，默认 seccomp 不允许它建用户命名空间；这份配置只额外放行这些调用。
+    security_opt:
+      - seccomp=docker/host-runtime/chromium-seccomp.json
     init: true
     stop_grace_period: 60s
     restart: "no"

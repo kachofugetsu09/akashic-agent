@@ -102,7 +102,7 @@ jobs:
               'platforms': ['linux/amd64', 'linux/arm64'],
           }, indent=2) + '\n')
           PY
-          (cd "$RUNNER_TEMP/release" && sha256sum compose.yaml release.json > SHA256SUMS)
+          (cd "$RUNNER_TEMP/release" && sha256sum compose.yaml chromium-seccomp.json release.json > SHA256SUMS)
       - name: Require anonymous pull and check the downloadable Compose
         run: |
           IMAGE_REF=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["image"])' "$RUNNER_TEMP/release/release.json")
@@ -132,7 +132,7 @@ jobs:
           CHANGES=$(git tag -l --format='%(contents)' "$VERSION")
           [ -n "$CHANGES" ] || CHANGES="见下方源码提交。"
           cat > "$RUNNER_TEMP/release-notes.md" <<EOF
-          下载 Assets 中的 compose.yaml，放入专用目录后运行：
+          下载 Assets 中的 compose.yaml 和 chromium-seccomp.json，放入同一个专用目录后运行：
 
           \`\`\`bash
           docker compose up -d --wait

@@ -16,11 +16,12 @@ Akashic 是一个会主动找你的 AI 伙伴：能聊天，能根据你订阅�
 mkdir akashic
 cd akashic
 curl -fsSLO https://github.com/kachofugetsu09/akashic-agent/releases/latest/download/compose.yaml
+curl -fsSLO https://github.com/kachofugetsu09/akashic-agent/releases/latest/download/chromium-seccomp.json
 docker compose up -d --wait
 docker compose exec akashic python main.py web-login
 ```
 
-Windows 的 PowerShell 里把第三行的 `curl` 换成 `curl.exe`。
+Windows 的 PowerShell 里把两行 `curl` 换成 `curl.exe`。
 
 第一次启动只装核心，大约 1 分钟，主要是下载镜像；期间终端只显示等待；想看进度，另开一个终端运行 `docker compose logs -f`。其余功能在网页引导里挑选安装。最后一条命令会打印一个登录链接，在浏览器里打开它就能进入。
 
