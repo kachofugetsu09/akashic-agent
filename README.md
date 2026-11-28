@@ -30,6 +30,7 @@ Windows 的 PowerShell 里把两行 `curl` 换成 `curl.exe`。
 几件要知道的事：
 
 - **代理**：装扩展包要访问 GitHub。需要代理时，在同一目录的 `.env` 里写一行 `AKASHIC_PROXY=http://host.docker.internal:7897`（端口换成你代理软件的），并在代理软件里打开“允许局域网连接”，再运行一次 `docker compose up -d --wait`。不要写 `127.0.0.1`，那在容器里指的是容器自己。
+- **时区**：容器默认用 UTC。在 `.env` 里写一行 `TZ=Asia/Shanghai`（换成你所在的时区）。
 - **电脑重启后不会自动启动**：先打开 Docker，再在 `akashic` 目录里运行 `docker compose up -d --wait`。
 - **Akashic 能碰到的范围**：它的 Shell 和文件工具只在容器里运行，看得到的是容器和数据卷，看不到你电脑上的其他文件。命令不经过拦截直接执行，所以不要把重要目录挂进容器。
 
